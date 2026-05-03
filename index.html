@@ -381,6 +381,8 @@ body.perfil-equipe #btn-hamburger,
 body.perfil-equipe #gestor-bar,
 body.perfil-equipe #nav-mobile-panel,
 body.perfil-equipe #nav-mobile-overlay,
+body.perfil-equipe #sidebar,
+body.perfil-equipe #app-content-area,
 body.perfil-equipe #pg-dashboard,
 body.perfil-equipe #pg-contratos,
 body.perfil-equipe #pg-verbas,
@@ -7091,6 +7093,7 @@ function renderDiario(){
     var eqPlpt = equipes.find(function(e){return e.id===usuarioLogado.equipe_id;});
     if(eqPlpt){
       // Normalizar para o formato esperado pelo diário
+
       _dbEquipe = {
         id:          eqPlpt.id,
         codigo:      eqPlpt.nome_equipe,
@@ -7161,11 +7164,83 @@ function renderDiario(){
   // Recarregar composição do dia do banco para ter UUIDs atualizados
   // composicao_dia será buscada junto com as sessoes abaixo
   if(!_dbEquipe){
-    // Usuário sem equipe de disponibilidade vinculada
-    // Pode ser equipe de obras ou outro tipo — redirecionar para dashboard
-    // Se tem perfil equipe mas sem equipe TMA, mostrar dashboard normal
+    // Colaborador de campo sem equipe fixa — buscar na programação do dia
+    if(!DEMO && usuarioLogado.id){
+      var hoje2 = dataHoje();
+      var colabId = usuarioLogado.id;
+
+      // Mostrar mensagem de carregamento
+      var pgD2 = document.getElementById('pg-diario');
+      if(pgD2) pgD2.innerHTML = '<div style="padding:3rem;text-align:center;color:#888">'
+        +'<div style="font-size:32px;margin-bottom:1rem">⏳</div>'
+        +'<div>Buscando sua programação de hoje...</div></div>';
+
+      // Buscar em composicao_dia onde este colaborador está programado hoje
+      Promise.all([
+        sbFetch('composicao_dia', {filters:['data=eq.'+hoje2]}),
+        sbFetch('equipes', {filters:['contrato_id=eq.'+usuarioLogado.contrato_id,'status=eq.Ativo']}),
+        sbFetch('equipes_disp', {filters:['status=eq.Ativo']})
+      ]).then(function(res){
+        var comps   = res[0]||[];
+        var eqsPlpt = res[1]||[];
+        var eqsDisp = res[2]||[];
+
+        // Atualizar arrays globais
+        eqsPlpt.forEach(function(e){ if(!equipes.find(function(x){return x.id===e.id;})) equipes.push(e); });
+        eqsDisp.forEach(function(e){ if(!equipes_disp.find(function(x){return x.id===e.id;})) equipes_disp.push(e); });
+        comps.forEach(function(c){
+          c.colaborador_ids = parseJsonField(c.colaborador_ids, []);
+          if(!composicao_dia.find(function(x){return x.id===c.id;})) composicao_dia.push(c);
+        });
+
+        // Encontrar composição onde este colaborador está escalado hoje
+        var compDoColaborador = comps.find(function(c){
+          var ids = parseJsonField(c.colaborador_ids, []);
+          return ids.indexOf(colabId) >= 0;
+        });
+
+        if(compDoColaborador){
+          // Achou! Buscar a equipe correspondente
+          var eqEncontrada = equipes.find(function(e){return e.id===compDoColaborador.equipe_id;})
+            || equipes_disp.find(function(e){return e.id===compDoColaborador.equipe_id;});
+
+          if(eqEncontrada){
+            _dbEquipe = {
+              id:          eqEncontrada.id,
+              codigo:      eqEncontrada.nome_equipe || eqEncontrada.codigo,
+              nome:        eqEncontrada.nome_equipe || eqEncontrada.nome,
+              supervisor:  eqEncontrada.supervisor,
+              contrato_id: eqEncontrada.contrato_id,
+              tipo:        eqEncontrada.cargo||eqEncontrada.tipo||'',
+              status:      eqEncontrada.status,
+              _plpt:       !!eqEncontrada.nome_equipe
+            };
+            // Restaurar pg-diario e renderizar
+            var pgD3 = document.getElementById('pg-diario');
+            if(pgD3) pgD3.innerHTML = ''; // limpar loading
+            renderDiario();
+            return;
+          }
+        }
+
+        // Não está programado hoje — mostrar mensagem amigável
+        var pgD4 = document.getElementById('pg-diario');
+        if(pgD4) pgD4.innerHTML = '<div style="padding:3rem;text-align:center">'
+          +'<div style="font-size:40px;margin-bottom:1rem">📋</div>'
+          +'<div style="font-size:16px;font-weight:600;color:#1a1a18;margin-bottom:.5rem">Sem programação para hoje</div>'
+          +'<div style="font-size:13px;color:#888;max-width:280px;margin:0 auto">Você ainda não foi escalado em nenhuma equipe para '+fmtD(hoje2)+'.<br>Aguarde o encarregado confirmar a programação.</div>'
+          +'<button class="btn" onclick="fazerLogout()" style="margin-top:1.5rem">Sair</button></div>';
+      }).catch(function(e){
+        console.error('Erro ao buscar programação:', e);
+        var pgD5 = document.getElementById('pg-diario');
+        if(pgD5) pgD5.innerHTML = '<div style="padding:2rem;text-align:center"><div style="font-size:32px">⚠️</div>'
+          +'<div style="font-size:13px;color:#888;margin-top:.5rem">Erro ao buscar programação.</div>'
+          +'<button class="btn" onclick="fazerLogout()" style="margin-top:1rem">Sair</button></div>';
+      });
+      return;
+    }
+    // DEMO ou sem ID: ir para dashboard
     document.getElementById('pg-diario').classList.add('hidden');
-    /* pg-app-content removido */;
     var hdr=document.getElementById('hdr-principal');if(hdr)hdr.style.display='';
     var nm=document.getElementById('nav-main');if(nm&&window.innerWidth>=768)nm.style.display='flex';
     showMain('dashboard');
@@ -14292,7 +14367,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.5.3',
+  numero: '2.5.5',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -21702,30 +21777,37 @@ async function fazerLogin(){
     // Badge de versão
     var bv=document.getElementById('badge-versao');
     if(bv&&typeof APP_VERSAO!=='undefined')bv.textContent=APP_VERSAO.numero;
-    // Mostrar módulos no sidebar ao iniciar
-    sidebarMostrarModulos();
 
-    // Perfil equipe (Eletricista TMA): tela dedicada sem pg-app
+    // Perfil equipe (Eletricista TMA): tela dedicada sem sidebar
     if(user.perfil==='equipe'){
-      // Adicionar classe no body para CSS blindar tudo financeiro
       document.body.classList.add('perfil-equipe');
       document.getElementById('pg-app').classList.remove('hidden');
-      var hdr=document.getElementById('hdr-principal');if(hdr)hdr.style.display='none';
-      var bm=document.getElementById('bloco-metricas');if(bm)bm.style.display='none';
-      var nm=document.getElementById('nav-main');if(nm)nm.style.display='none';
-      var ns=document.getElementById('nav-sub');if(ns)ns.style.display='none';
-      var nsm=document.getElementById('nav-sub-mobile');if(nsm)nsm.style.display='none';
-      var hb=document.getElementById('btn-hamburger');if(hb)hb.style.display='none';
-      var gb=document.getElementById('gestor-bar');if(gb)gb.style.display='none';
-      // Esconder todas as páginas
-      document.querySelectorAll('[id^="pg-"]').forEach(function(el){if(el.id!=='pg-app'&&el.id!=='pg-login'&&el.id!=='pg-app-content')el.classList.add('hidden');});
-      // Mostrar só loading
+
+      // Esconder TUDO que não é diário
+      var _esc=['hdr-principal','bloco-metricas','nav-main','nav-sub',
+                'nav-sub-mobile','btn-hamburger','gestor-bar','sidebar',
+                'nav-mobile-panel','nav-mobile-overlay','app-content-area'];
+      _esc.forEach(function(id){
+        var el=document.getElementById(id);
+        if(el){ el.style.display='none'; el.style.visibility='hidden'; }
+      });
+
+      // Garantir que pg-diario ocupe a tela toda
+      var pgApp = document.getElementById('pg-app');
+      if(pgApp) pgApp.style.cssText='padding:0!important;margin:0!important;display:block!important';
+      document.querySelectorAll('[id^="pg-"]').forEach(function(el){
+        if(el.id!=='pg-app'&&el.id!=='pg-login'&&el.id!=='pg-diario') el.classList.add('hidden');
+      });
       var pgD=document.getElementById('pg-diario');
       if(pgD) pgD.classList.remove('hidden');
+
       await carregarDados();
       showPageDiario();
       return;
     }
+
+    // Demais perfis: mostrar sidebar normal
+    sidebarMostrarModulos();
 
     document.getElementById('pg-app').classList.remove('hidden');
     var btnVP=document.getElementById('btn-voltar-painel');
