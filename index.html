@@ -14384,7 +14384,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.6.4',
+  numero: '2.6.5',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -28712,21 +28712,38 @@ function salvarEditarFer(fid){
   if(!DEMO)sbUpdate('ferramentas',f,'id=eq.'+fid);
   closeModal();renderFer();
 }
-function openEntradaEstoque(){
-  // Popular select com itens do catálogo único
-  var itemOpts = '<option value="">— Novo item —</option>'
-    + itens_catalogo.filter(function(i){return i.ativo!==false;})
-        .map(function(i){
-          return '<option value="'+i.id+'">'
-            +(i.codigo?'['+i.codigo+'] ':'')+i.nome
-            +' ('+tipoItemLabel(i.tipo_item)+')</option>';
-        }).join('');
+function eePopularItens(){
+  var busca = ((document.getElementById('ee-busca')||{}).value||'').toLowerCase();
+  var tipo  = (document.getElementById('ee-fil-tipo')||{}).value||'';
+  var sel   = document.getElementById('ee-item-id'); if(!sel) return;
+  var valAtual = sel.value;
 
-  var tipoOpts = TIPOS_ITEM.map(function(t){
-    return '<option value="'+t+'">'+tipoItemLabel(t)+'</option>';
-  }).join('');
-  var unOpts = UNIDADES_MEDIDA.map(function(u){ return '<option>'+u+'</option>'; }).join('');
-  var filOpts = '<option value="">Selecione a filial</option>'
+  var lista = itens_catalogo.filter(function(i){
+    if(i.ativo===false) return false;
+    if(tipo && i.tipo_item!==tipo) return false;
+    if(busca){
+      return (i.nome||'').toLowerCase().includes(busca)
+          || (i.sku||'').toLowerCase().includes(busca)
+          || (i.codigo||'').toLowerCase().includes(busca);
+    }
+    return true;
+  });
+
+  sel.innerHTML = '<option value="">— Novo item —</option>'
+    + lista.map(function(i){
+        return '<option value="'+i.id+'"'+(i.id===valAtual?' selected':'')+'>'
+          +(i.sku?'['+i.sku+'] ':i.codigo?'['+i.codigo+'] ':'')+i.nome
+          +' — '+tipoItemLabel(i.tipo_item)+'</option>';
+      }).join('');
+}
+
+function openEntradaEstoque(){
+  var tipoOpts = '<option value="">Todos os tipos</option>'
+    + TIPOS_ITEM.map(function(t){
+        return '<option value="'+t+'">'+tipoItemLabel(t)+'</option>';
+      }).join('');
+  var unOpts   = UNIDADES_MEDIDA.map(function(u){ return '<option>'+u+'</option>'; }).join('');
+  var filOpts  = '<option value="">Selecione a filial</option>'
     + filiais.map(function(f){ return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>'; }).join('');
   var contOpts = '<option value="">Sem contrato</option>'
     + contratos.map(function(c){ return '<option value="'+c.id+'">'+c.codigo+'</option>'; }).join('');
@@ -28739,9 +28756,17 @@ function openEntradaEstoque(){
     +'</div>'
     +'<div style="display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem">'
 
-    // Selecionar item existente
+    // Filtro tipo + busca SKU/nome
+    +'<div style="display:grid;grid-template-columns:160px 1fr;gap:.5rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Filtrar por tipo</label>'
+    +'<select class="inp" id="ee-fil-tipo" style="width:100%" onchange="eePopularItens()">'+tipoOpts+'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Buscar por nome ou SKU</label>'
+    +'<input class="inp" id="ee-busca" style="width:100%" placeholder="Digite nome ou SKU..." oninput="eePopularItens()"/></div>'
+    +'</div>'
+
+    // Select de item (populado dinamicamente)
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Item existente (ou deixe em branco para criar novo)</label>'
-    +'<select class="inp" id="ee-item-id" style="width:100%" onchange="almToggleNovoItem()">'+itemOpts+'</select></div>'
+    +'<select class="inp" id="ee-item-id" style="width:100%" onchange="almToggleNovoItem()"><option value="">— Novo item —</option></select></div>'
 
     // Campos para novo item
     +'<div id="ee-novo-wrap">'
@@ -28801,6 +28826,9 @@ function openEntradaEstoque(){
     +'<button class="btn btn-pri" onclick="salvarEntrada()" style="flex:1">📥 Registrar entrada</button>'
     +'</div></div></div>');
 
+  // Popular lista de itens após renderizar o modal
+  eePopularItens();
+
   // Funções dinâmicas de tipo/unidade
   window.eeAdicionarTipo = function(){
     var novo = prompt('Nome do novo tipo:'); if(!novo||!novo.trim()) return;
@@ -28844,11 +28872,33 @@ function salvarEntrada(){
   var lote   = (document.getElementById('ee-lote')||{}).value||'';
 
   if(itemId){
-    // Entrada em item existente — só atualiza saldo
-    var item = estoque.find(function(e){return e.id===itemId;}); if(!item) return;
-    item.saldo = (item.saldo||0) + qtd;
-    if(!DEMO) sbUpdate('estoque',{saldo:item.saldo},'id=eq.'+itemId);
-    progShowToast('✅ Entrada registrada — novo saldo: '+item.saldo);
+    // Entrada em item do catálogo único
+    var itemCat = itens_catalogo.find(function(e){return e.id===itemId;});
+    if(!itemCat){ alert('Item não encontrado no catálogo.'); return; }
+    var custo = parseFloat((document.getElementById('ee-custo')||{}).value)||0;
+    var payload = {
+      item_id: itemId, tipo_mov: 'entrada', quantidade: qtd,
+      deposito_id: depId||null, filial_id: filId||null,
+      contrato_id: (document.getElementById('ee-cont')||{}).value||null,
+      fornecedor: forn, nota_fiscal: lote,
+      valor_unitario: custo,
+      data_mov: dataHoje(),
+      motivo: 'Entrada de estoque',
+      responsavel_id: usuarioLogado?usuarioLogado.id:null,
+      status: 'Disponível'
+    };
+    var novo = Object.assign({id:'mov'+Date.now()}, payload);
+    movimentacoes_itens.push(novo);
+    if(!DEMO){
+      sbInsert('movimentacoes_itens', payload);
+      // Atualizar preço se informado
+      if(custo > 0){
+        var idx = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+        if(idx>=0) itens_catalogo[idx].preco_unitario = custo;
+        sbUpdate('itens_catalogo', {preco_unitario: custo}, 'id=eq.'+itemId);
+      }
+    }
+    progShowToast('✅ Entrada registrada: '+qtd+'x '+itemCat.nome);
   } else {
     // Novo item no estoque
     var nome = ((document.getElementById('ee-nome')||{}).value||'').trim();
