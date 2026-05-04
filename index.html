@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.7.5',
+  numero: '2.7.6',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -14801,7 +14801,7 @@ function progSalvarStatus(){
   // 1. localStorage (instantâneo)
   try{ localStorage.setItem(key, JSON.stringify({status:_progStatus,info:_progStatusInfo})); }catch(e){}
 
-  // 2. Banco — UPSERT em batch (uma única chamada em vez de N queries)
+  // 2. Banco — upsert com on_conflict explícito
   if(!DEMO){
     var registros = Object.keys(_progStatus)
       .filter(function(colId){ return _progStatus[colId]&&_progStatus[colId]!=='disponivel'; })
@@ -14814,16 +14814,37 @@ function progSalvarStatus(){
           registrado_por:usuarioLogado?usuarioLogado.nome:''
         };
       });
-    if(!registros.length) return;
-    fetch(SB.url+'/rest/v1/prog_status_diario',{
+    if(!registros.length){
+      // Se não há status não-default, limpar registros do dia no banco
+      fetch(SB.url+'/rest/v1/prog_status_diario?data=eq.'+data,{
+        method:'DELETE',
+        headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+      }).catch(function(){});
+      return;
+    }
+    // Upsert com on_conflict na URL (funciona mesmo sem constraint UNIQUE definida explicitamente)
+    fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
       method:'POST',
       headers:{
         'apikey':SB.key,'Authorization':'Bearer '+SB.key,
         'Content-Type':'application/json',
-        'Prefer':'resolution=merge-duplicates'
+        'Prefer':'resolution=merge-duplicates,return=minimal'
       },
       body:JSON.stringify(registros)
-    }).catch(function(e){ console.warn('progSalvarStatus erro:',e); });
+    }).catch(function(){
+      // Fallback: DELETE + INSERT
+      fetch(SB.url+'/rest/v1/prog_status_diario?data=eq.'+data,{
+        method:'DELETE',
+        headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+      }).then(function(){
+        if(!registros.length) return;
+        fetch(SB.url+'/rest/v1/prog_status_diario',{
+          method:'POST',
+          headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json','Prefer':'return=minimal'},
+          body:JSON.stringify(registros)
+        }).catch(function(e){ console.warn('progSalvarStatus fallback erro:',e); });
+      });
+    });
   }
 }
 
