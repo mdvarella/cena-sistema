@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.7.8',
+  numero: '2.7.9',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15140,15 +15140,16 @@ function progRenderEquipeRow(eq, data){
     return true;
   });
 
-  // Montar slots: composicao_dia tem prioridade absoluta
-  // Se há composição para hoje, usar exclusivamente ela
-  // Vinculados só preenchem se NÃO houver nenhuma composição para este dia
+  // Montar slots: composicao_dia tem prioridade; vinculados preenchem slots nulos
+  // Exceção: colaboradores em _progRemovidosEq[equipe+data] não reaparecem
   var slots = [null, null, null];
   var compAtual = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
   var idsModificado = false;
+  var removidosKey = eq.id+'_'+data;
+  var removidosSet = (_progRemovidosEq && _progRemovidosEq[removidosKey]) || {};
 
   if(compAtual){
-    // Composição existe → usar os IDs dela, sem sobrescrever com vinculados
+    // 1ª passagem: aplicar IDs da composição
     ids.forEach(function(id, i){
       if(i >= 3) return;
       if(!id){ slots[i]=null; return; }
@@ -15163,8 +15164,20 @@ function progRenderEquipeRow(eq, data){
         slots[i]=col;
       }
     });
+    // 2ª passagem: preencher slots nulos com vinculados disponíveis
+    // (exceto quem foi explicitamente removido hoje)
+    var jaNoSlot={};
+    slots.forEach(function(c){if(c)jaNoSlot[c.id]=true;});
+    var vinculadosExtra=vinculados.filter(function(c){
+      return !jaNoSlot[c.id] && !removidosSet[c.id] && !emOutraEq[c.id];
+    });
+    for(var i=0;i<3;i++){
+      if(!slots[i]&&vinculadosExtra.length){
+        slots[i]=vinculadosExtra.shift();
+      }
+    }
   } else {
-    // Sem composição → usar vinculados como sugestão inicial
+    // Sem composição ainda → usar vinculados como sugestão inicial
     vinculados.slice(0,3).forEach(function(c,i){ slots[i] = c; });
   }
   // Salvar correção se removemos duplicatas
@@ -15460,12 +15473,22 @@ function progRenderPainelDisp(eqs, data, cid){
   });
 
   var disp = grupos_st['disponivel'];
-  // Verificar quem já está escalado hoje
+  // Verificar quem já está escalado hoje (composicao_dia + vinculados nos slots)
   var escalados = {};
   composicao_dia.forEach(function(comp){
     if(comp.data !== data) return;
     var ids=[]; try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
-    ids.forEach(function(id){ escalados[id]=true; });
+    ids.filter(Boolean).forEach(function(id){ escalados[id]=true; });
+  });
+  // Também marcar vinculados que aparecem nos slots como escalados
+  eqs.forEach(function(eq){
+    var removidosKey=eq.id+'_'+data;
+    var removidosSet=(_progRemovidosEq&&_progRemovidosEq[removidosKey])||{};
+    colaboradores.filter(function(c){
+      return c.equipe_id===eq.id && c.ativo!==false
+        && !removidosSet[c.id]
+        && (['ferias','afastado','treinamento','falta'].indexOf(_progStatus[c.id]||'disponivel')<0);
+    }).forEach(function(c){ escalados[c.id]=true; });
   });
   var livres = disp.filter(function(c){ return !escalados[c.id]; });
 
@@ -15682,17 +15705,38 @@ function progMenuSlot(colabId, eqId, pos){
   setModal(html);
 }
 
+var _progRemovidosEq = {}; // {equipeId_data: {colabId: true}} — removidos explicitamente
+
 function progRetirarDaEquipe(colabId, eqId, pos){
   var data = progGetData();
-  // Remover do slot na composicao_dia
+  // 1. Marcar como explicitamente removido para esta equipe+data
+  var key = eqId+'_'+data;
+  if(!_progRemovidosEq[key]) _progRemovidosEq[key]={};
+  _progRemovidosEq[key][colabId] = true;
+
+  // 2. Remover do composicao_dia
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(comp){
     var ids = parseJsonField(comp.colaborador_ids,[]);
     ids = ids.map(function(id){ return id===colabId ? null : id; });
     comp.colaborador_ids = JSON.stringify(ids);
     if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+  } else {
+    // Não havia composição — criar uma com os vinculados menos este
+    var vinc = colaboradores.filter(function(c){
+      return c.equipe_id===eqId && c.ativo!==false && c.id!==colabId;
+    });
+    var novosIds = [null,null,null];
+    vinc.slice(0,3).forEach(function(c,i){ novosIds[i]=c.id; });
+    var nova = {id:'cd'+Date.now(),equipe_id:eqId,data:data,
+      colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false};
+    composicao_dia.push(nova);
+    if(!DEMO) sbInsert('composicao_dia',{equipe_id:eqId,data:data,
+      colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false})
+      .then(function(r){if(r&&r[0]&&r[0].id)nova.id=r[0].id;});
   }
-  // Garantir status disponivel
+
+  // 3. Garantir status disponivel
   _progStatus[colabId] = 'disponivel';
   progSalvarStatus();
   closeModal();
