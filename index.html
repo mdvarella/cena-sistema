@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.7.9',
+  numero: '2.8.1',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15140,50 +15140,50 @@ function progRenderEquipeRow(eq, data){
     return true;
   });
 
-  // Montar slots: composicao_dia tem prioridade; vinculados preenchem slots nulos
-  // Exceção: colaboradores em _progRemovidosEq[equipe+data] não reaparecem
+  // ── Montar slots ─────────────────────────────────────────────
+  // Regra: composicao_dia é a única fonte de verdade.
+  // Se não existe para hoje, criamos um registro LOCAL em memória com os vinculados.
+  // A partir daí, nunca mais vinculados sobrescrevem slots — removido fica removido.
   var slots = [null, null, null];
   var compAtual = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
   var idsModificado = false;
-  var removidosKey = eq.id+'_'+data;
-  var removidosSet = (_progRemovidosEq && _progRemovidosEq[removidosKey]) || {};
 
-  if(compAtual){
-    // 1ª passagem: aplicar IDs da composição
-    ids.forEach(function(id, i){
-      if(i >= 3) return;
-      if(!id){ slots[i]=null; return; }
-      var col = colaboradores.find(function(c){return c.id===id;});
-      if(!col){ slots[i]=null; return; }
-      var st = _progStatus[col.id]||'disponivel';
-      if(STATUS_BLOQUEADOS.indexOf(st)>=0){
-        slots[i]=null;
-      } else if(emOutraEq[col.id]){
-        ids[i]=null; idsModificado=true; slots[i]=null;
-      } else {
-        slots[i]=col;
-      }
-    });
-    // 2ª passagem: preencher slots nulos com vinculados disponíveis
-    // (exceto quem foi explicitamente removido hoje)
-    var jaNoSlot={};
-    slots.forEach(function(c){if(c)jaNoSlot[c.id]=true;});
-    var vinculadosExtra=vinculados.filter(function(c){
-      return !jaNoSlot[c.id] && !removidosSet[c.id] && !emOutraEq[c.id];
-    });
-    for(var i=0;i<3;i++){
-      if(!slots[i]&&vinculadosExtra.length){
-        slots[i]=vinculadosExtra.shift();
-      }
-    }
-  } else {
-    // Sem composição ainda → usar vinculados como sugestão inicial
-    vinculados.slice(0,3).forEach(function(c,i){ slots[i] = c; });
+  if(!compAtual){
+    // Criar registro local em memória com vinculados como sugestão
+    var novosIds = [null, null, null];
+    vinculados.slice(0,3).forEach(function(c,i){ novosIds[i] = c.id; });
+    compAtual = {
+      id: 'local_'+eq.id+'_'+data,
+      equipe_id: eq.id, data: data,
+      colaborador_ids: JSON.stringify(novosIds),
+      turno: 'Manha', confirmada: false, _local: true
+    };
+    composicao_dia.push(compAtual);
+    // Sincronizar ids
+    ids = novosIds.slice();
   }
-  // Salvar correção se removemos duplicatas
-  if(idsModificado && compAtual){
-    compAtual.colaborador_ids=JSON.stringify(ids);
-    if(!DEMO)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+compAtual.id);
+
+  // Aplicar IDs da composição — null = slot vazio, sem preencher com vinculados
+  ids.forEach(function(id, i){
+    if(i >= 3) return;
+    if(!id){ slots[i] = null; return; }
+    var col = colaboradores.find(function(c){return c.id===id;});
+    if(!col){ slots[i] = null; return; }
+    var st = _progStatus[col.id]||'disponivel';
+    if(STATUS_BLOQUEADOS.indexOf(st)>=0){
+      slots[i] = null;
+    } else if(emOutraEq[col.id]){
+      ids[i] = null; idsModificado = true; slots[i] = null;
+    } else {
+      slots[i] = col;
+    }
+  });
+
+  // Salvar correção de duplicatas se necessário
+  if(idsModificado){
+    compAtual.colaborador_ids = JSON.stringify(ids);
+    if(!DEMO && !compAtual._local)
+      sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+compAtual.id);
   }
 
   function renderSlot(col, pos, eqId){
@@ -15473,22 +15473,12 @@ function progRenderPainelDisp(eqs, data, cid){
   });
 
   var disp = grupos_st['disponivel'];
-  // Verificar quem já está escalado hoje (composicao_dia + vinculados nos slots)
+  // Escalados = quem está em qualquer composicao_dia desta data (incluindo locais)
   var escalados = {};
   composicao_dia.forEach(function(comp){
     if(comp.data !== data) return;
     var ids=[]; try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
     ids.filter(Boolean).forEach(function(id){ escalados[id]=true; });
-  });
-  // Também marcar vinculados que aparecem nos slots como escalados
-  eqs.forEach(function(eq){
-    var removidosKey=eq.id+'_'+data;
-    var removidosSet=(_progRemovidosEq&&_progRemovidosEq[removidosKey])||{};
-    colaboradores.filter(function(c){
-      return c.equipe_id===eq.id && c.ativo!==false
-        && !removidosSet[c.id]
-        && (['ferias','afastado','treinamento','falta'].indexOf(_progStatus[c.id]||'disponivel')<0);
-    }).forEach(function(c){ escalados[c.id]=true; });
   });
   var livres = disp.filter(function(c){ return !escalados[c.id]; });
 
@@ -15705,38 +15695,42 @@ function progMenuSlot(colabId, eqId, pos){
   setModal(html);
 }
 
-var _progRemovidosEq = {}; // {equipeId_data: {colabId: true}} — removidos explicitamente
+var _progRemovidosEq = {}; // mantido para compatibilidade
 
 function progRetirarDaEquipe(colabId, eqId, pos){
   var data = progGetData();
-  // 1. Marcar como explicitamente removido para esta equipe+data
-  var key = eqId+'_'+data;
-  if(!_progRemovidosEq[key]) _progRemovidosEq[key]={};
-  _progRemovidosEq[key][colabId] = true;
 
-  // 2. Remover do composicao_dia
+  // Buscar composicao_dia (sempre existe após render, pois criamos local)
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
-  if(comp){
-    var ids = parseJsonField(comp.colaborador_ids,[]);
-    ids = ids.map(function(id){ return id===colabId ? null : id; });
-    comp.colaborador_ids = JSON.stringify(ids);
-    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
-  } else {
-    // Não havia composição — criar uma com os vinculados menos este
-    var vinc = colaboradores.filter(function(c){
-      return c.equipe_id===eqId && c.ativo!==false && c.id!==colabId;
-    });
-    var novosIds = [null,null,null];
-    vinc.slice(0,3).forEach(function(c,i){ novosIds[i]=c.id; });
-    var nova = {id:'cd'+Date.now(),equipe_id:eqId,data:data,
-      colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false};
-    composicao_dia.push(nova);
-    if(!DEMO) sbInsert('composicao_dia',{equipe_id:eqId,data:data,
-      colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false})
-      .then(function(r){if(r&&r[0]&&r[0].id)nova.id=r[0].id;});
+  if(!comp){
+    // Segurança: criar se ainda não existe
+    comp = {id:'local_'+eqId+'_'+data, equipe_id:eqId, data:data,
+      colaborador_ids:'[null,null,null]', turno:'Manha', confirmada:false, _local:true};
+    composicao_dia.push(comp);
   }
 
-  // 3. Garantir status disponivel
+  // Remover colabId do array
+  var ids = parseJsonField(comp.colaborador_ids, []);
+  ids = ids.map(function(id){ return id===colabId ? null : id; });
+  comp.colaborador_ids = JSON.stringify(ids);
+
+  // Salvar no banco
+  if(!DEMO){
+    if(comp._local){
+      // Era local — agora virou real
+      comp._local = false;
+      sbInsert('composicao_dia',{
+        equipe_id:eqId, data:data,
+        colaborador_ids:JSON.stringify(ids),
+        turno:'Manha', confirmada:false
+      }).then(function(r){
+        if(r&&r[0]&&r[0].id) comp.id = r[0].id;
+      });
+    } else {
+      sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+    }
+  }
+
   _progStatus[colabId] = 'disponivel';
   progSalvarStatus();
   closeModal();
@@ -23080,11 +23074,8 @@ function progAbrirSelecionarVeiculo(eqId, data){
   var perfil = usuarioLogado ? usuarioLogado.perfil : '';
   var precisaJustif = vAtual && perfil !== 'programador' && perfil !== 'gestor' && perfil !== 'administrador';
 
-  // Filtrar por contrato da equipe
-  var veicsFrota = (frt_veiculos || []).filter(function(v){
-    if(!eq || !eq.contrato_id) return true;
-    return !v.contrato_id || v.contrato_id === eq.contrato_id;
-  });
+  // Mostrar todos os veículos — veículos de outro contrato aparecem marcados
+  var veicsFrota = frt_veiculos || [];
   var veicsClassif = veicsFrota.map(function(v){
     var classe, cor, bg, icone, titulo;
 
@@ -23129,11 +23120,21 @@ function progAbrirSelecionarVeiculo(eqId, data){
       icone  = mesmoContrato ? '🟡' : '🔴';
       titulo = mesmoContrato ? 'Em uso (mesmo contrato)' : 'Em uso (outro contrato)';
     } else {
-      classe = 'green';
-      cor    = '#3B6D11';
-      bg     = '#EAF3DE';
-      icone  = '🟢';
-      titulo = v.status === 'Disponível' ? 'Disponível' : v.status;
+      // Verificar se é do mesmo contrato da equipe
+      var mesmoContr = !eq || !eq.contrato_id || !v.contrato_id || v.contrato_id === eq.contrato_id;
+      if(!mesmoContr){
+        classe = 'yellow';
+        cor    = '#854F0B';
+        bg     = '#FEF3E2';
+        icone  = '🟡';
+        titulo = 'Outro contrato';
+      } else {
+        classe = 'green';
+        cor    = '#3B6D11';
+        bg     = '#EAF3DE';
+        icone  = '🟢';
+        titulo = v.status === 'Disponível' ? 'Disponível' : v.status;
+      }
     }
 
     return {v:v, classe:classe, cor:cor, bg:bg, icone:icone, titulo:titulo,
@@ -23172,9 +23173,9 @@ function progAbrirSelecionarVeiculo(eqId, data){
 
   // ── Legenda ───────────────────────────────────────────────
   var legendaHtml = '<div style="display:flex;gap:10px;font-size:10px;flex-wrap:wrap;margin-bottom:.75rem;padding:.5rem .75rem;background:#f9f9f7;border-radius:8px">'
-    +'<span>🟢 Disponível</span>'
-    +'<span>🟡 Em manutenção / Em uso (mesmo contrato)</span>'
-    +'<span>🔴 Em uso (outro contrato) / Bloqueado</span>'
+    +'<span>🟢 Disponível (mesmo contrato)</span>'
+    +'<span>🟡 Outro contrato / Manutenção</span>'
+    +'<span>🔴 Em uso / Bloqueado / Outra equipe</span>'
     +'</div>';
 
   var html = '<div class="modal-bg"><div class="modal" style="max-width:440px">'
