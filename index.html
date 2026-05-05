@@ -9641,7 +9641,24 @@ var DB_MOTIVOS_AGUARDO = [
   'Outro motivo'
 ];
 
-var _dbObsTimer = null;
+function dbSalvarObsDetalhe(oid){
+  var o = ordens_db.find(function(x){return x.id===oid;});
+  if(!o) return;
+  var txt = (document.getElementById('detalhe-obs-txt')||{}).value||'';
+  o.observacao = txt;
+  // Atualizar também no card ativo se for a mesma OS
+  if(_dbOrdemAtual && _dbOrdemAtual.id===oid){
+    _dbOrdemAtual.observacao = txt;
+    var ta = document.getElementById('db-obs-texto');
+    if(ta) ta.value = txt;
+  }
+  if(!DEMO && oid && oid.indexOf('ord')!==0){
+    sbUpdate('ordens_diario',{observacao:txt},'id=eq.'+oid);
+  }
+  progShowToast('✅ Observação salva');
+}
+
+
 function dbSalvarObsDebounce(){
   clearTimeout(_dbObsTimer);
   _dbObsTimer = setTimeout(dbSalvarObs, 1500);
@@ -10090,7 +10107,7 @@ function renderDbOrdemAtual(){
     obsDiv.innerHTML =
       '<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:4px">📝 Observações da OS</div>'
       +'<textarea id="db-obs-texto" placeholder="Descreva o que foi feito, materiais, informações importantes..." '
-      +'style="width:100%;height:80px;border:.5px solid #e0dfd8;border-radius:8px;padding:.5rem;font-size:12px;resize:vertical;font-family:inherit;box-sizing:border-box">'
+      +'style="width:100%;height:100px;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem;font-size:13px;resize:vertical;font-family:inherit;box-sizing:border-box">'
       +(_dbOrdemAtual.observacao||'')+'</textarea>'
       +'<div style="display:flex;justify-content:flex-end;margin-top:4px">'
       +'<button onclick="dbSalvarObs()" style="background:#1a1a18;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer">💾 Salvar</button>'
@@ -10231,8 +10248,79 @@ function abrirDetalheOrdem(oid){
       +'</div></div>';
   }).join('');
 
+  // Buscar APRs desta OS
+  var aprsOs = aprs_registradas.filter(function(a){
+    return a.ordem_id===o.numero_ordem && a.equipe_id===(_dbEquipe?_dbEquipe.id:'');
+  });
+
+  // Checklist EPI/Veicular do turno (só exibe uma vez por sessão, mas vincula ao detalhamento)
+  var turnoHoje = turnos_abertos.find(function(t){
+    return t.equipe_id===(_dbEquipe?_dbEquipe.id:'') && t.data===o.data;
+  });
+
+  // Seção observações
+  var obsHtml = '';
+  if(['encerrada','encerrando','em_andamento'].indexOf(o.status)>=0 || o.observacao){
+    obsHtml = '<div style="margin-top:1rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
+      +'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:6px">📝 Observações</div>'
+      +'<textarea id="detalhe-obs-txt" style="width:100%;height:80px;border:.5px solid #e0dfd8;border-radius:8px;padding:.5rem;font-size:12px;resize:vertical;font-family:inherit;box-sizing:border-box">'
+      +(o.observacao||'')+'</textarea>'
+      +'<div style="display:flex;justify-content:flex-end;margin-top:4px">'
+      +'<button onclick="dbSalvarObsDetalhe(\''+o.id+'\')" style="background:#1a1a18;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;cursor:pointer">💾 Salvar</button>'
+      +'</div></div>';
+  }
+
+  // Seção APR
+  var aprHtml = '';
+  if(aprsOs.length){
+    aprHtml = '<div style="margin-top:.75rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
+      +'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:6px">⚠️ APR Preenchida</div>'
+      + aprsOs.map(function(a){
+          var resps = parseJsonField(a.respostas||a.itens, []);
+          return '<div style="background:#FEF3E2;border-radius:8px;padding:.5rem .75rem;font-size:12px;margin-bottom:4px">'
+            +'<div style="font-weight:600;color:#854F0B;margin-bottom:4px">APR — OS #'+o.numero_ordem+'</div>'
+            + resps.map(function(r){
+                var cor = r.resposta==='S'||r.resposta==='Sim'||r.resposta===true ? '#3B6D11' : '#A32D2D';
+                return '<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px">'
+                  +'<span style="color:#555">'+r.item+'</span>'
+                  +'<span style="font-weight:700;color:'+cor+'">'+r.resposta+'</span>'
+                  +'</div>';
+              }).join('')
+            +'</div>';
+        }).join('')
+      +'</div>';
+  }
+
+  // Seção Checklist do turno (EPI + Veicular)
+  var clHtml = '';
+  if(turnoHoje){
+    var resEpi = parseJsonField(turnoHoje.respostas_epi,[]);
+    var resVei = parseJsonField(turnoHoje.respostas_vei,[]);
+    if(resEpi.length || resVei.length){
+      function renderCl(titulo, itens, ok){
+        if(!itens.length) return '';
+        return '<div style="margin-bottom:.5rem">'
+          +'<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:3px">'+titulo
+          +(ok!==null?'<span style="margin-left:6px;font-size:10px;color:'+(ok?'#3B6D11':'#A32D2D')+'">'+(ok?'✅ Conforme':'⚠️ Não conforme')+'</span>':'')+'</div>'
+          + itens.map(function(r){
+              var cor = r.resposta==='S'||r.resposta==='Sim'||r.resposta===true ? '#3B6D11' : '#A32D2D';
+              return '<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">'
+                +'<span style="color:#555">'+r.item+'</span>'
+                +'<span style="font-weight:700;color:'+cor+'">'+r.resposta+'</span>'
+                +'</div>';
+            }).join('')
+          +'</div>';
+      }
+      clHtml = '<div style="margin-top:.75rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
+        +'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:6px">✅ Checklists do Turno</div>'
+        + renderCl('🦺 EPI', resEpi, turnoHoje.checklist_epi_ok!==undefined?!!turnoHoje.checklist_epi_ok:null)
+        + renderCl('🚗 Veicular', resVei, turnoHoje.checklist_vei_ok!==undefined?!!turnoHoje.checklist_vei_ok:null)
+        +'</div>';
+    }
+  }
+
   setModal(
-    '<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    '<div class="modal-bg"><div class="modal" style="max-width:520px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">'
     +'<div>'
     +'<h3 style="margin:0;color:#185FA5">Ordem #'+o.numero_ordem+'</h3>'
@@ -10242,7 +10330,12 @@ function abrirDetalheOrdem(oid){
     +'<span class="bdg '+(stCls[o.status]||'gray')+'">'+(stLabel[o.status]||o.status)+'</span>'
     +'</div>'
     +(o.motivo_cancel?'<div style="background:#FCEBEB;border-radius:8px;padding:8px 12px;font-size:12px;color:#A32D2D;margin-bottom:.75rem">✗ '+o.motivo_cancel+'</div>':'')
-    +'<div style="max-height:420px;overflow-y:auto">'+timeline+'</div>'
+    +'<div style="max-height:55vh;overflow-y:auto">'
+    +timeline
+    +obsHtml
+    +aprHtml
+    +clHtml
+    +'</div>'
     +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Fechar</button></div>'
     +'</div></div>'
   );
@@ -14982,7 +15075,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.1.7',
+  numero: '3.1.8',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
