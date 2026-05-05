@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.8.5',
+  numero: '2.8.8',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15306,7 +15306,9 @@ function progMostrarListaStatus(statusFiltro){
 function progBuscarParaSlot(eqId, pos){
   var data = progGetData();
   var cid  = progGetCont();
-  var eq   = equipes_disp.find(function(e){return e.id===eqId;})||{codigo:eqId};
+  var eq   = equipes_disp.find(function(e){return e.id===eqId;})
+          || equipes.find(function(e){return e.id===eqId;})
+          || {codigo:eqId};
   var slotLabel = pos===0?'Titular 1':pos===1?'Titular 2':'Folguista';
   var STATUS_BLOQ = ['ferias','afastado','treinamento','falta'];
 
@@ -21115,7 +21117,6 @@ var MAIN_CONFIG = {
     {id:'operacional-prod',       label:'📊 Produção Diária / COD X'},
     {id:'programacao-equipes',    label:'👥 Programação de Equipes'},
     {id:'programacao-projetos',   label:'🗂 Programação de Projetos'},
-    {id:'plpt-programacao',       label:'⚡ Programação Projetos PLPT'},
     {id:'obras-projetos',         label:'📋 Projetos de Obras'},
     {id:'obras-execucao',         label:'🔨 Execução de Obras'},
     {id:'obras-medicao',          label:'📐 Medição e Faturamento'},
@@ -21204,7 +21205,6 @@ var SIDEBAR_GROUPS = {
     {label:'Programação', items:[
       {id:'programacao-equipes',    icon:'👥', label:'Programação de Equipes'},
       {id:'programacao-projetos',   icon:'🗂', label:'Programação de Projetos'},
-      {id:'plpt-programacao',       icon:'⚡', label:'Prog. Equipes (Projetos)'},
       {id:'operacional-prod',       icon:'📊', label:'Produção / COD X'},
     ]},
     {label:'Em Campo', items:[
@@ -22318,16 +22318,56 @@ function progProjMudarContrato(){
 function progProjGetProjetos(cid){
   if(!cid) return [];
   var lista = [];
+
   // projetos_obra
-  if(typeof projetos!=='undefined'){
+  if(typeof projetos!=='undefined' && projetos.length){
     projetos.filter(function(p){ return p.contrato_id===cid && p.status!=='Cancelado'; })
-      .forEach(function(p){ lista.push({id:p.id, nome:p.codigo_cliente||p.nome||p.codigo||p.id, status:p.status, origem:'obra'}); });
+      .forEach(function(p){
+        lista.push({
+          id:p.id,
+          nome:p.codigo_cliente||p.codigo||p.nome||p.descricao||p.id,
+          status:p.status, origem:'obra'
+        });
+      });
   }
+
   // sot_projetos
-  if(typeof sot_projetos!=='undefined'){
+  if(typeof sot_projetos!=='undefined' && sot_projetos.length){
     sot_projetos.filter(function(p){ return p.contrato_id===cid && p.status!=='Cancelado'; })
-      .forEach(function(p){ lista.push({id:p.id, nome:p.codigo_cliente||p.nome||p.id, status:p.status, origem:'sot'}); });
+      .forEach(function(p){
+        lista.push({
+          id:p.id,
+          nome:p.codigo_cliente||p.nome||p.codigo||p.descricao||p.id,
+          status:p.status, origem:'sot'
+        });
+      });
   }
+
+  // Se não tem nada, tentar carregar sot_projetos do banco para este contrato
+  if(!lista.length && !DEMO){
+    sbFetchPaged('sot_projetos',{filters:['contrato_id=eq.'+cid],order:'nome'})
+      .then(function(rows){
+        if(rows&&rows.length){
+          rows.forEach(function(r){
+            if(sot_projetos.findIndex(function(x){return x.id===r.id;})<0)
+              sot_projetos.push(r);
+          });
+          // Re-renderizar após carregar
+          if(typeof progProjRenderQuadro==='function') progProjRenderQuadro();
+        }
+      }).catch(function(){});
+    // Também tentar projetos_obra
+    sbFetch('projetos_obra',{filters:['contrato_id=eq.'+cid],order:'criado_em.desc'})
+      .then(function(rows){
+        if(rows&&rows.length){
+          rows.forEach(function(r){
+            if(projetos.findIndex(function(x){return x.id===r.id;})<0)
+              projetos.push(r);
+          });
+        }
+      }).catch(function(){});
+  }
+
   return lista;
 }
 
@@ -22864,10 +22904,16 @@ function ppEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
 }
 
 function ppBindDrag(){
+  var data = progProjGetData();
   document.querySelectorAll('.pp-slot-vazio[id^="ppslot-vz-"]').forEach(function(el){
     var eqId=el.getAttribute('data-eq');
     var pos=parseInt(el.getAttribute('data-pos'));
     el.onclick=function(){ ppBuscarParaSlot(eqId,pos); };
+  });
+  // Vincular botões de veículo (reutiliza a mesma função da Prog. Equipes)
+  document.querySelectorAll('[id^="prog-veic-btn-"]').forEach(function(el){
+    var eqId = el.id.replace('prog-veic-btn-','');
+    el.onclick = function(){ progAbrirSelecionarVeiculo(eqId, data); };
   });
   document.querySelectorAll('.pp-slot,.pp-slot-vazio,.pp-slot-pool,#pp-pool').forEach(function(el){
     el.addEventListener('dragleave',function(){ el.style.outline=''; });
@@ -23239,7 +23285,9 @@ function progRenderVeiculoCell(eq, data){
 
 // ── Abrir modal de seleção de veículo ────────────────────────
 function progAbrirSelecionarVeiculo(eqId, data){
-  var eq = equipes_disp.find(function(e){return e.id===eqId;});
+  // Aceita equipes de equipes_disp (Disponibilidade) OU equipes (Projetos)
+  var eq = equipes_disp.find(function(e){return e.id===eqId;})
+        || equipes.find(function(e){return e.id===eqId;});
   if(!eq) return;
   var vAtual = progGetVeiculo(eqId, data);
   var perfil = usuarioLogado ? usuarioLogado.perfil : '';
