@@ -7585,6 +7585,8 @@ function renderDiario(){
       renderDbOrdemAtual();
       renderDbOrdensDia();
       renderDbHistoricoSessao();
+      // Popular supervisão do diário
+      dbIniciarSupervisionSection();
       return;
     }
     // Marcar equipe como "fluxo projeto" se ainda não marcada
@@ -9468,6 +9470,69 @@ function dbIniciarTimer(){
   },1000);
 }
 
+function dbIniciarSupervisionSection(){
+  var selEq  = document.getElementById('db-admin-eq');
+  var inpData= document.getElementById('db-admin-data');
+  var btnBus = document.getElementById('btn-db-admin-buscar');
+
+  // Popular select de equipes do contrato do usuário logado
+  if(selEq){
+    var cid = usuarioLogado ? usuarioLogado.contrato_id : '';
+    var eqsDisp = equipes_disp.filter(function(e){
+      return (!cid || e.contrato_id===cid) && e.status==='Ativo';
+    });
+    selEq.innerHTML = '<option value="">Todas as equipes</option>'
+      + eqsDisp.map(function(e){
+          return '<option value="'+e.id+'">'+e.codigo+' — '+e.nome+'</option>';
+        }).join('');
+    // Se só tem 1 equipe (o encarregado da própria equipe), pré-selecionar
+    if(eqsDisp.length===1) selEq.value = eqsDisp[0].id;
+  }
+
+  // Data padrão = hoje
+  if(inpData && !inpData.value) inpData.value = dataHoje();
+
+  // Navegação de mês — botões ← →
+  var wrap = document.getElementById('db-admin-wrap');
+  if(wrap && !document.getElementById('db-cal-nav')){
+    var navDiv = document.createElement('div');
+    navDiv.id = 'db-cal-nav';
+    navDiv.style.cssText = 'display:flex;align-items:center;gap:6px;padding:.5rem .75rem;border-top:.5px solid #f0efe8';
+    navDiv.innerHTML =
+      '<button onclick="dbNavMes(-1)" style="border:none;background:none;font-size:18px;cursor:pointer;padding:2px 8px">◀</button>'
+      +'<span id="db-cal-mes-label" style="font-size:13px;font-weight:600;flex:1;text-align:center"></span>'
+      +'<button onclick="dbNavMes(1)" style="border:none;background:none;font-size:18px;cursor:pointer;padding:2px 8px">▶</button>';
+    var resultDiv = document.getElementById('db-admin-resultado');
+    var cardInner = wrap.querySelector('div > div');
+    if(resultDiv && cardInner) cardInner.insertBefore(navDiv, resultDiv);
+    else if(cardInner) cardInner.appendChild(navDiv);
+    dbAtualizarMesLabel();
+  }
+
+  if(btnBus) btnBus.onclick = _buscarDiarioAdmin;
+}
+
+function dbAtualizarMesLabel(){
+  var inp = document.getElementById('db-admin-data');
+  var lbl = document.getElementById('db-cal-mes-label');
+  if(!lbl||!inp||!inp.value) return;
+  var d = new Date(inp.value+'T12:00:00');
+  lbl.textContent = d.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
+}
+
+function dbNavMes(delta){
+  var inp = document.getElementById('db-admin-data');
+  if(!inp||!inp.value) return;
+  var d = new Date(inp.value+'T12:00:00');
+  d.setMonth(d.getMonth()+delta);
+  // Ir para o primeiro dia do novo mês
+  d.setDate(1);
+  inp.value = d.toISOString().split('T')[0];
+  dbAtualizarMesLabel();
+  _buscarDiarioAdmin();
+}
+
+
 function dbAtualizarBotoes(){
   var btnLogin=document.getElementById('btn-db-login');
   var btnAlmoco=document.getElementById('btn-db-almoco');
@@ -9476,10 +9541,6 @@ function dbAtualizarBotoes(){
 
   if(!_dbSessao){
     if(btnLogin)btnLogin.style.display='';
-    if(btnAlmoco)btnAlmoco.style.display='none';
-    if(btnLogout)btnLogout.style.display='none';
-    if(btnRetomar)btnRetomar.style.display='none';
-  } else if(_dbSessao.logout_ts){
     // Dia encerrado — mostrar botão para iniciar novo dia (caso precise corrigir)
     if(btnLogin){
       btnLogin.style.display='';
@@ -14841,7 +14902,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.0.3',
+  numero: '3.0.8',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15219,6 +15280,30 @@ function progInit(){
   if(selData) selData.value = _progData;
   progCarregarStatus(_progData);
   progAtualizarPillsTipo();
+
+  // Garantir colaboradores carregados para o contrato selecionado
+  if(!DEMO){
+    var cids = _contratosVisiveis().filter(function(c){
+      return (c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
+    }).map(function(c){return c.id;});
+    if(cids.length){
+      var jaTemColabs = colaboradores.some(function(c){return cids.indexOf(c.contrato_id)>=0;});
+      if(!jaTemColabs){
+        var filtro = cids.length===1 ? 'contrato_id=eq.'+cids[0] : 'contrato_id=in.('+cids.join(',')+')';
+        sbFetch('colaboradores',{filters:[filtro,'ativo=eq.true'],order:'nome'})
+          .then(function(rows){
+            if(rows&&rows.length){
+              rows.forEach(function(c){
+                var i=colaboradores.findIndex(function(x){return x.id===c.id;});
+                if(i>=0) colaboradores[i]=c; else colaboradores.push(c);
+              });
+            }
+            progRenderQuadro();
+          }).catch(function(){progRenderQuadro();});
+        return; // aguardar carregamento
+      }
+    }
+  }
   progRenderQuadro();
 }
 
@@ -15423,13 +15508,32 @@ function progRenderEquipeRow(eq, data){
 
   // Slots fixos: T1=pos0, T2=pos1, Folg=pos2
   var slots = [null, null, null];
-  ids.forEach(function(id, i){
-    if(i >= 3) return;
-    var col = colaboradores.find(function(c){return c.id===id;});
-    if(!col) return;
-    var st = _progStatus[col.id]||'disponivel';
-    if(STATUS_BLOQUEADOS.indexOf(st)<0 && !emOutraEq[col.id]) slots[i]=col;
-  });
+
+  // Se os ids vieram do banco mas colaboradores ainda não carregou,
+  // usar vinculados como fallback por posição
+  var idsDosBanco = ids.filter(Boolean);
+  var colaboradoresCarregados = idsDosBanco.length > 0 &&
+    idsDosBanco.some(function(id){ return !!colaboradores.find(function(c){return c.id===id;}); });
+
+  if(idsDosBanco.length > 0 && !colaboradoresCarregados){
+    // Fallback: usar vinculados por posição (mesma ordem)
+    vinculados.slice(0,3).forEach(function(c,i){ slots[i]=c; });
+  } else {
+    ids.forEach(function(id, i){
+      if(i >= 3) return;
+      var col = colaboradores.find(function(c){return c.id===id;});
+      if(!col) return;
+      var st = _progStatus[col.id]||'disponivel';
+      if(STATUS_BLOQUEADOS.indexOf(st)<0 && !emOutraEq[col.id]) slots[i]=col;
+    });
+  }
+
+  // Status: usar idsDosBanco para determinar se foi programada,
+  // independente de slots (que podem estar vazios por timing de carregamento)
+  var ativos = slots.filter(function(c){return c&&(_progStatus[c.id]||'disponivel')==='disponivel';}).length;
+  var idsValidos = idsDosBanco.length;
+  // Se temos vinculados mas composicao não carregou ainda, contar vinculados
+  if(!idsValidos && vinculados.length) idsValidos = vinculados.length;
 
   // Projetos vinculados a esta equipe neste dia
   var projetoIdsEq = [];
@@ -15483,8 +15587,6 @@ function progRenderEquipeRow(eq, data){
       +'</div></td>';
   }
 
-  var ativos = slots.filter(function(c){return c&&(_progStatus[c.id]||'disponivel')==='disponivel';}).length;
-  var idsValidos = ids.filter(Boolean).length;
   var st,stBg,stTxt;
   if(!idsValidos){st='Não prog.';stBg='#f5f5f3';stTxt='#888';}
   else if(ativos>=2){st='Completa';stBg='#EAF3DE';stTxt='#3B6D11';}
