@@ -7637,15 +7637,30 @@ function renderDiarioPlpt(){
   var projs   = _plptDiario.projetos;
   var eq      = _dbEquipe;
   var sessao  = _plptDiario.sessao;
-  // Contrato dinâmico — funciona para PLPT e todos os contratos habilitados
   var PLPT_CID = usuarioLogado ? usuarioLogado.contrato_id : CONTRATOS_UUID_MAP['PLPT'];
 
-  // Filtrar membros da equipe correta e contrato do usuário
-  var membros = colaboradores.filter(function(c){
-    return c.equipe_id === eq.id
-        && c.contrato_id === PLPT_CID
-        && c.ativo !== false;
+  // ── Verificar composicao_dia como fonte alternativa de programação ──
+  var compDia = composicao_dia.find(function(c){
+    return c.equipe_id===eq.id && c.data===hoje && !c._local;
   });
+  // Se não tem plpt_prog_dia mas tem composicao_dia real, considerar como programada
+  var temEscala = prog || compDia;
+  var escalaConfirmada = compDia && compDia.confirmada;
+
+  // Filtrar membros — primeiro tenta pela composicao_dia, depois por equipe_id fixo
+  var membros = [];
+  if(compDia){
+    var idsComp = parseJsonField(compDia.colaborador_ids,[]).filter(Boolean);
+    idsComp.forEach(function(id){
+      var c=colaboradores.find(function(x){return x.id===id;});
+      if(c) membros.push(c);
+    });
+  }
+  if(!membros.length){
+    membros = colaboradores.filter(function(c){
+      return c.equipe_id===eq.id && c.contrato_id===PLPT_CID && c.ativo!==false;
+    });
+  }
 
   var encNome   = prog ? (prog.encarregado_nome||'—') : '—';
   var veicPlaca = prog ? (prog.veiculo_placa||'—')    : '—';
@@ -7763,24 +7778,28 @@ function renderDiarioPlpt(){
     )
 
     // Aviso sem programação
-    +(!prog
+    +(!temEscala
       ? '<div style="background:#FFF3E0;border:.5px solid #F9A825;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#7B4F00;margin-bottom:1rem">⚠ Esta equipe não possui programação para hoje. Contate o supervisor.</div>'
-      : ''
+      : escalaConfirmada
+        ? '<div style="background:#EAF3DE;border:.5px solid #3B6D11;border-radius:10px;padding:.5rem 1rem;font-size:12px;color:#3B6D11;margin-bottom:.75rem">✅ Escala confirmada para hoje.</div>'
+        : '<div style="background:#EBF4FD;border:.5px solid #185FA5;border-radius:10px;padding:.5rem 1rem;font-size:12px;color:#185FA5;margin-bottom:.75rem">📋 Equipe programada — aguardando confirmação.</div>'
     )
 
     // Composição
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">'
     +'<span style="font-size:12px;font-weight:700;color:#555">Composição</span>'
-    +(!_plptDiario.composConfirm && !sessao && prog
-      ? '<span style="font-size:10px;color:#A32D2D">Aguardando confirmação</span>'
-      : '<span style="font-size:10px;color:#3B6D11">✓ Confirmada</span>'
+    +(escalaConfirmada
+      ? '<span style="font-size:10px;color:#3B6D11">✓ Confirmada</span>'
+      : temEscala
+        ? '<span style="font-size:10px;color:#854F0B">Aguardando confirmação</span>'
+        : '<span style="font-size:10px;color:#A32D2D">Sem escala</span>'
     )
     +'</div>'
     + membrosHtml
-    +(!_plptDiario.composConfirm && !sessao && prog
+    +(temEscala && !escalaConfirmada && !sessao
       ? '<div style="display:flex;gap:8px;margin-top:.75rem">'
-        +'<button onclick="plptDiarioConfirmarComposicao()" style="flex:1;padding:.6rem;background:#1a1a18;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">✓ Confirmar</button>'
+        +'<button onclick="diarioConfirmarEscala()" style="flex:1;padding:.6rem;background:#1a1a18;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">✓ Confirmar escala</button>'
         +'<button onclick="plptDiarioReportarComposicao()" style="padding:.6rem 1rem;background:#fff;color:#A32D2D;border:.5px solid #A32D2D;border-radius:8px;cursor:pointer;font-size:12px">⚠ Reportar</button>'
         +'</div>'
       : ''
@@ -7839,6 +7858,19 @@ function plptDocTogglePreview(idx){
 function plptDiarioConfirmarComposicao(){
   _plptDiario.composConfirm = true;
   progShowToast('✅ Composição confirmada');
+  renderDiarioPlpt();
+}
+
+function diarioConfirmarEscala(){
+  var hoje = new Date().toISOString().split('T')[0];
+  var eq   = _dbEquipe; if(!eq) return;
+  var comp = composicao_dia.find(function(c){
+    return c.equipe_id===eq.id && c.data===hoje && !c._local;
+  });
+  if(!comp){ progShowToast('⚠ Nenhuma composição encontrada'); return; }
+  comp.confirmada = true;
+  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  progShowToast('✅ Escala confirmada!');
   renderDiarioPlpt();
 }
 
@@ -14578,7 +14610,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.9.0',
+  numero: '2.9.1',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
