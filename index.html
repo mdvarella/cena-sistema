@@ -7555,10 +7555,16 @@ function renderDiario(){
 
           // Restaurar sessão se já iniciada hoje
           if(sessaoRow && !_plptDiario.sessao){
+            var loginTs = sessaoRow.login_ts;
+            var inicioIso = loginTs
+              ? (typeof loginTs==='number' ? new Date(loginTs).toISOString() : loginTs)
+              : null;
             _plptDiario.sessao = {
               id:        sessaoRow.id,
-              inicio_ts: sessaoRow.inicio_ts,
+              login_ts:  loginTs,
+              inicio_ts: inicioIso,
               fim_ts:    sessaoRow.fim_ts||null,
+              logout_ts: sessaoRow.logout_ts||null,
               almoco_ts: sessaoRow.almoco_ts||null,
               retorno_ts:sessaoRow.retorno_ts||null,
               eventos:   typeof sessaoRow.eventos==='string'
@@ -7566,7 +7572,7 @@ function renderDiario(){
                          : (sessaoRow.eventos||[]),
               status:    sessaoRow.status||'em andamento'
             };
-            _plptDiario.composConfirm = true; // se já iniciou, composição foi confirmada
+            _plptDiario.composConfirm = true;
           }
 
           renderDiarioPlpt();
@@ -7919,36 +7925,44 @@ function plptDiarioIniciarDia(){
   }
   var agora = new Date();
   var hora  = agora.toTimeString().slice(0,5);
+  var hoje  = dataHoje();
+  // login_ts = timestamp numérico (campo real da tabela sessoes_disponibilidade)
+  // inicio_ts = ISO string (alias para compatibilidade com renderDiarioPlpt)
   _plptDiario.sessao = {
+    login_ts:  agora.getTime(),
     inicio_ts: agora.toISOString(),
-    fim_ts: null,
-    eventos: [{hora:hora, desc:'Início do dia'}]
+    fim_ts:    null,
+    logout_ts: null,
+    eventos:   [{hora:hora, desc:'Início do dia'}]
   };
-  var hoje = dataHoje();
   var comp = composicao_dia.find(function(c){
     return c.equipe_id===_dbEquipe.id && c.data===hoje && !c._local;
   });
   if(!DEMO){
-    var payload = {
-      equipe_id:     _dbEquipe.id,
-      contrato_id:   usuarioLogado ? usuarioLogado.contrato_id : null,
-      data:          hoje,
-      inicio_ts:     _plptDiario.sessao.inicio_ts,
-      colaborador_id:usuarioLogado ? usuarioLogado.id : null,
-      eventos:       JSON.stringify(_plptDiario.sessao.eventos),
-      status:        'em andamento',
-      composicao_dia_id: comp ? comp.id : null
-    };
-    if(_plptDiario.prog) payload.prog_dia_id = _plptDiario.prog.id;
-    sbInsert('sessoes_disponibilidade', payload)
-      .then(function(r){ if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id; })
-      .catch(function(){
-        // Fallback: tentar plpt_sessoes_dia se sessoes_disponibilidade falhar
-        if(_plptDiario.prog){
-          sbInsert('plpt_sessoes_dia', Object.assign({prog_dia_id:_plptDiario.prog.id}, payload))
-            .then(function(r2){ if(r2&&r2[0]&&r2[0].id) _plptDiario.sessao.id = r2[0].id; });
-        }
-      });
+    // Inserir com campos corretos de sessoes_disponibilidade
+    sbInsert('sessoes_disponibilidade', {
+      equipe_id:   _dbEquipe.id,
+      data:        hoje,
+      login_ts:    _plptDiario.sessao.login_ts,
+      placa:       '',
+      km_inicial:  0,
+      eventos:     JSON.stringify(_plptDiario.sessao.eventos)
+    }).then(function(r){
+      if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id;
+    }).catch(function(e){ console.warn('sessoes_disponibilidade insert erro:', e); });
+
+    // Salvar também em plpt_sessoes_dia se tiver prog
+    if(_plptDiario.prog){
+      sbInsert('plpt_sessoes_dia',{
+        prog_dia_id:    _plptDiario.prog.id,
+        equipe_id:      _dbEquipe.id,
+        data:           hoje,
+        inicio_ts:      _plptDiario.sessao.inicio_ts,
+        colaborador_id: usuarioLogado ? usuarioLogado.id : null,
+        eventos:        JSON.stringify(_plptDiario.sessao.eventos),
+        status:         'em andamento'
+      }).catch(function(){});
+    }
   }
   progShowToast('▶ Turno iniciado');
   renderDiarioPlpt();
@@ -14643,7 +14657,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.9.3',
+  numero: '2.9.4',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
