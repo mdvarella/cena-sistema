@@ -7771,8 +7771,8 @@ function renderDiarioPlpt(){
     // Cronômetro (só se turno ativo)
     + cronometroHtml
 
-    // Botão Iniciar dia (se não tem sessão)
-    +(!sessao && prog
+    // Botão Iniciar dia (se não tem sessão e escala confirmada)
+    +(!sessao && temEscala && _plptDiario.composConfirm
       ? '<button onclick="plptDiarioIniciarDia()" style="width:100%;padding:.9rem;background:#1a1a18;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:1rem">▶ Iniciar novo dia</button>'
       : ''
     )
@@ -7869,6 +7869,8 @@ function diarioConfirmarEscala(){
   });
   if(!comp){ progShowToast('⚠ Nenhuma composição encontrada'); return; }
   comp.confirmada = true;
+  // Liberar fluxo do diário
+  _plptDiario.composConfirm = true;
   if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
   progShowToast('✅ Escala confirmada!');
   renderDiarioPlpt();
@@ -7904,18 +7906,31 @@ function plptDiarioIniciarDia(){
     fim_ts: null,
     eventos: [{hora:hora, desc:'Início do dia'}]
   };
-  if(!DEMO && _plptDiario.prog){
-    sbInsert('plpt_sessoes_dia',{
-      prog_dia_id:   _plptDiario.prog.id,
+  var hoje = dataHoje();
+  var comp = composicao_dia.find(function(c){
+    return c.equipe_id===_dbEquipe.id && c.data===hoje && !c._local;
+  });
+  if(!DEMO){
+    var payload = {
       equipe_id:     _dbEquipe.id,
-      contrato_id:   (usuarioLogado?usuarioLogado.contrato_id:CONTRATOS_UUID_MAP['PLPT']),
-      data:          dataHoje(),
+      contrato_id:   usuarioLogado ? usuarioLogado.contrato_id : null,
+      data:          hoje,
       inicio_ts:     _plptDiario.sessao.inicio_ts,
       colaborador_id:usuarioLogado ? usuarioLogado.id : null,
       eventos:       JSON.stringify(_plptDiario.sessao.eventos),
-      status:        'em andamento'
-    }).then(function(r){ if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id; })
-    .catch(function(e){ console.error('plptDiarioIniciarDia erro:', e); });
+      status:        'em andamento',
+      composicao_dia_id: comp ? comp.id : null
+    };
+    if(_plptDiario.prog) payload.prog_dia_id = _plptDiario.prog.id;
+    sbInsert('sessoes_disponibilidade', payload)
+      .then(function(r){ if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id; })
+      .catch(function(){
+        // Fallback: tentar plpt_sessoes_dia se sessoes_disponibilidade falhar
+        if(_plptDiario.prog){
+          sbInsert('plpt_sessoes_dia', Object.assign({prog_dia_id:_plptDiario.prog.id}, payload))
+            .then(function(r2){ if(r2&&r2[0]&&r2[0].id) _plptDiario.sessao.id = r2[0].id; });
+        }
+      });
   }
   progShowToast('▶ Turno iniciado');
   renderDiarioPlpt();
@@ -14610,7 +14625,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.9.1',
+  numero: '2.9.2',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
