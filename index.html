@@ -14902,7 +14902,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.0.8',
+  numero: '3.1.1',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15491,49 +15491,30 @@ function progRenderEquipeRow(eq, data){
     return true;
   });
 
-  // Composição: criar local se não existir
-  var compAtual = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
+  // Composição: usar SOMENTE o que está no banco
+  // Vinculados NÃO pré-preenchem slots — apenas o auto-escalar faz isso
+  var compAtual = composicao_dia.find(function(c){
+    return c.equipe_id===eq.id && c.data===data && !c._local;
+  });
   var ids = [];
-  if(!compAtual){
-    vinculados.forEach(function(c){ ids.push(c.id); });
-    compAtual = {
-      id:'local_'+eq.id+'_'+data, equipe_id:eq.id, data:data,
-      colaborador_ids:JSON.stringify(ids), turno:'Manha', confirmada:false, _local:true
-    };
-    composicao_dia.push(compAtual);
-  } else {
-    try{ ids=JSON.parse(compAtual.colaborador_ids||'[]'); }catch(e){}
-    ids = ids.filter(Boolean);
+  if(compAtual){
+    var raw = compAtual.colaborador_ids;
+    if(Array.isArray(raw)){
+      ids = raw.filter(Boolean);
+    } else {
+      try{ ids=JSON.parse(raw||'[]'); }catch(e){}
+      ids = ids.filter(Boolean);
+    }
   }
-
-  // Slots fixos: T1=pos0, T2=pos1, Folg=pos2
+  // Slots
   var slots = [null, null, null];
-
-  // Se os ids vieram do banco mas colaboradores ainda não carregou,
-  // usar vinculados como fallback por posição
-  var idsDosBanco = ids.filter(Boolean);
-  var colaboradoresCarregados = idsDosBanco.length > 0 &&
-    idsDosBanco.some(function(id){ return !!colaboradores.find(function(c){return c.id===id;}); });
-
-  if(idsDosBanco.length > 0 && !colaboradoresCarregados){
-    // Fallback: usar vinculados por posição (mesma ordem)
-    vinculados.slice(0,3).forEach(function(c,i){ slots[i]=c; });
-  } else {
-    ids.forEach(function(id, i){
-      if(i >= 3) return;
-      var col = colaboradores.find(function(c){return c.id===id;});
-      if(!col) return;
-      var st = _progStatus[col.id]||'disponivel';
-      if(STATUS_BLOQUEADOS.indexOf(st)<0 && !emOutraEq[col.id]) slots[i]=col;
-    });
-  }
-
-  // Status: usar idsDosBanco para determinar se foi programada,
-  // independente de slots (que podem estar vazios por timing de carregamento)
-  var ativos = slots.filter(function(c){return c&&(_progStatus[c.id]||'disponivel')==='disponivel';}).length;
-  var idsValidos = idsDosBanco.length;
-  // Se temos vinculados mas composicao não carregou ainda, contar vinculados
-  if(!idsValidos && vinculados.length) idsValidos = vinculados.length;
+  ids.forEach(function(id, i){
+    if(i >= 3) return;
+    var col = colaboradores.find(function(c){return c.id===id;});
+    if(!col) return;
+    var st = _progStatus[col.id]||'disponivel';
+    if(STATUS_BLOQUEADOS.indexOf(st)<0 && !emOutraEq[col.id]) slots[i]=col;
+  });
 
   // Projetos vinculados a esta equipe neste dia
   var projetoIdsEq = [];
@@ -15587,9 +15568,13 @@ function progRenderEquipeRow(eq, data){
       +'</div></td>';
   }
 
+  var ativos = slots.filter(function(c){return c&&(_progStatus[c.id]||'disponivel')==='disponivel';}).length;
+  var idsValidos = ids.length;
+  var confirmada = compAtual && compAtual.confirmada;
   var st,stBg,stTxt;
   if(!idsValidos){st='Não prog.';stBg='#f5f5f3';stTxt='#888';}
-  else if(ativos>=2){st='Completa';stBg='#EAF3DE';stTxt='#3B6D11';}
+  else if(confirmada){st='✓ Programada';stBg='#EAF3DE';stTxt='#3B6D11';}
+  else if(ativos>=2){st='Completa';stBg='#D4EDDA';stTxt='#3B6D11';}
   else if(ativos===1){st='Falta 1';stBg='#FEF3E2';stTxt='#854F0B';}
   else{st='Parada';stBg='#FCEBEB';stTxt='#A32D2D';}
 
@@ -15603,13 +15588,36 @@ function progRenderEquipeRow(eq, data){
     +'<td style="padding:4px 6px;vertical-align:top">'+projHtml+'</td>'
     +'<td style="padding:4px 8px;text-align:center;vertical-align:top">'
     +'<span style="display:inline-block;background:'+stBg+';color:'+stTxt+';border-radius:6px;font-size:10px;font-weight:600;padding:2px 6px">'+st+'</span></td>'
-    +'<td style="padding:4px 6px;vertical-align:top">'
-    +'<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" title="Auto-escalar" style="font-size:10px;padding:2px 5px">⚡</button>'
+    +'<td style="padding:4px 6px;vertical-align:top;display:flex;flex-direction:column;gap:3px">'
+    +'<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
+    +'<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
     +'</td>'
     +'</tr>';
 }
 
-// ── Painel colaboradores disponíveis ─────────────────────────
+function progSalvarEquipe(eqId){
+  var data = progGetData();
+  var comp = composicao_dia.find(function(c){
+    return c.equipe_id===eqId && c.data===data && !c._local;
+  });
+  if(!comp){
+    progShowToast('⚠ Nenhum colaborador escalado — use Auto Escalar primeiro');
+    return;
+  }
+  var raw = comp.colaborador_ids;
+  var ids = Array.isArray(raw) ? raw.filter(Boolean)
+    : (function(){ try{return JSON.parse(raw||'[]').filter(Boolean);}catch(e){return[];} })();
+  if(!ids.length){
+    progShowToast('⚠ Equipe sem colaboradores escalados');
+    return;
+  }
+  comp.confirmada = true;
+  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  progShowToast('✅ Programação salva — equipe Programada');
+  progRenderQuadro();
+}
+
+
 // ── Lista de colaboradores por status ───────────────────────
 function progMostrarListaStatus(statusFiltro){
   var cid = progGetCont();
@@ -16521,8 +16529,10 @@ function progAutoEscalar(eqId){
   var jaEscalado = {};
   composicao_dia.forEach(function(comp){
     if(comp.data!==data) return;
-    if(comp.equipe_id===eqId) return; // ignorar a própria equipe
-    var idsC=[];try{idsC=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
+    if(comp.equipe_id===eqId) return;
+    var idsC = Array.isArray(comp.colaborador_ids)
+      ? comp.colaborador_ids
+      : (function(){ try{return JSON.parse(comp.colaborador_ids||'[]');}catch(e){return [];} })();
     idsC.forEach(function(id){if(id) jaEscalado[id]=true;});
   });
 
