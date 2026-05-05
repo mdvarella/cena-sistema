@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.8.2',
+  numero: '2.8.3',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15113,11 +15113,11 @@ function progRenderGrupo(tNome, grupo, data){
     +'<table style="width:100%;border-collapse:collapse">'
     +'<thead><tr style="background:#f9f9f7;font-size:10px;color:#888;text-transform:uppercase">'
     +'<th style="padding:6px 10px;text-align:left;width:90px">Equipe</th>'
-    +'<th style="padding:6px 10px;text-align:left">Titular 1</th>'
-    +'<th style="padding:6px 10px;text-align:left">Titular 2</th>'
-    +'<th style="padding:6px 10px;text-align:left">Folguista</th>'    +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
-    +'<th style="padding:6px 10px;text-align:center;width:100px">Status</th>'
-    +'<th style="padding:6px 10px;width:40px"></th>'
+    +'<th style="padding:6px 10px;text-align:left">Colaboradores escalados</th>'
+    +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
+    +'<th style="padding:6px 10px;text-align:left;min-width:140px">📋 Projetos</th>'
+    +'<th style="padding:6px 10px;text-align:center;width:90px">Status</th>'
+    +'<th style="padding:6px 10px;width:30px"></th>'
     +'</tr></thead>'
     +'<tbody>'+rows+'</tbody>'
     +'</table></div></div>';
@@ -15125,147 +15125,106 @@ function progRenderGrupo(tNome, grupo, data){
 
 // ── Linha de equipe ──────────────────────────────────────────
 function progRenderEquipeRow(eq, data){
-  var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
-  var ids = [];
-  if(comp){try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}}
-
-  // Classificar: titulares são vinculados à equipe, folguista é adicional
-  // Status que bloqueiam da escala
   var STATUS_BLOQUEADOS = ['ferias','afastado','treinamento','falta'];
 
-  // Mapear quem já está escalado em OUTRAS equipes hoje
+  // Quem está em OUTRAS equipes hoje
   var emOutraEq = {};
-  composicao_dia.forEach(function(comp){
-    if(comp.data!==data||comp.equipe_id===eq.id)return;
-    var idsO=[];try{idsO=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
+  composicao_dia.forEach(function(c){
+    if(c.data!==data||c.equipe_id===eq.id) return;
+    var idsO=[]; try{idsO=JSON.parse(c.colaborador_ids||'[]');}catch(e){}
     idsO.forEach(function(id){if(id)emOutraEq[id]=true;});
   });
 
   var vinculados = colaboradores.filter(function(c){
-    if(c.equipe_id!==eq.id||c.ativo===false)return false;
-    var st=_progStatus[c.id]||'disponivel';
-    if(STATUS_BLOQUEADOS.indexOf(st)>=0)return false;
-    // Excluir quem já está escalado em outra equipe hoje
-    if(emOutraEq[c.id])return false;
+    if(c.equipe_id!==eq.id||c.ativo===false) return false;
+    if(STATUS_BLOQUEADOS.indexOf(_progStatus[c.id]||'disponivel')>=0) return false;
+    if(emOutraEq[c.id]) return false;
     return true;
   });
 
-  // ── Montar slots ─────────────────────────────────────────────
-  // Regra: composicao_dia é a única fonte de verdade.
-  // Se não existe para hoje, criamos um registro LOCAL em memória com os vinculados.
-  // A partir daí, nunca mais vinculados sobrescrevem slots — removido fica removido.
-  var slots = [null, null, null];
+  // Composição: criar local se não existir
   var compAtual = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
-  var idsModificado = false;
-
+  var ids = [];
   if(!compAtual){
-    // Criar registro local em memória com vinculados como sugestão
-    var novosIds = [null, null, null];
-    vinculados.slice(0,3).forEach(function(c,i){ novosIds[i] = c.id; });
+    vinculados.forEach(function(c){ ids.push(c.id); });
     compAtual = {
-      id: 'local_'+eq.id+'_'+data,
-      equipe_id: eq.id, data: data,
-      colaborador_ids: JSON.stringify(novosIds),
-      turno: 'Manha', confirmada: false, _local: true
+      id:'local_'+eq.id+'_'+data, equipe_id:eq.id, data:data,
+      colaborador_ids:JSON.stringify(ids), turno:'Manha', confirmada:false, _local:true
     };
     composicao_dia.push(compAtual);
-    // Sincronizar ids
-    ids = novosIds.slice();
-  }
-
-  // Aplicar IDs da composição — null = slot vazio, sem preencher com vinculados
-  ids.forEach(function(id, i){
-    if(i >= 3) return;
-    if(!id){ slots[i] = null; return; }
-    var col = colaboradores.find(function(c){return c.id===id;});
-    if(!col){ slots[i] = null; return; }
-    var st = _progStatus[col.id]||'disponivel';
-    if(STATUS_BLOQUEADOS.indexOf(st)>=0){
-      slots[i] = null;
-    } else if(emOutraEq[col.id]){
-      ids[i] = null; idsModificado = true; slots[i] = null;
-    } else {
-      slots[i] = col;
-    }
-  });
-
-  // Salvar correção de duplicatas se necessário
-  if(idsModificado){
-    compAtual.colaborador_ids = JSON.stringify(ids);
-    if(!DEMO && !compAtual._local)
-      sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+compAtual.id);
-  }
-
-  function renderSlot(col, pos, eqId){
-    var slotLabel = pos===0?'T1':pos===1?'T2':'Folg';
-    if(!col){
-      return '<td style="padding:4px 8px">'
-        +'<div class="prog-slot prog-slot-vazio" '
-        +'id="slot-vz-'+eqId+'-'+pos+'" '
-        +'data-eq="'+eqId+'" data-pos="'+pos+'" '
-        +'style="border:1.5px dashed #aaa;border-radius:6px;padding:5px 8px;min-width:110px;'
-        +'color:#666;font-size:11px;text-align:center;cursor:pointer;background:#fafaf8" '
-        +'ondragover="progDragOver(event)" ondrop="progDrop(event,\''+eqId+'\','+pos+')">'
-        +'<b style="font-size:14px;opacity:.5">+</b> '+slotLabel+'</div></td>';
-    }
-    var st = _progStatus[col.id] || 'disponivel';
-    var stInfo = PROG_STATUS[st] || PROG_STATUS.disponivel;
-    var isMot = col.motorista || col.cnh_categoria;
-    // Nome mais completo: até 3 palavras
-    var partes = (col.nome||'').split(' ');
-    var nomeExib = partes.length>=3
-      ? partes[0]+' '+partes[1]+' '+partes[partes.length-1]
-      : col.nome;
-    return '<td style="padding:4px 8px">'
-      +'<div class="prog-slot" id="slot-'+eqId+'-'+pos+'" '
-      +    'draggable="true" '
-      +    'data-colab="'+col.id+'" data-eq="'+eqId+'" data-pos="'+pos+'" '
-      +    'ondragstart="progDragStart(event,\''+col.id+'\',\''+eqId+'\')" '
-      +    'ondragover="progDragOver(event)" '
-      +    'ondrop="progDrop(event,\''+eqId+'\','+pos+')" '
-      +    'style="background:'+stInfo.bg+';border:.5px solid '+stInfo.cor+'44;border-radius:6px;'
-      +    'padding:4px 8px;min-width:110px;cursor:grab;font-size:11px;position:relative">'
-      +'<div style="font-weight:600;color:'+stInfo.cor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px;font-size:11px">'
-      + nomeExib
-      +'</div>'
-      +'<div style="font-size:9px;color:#888;margin-top:1px">RE '+(col.re||'—')+'</div>'
-      +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">'+(col.cargo||'')+'</div>'
-      +'<div style="display:flex;gap:3px;margin-top:2px;align-items:center">'
-      +(isMot?'<span style="font-size:9px;background:#185FA5;color:#fff;border-radius:3px;padding:0 3px">CNH</span>':'')
-      +'<span style="font-size:9px;color:'+stInfo.cor+'">'+stInfo.label+'</span>'
-      +'</div>'
-      +'<div style="position:absolute;top:1px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#333;line-height:1;user-select:none" '
-      +     'onclick="progMenuSlot(\''+col.id+'\',\''+eqId+'\','+pos+')">⋮</div>'
-      +'</div></td>';
-  }
-
-  // Calcular status da equipe
-  var ativos = slots.filter(function(c){
-    return c && (_progStatus[c.id]||'disponivel')==='disponivel';
-  }).length;
-  var idsValidos = ids.filter(Boolean).length;
-  var st, stBg, stTxt;
-  if(!comp || !idsValidos){
-    st='Não prog.'; stBg='#f5f5f3'; stTxt='#888';
-  } else if(ativos >= 2){
-    st='Completa'; stBg='#EAF3DE'; stTxt='#3B6D11';
-  } else if(ativos === 1){
-    st='Falta 1'; stBg='#FEF3E2'; stTxt='#854F0B';
   } else {
-    st='Parada'; stBg='#FCEBEB'; stTxt='#A32D2D';
+    try{ ids=JSON.parse(compAtual.colaborador_ids||'[]'); }catch(e){}
+    ids = ids.filter(Boolean);
   }
 
-  return '<tr style="border-bottom:.5px solid #f5f5f3" id="row-eq-'+eq.id+'">'
-    +'<td style="padding:4px 10px;font-weight:700;font-size:12px">'+eq.codigo+'</td>'
-    + renderSlot(slots[0], 0, eq.id)
-    + renderSlot(slots[1], 1, eq.id)
-    + renderSlot(slots[2], 2, eq.id)
-    +'<td style="padding:4px 6px;min-width:120px" id="prog-veic-cell-'+eq.id+'">'
-    +progRenderVeiculoCell(eq, data)
-    +'</td>'
-    +'<td style="padding:4px 8px;text-align:center">'
-    +'<span style="display:inline-block;background:'+stBg+';color:'+stTxt+';border-radius:6px;'
-    +            'font-size:10px;font-weight:600;padding:2px 6px">'+st+'</span></td>'
+  // Projetos vinculados à equipe neste dia
+  var projetoIdsEq = [];
+  try{ projetoIdsEq = JSON.parse(compAtual.projeto_ids||'[]'); }catch(e){}
+  if(!Array.isArray(projetoIdsEq)) projetoIdsEq=[];
+
+  // ── Renderizar cada slot de colaborador ───────────────────
+  function renderSlot(colabId, pos){
+    var col = colaboradores.find(function(c){return c.id===colabId;});
+    if(!col) return '';
+    var st = _progStatus[col.id]||'disponivel';
+    var stInfo = PROG_STATUS[st]||PROG_STATUS.disponivel;
+    var partes=(col.nome||'').split(' ');
+    var nomeExib=partes.length>=3?partes[0]+' '+partes[1]+' '+partes[partes.length-1]:col.nome;
+    return '<div class="prog-slot" id="slot-'+eq.id+'-'+pos+'" draggable="true" '
+      +'data-colab="'+col.id+'" data-eq="'+eq.id+'" data-pos="'+pos+'" '
+      +'ondragstart="progDragStart(event,\''+col.id+'\',\''+eq.id+'\')" '
+      +'ondragover="progDragOver(event)" ondrop="progDrop(event,\''+eq.id+'\','+pos+')" '
+      +'style="background:'+stInfo.bg+';border:.5px solid '+stInfo.cor+'44;border-radius:6px;'
+      +'padding:4px 8px;cursor:grab;font-size:11px;position:relative;margin-bottom:4px;min-width:120px">'
+      +'<div style="font-weight:600;color:'+stInfo.cor+';font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:125px;padding-right:16px">'+nomeExib+'</div>'
+      +'<div style="font-size:9px;color:#888">RE '+(col.re||'—')+' · '+(col.cargo||'')+'</div>'
+      +'<div style="font-size:9px;color:'+stInfo.cor+';margin-top:1px">'+stInfo.label+'</div>'
+      +'<div style="position:absolute;top:2px;right:3px;cursor:pointer;font-size:13px;font-weight:900;color:#555;line-height:1;user-select:none" '
+      +'onclick="progMenuSlot(\''+col.id+'\',\''+eq.id+'\','+pos+')">⋮</div>'
+      +'</div>';
+  }
+
+  // Coluna de colaboradores (dinâmica)
+  var colabsHtml = ids.map(function(id,i){ return renderSlot(id,i); }).join('');
+  // Slot vazio para adicionar
+  colabsHtml += '<div class="prog-slot-vazio" id="slot-vz-'+eq.id+'-'+ids.length+'" '
+    +'data-eq="'+eq.id+'" data-pos="'+ids.length+'" '
+    +'ondragover="progDragOver(event)" ondrop="progDrop(event,\''+eq.id+'\','+ids.length+')" '
+    +'onclick="progBuscarParaSlot(\''+eq.id+'\','+ids.length+')" '
+    +'style="border:1.5px dashed #ccc;border-radius:6px;padding:4px 10px;font-size:11px;'
+    +'color:#aaa;cursor:pointer;text-align:center;display:inline-block;min-width:80px;margin-top:2px">+ colaborador</div>';
+
+  // Projetos da equipe
+  var projs = progProjGetProjetos ? progProjGetProjetos(progGetCont()) : [];
+  var projTagsHtml = projetoIdsEq.map(function(pid){
+    var p=projs.find(function(x){return x.id===pid;});
+    return p?'<span style="display:inline-flex;align-items:center;gap:3px;background:#EBF4FD;color:#185FA5;'
+      +'border-radius:4px;padding:1px 5px;font-size:10px;margin:1px">'
+      +p.nome
+      +'<span onclick="progEqRemoverProjeto(\''+eq.id+'\',\''+pid+'\')" '
+      +'style="cursor:pointer;color:#A32D2D;font-size:11px;line-height:1;margin-left:1px">✕</span></span>':'';
+  }).join('');
+  var projHtml = projTagsHtml
+    +'<div onclick="progEqSelecionarProjetos(\''+eq.id+'\')" '
+    +'style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;background:#f5f5f3;'
+    +'border:.5px dashed #bbb;border-radius:4px;padding:2px 7px;font-size:10px;color:#888;margin:1px">+ projeto</div>';
+
+  // Status da equipe
+  var ativos=ids.filter(function(id){return id&&(_progStatus[id]||'disponivel')==='disponivel';}).length;
+  var st,stBg,stTxt;
+  if(!ids.length){st='Não prog.';stBg='#f5f5f3';stTxt='#888';}
+  else if(ativos>=2){st='Completa';stBg='#EAF3DE';stTxt='#3B6D11';}
+  else if(ativos===1){st='Falta 1';stBg='#FEF3E2';stTxt='#854F0B';}
+  else{st='Parada';stBg='#FCEBEB';stTxt='#A32D2D';}
+
+  return '<tr style="border-bottom:.5px solid #f5f5f3;vertical-align:top" id="row-eq-'+eq.id+'">'
+    +'<td style="padding:6px 10px;font-weight:700;font-size:12px;white-space:nowrap">'+eq.codigo
+    +'<div style="font-size:9px;color:#888;font-weight:400">'+eq.supervisor+'</div></td>'
+    +'<td style="padding:6px 8px">'+colabsHtml+'</td>'
+    +'<td style="padding:6px 6px;min-width:120px" id="prog-veic-cell-'+eq.id+'">'+progRenderVeiculoCell(eq,data)+'</td>'
+    +'<td style="padding:6px 6px;min-width:140px">'+projHtml+'</td>'
+    +'<td style="padding:6px 8px;text-align:center;white-space:nowrap">'
+    +'<span style="display:inline-block;background:'+stBg+';color:'+stTxt+';border-radius:6px;font-size:10px;font-weight:600;padding:2px 6px">'+st+'</span></td>'
     +'<td style="padding:4px 6px">'
     +'<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" title="Auto-escalar" style="font-size:10px;padding:2px 5px">⚡</button>'
     +'</td>'
@@ -15605,36 +15564,42 @@ function progDrop(event, toEqId, toPos){
 
 function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
   var data=progGetData();
-  // MOVER: remover de TODAS as posições onde está presente (não duplicar)
   if(!duplicar){
     composicao_dia.forEach(function(comp){
       if(comp.data!==data) return;
       var idsC=[];try{idsC=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
       if(idsC.indexOf(colabId)<0) return;
-      // Se é a equipe destino, só remover se está em posição diferente
-      if(comp.equipe_id===toEqId){
-        var posAtual=idsC.indexOf(colabId);
-        if(posAtual===toPos) return; // já está no destino
-        idsC=idsC.map(function(id,i){return (id===colabId&&i!==toPos)?null:id;});
-      } else {
-        idsC=idsC.map(function(id){return id===colabId?null:id;});
-      }
+      idsC=idsC.filter(function(id){return id!==colabId;});
       comp.colaborador_ids=JSON.stringify(idsC);
-      if(!DEMO)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(idsC)},'id=eq.'+comp.id);
+      if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(idsC)},'id=eq.'+comp.id);
     });
   }
   var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   var ids=[];if(comp){try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}}
-  while(ids.length<3)ids.push(null);
-  ids[toPos]=colabId;
+  ids=ids.filter(Boolean);
+  // Inserir na posição ou no final
+  if(toPos<=ids.length){ ids.splice(toPos,0,colabId); }
+  else { ids.push(colabId); }
+  // Remover duplicatas
+  ids=ids.filter(function(id,i){return ids.indexOf(id)===i;});
   if(comp){
     comp.colaborador_ids=JSON.stringify(ids);
-    if(!DEMO)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+    if(!DEMO){
+      if(comp._local){
+        comp._local=false;
+        sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+          .then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});
+      } else {
+        sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      }
+    }
   } else {
-    var nova={id:'cd'+Date.now(),equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,erro_reportado:false};
+    var nova={id:'local_'+toEqId+'_'+data,equipe_id:toEqId,data:data,
+      colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,_local:true};
     composicao_dia.push(nova);
-    if(!DEMO)sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,erro_reportado:false})
-      .then(function(res){if(res&&res[0]&&res[0].id)nova.id=res[0].id;});
+    if(!DEMO) sbInsert('composicao_dia',{equipe_id:toEqId,data:data,
+      colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+      .then(function(r){if(r&&r[0]&&r[0].id)nova.id=r[0].id;nova._local=false;});
   }
   progRenderQuadro();
 }
@@ -15705,43 +15670,96 @@ function progMenuSlot(colabId, eqId, pos){
   setModal(html);
 }
 
-var _progRemovidosEq = {}; // mantido para compatibilidade
+// ── Projetos por equipe ───────────────────────────────────────
+function progEqSelecionarProjetos(eqId){
+  var cid = progGetCont();
+  var data = progGetData();
+  var projs = typeof progProjGetProjetos==='function' ? progProjGetProjetos(cid) : [];
+  if(!projs.length){ alert('Nenhum projeto encontrado para este contrato.'); return; }
+
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  var selecionados=[]; try{selecionados=JSON.parse((comp&&comp.projeto_ids)||'[]');}catch(e){}
+  if(!Array.isArray(selecionados)) selecionados=[];
+
+  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:460px">'
+    +'<h3 style="margin-bottom:.5rem">📋 Projetos da equipe</h3>'
+    +'<input class="inp" id="eq-proj-busca" placeholder="Buscar..." style="width:100%;margin-bottom:.5rem" oninput="eqFiltrarProjs()"/>'
+    +'<div style="max-height:300px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px" id="eq-proj-lista">'
+    +projs.map(function(p){
+      var sel=selecionados.indexOf(p.id)>=0;
+      return '<label style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;border-bottom:.5px solid #f0efe8;font-size:12px">'
+        +'<input type="checkbox" class="eq-proj-cb" value="'+p.id+'" '+(sel?'checked':'')+' style="width:14px;height:14px"/>'
+        +'<span style="flex:1">'+p.nome+'</span>'
+        +'<span style="font-size:10px;color:#888">'+(p.status||'')+'</span>'
+        +'</label>';
+    }).join('')
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="eq-proj-ok" style="flex:1">✓ Confirmar</button>'
+    +'</div></div></div>';
+  setModal(html);
+
+  window.eqFiltrarProjs=function(){
+    var q=((document.getElementById('eq-proj-busca')||{}).value||'').toLowerCase();
+    document.querySelectorAll('#eq-proj-lista label').forEach(function(el){
+      el.style.display=el.textContent.toLowerCase().includes(q)?'':'none';
+    });
+  };
+
+  var btn=document.getElementById('eq-proj-ok');
+  if(btn) btn.onclick=function(){
+    var cbs=document.querySelectorAll('#modal-area .eq-proj-cb:checked');
+    var novos=Array.from(cbs).map(function(cb){return cb.value;});
+    if(!comp){
+      comp={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,
+        colaborador_ids:'[]',projeto_ids:JSON.stringify(novos),turno:'Manha',confirmada:false,_local:true};
+      composicao_dia.push(comp);
+    } else {
+      comp.projeto_ids=JSON.stringify(novos);
+    }
+    if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{projeto_ids:JSON.stringify(novos)},'id=eq.'+comp.id);
+    closeModal();
+    progRenderQuadro();
+  };
+}
+
+function progEqRemoverProjeto(eqId, projetoId){
+  var data=progGetData();
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  if(!comp) return;
+  var ids=[]; try{ids=JSON.parse(comp.projeto_ids||'[]');}catch(e){}
+  ids=ids.filter(function(id){return id!==projetoId;});
+  comp.projeto_ids=JSON.stringify(ids);
+  if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{projeto_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+  progRenderQuadro();
+}
+
+var _progRemovidosEq = {};
 
 function progRetirarDaEquipe(colabId, eqId, pos){
   var data = progGetData();
-
-  // Buscar composicao_dia (sempre existe após render, pois criamos local)
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp){
-    // Segurança: criar se ainda não existe
-    comp = {id:'local_'+eqId+'_'+data, equipe_id:eqId, data:data,
-      colaborador_ids:'[null,null,null]', turno:'Manha', confirmada:false, _local:true};
+    comp={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,
+      colaborador_ids:'[]',turno:'Manha',confirmada:false,_local:true};
     composicao_dia.push(comp);
   }
-
-  // Remover colabId do array
-  var ids = parseJsonField(comp.colaborador_ids, []);
-  ids = ids.map(function(id){ return id===colabId ? null : id; });
-  comp.colaborador_ids = JSON.stringify(ids);
-
-  // Salvar no banco
+  var ids=[]; try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
+  ids=ids.filter(function(id){return id!==colabId;});
+  comp.colaborador_ids=JSON.stringify(ids);
   if(!DEMO){
     if(comp._local){
-      // Era local — agora virou real
-      comp._local = false;
-      sbInsert('composicao_dia',{
-        equipe_id:eqId, data:data,
-        colaborador_ids:JSON.stringify(ids),
-        turno:'Manha', confirmada:false
-      }).then(function(r){
-        if(r&&r[0]&&r[0].id) comp.id = r[0].id;
-      });
+      comp._local=false;
+      sbInsert('composicao_dia',{equipe_id:eqId,data:data,
+        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+        .then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});
     } else {
       sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
     }
   }
-
-  _progStatus[colabId] = 'disponivel';
+  _progStatus[colabId]='disponivel';
   progSalvarStatus();
   closeModal();
   progRenderQuadro();
