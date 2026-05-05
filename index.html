@@ -14578,7 +14578,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '2.8.9',
+  numero: '2.9.0',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -16152,10 +16152,11 @@ function progAutoEscalar(eqId){
   if(!eq) return;
   var STATUS_BLOQ = ['ferias','afastado','treinamento','falta'];
 
-  // Montar mapa de quem já está escalado em QUALQUER equipe hoje
+  // Montar mapa de quem já está escalado em OUTRAS equipes hoje
   var jaEscalado = {};
   composicao_dia.forEach(function(comp){
     if(comp.data!==data) return;
+    if(comp.equipe_id===eqId) return; // ignorar a própria equipe
     var idsC=[];try{idsC=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
     idsC.forEach(function(id){if(id) jaEscalado[id]=true;});
   });
@@ -16204,37 +16205,40 @@ function progAutoEscalarTodas(){
   });
 
   var ok=0, falha=0;
-  // Mapa de já escalados (atualizado a cada equipe)
-  var jaEscaladoAll = {};
-  composicao_dia.forEach(function(comp){
-    if(comp.data!==data) return;
-    var idsC=[];try{idsC=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
-    idsC.forEach(function(id){if(id) jaEscaladoAll[id]=true;});
-  });
-
   var STATUS_BLOQ2 = ['ferias','afastado','treinamento','falta'];
+  // Mapa global de já escalados — atualizado após cada equipe ser escalada
+  var jaEscaladoAll = {};
+
   eqs.forEach(function(eq){
     var vinc = colaboradores.filter(function(c){
-      if(c.equipe_id!==eq.id||c.ativo===false)return false;
+      if(c.equipe_id!==eq.id||c.ativo===false) return false;
       var st=_progStatus[c.id]||'disponivel';
       if(STATUS_BLOQ2.indexOf(st)>=0) return false;
-      if(jaEscaladoAll[c.id]) return false;
+      if(jaEscaladoAll[c.id]) return false; // já escalado em OUTRA equipe
       return true;
     });
     if(vinc.length < 2){ falha++; return; }
     var ids = [];
     var usados2={};
     vinc.slice(0,3).forEach(function(c){if(!usados2[c.id]){ids.push(c.id);usados2[c.id]=true;}});
+    // Marcar estes como escalados para as próximas equipes
+    ids.forEach(function(id){if(id) jaEscaladoAll[id]=true;});
     var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     if(comp){
       comp.colaborador_ids = JSON.stringify(ids);
-      if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      if(!DEMO&&comp._local){
+        comp._local=false;
+        sbInsert('composicao_dia',{equipe_id:eq.id,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+          .then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});
+      }
     } else {
-      var nova={id:'cd'+Date.now(),equipe_id:eq.id,data:data,
-        colaborador_ids:JSON.stringify(ids),turno:'Manhã',confirmada:false,erro_reportado:false};
+      var nova={id:'local_'+eq.id+'_'+data,equipe_id:eq.id,data:data,
+        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,_local:true};
       composicao_dia.push(nova);
       if(!DEMO) sbInsert('composicao_dia',{equipe_id:eq.id,data:data,
-        colaborador_ids:JSON.stringify(ids),turno:'Manhã',confirmada:false,erro_reportado:false});
+        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+        .then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
     }
     ok++;
   });
