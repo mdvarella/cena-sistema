@@ -22275,9 +22275,303 @@ function showPage(pageId){
     else if(pageId==='campo-apr')renderAPRs();
     else if(pageId==='campo-execucao-field')renderCampoEncarregado();
   }
+
   else if(pageId==='obras-requisicao'){renderRequisicaoObras();}
   else if(pageId==='obras-medicao'){popularFiltrosMedicao();renderMedicoes();}
 }
+
+// ── Programação de Projetos (PLPT/SOT/ETD/RDSE) ──────────────
+var _ppStatus = {};
+var _pp = { data: '', contrato: '' };
+
+function progProjGetData(){
+  return (document.getElementById('pp-data')||{}).value || _pp.data || dataHoje();
+}
+function progProjGetCid(){
+  return (document.getElementById('pp-cont')||{}).value || _pp.contrato || '';
+}
+
+function progProjInit(){
+  _pp.data = dataHoje();
+  var selData = document.getElementById('pp-data');
+  if(selData) selData.value = _pp.data;
+
+  // Carregar veículos se necessário
+  if(!frt_veiculos||!frt_veiculos.length){
+    if(!DEMO) sbFetch('frotas_veiculos',{filters:['ativo=eq.true'],order:'placa'})
+      .then(function(rows){ if(rows&&rows.length) frt_veiculos=rows; }).catch(function(){});
+  }
+
+  // Popular select de contratos (excluir Disponibilidade)
+  var selCont = document.getElementById('pp-cont');
+  if(selCont){
+    var contsProj = contratos.filter(function(c){
+      return c.status!=='Inativo' && c.modalidade_trabalho!=='Disponibilidade';
+    });
+    selCont.innerHTML = '<option value="">Selecione contrato</option>'
+      + contsProj.map(function(c){
+          return '<option value="'+c.id+'">'+c.codigo+' — '+c.nome+'</option>';
+        }).join('');
+    // Auto-selecionar se usuário tem contrato
+    if(usuarioLogado && usuarioLogado.contrato_id){
+      var match = contsProj.find(function(c){ return c.id===usuarioLogado.contrato_id; });
+      if(match){ selCont.value = match.id; _pp.contrato = match.id; }
+    }
+  }
+
+  progProjRenderQuadro();
+}
+
+function progProjMudarContrato(){
+  _pp.contrato = progProjGetCid();
+  progProjRenderQuadro();
+}
+
+function progProjRenderQuadro(){
+  var wrap = document.getElementById('pp-quadro'); if(!wrap) return;
+  var data = progProjGetData();
+  var cid  = progProjGetCid();
+
+  if(!cid){
+    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">Selecione um contrato para ver as equipes</div>';
+    return;
+  }
+
+  var eqs = equipes.filter(function(e){
+    return (!cid||e.contrato_id===cid) && e.status!=='Inativo';
+  });
+
+  if(!eqs.length){
+    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma equipe encontrada para este contrato</div>';
+    return;
+  }
+
+  // Filtros de tipo
+  var tiposFiltro = document.getElementById('pp-tipos-btns');
+  if(tiposFiltro){
+    var tipos = [''].concat([...new Set(eqs.map(function(e){ return e.tipo||''; }).filter(Boolean))].sort());
+    tiposFiltro.innerHTML = tipos.map(function(t){
+      var ativo = (_pp.tipoFiltro||'')=== t;
+      return '<button class="btn btn-sm prog-tipo-btn" style="font-size:11px;'+(ativo?'background:#1a1a18;color:#fff':'')+'" onclick="progProjFiltrarTipo(\''+ t +'\')">'+(t||'Todos')+'</button>';
+    }).join('');
+  }
+
+  var eqsFilt = _pp.tipoFiltro
+    ? eqs.filter(function(e){ return e.tipo===_pp.tipoFiltro; })
+    : eqs;
+
+  // Cabeçalho + linhas
+  var thead = '<tr style="background:#f5f5f3">'
+    +'<th style="padding:6px 10px;text-align:left;width:120px">Equipe</th>'
+    +'<th style="padding:6px 10px;text-align:left">Titular 1</th>'
+    +'<th style="padding:6px 10px;text-align:left">Titular 2</th>'
+    +'<th style="padding:6px 10px;text-align:left">Folguista</th>'
+    +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
+    +'<th style="padding:6px 10px;text-align:left;min-width:150px">📋 Projetos</th>'
+    +'<th style="padding:6px 10px;text-align:center;width:90px">Status</th>'
+    +'<th style="padding:6px 10px;width:40px"></th>'
+    +'</tr>';
+
+  var rows = eqsFilt.map(function(eq){ return ppRenderEquipeRow(eq, data, cid); }).join('');
+
+  wrap.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead>'+thead+'</thead><tbody>'+rows+'</tbody></table>';
+
+  // Painel disponíveis
+  var dispHtml = ppRenderPainelDisp(eqsFilt, data, cid);
+  wrap.innerHTML += dispHtml;
+
+  setTimeout(function(){
+    // Vincular botões de veículo
+    eqsFilt.forEach(function(eq){
+      var btn = document.getElementById('prog-veic-btn-'+eq.id);
+      if(btn) btn.onclick = function(){ progAbrirSelecionarVeiculo(eq.id, data); };
+    });
+  }, 50);
+}
+
+function progProjFiltrarTipo(tipo){
+  _pp.tipoFiltro = tipo;
+  progProjRenderQuadro();
+}
+
+function ppRenderEquipeRow(eq, data, cid){
+  var STATUS_BLOQUEADOS = ['ferias','afastado','treinamento','falta'];
+  var emOutraEq = {};
+  composicao_dia.forEach(function(c){
+    if(c.data!==data||c.equipe_id===eq.id) return;
+    var ids=parseJsonField(c.colaborador_ids,[]);
+    ids.forEach(function(id){if(id)emOutraEq[id]=true;});
+  });
+
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data&&!c._local;});
+  var ids = comp ? parseJsonField(comp.colaborador_ids,[]).filter(Boolean) : [];
+
+  var slots = [null,null,null];
+  ids.forEach(function(id,i){
+    if(i>=3) return;
+    var col=colaboradores.find(function(c){return c.id===id;});
+    if(!col) return;
+    var st=_ppStatus[col.id]||'disponivel';
+    if(STATUS_BLOQUEADOS.indexOf(st)<0&&!emOutraEq[col.id]) slots[i]=col;
+  });
+
+  // Projetos vinculados
+  var projIds=[];
+  try{projIds=JSON.parse((comp&&comp.projeto_ids)||'[]');}catch(e){}
+  var projs=typeof progProjGetProjetos==='function'?progProjGetProjetos(cid):[];
+  var projHtml='<div style="display:flex;flex-direction:column;gap:1px">'
+    +projIds.map(function(pid){
+      var p=projs.find(function(x){return x.id===pid;});
+      return p?'<div style="display:flex;align-items:center;gap:2px;background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 0">'+p.nome
+        +'<span onclick="ppEqRemoverProjeto(\''+eq.id+'\',\''+pid+'\')" style="cursor:pointer;color:#A32D2D;margin-left:3px">✕</span></div>':'';
+    }).join('')
+    +'<div onclick="ppEqSelecionarProjetos(\''+eq.id+'\')" style="cursor:pointer;background:#f5f5f3;border:.5px dashed #bbb;border-radius:4px;padding:2px 7px;font-size:10px;color:#888;margin-top:2px;display:inline-block">+ projeto</div></div>';
+
+  function renderSlot(col,pos,eqId){
+    var slotLabel=pos===0?'T1':pos===1?'T2':'Folg';
+    if(!col){
+      return '<td style="padding:4px 8px"><div class="prog-slot prog-slot-vazio" id="ppslot-vz-'+eqId+'-'+pos+'" data-eq="'+eqId+'" data-pos="'+pos+'" ondragover="ppDragOver(event)" ondrop="ppDrop(event,\''+eqId+'\','+pos+')" style="border:1.5px dashed #aaa;border-radius:6px;padding:5px 8px;min-width:110px;color:#666;font-size:11px;text-align:center;cursor:pointer;background:#fafaf8"><b style="font-size:14px;opacity:.5">+</b> '+slotLabel+'</div></td>';
+    }
+    var st=_ppStatus[col.id]||'disponivel';
+    var stInfo=PROG_STATUS[st]||PROG_STATUS.disponivel;
+    var partes=(col.nome||'').split(' ');
+    var nomeExib=partes.length>=3?partes[0]+' '+partes[1]+' '+partes[partes.length-1]:col.nome;
+    return '<td style="padding:4px 8px"><div class="pp-slot" id="ppslot-'+eqId+'-'+pos+'" draggable="true" data-colab="'+col.id+'" data-eq="'+eqId+'" data-pos="'+pos+'" ondragstart="ppDragStart(event,\''+col.id+'\',\''+eqId+'\')" ondragover="ppDragOver(event)" ondrop="ppDrop(event,\''+eqId+'\','+pos+')" style="background:'+stInfo.bg+';border:.5px solid '+stInfo.cor+'44;border-radius:6px;padding:4px 8px;min-width:110px;cursor:grab;font-size:11px;position:relative"><div style="font-weight:600;color:'+stInfo.cor+';font-size:11px;padding-right:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:115px">'+nomeExib+'</div><div style="font-size:9px;color:#888">RE '+(col.re||'—')+'</div><div style="font-size:9px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:115px">'+(col.cargo||'')+'</div><div style="font-size:9px;color:'+stInfo.cor+';margin-top:1px">'+stInfo.label+'</div><div style="position:absolute;top:2px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#555;user-select:none" onclick="ppMenuSlot(\''+col.id+'\',\''+eqId+'\','+pos+')">⋮</div></div></td>';
+  }
+
+  var ativos=slots.filter(function(c){return c&&(_ppStatus[c.id]||'disponivel')==='disponivel';}).length;
+  var st2,stBg,stTxt;
+  if(!ids.length){st2='Não prog.';stBg='#f5f5f3';stTxt='#888';}
+  else if(ativos>=2){st2='Completa';stBg='#EAF3DE';stTxt='#3B6D11';}
+  else if(ativos===1){st2='Falta 1';stBg='#FEF3E2';stTxt='#854F0B';}
+  else{st2='Parada';stBg='#FCEBEB';stTxt='#A32D2D';}
+
+  return '<tr style="border-bottom:.5px solid #f5f5f3;vertical-align:top" id="pprow-eq-'+eq.id+'">'
+    +'<td style="padding:4px 10px;font-weight:700;font-size:12px;white-space:nowrap">'+eq.nome_equipe+'<div style="font-size:9px;color:#888;font-weight:400">'+(eq.supervisor||'')+'</div></td>'
+    +renderSlot(slots[0],0,eq.id)
+    +renderSlot(slots[1],1,eq.id)
+    +renderSlot(slots[2],2,eq.id)
+    +'<td style="padding:4px 6px;min-width:120px;vertical-align:top" id="prog-veic-cell-'+eq.id+'">'+progRenderVeiculoCell(eq,data)+'</td>'
+    +'<td style="padding:4px 6px;vertical-align:top">'+projHtml+'</td>'
+    +'<td style="padding:4px 8px;text-align:center;vertical-align:top"><span style="display:inline-block;background:'+stBg+';color:'+stTxt+';border-radius:6px;font-size:10px;font-weight:600;padding:2px 6px">'+st2+'</span></td>'
+    +'<td style="padding:4px 6px;vertical-align:top"><button class="btn btn-sm" onclick="ppAutoEscalarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 5px">⚡</button></td>'
+    +'</tr>';
+}
+
+function ppMenuSlot(colabId,eqId,pos){
+  var col=colaboradores.find(function(c){return c.id===colabId;})||{nome:colabId};
+  var st=_ppStatus[colabId]||'disponivel';
+  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:300px">'
+    +'<div style="font-weight:700;font-size:13px;margin-bottom:.25rem">'+(col.nome.split(' ').slice(0,2).join(' '))+'</div>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">RE '+(col.re||'—')+' · '+(col.cargo||'')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px">'
+    +'<button onclick="ppRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" style="background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D1144;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">✅ Disponível — retirar da equipe</button>'
+    +Object.keys(PROG_STATUS).filter(function(k){return k!=='disponivel';}).map(function(k){
+      var s=PROG_STATUS[k];
+      return '<button onclick="ppDefinirStatus(\''+colabId+'\',\''+k+'\')" style="background:'+s.bg+';color:'+s.cor+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left'+(k===st?';font-weight:700':'')+'">'+ s.label+(k===st?' ✓':'')+'</button>';
+    }).join('')
+    +'</div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:.6rem">Cancelar</button>'
+    +'</div></div>';
+  setModal(html);
+}
+
+function ppDefinirStatus(colabId, status){
+  _ppStatus[colabId]=status;
+  closeModal();
+  progProjRenderQuadro();
+}
+
+function ppRetirarDaEquipe(colabId,eqId,pos){
+  var data=progProjGetData();
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  if(comp){
+    var ids=parseJsonField(comp.colaborador_ids,[]);
+    ids=ids.filter(function(id){return id!==colabId;});
+    comp.colaborador_ids=JSON.stringify(ids);
+    if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+  }
+  _ppStatus[colabId]='disponivel';
+  closeModal();
+  progProjRenderQuadro();
+  progShowToast('✅ Colaborador movido para disponíveis');
+}
+
+function ppAutoEscalarEquipe(eqId){
+  var cid=progProjGetCid(); var data=progProjGetData();
+  var STATUS_BLOQ=['ferias','afastado','treinamento','falta'];
+  var emEscala={};
+  composicao_dia.forEach(function(c){
+    if(c.data!==data) return;
+    parseJsonField(c.colaborador_ids,[]).filter(Boolean).forEach(function(id){emEscala[id]=true;});
+  });
+  var vinc=colaboradores.filter(function(c){
+    return c.equipe_id===eqId&&c.ativo!==false
+      &&STATUS_BLOQ.indexOf(_ppStatus[c.id]||'disponivel')<0&&!emEscala[c.id];
+  });
+  if(!vinc.length){progShowToast('Nenhum colaborador disponível');return;}
+  var novosIds=vinc.slice(0,3).map(function(c){return c.id;});
+  while(novosIds.length<3) novosIds.push(null);
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  if(comp){
+    comp.colaborador_ids=JSON.stringify(novosIds);
+    if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(novosIds)},'id=eq.'+comp.id);
+  } else {
+    var nova={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false,_local:true};
+    composicao_dia.push(nova);
+    if(!DEMO) sbInsert('composicao_dia',{equipe_id:eqId,data:data,colaborador_ids:JSON.stringify(novosIds),turno:'Manha',confirmada:false})
+      .then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
+  }
+  progProjRenderQuadro();
+  progShowToast('✅ '+vinc.slice(0,3).length+' colaboradores escalados');
+}
+
+function ppDragStart(event,colabId,eqId){event.dataTransfer.setData('colabId',colabId);event.dataTransfer.setData('fromEqId',eqId);}
+function ppDragOver(event){event.preventDefault();}
+function ppDrop(event,toEqId,toPos){
+  event.preventDefault();
+  var colabId=event.dataTransfer.getData('colabId');
+  var fromEqId=event.dataTransfer.getData('fromEqId');
+  if(!colabId) return;
+  var data=progProjGetData();
+  // Remover de onde estava
+  composicao_dia.forEach(function(c){
+    if(c.data!==data) return;
+    var ids=parseJsonField(c.colaborador_ids,[]);
+    if(ids.indexOf(colabId)<0) return;
+    ids=ids.map(function(id){return id===colabId?null:id;});
+    c.colaborador_ids=JSON.stringify(ids);
+    if(!DEMO&&!c._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+c.id);
+  });
+  // Inserir no novo slot
+  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
+  var ids2=[]; if(comp) ids2=parseJsonField(comp.colaborador_ids,[]);
+  while(ids2.length<3) ids2.push(null);
+  ids2[toPos]=colabId;
+  if(comp){
+    comp.colaborador_ids=JSON.stringify(ids2);
+    if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids2)},'id=eq.'+comp.id);
+  } else {
+    var nova={id:'local_'+toEqId+'_'+data,equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids2),turno:'Manha',confirmada:false,_local:true};
+    composicao_dia.push(nova);
+    if(!DEMO) sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids2),turno:'Manha',confirmada:false})
+      .then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
+  }
+  progProjRenderQuadro();
+}
+
+function ppSalvarEquipe(eqId){
+  var data=progProjGetData();
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data&&!c._local;});
+  if(!comp){progShowToast('⚠ Nenhum colaborador escalado');return;}
+  comp.confirmada=true;
+  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  progShowToast('✅ Programação salva');
+  progProjRenderQuadro();
+}
+
+
+
 
 
 function showPageDiario(){
