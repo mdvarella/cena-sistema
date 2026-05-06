@@ -15270,7 +15270,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.2.9',
+  numero: '3.3.0',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -21949,6 +21949,7 @@ var MAIN_CONFIG = {
   frotas: {label:'🚗 Frotas', subs:[
     {id:'frotas-dashboard',    label:'📊 Dashboard'},
     {id:'frotas-veiculos',     label:'🚗 Veículos'},
+    {id:'frotas-pneus',        label:'⚫ Controle de Pneus'},
     {id:'frotas-portaria',     label:'🏠 Portaria'},
     {id:'frotas-programacao',  label:'📅 Programação'},
     {id:'frotas-manutencoes',  label:'🔧 Manutenções'},
@@ -24482,6 +24483,421 @@ function dbAbrirCameraOdometro(targetInputId, label){
 // ═══════════════════════════════════════════════════════════════
 
 // ── Dados em memória ─────────────────────────────────────────
+// ══ MÓDULO CONTROLE DE PNEUS ══════════════════════════════════
+var pneus_dados      = [];
+var pneus_vidas      = [];
+var pneus_posicoes   = [];
+var pneus_movimentos = [];
+var pneus_config_eixos = {};
+var _pneusAbaAtiva   = 'estoque';
+
+var PNEU_STATUS = {
+  'novo':      {label:'Novo',       cor:'#3B6D11', bg:'#EAF3DE'},
+  'em_uso':    {label:'Em uso',     cor:'#185FA5', bg:'#E6F1FB'},
+  'recapado':  {label:'Recapado',   cor:'#854F0B', bg:'#FEF3E2'},
+  'estoque':   {label:'Estoque',    cor:'#555',    bg:'#f5f5f3'},
+  'descartado':{label:'Descartado', cor:'#A32D2D', bg:'#FCEBEB'},
+};
+var PNEU_MOVIMENTOS = ['Instalação','Remoção','Rodízio','Substituição','Envio para recapagem','Retorno de recapagem','Retorno para estoque','Descarte'];
+
+function pneusInit(){
+  if(!DEMO){
+    Promise.all([
+      sbFetch('pneus',{order:'codigo'}),
+      sbFetch('pneus_vidas',{order:'pneu_id,numero_vida'}),
+      sbFetch('pneus_posicoes'),
+      sbFetch('pneus_movimentos',{order:'data_hora.desc',limit:500}),
+      sbFetch('pneus_config_eixos'),
+    ]).then(function(res){
+      pneus_dados=res[0]||[]; pneus_vidas=res[1]||[];
+      pneus_posicoes=res[2]||[]; pneus_movimentos=res[3]||[];
+      (res[4]||[]).forEach(function(c){
+        if(!pneus_config_eixos[c.veiculo_id])pneus_config_eixos[c.veiculo_id]=[];
+        pneus_config_eixos[c.veiculo_id].push(c);
+      });
+      pneusRender();
+    }).catch(function(){pneusRender();});
+  } else { pneusRender(); }
+}
+
+function pneusAba(aba){
+  _pneusAbaAtiva=aba;
+  ['estoque','veiculos','movimentos','alertas','relatorios'].forEach(function(a){
+    var b=document.getElementById('pneu-tab-'+a);
+    if(b){b.style.background=a===aba?'#1a1a18':'';b.style.color=a===aba?'#fff':'';}
+  });
+  pneusRender();
+}
+
+function pneusRender(){
+  pneusRenderMetricas();
+  pneusRenderAlertasBanner();
+  var div=document.getElementById('pneu-conteudo'); if(!div)return;
+  if(_pneusAbaAtiva==='estoque')    pneusRenderEstoque(div);
+  else if(_pneusAbaAtiva==='veiculos')   pneusRenderVeiculos(div);
+  else if(_pneusAbaAtiva==='movimentos') pneusRenderMovimentos(div);
+  else if(_pneusAbaAtiva==='alertas')    pneusRenderAlertasAba(div);
+  else if(_pneusAbaAtiva==='relatorios') pneusRenderRelatorios(div);
+}
+
+function pneusRenderMetricas(){
+  var el=document.getElementById('pneu-metricas'); if(!el)return;
+  var t=pneus_dados.length;
+  var u=pneus_dados.filter(function(p){return p.status==='em_uso';}).length;
+  var s=pneus_dados.filter(function(p){return p.status==='estoque'||p.status==='novo';}).length;
+  var r=pneus_dados.filter(function(p){return p.status==='recapado';}).length;
+  var d=pneus_dados.filter(function(p){return p.status==='descartado';}).length;
+  el.innerHTML=[{l:'Total',v:t,c:'#555'},{l:'Em uso',v:u,c:'#185FA5'},{l:'Estoque',v:s,c:'#3B6D11'},{l:'Recapado',v:r,c:'#854F0B'},{l:'Descartado',v:d,c:'#A32D2D'}]
+    .map(function(m){return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.6rem;text-align:center"><div style="font-size:11px;color:#888;margin-bottom:3px">'+m.l+'</div><div style="font-size:20px;font-weight:700;color:'+m.c+'">'+m.v+'</div></div>';}).join('');
+}
+
+function pneusGetAlertas(){
+  var list=[];
+  pneus_dados.forEach(function(p){
+    var vidas=pneus_vidas.filter(function(v){return v.pneu_id===p.id;});
+    var va=vidas.find(function(v){return !v.km_final;});
+    if(va&&(va.km_rodado||0)>(p.vida_util_km||80000)*0.9) list.push(p.codigo+' — próximo do limite ('+va.km_rodado+' km)');
+    if(p.status==='em_uso'&&!pneus_posicoes.find(function(po){return po.pneu_id===p.id;})) list.push(p.codigo+' — em uso mas sem posição definida');
+  });
+  frt_veiculos.forEach(function(v){
+    var cfg=pneus_config_eixos[v.id]; if(!cfg||!cfg.length)return;
+    var totalPos=cfg.reduce(function(s,e){return s+(e.pneus_eixo||2);},0);
+    var emPos=pneus_posicoes.filter(function(p){return p.veiculo_id===v.id;}).length;
+    if(emPos<totalPos) list.push(v.placa+' — '+(totalPos-emPos)+' pneu(s) faltando no mapa');
+  });
+  return list;
+}
+
+function pneusRenderAlertasBanner(){
+  var el=document.getElementById('pneu-alertas-banner'); if(!el)return;
+  var al=pneusGetAlertas();
+  if(!al.length){el.innerHTML='';return;}
+  el.innerHTML='<div style="background:#FEF3E2;border:.5px solid #EF9F27;border-radius:10px;padding:.75rem 1rem;margin-bottom:.5rem">'
+    +'<div style="font-size:12px;font-weight:700;color:#854F0B;margin-bottom:6px">⚠️ '+al.length+' alerta(s)</div>'
+    +al.slice(0,3).map(function(a){return '<div style="font-size:11px;color:#854F0B">• '+a+'</div>';}).join('')
+    +(al.length>3?'<div style="font-size:11px;color:#854F0B">+ '+(al.length-3)+' outros...</div>':'')
+    +'</div>';
+}
+
+function pneusRenderEstoque(div){
+  div.innerHTML='<div class="card">'
+    +'<div class="ch" style="margin-bottom:.75rem">'
+    +'<input class="inp" id="pneu-busca" placeholder="Buscar código, marca, série..." style="flex:1;max-width:320px" oninput="pneusFiltrarEstoque()"/>'
+    +'<select class="inp" id="pneu-fil-status" style="width:160px" onchange="pneusFiltrarEstoque()">'
+    +'<option value="">Todos os status</option>'
+    +Object.keys(PNEU_STATUS).map(function(k){return '<option value="'+k+'">'+PNEU_STATUS[k].label+'</option>';}).join('')
+    +'</select></div>'
+    +'<div id="pneu-tabela-estoque"></div></div>';
+  pneusFiltrarEstoque();
+}
+
+function pneusFiltrarEstoque(){
+  var busca=((document.getElementById('pneu-busca')||{}).value||'').toLowerCase();
+  var st=(document.getElementById('pneu-fil-status')||{}).value||'';
+  var fil=pneus_dados.filter(function(p){
+    return (!busca||[p.codigo,p.marca,p.modelo,p.serie,p.medida].join(' ').toLowerCase().includes(busca))&&(!st||p.status===st);
+  });
+  var el=document.getElementById('pneu-tabela-estoque'); if(!el)return;
+  if(!fil.length){el.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Nenhum pneu encontrado</div>';return;}
+  el.innerHTML='<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Código</th><th>Marca/Modelo</th><th>Medida</th><th>Série / DOT</th><th>Vida</th><th>KM total</th><th>Status</th><th>Posição</th><th></th></tr></thead><tbody>'
+    +fil.map(function(p){
+      var vidas=pneus_vidas.filter(function(v){return v.pneu_id===p.id;});
+      var km=vidas.reduce(function(s,v){return s+(v.km_rodado||0);},0);
+      var pos=pneus_posicoes.find(function(po){return po.pneu_id===p.id;});
+      var veicPos=pos?((frt_veiculos.find(function(v){return v.id===pos.veiculo_id;})||{}).placa||'—')+' · '+(pos.descricao_posicao||'—'):'—';
+      var s=PNEU_STATUS[p.status]||{label:p.status,cor:'#888',bg:'#f5f5f3'};
+      return '<tr><td style="font-weight:700;font-size:12px">'+p.codigo+'</td>'
+        +'<td><div style="font-size:12px;font-weight:600">'+p.marca+'</div><div style="font-size:10px;color:#888">'+p.modelo+'</div></td>'
+        +'<td style="font-size:12px;font-weight:600">'+p.medida+'</td>'
+        +'<td><div style="font-size:11px">'+(p.serie||'—')+'</div><div style="font-size:10px;color:#888">DOT: '+(p.dot||'—')+'</div></td>'
+        +'<td style="text-align:center"><span style="background:#E6F1FB;color:#185FA5;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700">'+(vidas.length||1)+'ª</span></td>'
+        +'<td style="font-size:12px;text-align:right">'+km.toLocaleString('pt-BR')+' km</td>'
+        +'<td><span style="background:'+s.bg+';color:'+s.cor+';border-radius:4px;padding:2px 7px;font-size:10px;font-weight:600">'+s.label+'</span></td>'
+        +'<td style="font-size:11px">'+veicPos+'</td>'
+        +'<td style="display:flex;gap:4px"><button class="btn btn-sm" onclick="pneusVerPneu(\''+p.id+'\')">Ver</button>'
+        +'<button class="btn btn-sm" onclick="pneusMover(\''+p.id+'\')">Mover</button></td></tr>';
+    }).join('')+'</tbody></table></div>';
+}
+
+function pneusRenderVeiculos(div){
+  div.innerHTML='<div style="display:grid;grid-template-columns:220px 1fr;gap:1rem">'
+    +'<div class="card" style="padding:.5rem"><div style="font-size:11px;color:#888;font-weight:600;margin-bottom:.5rem">VEÍCULOS</div>'
+    +frt_veiculos.map(function(v){
+      var totalPos=(pneus_config_eixos[v.id]||[]).reduce(function(s,e){return s+(e.pneus_eixo||2);},0);
+      var emPos=pneus_posicoes.filter(function(p){return p.veiculo_id===v.id;}).length;
+      var cor=totalPos>0&&emPos>=totalPos?'#3B6D11':totalPos>0&&emPos>0?'#854F0B':'#aaa';
+      return '<div onclick="pneusVerMapaVeiculo(\''+v.id+'\')" style="padding:.5rem .75rem;border-radius:8px;cursor:pointer;margin-bottom:4px;border:.5px solid #e0dfd8;background:#fff">'
+        +'<div style="font-size:12px;font-weight:700">'+v.placa+'</div>'
+        +'<div style="font-size:10px;color:#888">'+v.modelo+'</div>'
+        +'<div style="font-size:10px;color:'+cor+'">'+(totalPos?emPos+'/'+totalPos+' pneus':'Sem config.')+'</div></div>';
+    }).join('')
+    +'</div><div id="pneu-mapa-conteudo"><div style="padding:2rem;text-align:center;color:#aaa">Selecione um veículo</div></div></div>';
+}
+
+function pneusVerMapaVeiculo(vId){
+  var v=frt_veiculos.find(function(x){return x.id===vId;}); if(!v)return;
+  var cfg=pneus_config_eixos[vId]||[];
+  var div=document.getElementById('pneu-mapa-conteudo'); if(!div)return;
+  var mapaHtml='';
+  if(!cfg.length){
+    mapaHtml='<div style="background:#FFF3E0;border:.5px solid #EF9F27;border-radius:8px;padding:1rem;text-align:center;font-size:12px;color:#854F0B">'
+      +'⚙️ Nenhuma configuração de eixos.<br><button class="btn btn-sm btn-pri" onclick="pneusConfigurarEixos(\''+vId+'\')" style="margin-top:.5rem">Configurar eixos</button></div>';
+  } else {
+    mapaHtml='<div style="display:flex;flex-direction:column;gap:1rem">';
+    cfg.sort(function(a,b){return a.numero_eixo-b.numero_eixo;}).forEach(function(eixo){
+      var posicoes=pneusGetPosicoesEixo(vId,eixo.numero_eixo,eixo.pneus_eixo||2);
+      mapaHtml+='<div style="background:#f9f9f7;border-radius:10px;padding:.75rem 1rem">'
+        +'<div style="font-size:11px;font-weight:700;color:#555;margin-bottom:.75rem">Eixo '+eixo.numero_eixo+' — '+eixo.descricao_eixo+'</div>'
+        +'<div style="display:flex;gap:.75rem;justify-content:center;flex-wrap:wrap">'
+        +posicoes.map(function(pos){
+          var posReg=pneus_posicoes.find(function(po){return po.veiculo_id===vId&&po.eixo===eixo.numero_eixo&&po.posicao===pos.posicao;});
+          var pneu=posReg?pneus_dados.find(function(p){return p.id===posReg.pneu_id;}):null;
+          var s=pneu?(PNEU_STATUS[pneu.status]||{cor:'#185FA5',bg:'#E6F1FB'}):{};
+          var vidas=pneu?pneus_vidas.filter(function(vd){return vd.pneu_id===pneu.id;}):[];
+          return '<div style="width:110px;text-align:center">'
+            +'<div style="font-size:9px;color:#888;margin-bottom:4px">'+pos.label+'</div>'
+            +'<div onclick="'+(pneu?'pneusVerPneu(\''+pneu.id+'\')':'pneusInstalarPosicao(\''+vId+'\','+eixo.numero_eixo+','+pos.posicao+')')+'" '
+            +'style="width:80px;height:80px;margin:0 auto;border-radius:50%;border:3px solid '+(pneu?s.cor:'#ddd')+';background:'+(pneu?s.bg:'#f9f9f7')
+            +';display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer">'
+            +(pneu?'<div style="font-weight:700;font-size:10px;color:'+s.cor+'">'+pneu.codigo+'</div><div style="font-size:9px;color:#555">'+pneu.medida+'</div><div style="font-size:9px;color:#888">'+(vidas.length||1)+'ª vida</div>'
+              :'<div style="color:#bbb;font-size:20px">+</div><div style="color:#bbb;font-size:9px">Instalar</div>')
+            +'</div>'
+            +(pneu?'<div style="margin-top:4px;display:flex;gap:2px;justify-content:center">'
+              +'<button class="btn btn-sm" onclick="pneusMover(\''+pneu.id+'\')" style="font-size:9px;padding:1px 5px">Mover</button>'
+              +'<button class="btn btn-sm" onclick="pneusVerPneu(\''+pneu.id+'\')" style="font-size:9px;padding:1px 5px">Info</button></div>':'')
+            +'</div>';
+        }).join('')+'</div></div>';
+    });
+    mapaHtml+='</div>';
+  }
+  div.innerHTML='<div class="card"><div class="ch" style="margin-bottom:.75rem">'
+    +'<div><div style="font-size:15px;font-weight:700">'+v.placa+'</div><div style="font-size:11px;color:#888">'+v.modelo+' · '+v.marca+'</div></div>'
+    +'<button class="btn btn-sm" onclick="pneusConfigurarEixos(\''+vId+'\')">⚙️ Eixos</button></div>'
+    +mapaHtml+'</div>';
+}
+
+function pneusGetPosicoesEixo(vId,numEixo,qtd){
+  var labels={2:['Esquerdo','Direito'],4:['Esq. Externo','Esq. Interno','Dir. Interno','Dir. Externo'],1:['Central']};
+  var lbs=labels[qtd]||Array.from({length:qtd},function(_,i){return 'Pos '+(i+1);});
+  return lbs.map(function(l,i){return {posicao:i+1,label:l};});
+}
+
+function pneusRenderMovimentos(div){
+  div.innerHTML='<div class="card"><div class="ch" style="margin-bottom:.75rem">'
+    +'<span class="ct">Histórico de Movimentações</span>'
+    +'<button class="btn btn-pri" onclick="pneusNovaMovimentacao()">+ Nova movimentação</button></div>'
+    +(pneus_movimentos.length?'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Data</th><th>Pneu</th><th>Tipo</th><th>Veículo</th><th>KM</th><th>Responsável</th></tr></thead><tbody>'
+      +pneus_movimentos.slice(0,100).map(function(m){
+        var p=pneus_dados.find(function(x){return x.id===m.pneu_id;})||{codigo:'—'};
+        var v=frt_veiculos.find(function(x){return x.id===m.veiculo_id;})||{placa:'—'};
+        return '<tr><td style="font-size:11px">'+fmtD(m.data_hora&&m.data_hora.split('T')[0])+'</td><td style="font-weight:600">'+p.codigo+'</td><td>'+m.tipo+'</td><td>'+v.placa+'</td><td style="text-align:right">'+((m.km_evento||0).toLocaleString('pt-BR'))+'</td><td style="font-size:11px;color:#888">'+m.responsavel+'</td></tr>';
+      }).join('')+'</tbody></table></div>'
+    :'<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma movimentação</div>')+'</div>';
+}
+
+function pneusRenderAlertasAba(div){
+  var al=pneusGetAlertas();
+  div.innerHTML='<div class="card"><div class="ct" style="margin-bottom:1rem">⚠️ Alertas</div>'
+    +(al.length?al.map(function(a){return '<div style="display:flex;gap:10px;padding:.6rem .75rem;border-bottom:.5px solid #f5f5f3"><span style="color:#854F0B">⚠️</span><span style="font-size:13px">'+a+'</span></div>';}).join('')
+    :'<div style="padding:2rem;text-align:center;color:#3B6D11">✅ Sem alertas</div>')+'</div>';
+}
+
+function pneusRenderRelatorios(div){
+  div.innerHTML='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem">'
+    +['Pneus por veículo','Pneus em estoque','Pneus descartados','Custo por pneu','Custo por km rodado','Histórico de rodízios','Vida útil média por marca','Próximos do limite','Vidas por resolagem']
+    .map(function(r){return '<div class="card" style="cursor:pointer;text-align:center;padding:1.5rem" onclick="progShowToast(\'📊 '+r+' — em breve\')">'
+      +'<div style="font-size:24px;margin-bottom:.5rem">📄</div><div style="font-size:13px;font-weight:600">'+r+'</div></div>';}).join('')+'</div>';
+}
+
+function pneusNovoPneu(pneuId){
+  var p=pneuId?pneus_dados.find(function(x){return x.id===pneuId;})||{}:{};
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">'
+    +'<h3 style="margin-bottom:1rem">'+(pneuId?'✏️ Editar':'+ Cadastrar')+' Pneu</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">'
+    +'<div class="fg"><label>Código *</label><input class="inp" id="pn-codigo" value="'+(p.codigo||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Marca *</label><input class="inp" id="pn-marca" value="'+(p.marca||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Modelo</label><input class="inp" id="pn-modelo" value="'+(p.modelo||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Medida *</label><input class="inp" id="pn-medida" placeholder="295/80R22.5" value="'+(p.medida||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Número de série</label><input class="inp" id="pn-serie" value="'+(p.serie||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>DOT (lote fabricante)</label><input class="inp" id="pn-dot" placeholder="Ex: 4821" value="'+(p.dot||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Data de compra</label><input class="inp" id="pn-compra" type="date" value="'+(p.data_compra||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Vida útil estimada (km)</label><input class="inp" id="pn-vida-util" type="number" value="'+(p.vida_util_km||80000)+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Status</label><select class="inp" id="pn-status" style="width:100%">'
+    +Object.keys(PNEU_STATUS).map(function(k){return '<option value="'+k+'"'+(p.status===k?' selected':'')+'>'+PNEU_STATUS[k].label+'</option>';}).join('')+'</select></div>'
+    +'<div class="fg"><label>Custo de compra (R$)</label><input class="inp" id="pn-custo" type="number" step="0.01" value="'+(p.custo_compra||'')+'" style="width:100%"/></div>'
+    +'</div>'
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="pneusSalvar(\''+( pneuId||'')+'\')">💾 Salvar</button></div></div></div>');
+}
+
+function pneusSalvar(pneuId){
+  var g=function(id){return((document.getElementById(id)||{}).value||'').trim();};
+  if(!g('pn-codigo')||!g('pn-marca')||!g('pn-medida')){alert('Preencha: Código, Marca e Medida');return;}
+  var payload={codigo:g('pn-codigo'),marca:g('pn-marca'),modelo:g('pn-modelo'),medida:g('pn-medida'),
+    serie:g('pn-serie'),dot:g('pn-dot'),data_compra:g('pn-compra')||null,
+    vida_util_km:parseInt(g('pn-vida-util'))||80000,status:g('pn-status'),custo_compra:parseFloat(g('pn-custo'))||null};
+  if(pneuId){
+    var idx=pneus_dados.findIndex(function(p){return p.id===pneuId;});
+    if(idx>=0)Object.assign(pneus_dados[idx],payload);
+    if(!DEMO)sbUpdate('pneus',payload,'id=eq.'+pneuId);
+  } else {
+    payload.id='pneu_'+Date.now();
+    pneus_dados.push(payload);
+    if(!DEMO)sbInsert('pneus',payload).then(function(r){if(r&&r[0]&&r[0].id)payload.id=r[0].id;});
+    var v1={pneu_id:payload.id,numero_vida:1,km_inicial:0,km_rodado:0,status:'ativa'};
+    pneus_vidas.push(v1);
+    if(!DEMO)sbInsert('pneus_vidas',v1);
+  }
+  closeModal(); pneusRender();
+  progShowToast('✅ Pneu '+(pneuId?'atualizado':'cadastrado'));
+}
+
+function pneusVerPneu(pneuId){
+  var p=pneus_dados.find(function(x){return x.id===pneuId;}); if(!p)return;
+  var vidas=pneus_vidas.filter(function(v){return v.pneu_id===pneuId;});
+  var movs=pneus_movimentos.filter(function(m){return m.pneu_id===pneuId;});
+  var pos=pneus_posicoes.find(function(po){return po.pneu_id===pneuId;});
+  var veic=pos?frt_veiculos.find(function(v){return v.id===pos.veiculo_id;}):null;
+  var km=vidas.reduce(function(s,v){return s+(v.km_rodado||0);},0);
+  var s=PNEU_STATUS[p.status]||{label:p.status,cor:'#888',bg:'#f5f5f3'};
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1rem">'
+    +'<div><h3 style="margin:0">⚫ '+p.codigo+'</h3><div style="font-size:12px;color:#888">'+p.marca+' '+p.modelo+' · '+p.medida+'</div>'
+    +'<div style="font-size:11px;color:#888">Série: '+(p.serie||'—')+' · DOT: '+(p.dot||'—')+'</div></div>'
+    +'<span style="background:'+s.bg+';color:'+s.cor+';font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px">'+s.label+'</span></div>'
+    +'<div style="background:#E6F1FB;border-radius:8px;padding:.6rem .9rem;margin-bottom:1rem;font-size:12px">'
+    +'📍 '+(veic?veic.placa+' · '+(pos.descricao_posicao||'—'):'Sem posição / Estoque')+'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:1rem">'
+    +[{l:'Vidas',v:vidas.length||1},{l:'KM total',v:km.toLocaleString('pt-BR')},{l:'Vida útil (km)',v:(p.vida_util_km||80000).toLocaleString('pt-BR')}]
+    .map(function(m){return '<div style="background:#f9f9f7;border-radius:8px;padding:.5rem;text-align:center"><div style="font-size:10px;color:#888">'+m.l+'</div><div style="font-size:16px;font-weight:700">'+m.v+'</div></div>';}).join('')+'</div>'
+    +'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:.5rem">Histórico por vida</div>'
+    +vidas.map(function(v){
+      return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .75rem;margin-bottom:.5rem">'
+        +'<div style="display:flex;justify-content:space-between"><span style="font-weight:700;font-size:12px">'+v.numero_vida+'ª vida</span>'
+        +'<span style="font-size:11px;color:#888">'+(v.km_rodado||0).toLocaleString('pt-BR')+' km</span></div>'
+        +'<div style="font-size:10px;color:#888;margin-top:3px">KM ini: '+(v.km_inicial||0).toLocaleString('pt-BR')
+        +(v.km_final?' · KM fim: '+v.km_final.toLocaleString('pt-BR'):'')
+        +(v.motivo_retirada?' · '+v.motivo_retirada:'')+'</div></div>';
+    }).join('')
+    +(movs.length?'<div style="font-size:12px;font-weight:600;color:#555;margin:.75rem 0 .5rem">Movimentações</div>'
+      +movs.slice(0,5).map(function(m){return '<div style="display:flex;gap:8px;font-size:11px;padding:4px 0;border-bottom:.5px solid #f5f5f3"><span style="color:#888;width:80px;flex-shrink:0">'+fmtD(m.data_hora&&m.data_hora.split('T')[0])+'</span><span>'+m.tipo+'</span><span style="color:#888;margin-left:auto">'+m.responsavel+'</span></div>';}).join(''):'')
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Fechar</button>'
+    +'<button class="btn" onclick="closeModal();pneusNovoPneu(\''+pneuId+'\')">✏️ Editar</button>'
+    +'<button class="btn btn-pri" onclick="closeModal();pneusMover(\''+pneuId+'\')">🔄 Movimentar</button></div></div></div>');
+}
+
+function pneusMover(pneuId){
+  var p=pneuId?pneus_dados.find(function(x){return x.id===pneuId;}):null;
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:1rem">🔄 Movimentar Pneu'+(p?' — '+p.codigo:'')+'</h3>'
+    +(pneuId?'':'<div class="fg"><label>Pneu *</label><select class="inp" id="pmov-pneu" style="width:100%"><option value="">Selecione...</option>'+pneus_dados.map(function(x){return '<option value="'+x.id+'">'+x.codigo+' — '+x.marca+' '+x.medida+'</option>';}).join('')+'</select></div>')
+    +'<div class="fg"><label>Tipo *</label><select class="inp" id="pmov-tipo" style="width:100%">'+PNEU_MOVIMENTOS.map(function(m){return '<option>'+m+'</option>';}).join('')+'</select></div>'
+    +'<div class="fg"><label>Veículo</label><select class="inp" id="pmov-veic" style="width:100%"><option value="">— Estoque —</option>'+frt_veiculos.map(function(v){return '<option value="'+v.id+'">'+v.placa+' — '+v.modelo+'</option>';}).join('')+'</select></div>'
+    +'<div class="fg"><label>KM do evento</label><input class="inp" id="pmov-km" type="number" style="width:100%"/></div>'
+    +'<div class="fg"><label>Responsável</label><input class="inp" id="pmov-resp" value="'+(usuarioLogado?usuarioLogado.nome:'')+'" style="width:100%"/></div>'
+    +'<div class="fg" style="grid-column:1/-1"><label>Observação</label><textarea class="inp" id="pmov-obs" style="width:100%;height:60px"></textarea></div>'
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="pneusConfirmarMovimento(\''+( pneuId||'')+'\')">✓ Confirmar</button></div></div></div>');
+}
+
+function pneusNovaMovimentacao(){ pneusMover(null); }
+
+function pneusConfirmarMovimento(pneuId){
+  var g=function(id){return((document.getElementById(id)||{}).value||'').trim();};
+  var pid=pneuId||g('pmov-pneu'); if(!pid){alert('Selecione o pneu');return;}
+  var tipo=g('pmov-tipo'); if(!tipo)return;
+  var mov={id:'mov_'+Date.now(),pneu_id:pid,tipo:tipo,veiculo_id:g('pmov-veic')||null,
+    km_evento:parseInt(g('pmov-km'))||0,responsavel:g('pmov-resp'),observacao:g('pmov-obs'),data_hora:new Date().toISOString()};
+  pneus_movimentos.unshift(mov);
+  var p=pneus_dados.find(function(x){return x.id===pid;});
+  if(p){
+    if(tipo==='Instalação')p.status='em_uso';
+    else if(tipo==='Descarte')p.status='descartado';
+    else if(tipo.includes('recapagem'))p.status='recapado';
+    else if(tipo==='Retorno para estoque'||tipo==='Remoção')p.status='estoque';
+    if(!DEMO)sbUpdate('pneus',{status:p.status},'id=eq.'+pid);
+  }
+  if(!DEMO)sbInsert('pneus_movimentos',mov);
+  closeModal(); pneusRender();
+  progShowToast('✅ Movimentação registrada');
+}
+
+function pneusConfigurarEixos(vId){
+  var v=frt_veiculos.find(function(x){return x.id===vId;}); if(!v)return;
+  var cfg=pneus_config_eixos[vId]||[];
+  var qtd=cfg.length||2;
+  function renderEixosForm(){
+    var rows='';
+    for(var i=1;i<=qtd;i++){
+      var e=cfg.find(function(c){return c.numero_eixo===i;})||{};
+      rows+='<div style="display:grid;grid-template-columns:60px 1fr 110px;gap:8px;align-items:center;margin-bottom:8px">'
+        +'<span style="font-size:12px;font-weight:700">Eixo '+i+'</span>'
+        +'<input class="inp" id="eixo-desc-'+i+'" placeholder="Ex: Dianteiro" value="'+(e.descricao_eixo||'')+'" style="font-size:12px"/>'
+        +'<select class="inp" id="eixo-qtd-'+i+'" style="font-size:12px">'
+        +[1,2,4].map(function(n){return '<option value="'+n+'"'+(e.pneus_eixo===n?' selected':'')+'>'+n+' pneu(s)</option>';}).join('')
+        +'</select></div>';
+    }
+    var el=document.getElementById('eixos-form-inner'); if(el)el.innerHTML=rows;
+  }
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin-bottom:.75rem">⚙️ Configurar Eixos — '+v.placa+'</h3>'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem"><label style="font-size:12px">Eixos:</label>'
+    +'<input id="qtd-eixos-inp" type="number" min="1" max="7" value="'+qtd+'" style="width:60px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;font-size:14px" oninput="qtd=parseInt(this.value)||1;renderEixosForm()"/></div>'
+    +'<div id="eixos-form-inner"></div>'
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="pneusSalvarEixos(\''+vId+'\')">💾 Salvar</button></div></div></div>');
+  renderEixosForm();
+}
+
+function pneusSalvarEixos(vId){
+  var qtd=parseInt(((document.getElementById('qtd-eixos-inp')||{}).value)||2);
+  var nova=[];
+  for(var i=1;i<=qtd;i++){
+    var desc=((document.getElementById('eixo-desc-'+i)||{}).value||'Eixo '+i).trim();
+    var qp=parseInt(((document.getElementById('eixo-qtd-'+i)||{}).value)||2);
+    nova.push({veiculo_id:vId,numero_eixo:i,descricao_eixo:desc,pneus_eixo:qp});
+  }
+  pneus_config_eixos[vId]=nova;
+  if(!DEMO)nova.forEach(function(c){sbInsert('pneus_config_eixos',c);});
+  closeModal(); pneusVerMapaVeiculo(vId);
+  progShowToast('✅ Eixos configurados');
+}
+
+function pneusInstalarPosicao(vId,eixo,posicao){
+  var disponiveis=pneus_dados.filter(function(p){return p.status==='estoque'||p.status==='novo';});
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px">'
+    +'<h3 style="margin-bottom:1rem">Instalar — Eixo '+eixo+' Pos.'+posicao+'</h3>'
+    +(disponiveis.length
+      ?'<select class="inp" id="inst-pneu-id" style="width:100%;margin-bottom:1rem"><option value="">Selecione...</option>'
+        +disponiveis.map(function(p){return '<option value="'+p.id+'">'+p.codigo+' — '+p.marca+' '+p.modelo+' '+p.medida+'</option>';}).join('')+'</select>'
+        +'<input class="inp" id="inst-km" type="number" placeholder="KM do veículo" style="width:100%;margin-bottom:1rem"/>'
+        +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
+        +'<button class="btn btn-pri" onclick="pneusConfirmarInstalacao(\''+vId+'\','+eixo+','+posicao+')">✓ Instalar</button></div>'
+      :'<div style="padding:1rem;text-align:center;color:#aaa">Nenhum pneu em estoque</div><div class="ma"><button class="btn" onclick="closeModal()">Fechar</button></div>')
+    +'</div></div>');
+}
+
+function pneusConfirmarInstalacao(vId,eixo,posicao){
+  var pid=((document.getElementById('inst-pneu-id')||{}).value||'');
+  var km=parseInt(((document.getElementById('inst-km')||{}).value)||0);
+  if(!pid){alert('Selecione um pneu');return;}
+  var eixoCfg=(pneus_config_eixos[vId]||[]).find(function(e){return e.numero_eixo===eixo;})||{};
+  var posLabel=(pneusGetPosicoesEixo(vId,eixo,eixoCfg.pneus_eixo||2).find(function(p){return p.posicao===posicao;})||{}).label||'Pos.'+posicao;
+  var desc='Eixo '+eixo+' — '+posLabel;
+  var pos={id:'pos_'+Date.now(),pneu_id:pid,veiculo_id:vId,eixo:eixo,posicao:posicao,descricao_posicao:desc,km_instalacao:km};
+  pneus_posicoes.push(pos);
+  if(!DEMO)sbInsert('pneus_posicoes',pos);
+  var mov={id:'mov_'+Date.now(),pneu_id:pid,tipo:'Instalação',veiculo_id:vId,km_evento:km,
+    responsavel:usuarioLogado?usuarioLogado.nome:'Sistema',observacao:desc,data_hora:new Date().toISOString()};
+  pneus_movimentos.unshift(mov);
+  var p=pneus_dados.find(function(x){return x.id===pid;});
+  if(p){p.status='em_uso';if(!DEMO)sbUpdate('pneus',{status:'em_uso'},'id=eq.'+pid);}
+  if(!DEMO)sbInsert('pneus_movimentos',mov);
+  closeModal(); pneusVerMapaVeiculo(vId);
+  progShowToast('✅ Pneu instalado em '+desc);
+}
+// ══ fim MÓDULO CONTROLE DE PNEUS ══════════════════════════════
+
 var frt_veiculos = [];
 var frt_portaria = [];      // saídas/retornos
 var frt_manutencoes = [];
@@ -24556,6 +24972,7 @@ function frtInit(subpage){
 
     if(subpage==='frotas-dashboard')    frtDashRender();
     else if(subpage==='frotas-veiculos') frtVeiculosRender();
+    else if(subpage==='frotas-pneus')   pneusInit();
     else if(subpage==='frotas-portaria') frtPortariaRender();
     else if(subpage==='frotas-programacao') frtProgRender();
     else if(subpage==='frotas-manutencoes') frtManutRender();
@@ -26353,6 +26770,30 @@ window.addEventListener('load',function(){
     </div>
   </div>
   <div id="frt-prog-quadro" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1rem"></div>
+</div>
+
+
+<!-- CONTROLE DE PNEUS -->
+<div id="pg-frotas-pneus" class="hidden">
+  <div class="card" style="margin-bottom:1rem">
+    <div class="ch" style="flex-wrap:wrap;gap:8px">
+      <span class="ct">⚫ Controle de Pneus</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-sm" id="pneu-tab-estoque" onclick="pneusAba('estoque')" style="background:#1a1a18;color:#fff">🗄 Estoque</button>
+        <button class="btn btn-sm" id="pneu-tab-veiculos" onclick="pneusAba('veiculos')">🚗 Por Veículo</button>
+        <button class="btn btn-sm" id="pneu-tab-movimentos" onclick="pneusAba('movimentos')">🔄 Movimentações</button>
+        <button class="btn btn-sm" id="pneu-tab-alertas" onclick="pneusAba('alertas')">⚠️ Alertas</button>
+        <button class="btn btn-sm" id="pneu-tab-relatorios" onclick="pneusAba('relatorios')">📈 Relatórios</button>
+        <button class="btn btn-pri" onclick="pneusNovoPneu()">+ Cadastrar Pneu</button>
+      </div>
+    </div>
+    <!-- Métricas rápidas -->
+    <div id="pneu-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
+  </div>
+  <!-- Alertas rápidos -->
+  <div id="pneu-alertas-banner" style="margin-bottom:1rem"></div>
+  <!-- Conteúdo da aba -->
+  <div id="pneu-conteudo"></div>
 </div>
 
 <!-- MANUTENÇÕES -->
