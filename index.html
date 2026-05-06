@@ -15274,7 +15274,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.4.4',
+  numero: '3.4.5',
   data:   '06/05/2026',
   build:  '20260506-324',
   log: [
@@ -16253,23 +16253,72 @@ function progRenderPainelDisp(eqs, data, cid){
 }
 
 // ── Drag & Drop ──────────────────────────────────────────────
+// ── Drag & Drop compartilhado (Prog. Equipes e Prog. Projetos) ──
+var _dragColabId = null;
+var _dragFromEquipeId = null;
+
 function progDragStart(event, colabId, fromEqId){
-  _dragColabId = colabId;
-  _dragFromEquipeId = fromEqId;
+  _dragColabId = colabId; _dragFromEquipeId = fromEqId;
   event.dataTransfer.effectAllowed = 'move';
   event.dataTransfer.setData('text/plain', colabId);
-  // Visual feedback
-  setTimeout(function(){
-    var el = event.target;
-    if(el) el.style.opacity = '0.4';
-  }, 0);
+  setTimeout(function(){ if(event.target) event.target.style.opacity='0.4'; }, 0);
 }
+function ppDragStart(event,colabId,eqId){ progDragStart(event,colabId,eqId); }
 
 function progDragOver(event){
   event.preventDefault();
   event.dataTransfer.dropEffect = 'move';
   event.currentTarget.style.outline = '2px solid #185FA5';
 }
+function ppDragOver(event){ progDragOver(event); }
+
+function _escalaEfetuarDrop(colabId, fromEqId, toEqId, toPos, data, getRenderFn){
+  composicao_dia.forEach(function(comp){
+    if(comp.data!==data) return;
+    var ids=parseJsonField(comp.colaborador_ids,[]);
+    if(ids.indexOf(colabId)<0) return;
+    if(comp.equipe_id===toEqId){var pa=ids.indexOf(colabId);if(pa===toPos)return;ids=ids.map(function(id,i){return(id===colabId&&i!==toPos)?null:id;});}
+    else{ids=ids.map(function(id){return id===colabId?null:id;});}
+    comp.colaborador_ids=JSON.stringify(ids);
+    if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+  });
+  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
+  var ids=[]; if(comp)ids=parseJsonField(comp.colaborador_ids,[]);
+  while(ids.length<=toPos)ids.push(null);
+  ids[toPos]=colabId;
+  if(comp){
+    comp.colaborador_ids=JSON.stringify(ids);
+    if(!DEMO){
+      if(comp._local){comp._local=false;sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false}).then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});}
+      else{sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);}
+    }
+  } else {
+    var nova={id:'local_'+toEqId+'_'+data,equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,_local:true};
+    composicao_dia.push(nova);
+    if(!DEMO)sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false}).then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
+  }
+  getRenderFn()();
+}
+
+function progDrop(event, toEqId, toPos){
+  event.preventDefault(); event.currentTarget.style.outline='';
+  if(!_dragColabId) return;
+  _escalaEfetuarDrop(_dragColabId,_dragFromEquipeId,toEqId,toPos,progGetData(),function(){return progRenderQuadro;});
+  _dragColabId=null; _dragFromEquipeId=null;
+}
+function ppDrop(event,toEqId,toPos){
+  event.preventDefault(); event.currentTarget.style.outline='';
+  if(!_dragColabId) return;
+  _escalaEfetuarDrop(_dragColabId,_dragFromEquipeId,toEqId,toPos,progProjGetData(),function(){return progProjRenderQuadro;});
+  _dragColabId=null; _dragFromEquipeId=null;
+}
+
+// progEfetuarDrop mantida para compatibilidade
+function progEfetuarDrop(colabId,fromEqId,toEqId,toPos){
+  _escalaEfetuarDrop(colabId,fromEqId,toEqId,toPos,progGetData(),function(){return progRenderQuadro;});
+}
+
+
 
 function progDrop(event, toEqId, toPos){
   event.preventDefault();
@@ -22581,39 +22630,7 @@ function ppAutoEscalarEquipe(eqId){
   progShowToast('✅ '+vinc.slice(0,3).length+' colaboradores escalados');
 }
 
-function ppDragStart(event,colabId,eqId){event.dataTransfer.setData('colabId',colabId);event.dataTransfer.setData('fromEqId',eqId);}
-function ppDragOver(event){event.preventDefault();}
-function ppDrop(event,toEqId,toPos){
-  event.preventDefault();
-  var colabId=event.dataTransfer.getData('colabId');
-  var fromEqId=event.dataTransfer.getData('fromEqId');
-  if(!colabId) return;
-  var data=progProjGetData();
-  // Remover de onde estava
-  composicao_dia.forEach(function(c){
-    if(c.data!==data) return;
-    var ids=parseJsonField(c.colaborador_ids,[]);
-    if(ids.indexOf(colabId)<0) return;
-    ids=ids.map(function(id){return id===colabId?null:id;});
-    c.colaborador_ids=JSON.stringify(ids);
-    if(!DEMO&&!c._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+c.id);
-  });
-  // Inserir no novo slot
-  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
-  var ids2=[]; if(comp) ids2=parseJsonField(comp.colaborador_ids,[]);
-  while(ids2.length<3) ids2.push(null);
-  ids2[toPos]=colabId;
-  if(comp){
-    comp.colaborador_ids=JSON.stringify(ids2);
-    if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids2)},'id=eq.'+comp.id);
-  } else {
-    var nova={id:'local_'+toEqId+'_'+data,equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids2),turno:'Manha',confirmada:false,_local:true};
-    composicao_dia.push(nova);
-    if(!DEMO) sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids2),turno:'Manha',confirmada:false})
-      .then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
-  }
-  progProjRenderQuadro();
-}
+// ppDropPool mantido para compatibilidade
 
 function ppSalvarEquipe(eqId){
   var data=progProjGetData();
