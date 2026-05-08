@@ -9619,6 +9619,51 @@ function _dbEncerrarTurnoConfirmado(kmFim, obs){
   },100);
 }
 
+function dbReabrirTurno(){
+  if(!_dbSessao) return;
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:360px">'
+    +'<h3 style="margin-bottom:.75rem;color:#854F0B">↩ Reabrir turno</h3>'
+    +'<p style="font-size:13px;color:#555;margin-bottom:1rem">O turno foi encerrado às '
+    +fmtHHMM(_dbSessao.logout_ts)+'. Deseja reabrir e continuar?</p>'
+    +'<div class="ma">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn" onclick="dbConfirmarReabrir()" style="color:#854F0B;border-color:#854F0B">↩ Reabrir</button>'
+    +'</div></div></div>');
+}
+
+function dbConfirmarReabrir(){
+  if(!_dbSessao) return;
+  delete _dbSessao.logout_ts;
+  delete _dbSessao.km_final;
+  // Remover evento de encerramento da lista
+  if(_dbSessao.eventos){
+    _dbSessao.eventos = _dbSessao.eventos.filter(function(e){
+      return e.tipo !== 'Encerramento do dia';
+    });
+  }
+  if(!DEMO) sbUpdate('sessoes_disponibilidade',{
+    logout_ts: null,
+    km_final: null,
+    eventos: JSON.stringify(_dbSessao.eventos||[])
+  },'id=eq.'+_dbSessao.id);
+  // Esconder botão reabrir
+  var btnRe=document.getElementById('btn-db-reabrir');if(btnRe)btnRe.style.display='none';
+  // Reativar timer
+  dbIniciarTimer();
+  closeModal();
+  dbAtualizarBotoes();
+  var sl=document.getElementById('db-status-label');
+  if(sl) sl.textContent='Turno em andamento';
+  progShowToast('✅ Turno reaberto com sucesso');
+}
+
+function fmtHHMM(ts){
+  if(!ts) return '—';
+  var d=new Date(typeof ts==='number'?ts:ts);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+
 function dbCalcMinFaturados(){
   if(!_dbSessao||!_dbSessao.login_ts)return 0;
   var agora=_dbSessao.logout_ts||Date.now();
@@ -9724,6 +9769,7 @@ function dbAtualizarBotoes(){
   var btnRetomar=document.getElementById('btn-db-retomar-wrap');
 
   if(!_dbSessao){
+    var btnRe=document.getElementById('btn-db-reabrir');if(btnRe)btnRe.style.display='none';
     if(btnLogin)btnLogin.style.display='';
     // Dia encerrado — mostrar botão para iniciar novo dia (caso precise corrigir)
     if(btnLogin){
@@ -9735,17 +9781,33 @@ function dbAtualizarBotoes(){
     if(btnLogout)btnLogout.style.display='none';
     if(btnRetomar)btnRetomar.style.display='none';
   } else if(_dbSessao.almoco_ts&&!_dbSessao.retorno_ts){
+    var btnRe2=document.getElementById('btn-db-reabrir');if(btnRe2)btnRe2.style.display='none';
     if(btnLogin)btnLogin.style.display='none';
     if(btnAlmoco)btnAlmoco.style.display='none';
     if(btnLogout)btnLogout.style.display='none';
     if(btnRetomar)btnRetomar.style.display='';
   } else if(_dbSessao.logout_ts){
-    // Dia já encerrado — esconder todos os botões de ação
+    // Dia já encerrado — esconder ações, mostrar opção de reabrir
     if(btnLogin)btnLogin.style.display='none';
     if(btnAlmoco)btnAlmoco.style.display='none';
     if(btnLogout)btnLogout.style.display='none';
     if(btnRetomar)btnRetomar.style.display='none';
+    // Botão reabrir
+    var btnReabrir=document.getElementById('btn-db-reabrir');
+    if(!btnReabrir){
+      btnReabrir=document.createElement('button');
+      btnReabrir.id='btn-db-reabrir';
+      btnReabrir.className='btn';
+      btnReabrir.style.cssText='flex:1;padding:14px;font-size:15px;border-radius:12px;color:#854F0B;border-color:#854F0B';
+      btnReabrir.textContent='↩ Reabrir turno';
+      btnReabrir.onclick=dbReabrirTurno;
+      var wrap=document.getElementById('btn-db-logout');
+      if(wrap&&wrap.parentNode) wrap.parentNode.appendChild(btnReabrir);
+    } else {
+      btnReabrir.style.display='';
+    }
   } else {
+    var btnRe3=document.getElementById('btn-db-reabrir');if(btnRe3)btnRe3.style.display='none';
     if(btnLogin)btnLogin.style.display='none';
     if(btnAlmoco)btnAlmoco.style.display='';
     if(btnLogout)btnLogout.style.display='';
@@ -15287,7 +15349,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.5.6',
+  numero: '3.5.7',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15894,10 +15956,10 @@ function progRenderEquipeRow(eq, data){
     return true;
   });
 
-  // Composição: usar SOMENTE o que está no banco
-  // Vinculados NÃO pré-preenchem slots — apenas o auto-escalar faz isso
+  // Composição: busca robusta incluindo locais e normalizando data
   var compAtual = composicao_dia.find(function(c){
-    return c.equipe_id===eq.id && c.data===data && !c._local;
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eq.id && (cd===data||c.data===data);
   });
   var ids = [];
   if(compAtual){
@@ -16093,23 +16155,31 @@ function progRenderVeiculoCellBloqueado(eq, data){
 function progSalvarEquipe(eqId){
   var data = progGetData();
   var comp = composicao_dia.find(function(c){
-    return c.equipe_id===eqId && c.data===data && !c._local;
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eqId && (cd===data||c.data===data);
   });
   if(!comp){
     progShowToast('⚠ Nenhum colaborador escalado — use Auto Escalar primeiro');
     return;
   }
-  var raw = comp.colaborador_ids;
-  var ids = Array.isArray(raw) ? raw.filter(Boolean)
-    : (function(){ try{return JSON.parse(raw||'[]').filter(Boolean);}catch(e){return[];} })();
+  var ids = parseJsonField(comp.colaborador_ids,[]).filter(Boolean);
   if(!ids.length){
     progShowToast('⚠ Equipe sem colaboradores escalados');
     return;
   }
   comp.confirmada = true;
-  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
-  progShowToast('✅ Programação salva — equipe Programada');
+  if(!DEMO){
+    var isLocal = comp._local || !comp.id || comp.id.startsWith('local_');
+    if(isLocal){
+      sbInsert('composicao_dia',{equipe_id:eqId,data:data,
+        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true})
+        .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
+    } else {
+      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+    }
+  }
   progRenderQuadro();
+  progShowToast('✅ Equipe programada com sucesso');
 }
 
 
@@ -22456,13 +22526,20 @@ function showPage(pageId){
 
 
 function showPageDiario(){
-  var isTMA = usuarioLogado && usuarioLogado.perfil === 'equipe';
+  var perfil = usuarioLogado && usuarioLogado.perfil;
+  var isTMA  = perfil === 'equipe';
+  var isCampo = perfil === 'campo' || perfil === 'encarregado';
+  var isEquipeOuCampo = isTMA || isCampo;
 
   // Esconder páginas
   document.getElementById('pg-app').querySelectorAll('[id^="pg-"]').forEach(function(el){
     if(el.id !== 'pg-diario') el.classList.add('hidden');
   });
   document.getElementById('pg-diario').classList.remove('hidden');
+
+  // Supervisão do Diário: esconder para perfis de equipe/campo
+  var adminWrap = document.getElementById('db-admin-wrap');
+  if(adminWrap) adminWrap.style.display = isEquipeOuCampo ? 'none' : '';
 
   // Métricas: esconder sempre no diário
   var bm=document.getElementById('bloco-metricas');if(bm)bm.style.display='none';
