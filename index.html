@@ -15279,7 +15279,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.4.9',
+  numero: '3.5.1',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -23401,10 +23401,11 @@ function progProjRenderQuadro(){
     return;
   }
 
-  // Equipes do contrato
-  var eqs = equipes.filter(function(e){
+  // Equipes do contrato — usar equipes_disp (mesma fonte que composicao_dia)
+  var eqsSource = (typeof equipes_disp!=='undefined'&&equipes_disp.length) ? equipes_disp : equipes;
+  var eqs = eqsSource.filter(function(e){
     if(e.status!=='Ativo'||e.contrato_id!==cid) return false;
-    if(_pp.tipoFiltro && (e.cargo||'')!==_pp.tipoFiltro) return false;
+    if(_pp.tipoFiltro && (e.cargo||e.tipo||'')!==_pp.tipoFiltro) return false;
     return true;
   });
 
@@ -23438,7 +23439,8 @@ function progProjRenderQuadro(){
 
   // Resumo — 6 indicadores iguais à Prog. Equipes
   // Usar TODAS as equipes do contrato (ignora filtro de tipo para o resumo)
-  var todasEqsCid = equipes.filter(function(e){return e.status==='Ativo'&&e.contrato_id===cid;});
+  var _eqsSrc = (typeof equipes_disp!=='undefined'&&equipes_disp.length) ? equipes_disp : equipes;
+  var todasEqsCid = _eqsSrc.filter(function(e){return e.status==='Ativo'&&e.contrato_id===cid;});
   var rTotal=0,rProgramadas=0,rCompletas=0,rIncompletas=0,rParadas=0;
   todasEqsCid.forEach(function(eq){
     rTotal++;
@@ -24019,12 +24021,9 @@ function ppMenuSlot(colabId, eqId, pos){
     +'<button onclick="ppRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" '
     +'style="background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D1144;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
     +'✅ Disponível — retirar da equipe</button>'
-    +Object.keys(PROG_STATUS).filter(function(k){return k!=='disponivel';}).map(function(k){
-      var s=PROG_STATUS[k];
-      return '<button onclick="ppDefinirStatus(\''+colabId+'\',\''+k+'\')" '
-        +'style="background:'+s.bg+';color:'+s.cor+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left'+(k===st?';font-weight:700':'')+'">'
-        +s.label+(k===st?' ✓':'')+'</button>';
-    }).join('')
+    +'<button onclick="ppToggleStatus(\''+colabId+'\')" '
+    +'style="background:#f5f5f3;color:#555;border:.5px solid #e0dfd8;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left">'
+    +'📋 Alterar status ('+(PROG_STATUS[st]||{label:st}).label+')</button>'
     +'</div>'
     +'<button class="btn" onclick="closeModal()" style="width:100%;margin-top:.6rem">Cancelar</button>'
     +'</div></div>';
@@ -24048,46 +24047,72 @@ function ppRetirarDaEquipe(colabId, eqId, pos){
 }
 
 function ppToggleStatus(colabId){
-  var atual=_ppStatus[colabId]||'disponivel';
-  var col=colaboradores.find(function(c){return c.id===colabId;})||{nome:colabId};
-  var opcoes=Object.keys(PROG_STATUS);
-  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:320px">'
-    +'<h3 style="margin-bottom:.25rem">'+col.nome.split(' ').slice(0,2).join(' ')+'</h3>'
-    +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">Status atual: '+(PROG_STATUS[atual]||{label:atual}).label+'</div>'
-    +'<div style="display:flex;flex-direction:column;gap:6px">'
+  var atual = _ppStatus[colabId]||'disponivel';
+  var col   = colaboradores.find(function(c){return c.id===colabId;})||{nome:colabId};
+  var info  = (_ppStatusInfo||{})[colabId]||{};
+  var opcoes = Object.keys(PROG_STATUS);
+  var html = '<div class="modal-bg"><div class="modal" style="max-width:340px">'
+    +'<h3>Status</h3>'
+    +'<div style="font-size:12px;color:#888;margin-bottom:.75rem">'+col.nome+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:1rem">'
     +opcoes.map(function(k){
       var s=PROG_STATUS[k];
-      return '<button onclick="ppDefinirStatus(\''+colabId+'\',\''+k+'\')" '
-        +'style="background:'+s.bg+';color:'+s.cor+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:.4rem .75rem;cursor:pointer;font-size:12px;text-align:left;'
-        +(k===atual?'font-weight:700;border-width:2px':'font-weight:400')+'">'+s.label+(k===atual?' ✓':'')+'</button>';
+      var sel=k===atual?'border:2px solid '+s.cor:'border:.5px solid #e0dfd8';
+      var extra=PROG_STATUS_REQUER_DATA.indexOf(k)>=0?' [previsão req.]':'';
+      return '<button id="pp-st-btn-'+k+'" style="padding:8px 12px;border-radius:8px;background:'+s.bg+';color:'+s.cor+';font-weight:600;cursor:pointer;text-align:left;'+sel+'">'
+        +s.label+extra+(k===atual?' (atual)':'')+'</button>';
     }).join('')
     +'</div>'
-    +'<button class="btn" onclick="closeModal()" style="margin-top:.75rem;width:100%">Cancelar</button>'
-    +'</div></div>';
+    +'<div id="pp-st-data-wrap" style="display:none;background:#f9f9f7;border-radius:8px;padding:.75rem;margin-bottom:.75rem">'
+    +'<label style="font-size:12px;font-weight:500;display:block;margin-bottom:4px">Previsão de retorno *</label>'
+    +'<input type="date" id="pp-st-data-retorno" class="inp" style="width:100%" value="'+(info.retorno||'')+'"/>'
+    +'<div style="font-size:11px;color:#888;margin-top:4px">Volta automaticamente para a escala nessa data.</div>'
+    +'</div>'
+    +'<div style="display:flex;gap:6px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="pp-st-confirmar" style="flex:1">Confirmar</button>'
+    +'</div></div></div>';
   setModal(html);
+  setTimeout(function(){
+    var statusSel = atual;
+    opcoes.forEach(function(k){
+      var btn = document.getElementById('pp-st-btn-'+k);
+      if(!btn) return;
+      btn.onclick = function(){
+        opcoes.forEach(function(j){
+          var b=document.getElementById('pp-st-btn-'+j); if(!b) return;
+          b.style.border = j===k ? '2px solid '+PROG_STATUS[j].cor : '.5px solid #e0dfd8';
+        });
+        statusSel = k;
+        var wrap = document.getElementById('pp-st-data-wrap');
+        if(wrap) wrap.style.display = PROG_STATUS_REQUER_DATA.indexOf(k)>=0 ? '' : 'none';
+      };
+    });
+    var btnConf = document.getElementById('pp-st-confirmar');
+    if(btnConf) btnConf.onclick = function(){
+      if(PROG_STATUS_REQUER_DATA.indexOf(statusSel)>=0){
+        var dr = (document.getElementById('pp-st-data-retorno')||{}).value||'';
+        if(!dr){ alert('Informe a previsão de retorno.'); return; }
+        ppDefinirStatus(colabId, statusSel, dr);
+      } else {
+        ppDefinirStatus(colabId, statusSel, null);
+      }
+    };
+  },50);
 }
 
-function ppDefinirStatus(colabId,status){
-  _ppStatus[colabId]=status;
+function ppDefinirStatus(colabId, status, dataRetorno){
+  if(!_ppStatusInfo) window._ppStatusInfo = {};
+  _ppStatus[colabId] = status;
+  if(!_ppStatusInfo[colabId]) _ppStatusInfo[colabId] = {};
+  if(dataRetorno) _ppStatusInfo[colabId].retorno = dataRetorno;
+  else delete (_ppStatusInfo[colabId]||{}).retorno;
   progProjSalvarStatus();
   closeModal();
   progProjRenderQuadro();
 }
 
-// ── Salvar equipe ─────────────────────────────────────────────
-function ppSalvarEquipe(eqId){
-  var data=progProjGetData();
-  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
-  var projetoIds=JSON.stringify(_pp.projetoIds);
-  if(comp){
-    comp.projeto_ids=projetoIds;
-    if(!DEMO) sbUpdate('composicao_dia',{projeto_ids:projetoIds},'id=eq.'+comp.id);
-    progShowToast('✅ Programação salva');
-  } else {
-    progShowToast('ℹ Equipe sem colaboradores escalados');
-  }
-}
+// ── Salvar equipe — ver ppSalvarEquipe acima ──────────────────
 
 // ── Auto-escalar ──────────────────────────────────────────────
 function progProjAutoEscalar(){
