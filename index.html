@@ -7911,221 +7911,224 @@ var _plptDiario = {
 var _plptModalTurnoAberto = false;
 
 function renderDiarioPlpt(){
-  // Não sobrescrever a página se o modal de turno estiver aberto
   if(_plptModalTurnoAberto) return;
   var pg = document.getElementById('pg-diario'); if(!pg) return;
+  var eq = _dbEquipe;
+  if(!eq){
+    pg.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:13px">⏳ Carregando dados da equipe...</div>';
+    return;
+  }
   var hoje    = dataHojeLocal();
   var prog    = _plptDiario.prog;
   var projs   = _plptDiario.projetos;
-  var eq      = _dbEquipe;
   var sessao  = _plptDiario.sessao;
   var PLPT_CID = usuarioLogado ? usuarioLogado.contrato_id : CONTRATOS_UUID_MAP['PLPT'];
 
-  // ── Verificar composicao_dia como fonte alternativa de programação ──
   var compDia = composicao_dia.find(function(c){
-    return c.equipe_id===eq.id && c.data===hoje && !c._local;
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eq.id && (cd===hoje||c.data===hoje);
   });
-  // Se não tem plpt_prog_dia mas tem composicao_dia real, considerar como programada
   var temEscala = prog || compDia;
-  var escalaConfirmada = compDia && compDia.confirmada;
+  var escalaConfirmada = !!(compDia && compDia.confirmada) || !!_plptDiario.composConfirm;
 
-  // Filtrar membros — primeiro tenta pela composicao_dia, depois por equipe_id fixo
+  // ── Membros da equipe ────────────────────────────
   var membros = [];
   if(compDia){
-    var idsComp = parseJsonField(compDia.colaborador_ids,[]).filter(Boolean);
-    idsComp.forEach(function(id){
+    parseJsonField(compDia.colaborador_ids,[]).filter(Boolean).forEach(function(id){
       var c=colaboradores.find(function(x){return x.id===id;});
       if(c) membros.push(c);
     });
   }
   if(!membros.length){
     membros = colaboradores.filter(function(c){
-      return c.equipe_id===eq.id && c.contrato_id===PLPT_CID && c.ativo!==false;
+      return c.equipe_id===eq.id && c.ativo!==false;
     });
   }
 
-  var encNome   = prog ? (prog.encarregado_nome||'—') : '—';
-  var veicPlaca = prog ? (prog.veiculo_placa||'—')    : '—';
+  // ── Veículo da equipe ────────────────────────────
+  var veic = null;
+  if(prog && prog.veiculo_placa){
+    veic = frt_veiculos.find(function(v){return v.placa===prog.veiculo_placa;});
+  }
+  if(!veic){
+    var vd = prog_veiculos_dia ? prog_veiculos_dia.find(function(v){
+      return v.equipe_id===eq.id && v.data===hoje;
+    }) : null;
+    if(vd) veic = frt_veiculos.find(function(v){return v.id===vd.veiculo_id;});
+  }
+  var veicInfo = veic ? (veic.placa+' — '+veic.modelo) : '—';
 
   // ── Status do turno ──────────────────────────────
   var turnoAtivo  = sessao && sessao.inicio_ts && !sessao.fim_ts;
-  var turnoStatus = !sessao ? 'Aguardando confirmação'
-    : turnoAtivo ? 'Em campo'
-    : 'Encerrado';
+  var turnoStatus = !sessao ? 'Aguardando' : turnoAtivo ? 'Em campo' : 'Encerrado';
   var turnoCorFundo = turnoAtivo ? '#185FA5' : '#1a1a18';
 
-  // ── Composição ───────────────────────────────────
+  // ── Composição (sempre visível) ──────────────────
   var membrosHtml = membros.length
-    ? membros.map(function(c, i){
-        var ini = (c.nome||'U').charAt(0).toUpperCase();
-        var pos = 'T'+(i+1);
-        return '<div style="display:flex;align-items:center;gap:10px;padding:.6rem 0;border-bottom:.5px solid #f5f5f3">'
-          +'<div style="width:32px;height:32px;border-radius:50%;background:#e0dfd8;color:#555;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0">'+ini+'</div>'
-          +'<span style="font-size:10px;color:#aaa;width:18px">'+pos+'</span>'
-          +'<div style="flex:1">'
-          +'<div style="font-size:13px;font-weight:600">'+c.nome+'</div>'
-          +'<div style="font-size:11px;color:#888">RE: '+(c.re||'—')+' | '+(c.cargo||'')+'</div>'
-          +'</div></div>';
+    ? membros.map(function(c,i){
+        var ini=(c.nome||'U').charAt(0).toUpperCase();
+        return '<div style="display:flex;align-items:center;gap:10px;padding:.5rem 0;border-bottom:.5px solid #f5f5f3">'
+          +'<div style="width:30px;height:30px;border-radius:50%;background:'+(escalaConfirmada?'#EAF3DE':'#e0dfd8')
+          +';color:'+(escalaConfirmada?'#3B6D11':'#555')+';display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">'+ini+'</div>'
+          +'<span style="font-size:10px;color:#aaa;width:18px">T'+(i+1)+'</span>'
+          +'<div style="flex:1"><div style="font-size:13px;font-weight:600">'+c.nome+'</div>'
+          +'<div style="font-size:11px;color:#888">RE '+(c.re||'—')+' | '+(c.cargo||'')+'</div></div>'
+          +'</div>';
       }).join('')
-    : '<div style="font-size:12px;color:#aaa;padding:.5rem 0">Nenhum membro cadastrado nesta equipe</div>';
+    : '<div style="font-size:12px;color:#aaa;padding:.5rem 0">Sem membros escalados</div>';
 
-  // ── Cronômetro (se turno ativo) ──────────────────
+  // ── Cronômetro ───────────────────────────────────
   var cronometroHtml = '';
   if(turnoAtivo && sessao.inicio_ts){
-    var diff = Math.floor((Date.now() - new Date(sessao.inicio_ts).getTime())/1000);
-    var hh = String(Math.floor(diff/3600)).padStart(2,'0');
-    var mm = String(Math.floor((diff%3600)/60)).padStart(2,'0');
-    var ss = String(diff%60).padStart(2,'0');
+    var diff = Math.floor((Date.now()-new Date(sessao.inicio_ts).getTime())/1000);
+    var hh=String(Math.floor(diff/3600)).padStart(2,'0');
+    var mm=String(Math.floor((diff%3600)/60)).padStart(2,'0');
+    var ss=String(diff%60).padStart(2,'0');
     var emAlmoco = !!_plptAlmocoInicioTs;
-
-    cronometroHtml = '<div style="background:'+( emAlmoco?'#854F0B':turnoCorFundo)+';color:#fff;padding:1.25rem;text-align:center;border-radius:12px;margin-bottom:1rem" id="plpt-cronometro-wrap">'
-      // Timer almoço (visível durante almoço)
+    cronometroHtml='<div style="background:'+(emAlmoco?'#854F0B':turnoCorFundo)+';color:#fff;padding:1.25rem;text-align:center;border-radius:12px;margin-bottom:1rem" id="plpt-cronometro-wrap">'
       +(emAlmoco
-        ? '<div id="plpt-almoco-timer" style="font-size:18px;font-weight:700;letter-spacing:1px;margin-bottom:.75rem">🍽 Calculando...</div>'
-        : '<div style="font-size:32px;font-weight:700;letter-spacing:2px" id="plpt-cronometro">'+hh+':'+mm+':'+ss+'</div>'
-          +'<div style="font-size:11px;opacity:.7;margin-top:4px">Tempo de turno</div>'
+        ?'<div id="plpt-almoco-timer" style="font-size:18px;font-weight:700;letter-spacing:1px;margin-bottom:.75rem">🍽 Calculando...</div>'
+        :'<div style="font-size:32px;font-weight:700;letter-spacing:2px" id="plpt-cronometro">'+hh+':'+mm+':'+ss+'</div>'
+         +'<div style="font-size:11px;opacity:.7;margin-top:4px">Tempo de turno</div>'
       )
       +'<div style="display:flex;gap:8px;margin-top:.75rem">'
       +(emAlmoco
-        ? '<button onclick="plptDiarioRetornarAlmoco()" style="flex:1;padding:.65rem;background:#fff;color:#854F0B;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">↩ Retornar do almoço</button>'
-        : '<button onclick="plptDiarioAlmoco()" style="flex:1;padding:.6rem;background:rgba(255,255,255,.15);color:#fff;border:.5px solid rgba(255,255,255,.3);border-radius:8px;cursor:pointer;font-size:13px">🍽 Almoço</button>'
-          +'<button onclick="plptDiarioEncerrar()" style="flex:1;padding:.6rem;background:#A32D2D;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">■ Encerrar</button>'
+        ?'<button onclick="plptDiarioRetornarAlmoco()" style="flex:1;padding:.65rem;background:#fff;color:#854F0B;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">↩ Retornar do almoço</button>'
+        :'<button onclick="plptDiarioAlmoco()" style="flex:1;padding:.6rem;background:rgba(255,255,255,.15);color:#fff;border:.5px solid rgba(255,255,255,.3);border-radius:8px;cursor:pointer;font-size:13px">🍽 Almoço</button>'
+         +'<button onclick="plptDiarioEncerrar()" style="flex:1;padding:.6rem;background:#A32D2D;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">■ Encerrar</button>'
       )
       +'</div></div>';
   }
 
-  // ── Projetos / Ordens do dia ────────────────────
-  var projetoAtivoId = _plptDiario.projetoAtivo ? _plptDiario.projetoAtivo.projeto_id : null;
-
-  var projsHtml = projs.length
-    ? projs.map(function(pj, i){
-        // Buscar dados reais do sot_projetos pelo projeto_id
-        var sot = (typeof sot_projetos!=='undefined'
-          ? sot_projetos.find(function(x){return x.id===pj.projeto_id;})
-          : null) || {};
-        // Código real: codigo_cliente > codigo > nome > fallback
-        var codReal = sot.codigo_cliente || sot.codigo || sot.numero_cadastro || sot.nome || '';
-        var isAtivo = pj.projeto_id === projetoAtivoId;
-        var stCor   = {pendente:'#888','em andamento':'#185FA5',concluido:'#3B6D11',cancelado:'#A32D2D'}[pj.status||'pendente']||'#888';
-        return '<div style="display:flex;align-items:center;gap:8px;padding:.6rem .75rem;'
-          +'background:'+(isAtivo?'#E8F0FE':'#fff')+';border:'+(isAtivo?'1.5px solid #185FA5':'.5px solid #e0dfd8')+';'
-          +'border-radius:8px;margin-bottom:6px;cursor:pointer"'
-          +' onclick="plptDiarioAbrirProjeto(\''+pj.projeto_id+'\')">'
-          +'<span style="background:#1a1a18;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">'+(i+1)+'</span>'
-          +'<div style="flex:1;min-width:0">'
-          +'<div style="font-size:12px;font-weight:700;color:#1a1a18">'+(codReal||'Projeto sem código')+'</div>'
-          +'<div style="font-size:11px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(sot.nome||pj.projeto_id||'')+(sot.tipo_servico?' · '+sot.tipo_servico:'')+'</div>'
-          +'</div>'
-          +'<span style="font-size:10px;color:'+stCor+';font-weight:600;flex-shrink:0">'+(pj.status||'Pendente')+'</span>'
-          +'<span style="font-size:12px;color:#aaa;margin-left:4px">▶</span>'
-          +'</div>';
-      }).join('')
-    : '<div style="background:#f9f9f7;border-radius:8px;padding:1rem;text-align:center;font-size:12px;color:#aaa">'
-      +(prog ? 'Nenhuma ordem programada para hoje' : 'Nenhuma programação PLPT encontrada para sua equipe na data de hoje.')
+  // ── Ações rápidas (só com turno ativo e projeto ativo) ──
+  var projAtivo = _plptDiario.projetoAtivo;
+  var acoesHtml = '';
+  if(turnoAtivo && projAtivo){
+    var projId = projAtivo.projeto_id;
+    acoesHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem">'
+      +'<button onclick="plptAbrirAtividades(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#EBF4FD;color:#185FA5;border:.5px solid #185FA5;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">⚡ Atividades</button>'
+      +'<button onclick="plptAbrirMateriais(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D11;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">📦 Materiais</button>'
+      +'<button onclick="plptAbrirBaixaMateriais(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#f9f9f7;color:#555;border:.5px solid #e0dfd8;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">📋 Baixa de materiais</button>'
       +'</div>';
+  }
 
-  // ── Histórico simplificado ──────────────────────
-  var histHtml = '';
-  if(sessao && sessao.eventos && sessao.eventos.length){
-    histHtml = '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
+  // ── Projetos/OS ──────────────────────────────────
+  var compHoje = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===hoje;});
+  var projIdsComp=[];try{projIdsComp=JSON.parse((compHoje&&compHoje.projeto_ids)||'[]');}catch(e){}
+  var projsComp=projIdsComp.map(function(pid){
+    return (typeof sot_projetos!=='undefined'?sot_projetos.find(function(x){return x.id===pid;}):null)
+        || (typeof projetos!=='undefined'?projetos.find(function(x){return x.id===pid;}):null);
+  }).filter(Boolean);
+  var listaOS = prog ? projs : projsComp.map(function(p){return {projeto_id:p.id,status:'pendente'};});
+  var projsHtmlLocal = listaOS.map(function(pj,i){
+    var sot=(typeof sot_projetos!=='undefined'?sot_projetos.find(function(x){return x.id===pj.projeto_id;}):null)||{};
+    var codReal=sot.codigo_cliente||sot.codigo||sot.numero_cadastro||sot.nome||pj.projeto_id||'Projeto';
+    var isAtivo=projAtivo&&pj.projeto_id===projAtivo.projeto_id;
+    var stCor={pendente:'#888','em andamento':'#185FA5',concluido:'#3B6D11',cancelado:'#A32D2D'}[pj.status||'pendente']||'#888';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:.6rem .75rem;'
+      +'background:'+(isAtivo?'#E8F0FE':'#fff')+';border:'+(isAtivo?'1.5px solid #185FA5':'.5px solid #e0dfd8')+';'
+      +'border-radius:8px;margin-bottom:6px;cursor:pointer"'
+      +' onclick="plptDiarioAbrirProjeto(\''+pj.projeto_id+'\')">'
+      +'<span style="background:#1a1a18;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">'+(i+1)+'</span>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:12px;font-weight:700">'+(codReal)+'</div>'
+      +'<div style="font-size:11px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(sot.nome||'')+(sot.tipo_servico?' · '+sot.tipo_servico:'')+'</div>'
+      +'</div>'
+      +(isAtivo?'<span style="font-size:10px;color:#185FA5;font-weight:700">Em andamento</span>':'')
+      +'<span style="font-size:10px;color:'+stCor+';font-weight:600;flex-shrink:0;margin-left:4px">'+(pj.status||'Pendente')+'</span>'
+      +'<span style="font-size:12px;color:#aaa;margin-left:4px">▶</span>'
+      +'</div>';
+  }).join('') || '<div style="font-size:12px;color:#aaa;padding:1rem;text-align:center">Nenhum projeto programado para hoje</div>';
+
+  // ── Histórico ────────────────────────────────────
+  var histHtml='';
+  if(sessao&&sessao.eventos&&sessao.eventos.length){
+    histHtml='<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
       +'<div style="font-size:12px;font-weight:700;color:#555;margin-bottom:.5rem">Histórico do turno</div>'
       +sessao.eventos.map(function(ev){
-        // Suporta formato {hora,desc} e {tipo,ts}
-        var hora = ev.hora || (ev.ts ? new Date(ev.ts).toTimeString().slice(0,5) : '—');
-        var desc = ev.desc || ev.tipo || ev.obs || '—';
+        var hora=ev.hora||(ev.ts?new Date(ev.ts).toTimeString().slice(0,5):'—');
+        var desc=ev.desc||ev.tipo||ev.obs||'—';
         return '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px">'
           +'<span style="color:#185FA5;font-weight:600;flex-shrink:0">'+hora+'</span>'
-          +'<span>'+desc+'</span>'
-          +'</div>';
+          +'<span>'+desc+'</span></div>';
       }).join('')
       +'</div>';
   }
 
-  // ── Montar tela ─────────────────────────────────
-  pg.innerHTML = '<div style="max-width:600px;margin:0 auto;padding:1rem">'
+  // ── Montar tela ──────────────────────────────────
+  pg.innerHTML='<div style="max-width:600px;margin:0 auto;padding:1rem">'
 
-    // Header
-    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.25rem">'
+    // Header com tipo de equipe e veículo
+    +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:.75rem 1rem;margin-bottom:.75rem">'
+    +'<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">'
     +'<div>'
     +'<div style="font-size:16px;font-weight:700">'+eq.nome+'</div>'
-    +'<div style="font-size:11px;color:#888">'+(eq.tipo||'EQUIPE PLPT')+' • '+fmtD(hoje)+'</div>'
+    +'<div style="font-size:11px;color:#888;margin-top:1px">'+(eq.tipo||eq.cargo||'EQUIPE PLPT')+' • '+fmtD(hoje)+'</div>'
     +'</div>'
-    +'<span style="font-size:11px;color:#185FA5;font-weight:600">'+turnoStatus+'</span>'
+    +'<span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;background:'+(turnoAtivo?'#EBF4FD':'#f9f9f7')+';color:'+(turnoAtivo?'#185FA5':'#888')+'">'+turnoStatus+'</span>'
+    +'</div>'
+    +'<div style="display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:.5px solid #f5f5f3">'
+    +'<div style="font-size:11px"><span style="color:#888">Veículo: </span><span style="font-weight:600">'+veicInfo+'</span></div>'
+    +(prog&&prog.encarregado_nome?'<div style="font-size:11px"><span style="color:#888">Enc.: </span><span style="font-weight:600">'+prog.encarregado_nome+'</span></div>':'')
+    +'</div>'
     +'</div>'
 
-    // Cronômetro (só se turno ativo)
+    // Cronômetro
     + cronometroHtml
 
-    // Botão Iniciar dia (se não tem sessão e escala confirmada)
-    +(!sessao && temEscala && _plptDiario.composConfirm
-      ? '<button onclick="dbAbrirModalTurno()" style="width:100%;padding:.9rem;background:#1a1a18;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:1rem">▶ Iniciar novo dia</button>'
-      : ''
+    // Botão Iniciar dia
+    +(!sessao&&temEscala&&escalaConfirmada
+      ?'<button onclick="dbAbrirModalTurno()" style="width:100%;padding:.9rem;background:#1a1a18;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:1rem">▶ Iniciar novo dia</button>'
+      :''
     )
 
     // Aviso sem programação
     +(!temEscala
-      ? '<div style="background:#FFF3E0;border:.5px solid #F9A825;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#7B4F00;margin-bottom:1rem">⚠ Esta equipe não possui programação para hoje. Contate o supervisor.</div>'
-      : escalaConfirmada
-        ? '<div style="background:#EAF3DE;border:.5px solid #3B6D11;border-radius:10px;padding:.5rem 1rem;font-size:12px;color:#3B6D11;margin-bottom:.75rem">✅ Escala confirmada para hoje.</div>'
-        : '<div style="background:#EBF4FD;border:.5px solid #185FA5;border-radius:10px;padding:.5rem 1rem;font-size:12px;color:#185FA5;margin-bottom:.75rem">📋 Equipe programada — aguardando confirmação.</div>'
+      ?'<div style="background:#FFF3E0;border:.5px solid #F9A825;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#7B4F00;margin-bottom:1rem">⚠ Sem programação para hoje. Contate o supervisor.</div>'
+      :''
     )
 
-    // Composição
-    +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
+    // Composição — sempre visível
+    +'<div style="background:#fff;border:.5px solid '+(escalaConfirmada?'#3B6D11':'#e0dfd8')+';border-radius:12px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">'
-    +'<span style="font-size:12px;font-weight:700;color:#555">Composição</span>'
+    +'<span style="font-size:12px;font-weight:700;color:#555">Composição da Equipe</span>'
     +(escalaConfirmada
-      ? '<span style="font-size:10px;color:#3B6D11">✓ Confirmada</span>'
-      : temEscala
-        ? '<span style="font-size:10px;color:#854F0B">Aguardando confirmação</span>'
-        : '<span style="font-size:10px;color:#A32D2D">Sem escala</span>'
+      ?'<span style="font-size:10px;color:#3B6D11;font-weight:600;background:#EAF3DE;padding:2px 8px;border-radius:4px">✓ Confirmada</span>'
+      :temEscala
+        ?'<span style="font-size:10px;color:#854F0B">Aguardando confirmação</span>'
+        :'<span style="font-size:10px;color:#A32D2D">Sem escala</span>'
     )
     +'</div>'
     + membrosHtml
-    +(temEscala && !escalaConfirmada && !sessao
-      ? '<div style="display:flex;gap:8px;margin-top:.75rem">'
-        +'<button onclick="diarioConfirmarEscala()" style="flex:1;padding:.6rem;background:#1a1a18;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">✓ Confirmar escala</button>'
-        +'<button onclick="plptDiarioReportarComposicao()" style="padding:.6rem 1rem;background:#fff;color:#A32D2D;border:.5px solid #A32D2D;border-radius:8px;cursor:pointer;font-size:12px">⚠ Reportar</button>'
-        +'</div>'
-      : ''
+    +(temEscala&&!escalaConfirmada&&!sessao
+      ?'<div style="display:flex;gap:8px;margin-top:.75rem">'
+       +'<button onclick="diarioConfirmarEscala()" style="flex:1;padding:.65rem;background:#1a1a18;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">✓ Confirmar escala</button>'
+       +'<button onclick="plptDiarioReportarComposicao()" style="padding:.65rem 1rem;background:#fff;color:#A32D2D;border:.5px solid #A32D2D;border-radius:8px;cursor:pointer;font-size:12px">⚠ Reportar</button>'
+       +'</div>'
+      :''
     )
     +'</div>'
 
-    // Projetos/OS do dia — mostrar se há prog PLPT ou projetos na composição
-    + (function(){
-        // Projetos da composicao_dia desta equipe
-        var compHoje = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===hoje;});
-        var projIdsComp = [];
-        try{ projIdsComp = JSON.parse((compHoje&&compHoje.projeto_ids)||'[]'); }catch(e){}
-        var projsComp = projIdsComp.map(function(pid){
-          return sot_projetos.find(function(x){return x.id===pid;})
-              || (typeof projetos!=='undefined'?projetos.find(function(x){return x.id===pid;}):null);
-        }).filter(Boolean);
+    // Ações rápidas (Atividades / Materiais / Baixa)
+    + acoesHtml
 
-        var listaOS = prog ? projs : projsComp;
-        var titulo  = prog ? 'Ordens do dia' : 'Projetos vinculados';
-
-        if(!sessao) return ''; // só mostra OS depois que o turno iniciou
-        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
-          +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
-          +'<span style="font-size:12px;font-weight:700;color:#555">'+titulo+'</span>'
-          +'<span style="font-size:10px;color:#888">'+listaOS.length+' item(s)</span>'
-          +'</div>'
-          + (listaOS.length ? projsHtml
-            : '<div style="font-size:12px;color:#aaa;text-align:center;padding:.75rem">'
-              +'Nenhuma OS ou projeto programado.<br>'
-              +'<span style="font-size:11px">O supervisor pode vincular projetos na Programação de Projetos.</span>'
-              +'</div>'
-          )
-          +'</div>';
-      })()
+    // Projetos/OS
+    +(sessao
+      ?'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
+       +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
+       +'<span style="font-size:12px;font-weight:700;color:#555">Projetos do dia</span>'
+       +'<span style="font-size:10px;color:#888">'+listaOS.length+' projeto(s)</span>'
+       +'</div>'
+       +projsHtmlLocal
+       +'</div>'
+      :''
+    )
 
     // Histórico
     + histHtml
 
     +'</div>';
 
-  // Iniciar cronômetro se turno ativo
   if(turnoAtivo){
     if(_plptAlmocoInicioTs) _plptIniciarTimerAlmoco();
     else _plptIniciarCronometro();
@@ -8164,19 +8167,57 @@ function plptDiarioConfirmarComposicao(){
 }
 
 function diarioConfirmarEscala(){
-  var hoje = dataHojeLocal();
-  var eq   = _dbEquipe; if(!eq) return;
-  var comp = composicao_dia.find(function(c){
-    return c.equipe_id===eq.id && c.data===hoje && !c._local;
+  var hoje=dataHojeLocal();
+  var eq=_dbEquipe; if(!eq) return;
+  var comp=composicao_dia.find(function(c){
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eq.id&&(cd===hoje||c.data===hoje);
   });
   if(!comp){ progShowToast('⚠ Nenhuma composição encontrada'); return; }
-  comp.confirmada = true;
-  // Liberar fluxo do diário
-  _plptDiario.composConfirm = true;
-  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  comp.confirmada=true;
+  _plptDiario.composConfirm=true;
+  if(!DEMO){
+    var isLocal=comp._local||!comp.id||comp.id.startsWith('local_');
+    if(isLocal){
+      sbInsert('composicao_dia',{equipe_id:eq.id,data:hoje,
+        colaborador_ids:comp.colaborador_ids,turno:'Manha',confirmada:true})
+        .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
+    } else {
+      sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+    }
+  }
   progShowToast('✅ Escala confirmada!');
   renderDiarioPlpt();
 }
+
+function plptAbrirAtividades(projId){
+  var pj=_plptDiario.projetos.find(function(p){return p.projeto_id===projId;})
+    ||(_plptDiario.projetoAtivo&&_plptDiario.projetoAtivo.projeto_id===projId?_plptDiario.projetoAtivo:null);
+  if(!pj){pj={projeto_id:projId,status:'em andamento',_timeline:[]};_plptDiario.projetoAtivo=pj;}
+  _plptDiario.projetoAtivo=pj;
+  pj._abaAtiva='atividades';
+  _plptRenderProjetoDetalhe(projId);
+}
+
+function plptAbrirMateriais(projId){
+  var pj=_plptDiario.projetos.find(function(p){return p.projeto_id===projId;})
+    ||(_plptDiario.projetoAtivo&&_plptDiario.projetoAtivo.projeto_id===projId?_plptDiario.projetoAtivo:null);
+  if(!pj){pj={projeto_id:projId,status:'em andamento',_timeline:[]};_plptDiario.projetoAtivo=pj;}
+  _plptDiario.projetoAtivo=pj;
+  pj._abaAtiva='materiais';
+  _plptRenderProjetoDetalhe(projId);
+}
+
+function plptAbrirBaixaMateriais(projId){
+  var pj=_plptDiario.projetos.find(function(p){return p.projeto_id===projId;})
+    ||(_plptDiario.projetoAtivo&&_plptDiario.projetoAtivo.projeto_id===projId?_plptDiario.projetoAtivo:null);
+  if(!pj){pj={projeto_id:projId,status:'em andamento',_timeline:[]};_plptDiario.projetoAtivo=pj;}
+  _plptDiario.projetoAtivo=pj;
+  pj._abaAtiva='baixa';
+  _plptRenderProjetoDetalhe(projId);
+}
+
+
 
 function plptDiarioReportarComposicao(){
   setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
@@ -8510,14 +8551,49 @@ function _plptRenderProjetoDetalhe(projId){
       }).join('')
     : '<div style="font-size:12px;color:#aaa;padding:1rem;text-align:center">Nenhum documento cadastrado neste projeto</div>';
 
+  // ── Aba: Baixa de Materiais (Viabilidade + Executada) ───
+  var baixaSubAba = pj._baixaSubAba||'viabilidade';
+  var baixaHtml = '<div>'
+    +'<div style="display:flex;border-bottom:.5px solid #e0dfd8;margin-bottom:.75rem">'
+    +'<button onclick="plptBaixaSubAba(\''+projId+'\',\'viabilidade\')" style="flex:1;padding:.5rem;border:none;border-bottom:2px solid '+(baixaSubAba==='viabilidade'?'#185FA5':'transparent')+';background:none;color:'+(baixaSubAba==='viabilidade'?'#185FA5':'#888')+';font-size:12px;font-weight:'+(baixaSubAba==='viabilidade'?'700':'500')+';cursor:pointer">📋 Viabilidade</button>'
+    +'<button onclick="plptBaixaSubAba(\''+projId+'\',\'executada\')" style="flex:1;padding:.5rem;border:none;border-bottom:2px solid '+(baixaSubAba==='executada'?'#3B6D11':'transparent')+';background:none;color:'+(baixaSubAba==='executada'?'#3B6D11':'#888')+';font-size:12px;font-weight:'+(baixaSubAba==='executada'?'700':'500')+';cursor:pointer">✅ Executada</button>'
+    +'</div>'
+    +(mats.length
+      ? mats.map(function(m,i){
+          var viab  = m._qtdViab  !==undefined ? m._qtdViab  : (m.qtd_viabilizada||0);
+          var aplic = m._qtdAplic !==undefined ? m._qtdAplic : (m.qtd_aplicada||0);
+          var previsto = m.qtd||m.qtd_prevista||0;
+          var campo = baixaSubAba==='viabilidade' ? viab : aplic;
+          var corBotao = baixaSubAba==='viabilidade' ? '#185FA5' : '#3B6D11';
+          var bgBotao  = baixaSubAba==='viabilidade' ? '#EBF4FD' : '#EAF3DE';
+          return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .75rem;margin-bottom:6px">'
+            +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:12px;font-weight:600">'+(m.descricao||m.codigo_sap||'—')+'</div>'
+            +'<div style="font-size:10px;color:#888">'+(m.codigo_sap||'—')+' · Prev: '+(previsto||0)+' '+(m.unidade||'UN')+'</div>'
+            +'</div>'
+            +'<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
+            +'<input type="number" min="0" max="'+previsto+'" value="'+(campo||0)+'" '
+            +'id="baixa-'+baixaSubAba+'-'+i+'" '
+            +'style="width:60px;padding:4px 6px;border:.5px solid #e0dfd8;border-radius:6px;font-size:14px;text-align:center"/>'
+            +'<span style="font-size:10px;color:#888">'+(m.unidade||'UN')+'</span>'
+            +'<button onclick="plptSalvarBaixa(\''+projId+'\','+i+',\''+baixaSubAba+'\')" '
+            +'style="padding:4px 10px;background:'+corBotao+';color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">✓</button>'
+            +'</div></div></div>';
+        }).join('')
+      : '<div style="font-size:12px;color:#aaa;padding:1rem;text-align:center">Nenhum material neste projeto</div>'
+    )
+    +'</div>';
+
   // ── Selector de aba ──────────────────────────────
-  function btnAba(id, label, icon){
-    var ativo = aba===id;
-    return '<button onclick="plptSetAba(\''+projId+'\',\''+id+'\')" style="flex:1;padding:.5rem 4px;border:none;border-bottom:2px solid '+(ativo?'#185FA5':'transparent')+';background:none;color:'+(ativo?'#185FA5':'#888')+';font-size:11px;font-weight:'+(ativo?'700':'500')+';cursor:pointer">'+icon+' '+label+'</button>';
+  function btnAba(id,label,icon){
+    var ativo=aba===id;
+    return '<button onclick="plptSetAba(\''+projId+'\',\''+id+'\')" style="flex:1;padding:.45rem 2px;border:none;border-bottom:2px solid '+(ativo?'#185FA5':'transparent')+';background:none;color:'+(ativo?'#185FA5':'#888')+';font-size:10px;font-weight:'+(ativo?'700':'500')+';cursor:pointer">'+icon+'<br>'+label+'</button>';
   }
 
   var abaContent = aba==='atividades' ? ativsHtml
     : aba==='materiais'  ? matsHtml
+    : aba==='baixa'      ? baixaHtml
     : aba==='documentos' ? docsHtml
     : timelineHtml;
 
@@ -8536,10 +8612,11 @@ function _plptRenderProjetoDetalhe(projId){
 
     // Abas
     +'<div style="display:flex;border-bottom:1px solid #e0dfd8;margin-bottom:.75rem">'
-    +btnAba('timeline',  'Status',     '📍')
-    +btnAba('atividades','Atividades', '⚡')
-    +btnAba('materiais', 'Materiais',  '📦')
-    +btnAba('documentos','Documentos', '📄')
+    +btnAba('timeline',  'Status',    '📍')
+    +btnAba('atividades','Atividades','⚡')
+    +btnAba('materiais', 'Materiais', '📦')
+    +btnAba('baixa',     'Baixa',     '✏️')
+    +btnAba('documentos','Docs',      '📄')
     +'</div>'
 
     // Conteúdo da aba
@@ -8560,6 +8637,25 @@ function _plptRenderProjetoDetalhe(projId){
       : '')
 
     +'</div>';
+}
+
+function plptBaixaSubAba(projId, subAba){
+  if(_plptDiario.projetoAtivo) _plptDiario.projetoAtivo._baixaSubAba=subAba;
+  _plptRenderProjetoDetalhe(projId);
+}
+
+function plptSalvarBaixa(projId, idx, tipo){
+  var pj = _plptDiario.projetoAtivo; if(!pj) return;
+  var mat = (pj._materiais||[])[idx]; if(!mat) return;
+  var val = parseFloat((document.getElementById('baixa-'+tipo+'-'+idx)||{}).value)||0;
+  if(tipo==='viabilidade'){
+    mat._qtdViab = val;
+    if(!DEMO&&mat.id) sbUpdate('sot_materiais',{qtd_viabilizada:val},'id=eq.'+mat.id);
+  } else {
+    mat._qtdAplic = val;
+    if(!DEMO&&mat.id) sbUpdate('sot_materiais',{qtd_aplicada:val},'id=eq.'+mat.id);
+  }
+  progShowToast('✅ '+( tipo==='viabilidade'?'Viabilidade':'Executada')+' salva: '+val+' '+(mat.unidade||'UN'));
 }
 
 function plptSetAba(projId, aba){
@@ -9975,6 +10071,22 @@ function dbSalvarObs(){
 
 function dbRegistrarAguardando(){
   if(!_dbSessao||!_dbSessao.login_ts){alert('Inicie o turno primeiro.');return;}
+
+  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:380px">'
+    +'<h3 style="margin-bottom:.75rem">⏳ Aguardando</h3>'
+    +'<p style="font-size:12px;color:#888;margin-bottom:.75rem">Selecione o motivo:</p>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:.75rem">'
+    +DB_MOTIVOS_AGUARDO.map(function(m,i){
+      return '<button id="db-ag-btn-'+i+'" style="padding:10px 12px;border-radius:8px;'
+        +'background:#f9f9f7;border:.5px solid #e0dfd8;cursor:pointer;font-size:13px;text-align:left">'+m+'</button>';
+    }).join('')
+    +'</div>'
+    +'<input id="db-ag-outro" class="inp" placeholder="Outro motivo..." style="width:100%;margin-bottom:.75rem"/>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="db-ag-confirmar" style="flex:1">Registrar</button>'
+    +'</div></div></div>';
   setModal(html);
 
   setTimeout(function(){
@@ -15349,7 +15461,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.5.7',
+  numero: '3.6.2',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
