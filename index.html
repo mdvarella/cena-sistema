@@ -1500,6 +1500,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
           <option value="">Todos contratos</option>
         </select>
         <button class="btn btn-pri" onclick="progAutoEscalarTodas()">⚡ Auto-escalar todas</button>
+        <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11">💾 Salvar tudo</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B" title="Verificar colaboradores sem equipe nem status">⚠ Sem escala</button>
         <button class="btn" onclick="enviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366">📲 WhatsApp</button>
       </div>
@@ -15277,7 +15278,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.3.5',
+  numero: '3.3.6',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -15932,7 +15933,26 @@ function progRenderEquipeRow(eq, data){
     +'</div>';
 
   function renderSlot(col, pos, eqId){
-    var slotLabel = pos===0?'T1':pos===1?'T2':'Folg';
+    var slotLabel = pos===0?'T1':pos===1?'T2':'T3';
+    // Bloqueado quando programada
+    if(confirmada){
+      if(!col){
+        return '<td style="padding:4px 8px">'
+          +'<div style="border:1.5px solid #e0dfd8;border-radius:6px;padding:5px 8px;min-width:110px;'
+          +'color:#bbb;font-size:11px;text-align:center;background:#f5f5f3">'+slotLabel+' — vazio</div></td>';
+      }
+      var stInfo = PROG_STATUS[_progStatus[col.id]||'disponivel']||PROG_STATUS.disponivel;
+      var partes=(col.nome||'').split(' ');
+      var nomeExib=partes.length>=3?partes[0]+' '+partes[1]+' '+partes[partes.length-1]:col.nome;
+      return '<td style="padding:4px 8px">'
+        +'<div style="background:'+stInfo.bg+';border:.5px solid '+stInfo.cor+'44;border-radius:6px;'
+        +'padding:4px 8px;min-width:110px;font-size:11px;position:relative;opacity:.85">'
+        +'<div style="position:absolute;top:2px;right:4px;font-size:10px;color:#3B6D11" title="Programada">🔒</div>'
+        +'<div style="font-weight:600;color:'+stInfo.cor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px;font-size:11px;padding-right:14px">'+nomeExib+'</div>'
+        +'<div style="font-size:9px;color:#888;margin-top:1px">RE '+(col.re||'—')+'</div>'
+        +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">'+(col.cargo||'')+'</div>'
+        +'</div></td>';
+    }
     if(!col){
       return '<td style="padding:4px 8px">'
         +'<div class="prog-slot prog-slot-vazio" id="slot-vz-'+eqId+'-'+pos+'" '
@@ -15989,15 +16009,78 @@ function progRenderEquipeRow(eq, data){
     +renderSlot(slots[0],0,eq.id)
     +renderSlot(slots[1],1,eq.id)
     +renderSlot(slots[2],2,eq.id)
-    +'<td style="padding:4px 6px;min-width:120px;vertical-align:top" id="prog-veic-cell-'+eq.id+'">'+progRenderVeiculoCell(eq,data)+'</td>'
+    +'<td style="padding:4px 6px;min-width:120px;vertical-align:top" id="prog-veic-cell-'+eq.id+'">'
+    +(confirmada ? progRenderVeiculoCellBloqueado(eq,data) : progRenderVeiculoCell(eq,data))
+    +'</td>'
     +'<td style="padding:4px 6px;vertical-align:top">'+projHtml+'</td>'
     +'<td style="padding:4px 8px;text-align:center;vertical-align:top">'
     +'<span style="display:inline-block;background:'+stBg+';color:'+stTxt+';border-radius:6px;font-size:10px;font-weight:600;padding:2px 6px">'+st+'</span></td>'
     +'<td style="padding:4px 6px;vertical-align:top;display:flex;flex-direction:column;gap:3px">'
-    +'<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
-    +'<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
+    +(confirmada
+      ? '<button class="btn btn-sm" onclick="progDesprogramarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap;color:#A32D2D;border-color:#A32D2D">↩ Desprogramar</button>'
+      : '<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
+        +'<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
+    )
     +'</td>'
     +'</tr>';
+}
+
+function progSalvarTodas(){
+  var data = progGetData();
+  var cid  = progGetCont();
+  var eqs  = equipes.filter(function(e){
+    return e.status==='Ativo' && (!cid||e.contrato_id===cid);
+  });
+  var salvos=0, pulados=0;
+  eqs.forEach(function(eq){
+    var comp = composicao_dia.find(function(c){
+      return c.equipe_id===eq.id && c.data===data && !c._local;
+    });
+    if(!comp){ pulados++; return; }
+    var ids = [];
+    try{ ids=JSON.parse(comp.colaborador_ids||'[]').filter(Boolean); }catch(e){}
+    if(!ids.length){ pulados++; return; }
+    if(comp.confirmada){ pulados++; return; } // já salva
+    comp.confirmada = true;
+    if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+    salvos++;
+  });
+  progRenderQuadro();
+  progShowToast('✅ '+salvos+' equipe(s) programada(s)'+(pulados?' · '+pulados+' sem escala ou já programadas':''));
+}
+
+function progDesprogramarEquipe(eqId){
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:380px">'
+    +'<h3 style="margin-bottom:.75rem">↩ Desprogramar equipe</h3>'
+    +'<p style="font-size:13px;color:#555;margin-bottom:1rem">A equipe voltará ao status <b>Completa</b> e poderá ter integrantes e veículo alterados.<br>Deseja continuar?</p>'
+    +'<div class="ma">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn" onclick="progConfirmarDesprogramar(\''+eqId+'\')" style="color:#A32D2D;border-color:#A32D2D">↩ Confirmar desprogramação</button>'
+    +'</div></div></div>');
+}
+
+function progConfirmarDesprogramar(eqId){
+  var data = progGetData();
+  var comp = composicao_dia.find(function(c){
+    return c.equipe_id===eqId && c.data===data;
+  });
+  if(comp){
+    comp.confirmada = false;
+    if(!DEMO && !comp._local) sbUpdate('composicao_dia',{confirmada:false},'id=eq.'+comp.id);
+  }
+  closeModal();
+  progRenderQuadro();
+  progShowToast('↩ Equipe desprogramada — alterações liberadas');
+}
+
+function progRenderVeiculoCellBloqueado(eq, data){
+  var veic = progGetVeiculo(eq.id, data);
+  if(!veic) return '<div style="font-size:11px;color:#bbb;padding:4px 6px">🔒 Sem veículo</div>';
+  return '<div style="display:flex;flex-direction:column;gap:2px;padding:2px 4px">'
+    +'<div style="font-size:12px;font-weight:700;color:#555;font-family:monospace">🚗 '+veic.placa+'</div>'
+    +'<div style="font-size:10px;color:#888">'+veic.modelo+'</div>'
+    +'<div style="font-size:9px;color:#bbb;display:flex;align-items:center;gap:3px">🔒 bloqueado</div>'
+    +'</div>';
 }
 
 function progSalvarEquipe(eqId){
