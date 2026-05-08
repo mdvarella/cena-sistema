@@ -15279,7 +15279,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.5.3',
+  numero: '3.5.5',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -23694,42 +23694,96 @@ function ppSalvarEquipe(eqId){
 }
 
 function ppRenderPainelDisp(eqs, data, cid){
-  var STATUS_BLOQ=['ferias','afastado','treinamento','falta'];
-  // IDs já escalados
-  var emEscala={};
-  composicao_dia.forEach(function(c){
-    if(c.data!==data) return;
-    parseJsonField(c.colaborador_ids,[]).forEach(function(id){if(id)emEscala[id]=true;});
-  });
+  // Usar _progStatus (compartilhado com Prog. Equipes) para manter status sincronizado
+  var statusRef = (typeof _progStatus!=='undefined' && Object.keys(_progStatus).length) ? _progStatus : _ppStatus;
 
-  var disp=colaboradores.filter(function(c){
-    if(c.contrato_id!==cid||c.ativo===false||c.vinculo!=='campo') return false;
-    if(STATUS_BLOQ.indexOf(_ppStatus[c.id]||'disponivel')>=0) return false;
-    if(emEscala[c.id]) return false;
+  var cols = colaboradores.filter(function(c){
+    if(c.ativo===false) return false;
+    if(cid && c.contrato_id!==cid) return false;
     return true;
   });
 
-  if(!disp.length) return '';
+  // Agrupar por status
+  var grupos_st = {};
+  Object.keys(PROG_STATUS).forEach(function(k){ grupos_st[k]=[]; });
+  cols.forEach(function(c){
+    var st = statusRef[c.id]||_ppStatus[c.id]||'disponivel';
+    if(grupos_st[st]) grupos_st[st].push(c);
+    else grupos_st['disponivel'].push(c);
+  });
 
-  return '<div style="margin-top:1rem">'
-    +'<div style="background:#3B6D11;color:#fff;padding:.6rem 1rem;border-radius:8px 8px 0 0;font-weight:700;font-size:13px">'
-    +'👥 Disponíveis — '+disp.length+' colaborador(es)</div>'
-    +'<div id="pp-pool" '
-    +'ondragover="ppDragOver(event)" ondrop="ppDropPool(event)" '
-    +'style="border:.5px solid #e0dfd8;border-top:none;border-radius:0 0 8px 8px;padding:.75rem 1rem;'
-    +'display:flex;flex-wrap:wrap;gap:6px;min-height:50px">'
-    +disp.map(function(c){
-      return '<div class="pp-slot pp-slot-pool" draggable="true" data-colab="'+c.id+'" '
-        +'ondragstart="ppDragStart(event,\''+c.id+'\',null)" '
-        +'ondragover="ppDragOver(event)" '
-        +'style="background:#EAF3DE;border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;cursor:grab;font-size:11px">'
-        +'<span style="font-weight:600;color:#3B6D11">'
-        +c.nome.split(' ').slice(0,2).join(' ')+'</span>'
-        +'<span style="font-size:9px;color:#888;display:block">'+(c.cargo||c.re||'')+'</span>'
-        +'<span style="position:absolute" style="cursor:pointer" onclick="ppToggleStatus(\''+c.id+'\')">⋮</span>'
+  // Quem já está escalado hoje
+  var escalados = {};
+  composicao_dia.forEach(function(comp){
+    var cd=(comp.data||'').split('T')[0];
+    if(cd!==data && comp.data!==data) return;
+    parseJsonField(comp.colaborador_ids,[]).filter(Boolean).forEach(function(id){ escalados[id]=true; });
+  });
+
+  var disp  = grupos_st['disponivel'];
+  var livres = disp.filter(function(c){ return !escalados[c.id]; });
+
+  // Badges de contagem por status
+  var countHtml = Object.keys(PROG_STATUS).map(function(k){
+    var n = grupos_st[k].length;
+    if(!n) return '';
+    var s = PROG_STATUS[k];
+    return '<div onclick="ppMostrarListaStatus(\''+k+'\')" '
+      +'style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:'+s.bg
+      +';border-radius:6px;font-size:11px;color:'+s.cor+';font-weight:600;cursor:pointer;'
+      +'border:.5px solid '+s.cor+'44">'+n+' '+s.label+' ▾</div>';
+  }).join('');
+
+  // Chips dos disponíveis
+  var livresHtml = livres.length
+    ? livres.map(function(c){
+        return '<div class="pp-colab-chip" draggable="true" id="pp-chip-'+c.id+'" '
+          +'data-colab="'+c.id+'" '
+          +'ondragstart="ppDragStart(event,\''+c.id+'\',null)" '
+          +'style="display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;'
+          +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;font-size:11px;cursor:grab;margin:2px">'
+          +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
+          +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||c.re||'')+'</span>'
+          +'</div>';
+      }).join('')
+    : '<div style="color:#aaa;font-size:12px">Todos escalados</div>';
+
+  return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;flex-wrap:wrap;gap:6px">'
+    +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados ('+livres.length+')</span>'
+    +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
+    +'</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
+    +'background:#f9f9f7;border-radius:6px;border:.5px solid #e0dfd8" '
+    +'id="pp-pool" ondragover="ppDragOver(event)" ondrop="ppDropPool(event)">'
+    +livresHtml
+    +'</div></div>';
+}
+
+function ppMostrarListaStatus(status){
+  var s = PROG_STATUS[status]||{label:status,cor:'#555',bg:'#f5f5f3'};
+  var statusRef = (typeof _progStatus!=='undefined' && Object.keys(_progStatus).length) ? _progStatus : _ppStatus;
+  var lista = colaboradores.filter(function(c){
+    return c.ativo!==false && (statusRef[c.id]||_ppStatus[c.id]||'disponivel')===status;
+  });
+  var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:400px">'
+    +'<h3 style="margin-bottom:.75rem;color:'+s.cor+'">'+s.label+' ('+lista.length+')</h3>'
+    +'<div style="max-height:350px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">'
+    +lista.map(function(c){
+      var info = (_ppStatusInfo||{})[c.id]||{};
+      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;'
+        +'background:'+s.bg+';border-radius:6px;font-size:12px">'
+        +'<div style="flex:1"><div style="font-weight:600;color:'+s.cor+'">'+c.nome+'</div>'
+        +'<div style="font-size:10px;color:#888">RE '+(c.re||'—')+' · '+(c.cargo||'')+' · Retorno: '+(info.retorno||'—')+'</div></div>'
+        +'<button onclick="ppDefinirStatus(\''+c.id+'\',\'disponivel\',null)" '
+        +'style="font-size:10px;padding:2px 6px;border-radius:4px;border:.5px solid #3B6D11;'
+        +'background:#EAF3DE;color:#3B6D11;cursor:pointer">Liberado</button>'
         +'</div>';
     }).join('')
+    +'</div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:.75rem">Fechar</button>'
     +'</div></div>';
+  setModal(html);
 }
 
 // ── Drag and Drop ─────────────────────────────────────────────
