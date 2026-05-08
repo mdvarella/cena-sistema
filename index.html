@@ -15279,7 +15279,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.5.1',
+  numero: '3.5.2',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -23401,11 +23401,10 @@ function progProjRenderQuadro(){
     return;
   }
 
-  // Equipes do contrato — usar equipes_disp (mesma fonte que composicao_dia)
-  var eqsSource = (typeof equipes_disp!=='undefined'&&equipes_disp.length) ? equipes_disp : equipes;
-  var eqs = eqsSource.filter(function(e){
+  // Equipes do contrato
+  var eqs = equipes.filter(function(e){
     if(e.status!=='Ativo'||e.contrato_id!==cid) return false;
-    if(_pp.tipoFiltro && (e.cargo||e.tipo||'')!==_pp.tipoFiltro) return false;
+    if(_pp.tipoFiltro && (e.tipo||e.cargo||'')!==_pp.tipoFiltro) return false;
     return true;
   });
 
@@ -23439,8 +23438,7 @@ function progProjRenderQuadro(){
 
   // Resumo — 6 indicadores iguais à Prog. Equipes
   // Usar TODAS as equipes do contrato (ignora filtro de tipo para o resumo)
-  var _eqsSrc = (typeof equipes_disp!=='undefined'&&equipes_disp.length) ? equipes_disp : equipes;
-  var todasEqsCid = _eqsSrc.filter(function(e){return e.status==='Ativo'&&e.contrato_id===cid;});
+  var todasEqsCid = equipes.filter(function(e){return e.status==='Ativo'&&e.contrato_id===cid;});
   var rTotal=0,rProgramadas=0,rCompletas=0,rIncompletas=0,rParadas=0;
   todasEqsCid.forEach(function(eq){
     rTotal++;
@@ -23524,7 +23522,10 @@ function progProjRenderQuadro(){
 }
 
 function ppRenderEquipeRow(eq, data, cid){
-  var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
+  var comp = composicao_dia.find(function(c){
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eq.id&&(cd===data||c.data===data);
+  });
   var allIds = comp ? parseJsonField(comp.colaborador_ids,[]) : [];   // inclui nulls
   var ids    = allIds.filter(Boolean);                                 // só UUIDs reais
   var STATUS_BLOQ = ['ferias','afastado','treinamento','falta'];
@@ -23630,9 +23631,12 @@ function ppAdicionarSlot(eqId){
 
 function ppSalvarEquipe(eqId){
   var data = progProjGetData() || dataHoje();
-  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  // Find robusto — comparar também só a parte da data (sem hora)
+  var comp = composicao_dia.find(function(c){
+    var cd = (c.data||'').split('T')[0];
+    return c.equipe_id===eqId && (cd===data || c.data===data);
+  });
 
-  // Criar composição se não existe
   if(!comp){
     comp = {id:'local_pp_'+eqId+'_'+data, equipe_id:eqId, data:data,
       colaborador_ids:JSON.stringify([]), confirmada:false, _local:true};
@@ -23645,29 +23649,21 @@ function ppSalvarEquipe(eqId){
     return;
   }
 
-  // Marcar como confirmada em memória imediatamente
   comp.confirmada = true;
   comp.colaborador_ids = JSON.stringify(ids);
 
   if(!DEMO){
     var isLocal = comp._local || !comp.id || comp.id.startsWith('local_');
     if(isLocal){
-      var payload = {equipe_id:eqId, data:data, colaborador_ids:JSON.stringify(ids),
-        turno:'Manha', confirmada:true};
-      sbInsert('composicao_dia', payload).then(function(r){
-        if(r && r[0] && r[0].id){
-          comp.id = r[0].id;
-          comp._local = false;
-        }
-      }).catch(function(err){
-        console.error('Erro ao salvar composição:', err);
-      });
+      sbInsert('composicao_dia',{equipe_id:eqId, data:data,
+        colaborador_ids:JSON.stringify(ids), turno:'Manha', confirmada:true})
+        .then(function(r){ if(r&&r[0]&&r[0].id){comp.id=r[0].id; comp._local=false;} })
+        .catch(function(e){ console.error('ppSalvarEquipe insert:', e); });
     } else {
       sbUpdate('composicao_dia',{confirmada:true, colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
     }
   }
 
-  // Re-renderizar imediatamente (já tem confirmada=true em memória)
   progProjRenderQuadro();
   progShowToast('✅ Equipe programada com sucesso');
 }
