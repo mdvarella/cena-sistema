@@ -15278,7 +15278,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.4.4',
+  numero: '3.4.5',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -23774,6 +23774,7 @@ function ppDropPool(event){
 
 function ppEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
   var data=progProjGetData();
+  var isUUID=function(id){return id&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);};
   if(!duplicar){
     composicao_dia.forEach(function(comp){
       if(comp.data!==data) return;
@@ -23787,24 +23788,34 @@ function ppEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
         ids=ids.map(function(id){return id===colabId?null:id;});
       }
       comp.colaborador_ids=JSON.stringify(ids);
-      if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      if(!DEMO&&isUUID(comp.id)) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
     });
   }
   var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   var ids=comp?parseJsonField(comp.colaborador_ids,[]):[];
-  while(ids.length<3) ids.push(null);
+  while(ids.length<=toPos) ids.push(null);
   ids[toPos]=colabId;
-  // Salvar projeto_ids junto
-  var projetoIds=JSON.stringify(_pp.projetoIds);
   if(comp){
     comp.colaborador_ids=JSON.stringify(ids);
-    comp.projeto_ids=projetoIds;
-    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids),projeto_ids:projetoIds},'id=eq.'+comp.id);
+    if(!DEMO){
+      if(isUUID(comp.id)){
+        sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      } else {
+        // Composição local — inserir no banco agora
+        var payload={equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false};
+        sbInsert('composicao_dia',payload).then(function(res){
+          if(res&&res[0]&&res[0].id){comp.id=res[0].id;comp._local=false;}
+        });
+      }
+    }
   } else {
-    var nova={id:'cd'+Date.now(),equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),projeto_ids:projetoIds,turno:'Manha',confirmada:false};
+    var nova={id:'local_pp_'+toEqId+'_'+data,equipe_id:toEqId,data:data,
+      colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false,_local:true};
     composicao_dia.push(nova);
-    if(!DEMO) sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),projeto_ids:projetoIds,turno:'Manha',confirmada:false})
-      .then(function(res){if(res&&res[0]&&res[0].id)nova.id=res[0].id;});
+    if(!DEMO){
+      sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
+        .then(function(res){if(res&&res[0]&&res[0].id){nova.id=res[0].id;nova._local=false;}});
+    }
   }
   progProjRenderQuadro();
 }
