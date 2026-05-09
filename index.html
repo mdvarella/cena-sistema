@@ -8853,57 +8853,115 @@ function plptAdicSubAba(projId, sub){
 
 function plptNovoAdicional(projId, tipo){
   var pj = _plptDiario.projetoAtivo; if(!pj) return;
-  var cid = usuarioLogado ? usuarioLogado.contrato_id : '';
-  var mats = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : []).filter(function(m){
-    if(!m.status||m.status==='Inativo') return false;
+  var sot = (typeof sot_projetos!=='undefined'?sot_projetos.find(function(x){return x.id===projId;}):null)||{};
+  var cid = sot.contrato_id || (usuarioLogado ? usuarioLogado.contrato_id : '');
+
+  // Catálogo conforme tipo
+  var catalogoMats = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : []).filter(function(m){
+    if(m.status==='Inativo') return false;
     if(!cid) return true;
     var cids=[]; try{cids=JSON.parse(m.contratos_ids||'[]');}catch(e){}
     return cids.indexOf('todos')>=0 || cids.indexOf(cid)>=0;
   });
-
-  var listOpts = mats.map(function(m){
-    return '<option value="'+m.id+'" data-sap="'+(m.codigo_sap||'')+'" data-un="'+(m.unidade||'UN')+'" data-desc="'+(m.descricao||'')+'">'+m.codigo_sap+' — '+m.descricao+'</option>';
-  }).join('');
-
+  var catalogoAtivs = (typeof servicos!=='undefined' ? servicos : []).filter(function(s){
+    if(!cid) return true;
+    return !s.contrato_id || s.contrato_id===cid;
+  });
+  var catalogo = tipo==='atividade' ? catalogoAtivs : catalogoMats;
   var titulo = tipo==='atividade' ? '⚡ Nova Atividade Adicional' : '📦 Novo Material Adicional';
+  var placeholder = tipo==='atividade' ? 'Buscar por descrição ou código...' : 'Buscar por descrição ou código SAP...';
+
+  // Serializar catálogo para uso no JS inline
+  window._adicCatalogo = catalogo;
+  window._adicTipo = tipo;
+
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:460px">'
+    +'<div class="modal" style="max-width:480px">'
     +'<h3 style="margin-bottom:.75rem">'+titulo+'</h3>'
-    +'<div style="margin-bottom:.75rem">'
-    +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Selecionar do catálogo</label>'
-    +'<select class="inp" id="adic-cat-sel" style="width:100%" onchange="plptAdicOnSelect()">'
-    +'<option value="">— Selecione ou preencha manualmente —</option>'
-    +listOpts
-    +'</select></div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">'
+
+    // Campo de busca
+    +'<div style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🔍 Buscar no catálogo</label>'
+    +'<input class="inp" id="adic-busca" style="width:100%" placeholder="'+placeholder+'" oninput="plptAdicFiltrar()"/>'
+    +'</div>'
+
+    // Lista de resultados
+    +'<div id="adic-resultados" style="max-height:180px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px;margin-bottom:.75rem;display:none"></div>'
+
+    // Campos
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.65rem;margin-bottom:.65rem">'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Descrição *</label>'
     +'<input class="inp" id="adic-desc" style="width:100%" placeholder="Descrição do item"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Código SAP</label>'
     +'<input class="inp" id="adic-sap" style="width:100%" placeholder="Ex: 1234567"/></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd *</label>'
     +'<input class="inp" id="adic-qtd" type="number" min="0" style="width:100%" value="1"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Unidade</label>'
     +'<input class="inp" id="adic-un" style="width:100%" value="UN"/></div>'
-    +'</div>'
-    +'<div style="margin-bottom:.75rem"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observações / Justificativa</label>'
-    +'<textarea class="inp" id="adic-obs" style="width:100%;height:70px;resize:none" placeholder="Ex: Material necessário por divergência no projeto..."></textarea></div>'
-    +'<div style="margin-bottom:1rem"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">📷 Fotos (base64)</label>'
+    +'</div></div>'
+    +'<div style="margin-bottom:.65rem"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observações / Justificativa</label>'
+    +'<textarea class="inp" id="adic-obs" style="width:100%;height:64px;resize:none" placeholder="Ex: Material necessário por divergência no projeto..."></textarea></div>'
+    +'<div style="margin-bottom:.75rem"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">📷 Fotos</label>'
     +'<input type="file" id="adic-foto" accept="image/*" multiple style="font-size:12px;width:100%"/></div>'
-    +'<div class="ma">'
-    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
-    +'<button class="btn btn-pri" onclick="plptSalvarAdicional(\''+projId+'\',\''+tipo+'\')">Salvar adicional</button>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="plptSalvarAdicional(\''+projId+'\',\''+tipo+'\')" style="flex:2">Salvar adicional</button>'
     +'</div></div></div>';
+
   setModal(html);
+
   setTimeout(function(){
-    window.plptAdicOnSelect=function(){
-      var sel=document.getElementById('adic-cat-sel'); if(!sel||!sel.value) return;
-      var opt=sel.options[sel.selectedIndex];
-      var desc=document.getElementById('adic-desc'); if(desc) desc.value=opt.getAttribute('data-desc')||'';
-      var sap=document.getElementById('adic-sap');  if(sap)  sap.value=opt.getAttribute('data-sap')||'';
-      var un=document.getElementById('adic-un');    if(un)   un.value=opt.getAttribute('data-un')||'UN';
+    // Função de filtro — busca aproximada por descrição e código
+    window.plptAdicFiltrar = function(){
+      var q=(document.getElementById('adic-busca')||{}).value.trim().toLowerCase();
+      var res=document.getElementById('adic-resultados'); if(!res) return;
+      if(!q){res.style.display='none';return;}
+      var cat=window._adicCatalogo||[];
+      var tipo=window._adicTipo;
+      var matches=cat.filter(function(item){
+        var desc=(item.descricao||item.nome||'').toLowerCase();
+        var sap=(item.codigo_sap||item.codigo||'').toLowerCase();
+        return desc.indexOf(q)>=0 || sap.indexOf(q)>=0;
+      }).slice(0,20);
+      if(!matches.length){
+        res.innerHTML='<div style="padding:8px 12px;font-size:12px;color:#aaa">Nenhum resultado</div>';
+        res.style.display='';
+        return;
+      }
+      res.style.display='';
+      res.innerHTML=matches.map(function(item,i){
+        var sap=item.codigo_sap||item.codigo||'';
+        var desc=item.descricao||item.nome||'';
+        var un=item.unidade||'UN';
+        return '<div onclick="plptAdicSelecionar('+i+',\''+escHtml(sap)+'\',\''+escHtml(desc)+'\',\''+escHtml(un)+'\')" '
+          +'style="padding:8px 12px;cursor:pointer;border-bottom:.5px solid #f5f5f3;font-size:12px" '
+          +'onmouseover="this.style.background=\'#f9f9f7\'" onmouseout="this.style.background=\'\'">'
+          +'<span style="font-weight:600;color:#185FA5">'+sap+'</span>'
+          +(sap?' — ':'')+desc
+          +'<span style="float:right;font-size:10px;color:#aaa">'+un+'</span>'
+          +'</div>';
+      }).join('');
     };
+
+    window.plptAdicSelecionar = function(i, sap, desc, un){
+      var dEl=document.getElementById('adic-desc'); if(dEl) dEl.value=desc;
+      var sEl=document.getElementById('adic-sap');  if(sEl) sEl.value=sap;
+      var uEl=document.getElementById('adic-un');   if(uEl) uEl.value=un;
+      var bEl=document.getElementById('adic-busca'); if(bEl) bEl.value=sap?sap+' — '+desc:desc;
+      var res=document.getElementById('adic-resultados'); if(res) res.style.display='none';
+      // Guardar catId
+      var cat=window._adicCatalogo||[];
+      window._adicCatId=(cat[i]&&cat[i].id)||null;
+    };
+
+    // Focar no campo de busca
+    var b=document.getElementById('adic-busca'); if(b) b.focus();
   },50);
 }
+
+// Helper para escapar aspas em atributos inline
+function escHtml(str){ return (str||'').replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
 
 function plptSalvarAdicional(projId, tipo){
   var desc=(document.getElementById('adic-desc')||{}).value.trim();
@@ -8913,7 +8971,7 @@ function plptSalvarAdicional(projId, tipo){
   var un=(document.getElementById('adic-un')||{}).value.trim()||'UN';
   var obs=(document.getElementById('adic-obs')||{}).value.trim();
   var sel=document.getElementById('adic-cat-sel');
-  var catId=sel&&sel.value?sel.value:null;
+  var catId=(window._adicCatId)||(sel&&sel.value?sel.value:null);
 
   var fotoInput=document.getElementById('adic-foto');
   var files=fotoInput?Array.from(fotoInput.files):[];
@@ -13790,10 +13848,11 @@ function sotRenderDetalhe(p, docs){
     // Abas de detalhe
     +'<div class="card">'
     +'<div style="display:flex;border-bottom:.5px solid #e0dfd8;overflow-x:auto">'
-    +['atividades','materiais','documentos'].map(function(t,i){
+    +['atividades','materiais','documentos','adicional'].map(function(t,i){
       var labels={atividades:'📋 Atividades ('+sot_atividades.length+')',
         materiais:'📦 Materiais ('+sot_materiais_proj.length+')',
-        documentos:'📄 Documentos ('+(docs.length)+')'};
+        documentos:'📄 Documentos ('+(docs.length)+')',
+        adicional:'➕ Adicional'};
       return '<button id="sot-tab-'+t+'" onclick="sotMostrarTab(\''+t+'\')" '
         +'style="padding:.6rem 1rem;border:none;border-bottom:2px solid '+(i===0?sc.cor:'transparent')+';'
         +'background:none;cursor:pointer;font-size:12px;font-weight:600;color:'+(i===0?sc.cor:'#888')+';white-space:nowrap">'
@@ -13801,12 +13860,14 @@ function sotRenderDetalhe(p, docs){
     }).join('')
     +'<button id="sot-tab-validacoes" onclick="sotMostrarTab(\'validacoes\')" '
     +'style="padding:.6rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#854F0B;white-space:nowrap">⏳ Campo</button>'
+    +'<button class="btn btn-sm" onclick="sotGerarDeParaSOT(\''+p.id+'\')" '
+      +'style="margin-left:auto;margin:.4rem .25rem;font-size:11px;background:#185FA5;color:#fff;border-color:#185FA5">📋 De Para</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirNovaAtividade(\''+p.id+'\')" '
-      +'style="margin-left:auto;margin:.4rem .75rem;font-size:11px">+ Atividade</button>'
+      +'style="font-size:11px;margin:.4rem .25rem">+ Atividade</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirNovoMaterial(\''+p.id+'\')" '
-      +'style="font-size:11px;margin-right:.25rem">+ Material</button>'
+      +'style="font-size:11px;margin:.4rem .25rem">+ Material</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirAnexarDoc(\''+p.id+'\')" '
-      +'style="font-size:11px;margin-right:.75rem;color:#185FA5;border-color:#185FA5">📎 Doc</button>'
+      +'style="font-size:11px;margin:.4rem .75rem;color:#185FA5;border-color:#185FA5">📎 Doc</button>'
     +'</div>'
 
     // Conteúdo da aba
@@ -13869,7 +13930,7 @@ function sotMostrarTab(tab){
   var p=sot_projetos.find(function(x){return x.id===_sotProjetoAtual;});
   if(!p)return;
   var sc=SOT_STATUS_COR[p.status]||{cor:'#555'};
-  ['atividades','materiais','documentos'].forEach(function(t){
+  ['atividades','materiais','documentos','adicional'].forEach(function(t){
     var btn=document.getElementById('sot-tab-'+t);
     if(btn){
       btn.style.borderBottomColor=t===tab?sc.cor:'transparent';
@@ -13887,12 +13948,104 @@ function sotMostrarTab(tab){
     },50);
   }
   else if(tab==='documentos')content.innerHTML=sotRenderTabDocumentos(p.id);
+  else if(tab==='adicional')sotRenderTabAdicional(p.id,content);
   else if(tab==='validacoes'){
     content.innerHTML='<div style="padding:1rem"><div style="font-size:13px;font-weight:600;margin-bottom:.75rem;color:#854F0B">⏳ Lançamentos do campo — aguardando validação</div>'
       +'<div id="sot-validacoes-campo"><div style="color:#aaa;text-align:center;padding:1rem">Carregando...</div></div>'
       +'</div>';
     sotRenderValidacoesCampo(p.id);
   }
+}
+
+function sotRenderTabAdicional(projId, container){
+  var el = container || document.getElementById('sot-tab-content');
+  if(!el) return;
+  el.innerHTML='<div style="padding:.5rem;text-align:center;color:#aaa">Carregando adicionais...</div>';
+  if(!DEMO){
+    sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+projId],order:'criado_em.desc'})
+      .then(function(rows){
+        var adics=rows||[];
+        var cid=(sot_projetos.find(function(p){return p.id===projId;})||{}).contrato_id||'';
+        el.innerHTML=_sotBuildAdicionalHtml(projId, adics, cid);
+      }).catch(function(){ el.innerHTML='<div style="padding:1rem;color:#A32D2D">Erro ao carregar adicionais.</div>'; });
+  } else {
+    el.innerHTML=_sotBuildAdicionalHtml(projId, [], '');
+  }
+}
+
+function _sotBuildAdicionalHtml(projId, adics, cid){
+  var ativos   = adics.filter(function(a){return a.tipo==='atividade';});
+  var materiais= adics.filter(function(a){return a.tipo==='material';});
+  function row(a){
+    return '<tr><td style="padding:6px 8px;font-size:12px">'+(a.codigo_sap||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:12px">'+a.descricao+'</td>'
+      +'<td style="padding:6px 8px;font-size:12px;text-align:center">'+a.qtd_solicitada+' '+(a.unidade||'UN')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#888">'+(a.observacoes||'')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#888">'+(a.criado_por||'')+'</td>'
+      +'<td style="padding:6px 8px;font-size:10px;color:#854F0B;font-weight:600">ADICIONAL</td>'
+      +'</tr>';
+  }
+  var tblHdr='<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f9f9f7;font-size:10px;color:#888;text-transform:uppercase">'
+    +'<th style="padding:6px 8px;text-align:left">Cód. SAP</th>'
+    +'<th style="padding:6px 8px;text-align:left">Descrição</th>'
+    +'<th style="padding:6px 8px;text-align:center">Qtd</th>'
+    +'<th style="padding:6px 8px;text-align:left">Observações</th>'
+    +'<th style="padding:6px 8px;text-align:left">Solicitado por</th>'
+    +'<th style="padding:6px 8px;text-align:left">Status</th>'
+    +'</tr></thead><tbody>';
+  return '<div style="padding:.75rem">'
+    +'<div style="display:flex;gap:8px;margin-bottom:1rem">'
+    +'<button onclick="sotAbrirNovoAdicional(\''+projId+'\',\'material\')" class="btn btn-pri" style="font-size:12px">+ Material adicional</button>'
+    +'<button onclick="sotAbrirNovoAdicional(\''+projId+'\',\'atividade\')" class="btn" style="font-size:12px;color:#185FA5;border-color:#185FA5">+ Atividade adicional</button>'
+    +'<button onclick="sotGerarDeParaSOT(\''+projId+'\')" class="btn" style="font-size:12px;color:#185FA5;border-color:#185FA5;margin-left:auto">📋 Gerar De Para</button>'
+    +'</div>'
+    +(materiais.length?'<div style="font-weight:600;font-size:12px;margin-bottom:.5rem;color:#854F0B">📦 Materiais Adicionais ('+materiais.length+')</div>'+tblHdr+materiais.map(row).join('')+'</tbody></table><br>':'')
+    +(ativos.length?'<div style="font-weight:600;font-size:12px;margin-bottom:.5rem;color:#185FA5">⚡ Atividades Adicionais ('+ativos.length+')</div>'+tblHdr+ativos.map(row).join('')+'</tbody></table><br>':'')
+    +(!adics.length?'<div style="text-align:center;color:#aaa;padding:2rem;font-size:13px">Nenhum adicional registrado para este projeto.</div>':'')
+    +'</div>';
+}
+
+function sotAbrirNovoAdicional(projId, tipo){
+  // Reutiliza a função do diário PLPT adaptada para contexto SOT
+  var mockPj={projeto_id:projId,_adicionais:[],_adicSub:tipo};
+  var prevAtivo=_plptDiario.projetoAtivo;
+  _plptDiario.projetoAtivo=mockPj;
+  plptNovoAdicional(projId, tipo);
+  // Sobrescrever o salvar para recarregar aba SOT ao invés do diário
+  setTimeout(function(){
+    var btnSalvar=document.querySelector('#modal-area .btn-pri');
+    if(btnSalvar){
+      var originalOnclick=btnSalvar.onclick;
+      btnSalvar.onclick=function(){
+        plptSalvarAdicional(projId, tipo);
+        setTimeout(function(){
+          _plptDiario.projetoAtivo=prevAtivo;
+          sotRenderTabAdicional(projId);
+        },300);
+      };
+    }
+  },100);
+}
+
+function sotGerarDeParaSOT(projId){
+  var mats=sot_materiais.filter(function(m){return m.projeto_id===projId;});
+  if(!mats.length&&!DEMO){
+    sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId]}).then(function(rows){
+      if(rows&&rows.length){ rows.forEach(function(m){if(!sot_materiais.find(function(x){return x.id===m.id;}))sot_materiais.push(m);}); }
+      sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+projId,'tipo=eq.material']}).then(function(adics){
+        _plptDiario.projetoAtivo={projeto_id:projId,_materiais:rows||[],_adicionais:adics||[]};
+        plptGerarDePara(projId);
+      });
+    });
+    return;
+  }
+  sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+projId,'tipo=eq.material']}).then(function(adics){
+    _plptDiario.projetoAtivo={projeto_id:projId,_materiais:mats,_adicionais:adics||[]};
+    plptGerarDePara(projId);
+  }).catch(function(){
+    _plptDiario.projetoAtivo={projeto_id:projId,_materiais:mats,_adicionais:[]};
+    plptGerarDePara(projId);
+  });
 }
 
 function sotRenderTabAtividades(projetoId){
@@ -15928,7 +16081,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.7.8',
+  numero: '3.7.9',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
