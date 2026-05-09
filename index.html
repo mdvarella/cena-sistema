@@ -5168,20 +5168,144 @@ function openNovaEquipeDisp(){
   };
 }
 
+// ── Helpers de turno e escala ──────────────────────────────────
+function calcularTurnoTipo(horaInicio){
+  if(!horaInicio) return 'Manhã';
+  var p=horaInicio.split(':'), h=parseInt(p[0]||0), m=parseInt(p[1]||0);
+  var min=h*60+m;
+  if(min>=450&&min<720)  return 'Manhã';  // 07:30–11:59
+  if(min>=720&&min<1080) return 'Tarde';  // 12:00–17:59
+  return 'Noite';                          // 18:00–04:59 (inclui madrugada)
+}
+
+function equipeEstaEmFolga(eq, data){
+  if(!eq||!eq.escala||!data) return false;
+  var d=new Date(data+'T12:00:00');
+  var dow=d.getDay(); // 0=Dom,1=Seg,2=Ter,3=Qua,4=Qui,5=Sex,6=Sab
+  var folgaDias={
+    '4x1':[5],      // sexta
+    '4x2':[3,4],    // quarta e quinta
+    '3x2':[1,2],    // segunda e terça
+    '3x3':[0,6]     // domingo e sábado
+  };
+  var dias=folgaDias[eq.escala]||[];
+  return dias.indexOf(dow)>=0;
+}
+
+function turnosSeOverlaiam(ini1,fim1,ini2,fim2){
+  // Converte para intervalos de minutos; lida com virada da meia-noite
+  function normalize(ini, fim){ return fim<=ini?fim+1440:fim; }
+  var f1=normalize(ini1,fim1), f2=normalize(ini2,fim2);
+  return !(f1<=ini2 || f2<=ini1);
+}
+
+function verificarConflitoVeiculo(veiculoId, equipeId, horaInicio, horaFim, data){
+  if(!veiculoId||!horaInicio||!horaFim) return null;
+  function toMin(h){ var p=(h||'00:00').split(':'); return parseInt(p[0]||0)*60+parseInt(p[1]||0); }
+  var ini1=toMin(horaInicio), fim1=toMin(horaFim);
+  var pvArr=typeof prog_veiculos_dia!=='undefined'?prog_veiculos_dia:[];
+  var conflitos=pvArr.filter(function(pv){
+    return pv.veiculo_id===veiculoId&&pv.data===data&&pv.equipe_id!==equipeId;
+  });
+  for(var i=0;i<conflitos.length;i++){
+    var outraEq=equipes_disp.find(function(e){return e.id===conflitos[i].equipe_id;});
+    if(!outraEq||!outraEq.hora_inicio||!outraEq.hora_fim) continue;
+    var ini2=toMin(outraEq.hora_inicio), fim2=toMin(outraEq.hora_fim);
+    if(turnosSeOverlaiam(ini1,fim1,ini2,fim2)) return outraEq;
+  }
+  return null;
+}
+
 function openEditarEqDisp(eid){
   var e=equipes_disp.find(function(x){return x.id===eid;});if(!e)return;
   var contOpts=contratos.map(function(c){return '<option value="'+c.id+'"'+(c.id===e.contrato_id?' selected':'')+'>'+c.codigo+' — '+c.nome+'</option>';}).join('');
   var tipoOpts=tipos_equipe.map(function(t){return '<option value="'+t.id+'"'+(t.id===e.tipo_id?' selected':'')+'>'+t.nome+'</option>';}).join('');
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Editar Equipe</h3>'    +'<div class="g2">'    +'<div class="fg"><label>Código</label><input id="ned-cod" value="'+e.codigo+'"/></div>'    +'<div class="fg"><label>Nome</label><input id="ned-nome" value="'+e.nome+'"/></div>'    +'<div class="fg"><label>Tipo</label><select id="ned-tipo">'+tipoOpts+'</select></div>'    +'<div class="fg"><label>Contrato</label><select id="ned-cont">'+contOpts+'</select></div>'    +'<div class="fg"><label>Status</label><select id="ned-status"><option'+(e.status==='Ativo'?' selected':'')+'>Ativo</option><option'+(e.status==='Inativo'?' selected':'')+'>Inativo</option></select></div>'    +'</div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-ed-ned">Salvar</button></div></div></div>');
+  var veicOpts='<option value="">Sem veículo padrão</option>'
+    +(frt_veiculos||[]).filter(function(v){return v.status!=='Inativo';}).map(function(v){
+      return '<option value="'+v.id+'"'+(v.id===e.veiculo_padrao_id?' selected':'')+'>'+v.placa+' — '+v.modelo+'</option>';
+    }).join('');
+  var turnoAtual=e.turno_tipo||calcularTurnoTipo(e.hora_inicio||'');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:520px">'
+    +'<h3 style="margin-bottom:.75rem">Editar Equipe TMA</h3>'
+    +'<div class="g2">'
+    +'<div class="fg"><label>Código</label><input id="ned-cod" class="inp" value="'+e.codigo+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Nome</label><input id="ned-nome" class="inp" value="'+e.nome+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Tipo</label><select id="ned-tipo" class="inp" style="width:100%">'+tipoOpts+'</select></div>'
+    +'<div class="fg"><label>Contrato</label><select id="ned-cont" class="inp" style="width:100%">'+contOpts+'</select></div>'
+    +'<div class="fg"><label>Status</label><select id="ned-status" class="inp" style="width:100%">'
+    +'<option'+(e.status==='Ativo'?' selected':'')+'>Ativo</option>'
+    +'<option'+(e.status==='Inativo'?' selected':'')+'>Inativo</option>'
+    +'</select></div>'
+    +'</div>'
+
+    // Bloco de turno
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.75rem;margin-top:.75rem">'
+    +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem">⏰ Turno</div>'
+    +'<div class="g2">'
+    +'<div class="fg"><label style="font-size:11px">Hora início</label>'
+    +'<input id="ned-hini" class="inp" type="time" value="'+(e.hora_inicio||'')+'" style="width:100%" oninput="nedAtualizarTurno()"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Hora fim</label>'
+    +'<input id="ned-hfim" class="inp" type="time" value="'+(e.hora_fim||'')+'" style="width:100%"/></div>'
+    +'</div>'
+    +'<div style="margin-top:.5rem;font-size:12px">Turno: <b id="ned-turno-label" style="color:#185FA5">'+turnoAtual+'</b>'
+    +' <span style="font-size:10px;color:#aaa">(calculado automaticamente)</span></div>'
+    +'</div>'
+
+    // Bloco de escala
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:.75rem;margin-top:.5rem">'
+    +'<div style="font-size:11px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">📅 Escala Operacional</div>'
+    +'<select id="ned-escala" class="inp" style="width:100%">'
+    +'<option value="">Sem escala definida</option>'
+    +['4x1','4x2','3x2','3x3'].map(function(esc){
+      var desc={
+        '4x1':'4x1 — Folga na sexta-feira',
+        '4x2':'4x2 — Folga quarta e quinta',
+        '3x2':'3x2 — Folga segunda e terça',
+        '3x3':'3x3 — Folga sábado e domingo'
+      }[esc];
+      return '<option value="'+esc+'"'+(e.escala===esc?' selected':'')+'>'+desc+'</option>';
+    }).join('')
+    +'</select>'
+    +'</div>'
+
+    // Veículo padrão
+    +'<div style="margin-top:.5rem">'
+    +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🚗 Veículo padrão</label>'
+    +'<select id="ned-veic" class="inp" style="width:100%">'+veicOpts+'</select>'
+    +'</div>'
+
+    +'<div class="ma" style="margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="btn-ed-ned">Salvar</button>'
+    +'</div></div></div>');
+
+  // Atualizar label do turno ao digitar
+  window.nedAtualizarTurno=function(){
+    var h=(document.getElementById('ned-hini')||{}).value||'';
+    var lbl=document.getElementById('ned-turno-label');
+    if(lbl) lbl.textContent=calcularTurnoTipo(h);
+  };
+
   document.getElementById('btn-ed-ned').onclick=function(){
+    var horaIni=(document.getElementById('ned-hini')||{}).value.trim()||null;
+    var horaFim=(document.getElementById('ned-hfim')||{}).value.trim()||null;
     e.codigo=(document.getElementById('ned-cod')||{}).value.trim()||e.codigo;
     e.nome=(document.getElementById('ned-nome')||{}).value.trim()||e.nome;
     e.tipo_id=(document.getElementById('ned-tipo')||{}).value||e.tipo_id;
     e.contrato_id=(document.getElementById('ned-cont')||{}).value||e.contrato_id;
     e.status=(document.getElementById('ned-status')||{}).value||e.status;
+    e.hora_inicio=horaIni;
+    e.hora_fim=horaFim;
+    e.turno_tipo=horaIni?calcularTurnoTipo(horaIni):(e.turno_tipo||'Manhã');
+    e.escala=(document.getElementById('ned-escala')||{}).value||null;
+    e.veiculo_padrao_id=(document.getElementById('ned-veic')||{}).value||null;
     if(!DEMO)sbUpdate('equipes_disp',{
       codigo:e.codigo,nome:e.nome,tipo_id:e.tipo_id,
-      contrato_id:e.contrato_id,status:e.status
+      contrato_id:e.contrato_id,status:e.status,
+      hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,
+      turno_tipo:e.turno_tipo,escala:e.escala,
+      veiculo_padrao_id:e.veiculo_padrao_id||null
     },'id=eq.'+eid);
     closeModal();renderEqDispVis();
   };
@@ -16174,7 +16298,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.8.7',
+  numero: '3.9.0',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -16532,7 +16656,6 @@ function progRenderQuadro(){
   var data = progGetData();
   var cid  = progGetCont();
   var tipo = progGetTipo();
-  // Se mudou a data, carregar status salvos para a nova data
   if(data !== _progData){
     _progData = data;
     progCarregarStatus(data);
@@ -16550,90 +16673,132 @@ function progRenderQuadro(){
     return true;
   });
 
-  // Filtro por colaborador: mostrar só equipes que têm o colaborador buscado
+  // Filtro por colaborador
   if(_progFiltroColab){
     eqs = eqs.filter(function(eq){
-      // Ver se algum colaborador da equipe ou na composição bate com a busca
       var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var idsComp = [];
       if(comp){try{idsComp=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}}
       var vinc = colaboradores.filter(function(c){return c.equipe_id===eq.id&&c.ativo!==false;});
-      var todos = vinc.concat(idsComp.map(function(id){
-        return colaboradores.find(function(c){return c.id===id;});
-      }).filter(Boolean));
+      var todos = vinc.concat(idsComp.map(function(id){return colaboradores.find(function(c){return c.id===id;});}).filter(Boolean));
       return todos.some(function(c){
-        return c.nome.toLowerCase().indexOf(_progFiltroColab)>=0
-          || (c.re||'').indexOf(_progFiltroColab)>=0;
+        return c.nome.toLowerCase().indexOf(_progFiltroColab)>=0||(c.re||'').indexOf(_progFiltroColab)>=0;
       });
     });
   }
 
-  // Filtro só incompletas: equipes com menos de 2 ativos ou sem composição
+  // Filtro só incompletas
   if(_progSoIncompletas){
     var STATUS_BLOQ_F = ['ferias','afastado','treinamento','falta'];
     eqs = eqs.filter(function(eq){
+      if(equipeEstaEmFolga(eq,data)) return false; // folgas ignorar no filtro de incompletas
       var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var ids = [];
       if(comp){try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}}
-      if(!comp||!ids.filter(Boolean).length) return true; // sem programação
-      var ativos = ids.filter(function(id){
-        return id && STATUS_BLOQ_F.indexOf(_progStatus[id]||'disponivel')<0;
-      }).length;
-      return ativos < 2; // incompleta ou parada
+      if(!comp||!ids.filter(Boolean).length) return true;
+      var ativos = ids.filter(function(id){return id&&STATUS_BLOQ_F.indexOf(_progStatus[id]||'disponivel')<0;}).length;
+      return ativos < 2;
     });
   }
 
-  // Agrupar por tipo
-  var grupos = {};
-  eqs.forEach(function(eq){
-    var t = tipos_equipe.find(function(x){return x.id===eq.tipo_id;});
-    var tNome = t ? t.nome : 'Sem tipo';
-    if(tipo && tNome !== tipo) return;
-    if(!grupos[tNome]) grupos[tNome] = {tipo_id: eq.tipo_id, equipes: []};
-    grupos[tNome].equipes.push(eq);
-  });
-
-  if(!Object.keys(grupos).length){
-    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma equipe encontrada. Selecione um contrato.</div>';
+  if(!eqs.length){
+    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma equipe encontrada.</div>';
     return;
   }
 
-  // Resumo topo — respeita o filtro ativo de tipo
-  var todasEqsResumo = [];
-  Object.keys(grupos).forEach(function(tNome){
-    grupos[tNome].equipes.forEach(function(eq){ todasEqsResumo.push(eq); });
-  });
-  var resumoHtml = progRenderResumo(todasEqsResumo, data);
+  // ── Separar em folga × ativas ──────────────────────────────
+  var emFolga = eqs.filter(function(eq){ return equipeEstaEmFolga(eq,data); });
+  var ativas  = eqs.filter(function(eq){ return !equipeEstaEmFolga(eq,data); });
 
-  // Quadro por tipo
-  var quadroHtml = Object.keys(grupos).sort().map(function(tNome){
-    return progRenderGrupo(tNome, grupos[tNome], data);
+  // ── Agrupar ativas por turno depois por tipo ───────────────
+  var TURNOS = ['Manhã','Tarde','Noite'];
+  var porTurno = {};
+  TURNOS.forEach(function(t){ porTurno[t]={}; });
+
+  ativas.forEach(function(eq){
+    var turno = eq.turno_tipo || calcularTurnoTipo(eq.hora_inicio||'') || 'Manhã';
+    var t = tipos_equipe.find(function(x){return x.id===eq.tipo_id;});
+    var tNome = t ? t.nome : 'Sem tipo';
+    if(tipo && tNome !== tipo) return;
+    if(!porTurno[turno]) porTurno[turno]={};
+    if(!porTurno[turno][tNome]) porTurno[turno][tNome]={tipo_id:eq.tipo_id,equipes:[]};
+    porTurno[turno][tNome].equipes.push(eq);
+  });
+
+  // Resumo
+  var resumoHtml = progRenderResumo(ativas, data, emFolga.length);
+
+  // Quadro por turno → tipo
+  var turnoIcons={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'};
+  var quadroHtml = TURNOS.map(function(turno){
+    var grupos = porTurno[turno]||{};
+    if(!Object.keys(grupos).length) return '';
+    var corTurno={'Manhã':'#185FA5','Tarde':'#854F0B','Noite':'#1a1a18'}[turno]||'#555';
+    var horaLabel='';
+    // Pegar intervalo de horários do turno
+    var eqsDoTurno=[];
+    Object.keys(grupos).forEach(function(t){grupos[t].equipes.forEach(function(e){eqsDoTurno.push(e);});});
+    var hInis=eqsDoTurno.filter(function(e){return e.hora_inicio;}).map(function(e){return e.hora_inicio;}).sort();
+    var hFims=eqsDoTurno.filter(function(e){return e.hora_fim;}).map(function(e){return e.hora_fim;}).sort();
+    if(hInis.length) horaLabel=' <span style="font-size:11px;opacity:.7">'+hInis[0]+' – '+(hFims[hFims.length-1]||'—')+'</span>';
+
+    return '<div style="margin-bottom:1.5rem">'
+      +'<div style="background:'+corTurno+';color:#fff;padding:.6rem 1rem;border-radius:8px;margin-bottom:.5rem;'
+      +'display:flex;align-items:center;justify-content:space-between">'
+      +'<span style="font-weight:700;font-size:14px">'+turnoIcons[turno]+' Turno '+turno+horaLabel+'</span>'
+      +'<span style="font-size:11px;opacity:.7">'+eqsDoTurno.length+' equipe(s)</span>'
+      +'</div>'
+      +Object.keys(grupos).sort().map(function(tNome){
+        return progRenderGrupo(tNome, grupos[tNome], data);
+      }).join('');
   }).join('');
 
-  // Painel de colaboradores disponíveis
-  var dispHtml = progRenderPainelDisp(eqs, data, cid);
+  // Equipes em folga
+  var folgaHtml = emFolga.length
+    ? '<div style="margin-bottom:1.5rem">'
+      +'<div style="background:#888;color:#fff;padding:.6rem 1rem;border-radius:8px;margin-bottom:.5rem;'
+      +'display:flex;align-items:center;justify-content:space-between">'
+      +'<span style="font-weight:700;font-size:14px">🏖 Em Folga</span>'
+      +'<span style="font-size:11px;opacity:.7">'+emFolga.length+' equipe(s)</span>'
+      +'</div>'
+      +'<div style="border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden">'
+      +'<table style="width:100%;border-collapse:collapse">'
+      +'<tbody>'
+      +emFolga.map(function(eq){
+        var escLabel={'4x1':'4x1 (folga sex)','4x2':'4x2 (folga qua/qui)','3x2':'3x2 (folga seg/ter)','3x3':'3x3 (folga sab/dom)'}[eq.escala]||eq.escala||'—';
+        return '<tr style="background:#f9f9f7;opacity:.7">'
+          +'<td style="padding:8px 10px;font-weight:600;font-size:12px;color:#888">'+eq.codigo+'</td>'
+          +'<td style="padding:8px 10px;font-size:12px;color:#888">'+eq.nome+'</td>'
+          +'<td style="padding:8px 10px;font-size:11px;color:#888">'+escLabel+'</td>'
+          +'<td style="padding:8px 10px"><span style="background:#e0dfd8;color:#888;font-size:10px;'
+          +'font-weight:600;padding:2px 8px;border-radius:4px">🏖 Folga</span></td>'
+          +'</tr>';
+      }).join('')
+      +'</tbody></table></div></div>'
+    : '';
 
-  wrap.innerHTML = resumoHtml + quadroHtml + dispHtml;
+  // Painel de disponíveis
+  var dispHtml = progRenderPainelDisp(ativas, data, cid);
 
-  // Vincular badges de status (clique para ver lista)
+  wrap.innerHTML = resumoHtml + quadroHtml + folgaHtml + dispHtml;
+
   Object.keys(PROG_STATUS).forEach(function(k){
     var el=document.getElementById('prog-count-'+k);
     if(el)el.onclick=function(){progMostrarListaStatus(k);};
   });
 
-  // Vincular drag-and-drop
   progBindDrag();
-  // Vincular botões de veículo
   setTimeout(progBindVeiculos, 50);
 }
 
 // ── Resumo executivo ─────────────────────────────────────────
-function progRenderResumo(eqs, data){
+function progRenderResumo(eqs, data, nFolga){
   var total=0, programadas=0, completas=0, incompletas=0, paradas=0;
   eqs.forEach(function(eq){
     total++;
     var comp = composicao_dia.find(function(c){
-      return c.equipe_id===eq.id && c.data===data && !c._local;
+      var cd=(c.data||'').split('T')[0];
+      return c.equipe_id===eq.id && (cd===data||c.data===data);
     });
     if(!comp){ paradas++; return; }
     var raw = comp.colaborador_ids;
@@ -16641,10 +16806,9 @@ function progRenderResumo(eqs, data){
       : (function(){ try{return JSON.parse(raw||'[]').filter(Boolean);}catch(e){return[];} })();
     if(!ids.length){ paradas++; return; }
     if(comp.confirmada){ programadas++; return; }
-    // Contar só IDs que existem em colaboradores E estão disponíveis
     var ativos = ids.filter(function(id){
       var col = colaboradores.find(function(c){return c.id===id;});
-      if(!col) return false; // ID não resolve → não conta
+      if(!col) return false;
       return (_progStatus[id]||'disponivel')==='disponivel';
     }).length;
     if(ativos >= 2) completas++;
@@ -16654,18 +16818,19 @@ function progRenderResumo(eqs, data){
   var pct = total ? Math.round((programadas+completas)/total*100) : 0;
   var corPct = pct>=90?'#3B6D11':pct>=70?'#854F0B':'#A32D2D';
 
-  return '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:1rem">'
+  return '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:1rem">'
     + [
         {l:'Total equipes',  v:total,       c:'#555'},
         {l:'✓ Programadas',  v:programadas, c:'#3B6D11'},
         {l:'Completas',      v:completas,   c:'#185FA5'},
         {l:'Incompletas',    v:incompletas, c:'#854F0B'},
         {l:'Não prog.',      v:paradas,     c:'#A32D2D'},
+        {l:'🏖 Folga',       v:nFolga||0,  c:'#888'},
         {l:'Aproveitamento', v:pct+'%',     c:corPct}
       ].map(function(m){
         return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;text-align:center">'
-          +'<div style="font-size:11px;color:#888;margin-bottom:4px">'+m.l+'</div>'
-          +'<div style="font-size:22px;font-weight:700;color:'+m.c+'">'+m.v+'</div>'
+          +'<div style="font-size:10px;color:#888;margin-bottom:4px">'+m.l+'</div>'
+          +'<div style="font-size:20px;font-weight:700;color:'+m.c+'">'+m.v+'</div>'
           +'</div>';
       }).join('')
     + '</div>';
@@ -16916,6 +17081,14 @@ function progRenderVeiculoCellBloqueado(eq, data){
 
 function progSalvarEquipe(eqId){
   var data = progGetData();
+  var eq = equipes_disp.find(function(e){return e.id===eqId;});
+
+  // Bloquear programação em dia de folga
+  if(eq && equipeEstaEmFolga(eq, data)){
+    progShowToast('🏖 Equipe está em período de folga conforme escala cadastrada.');
+    return;
+  }
+
   var comp = composicao_dia.find(function(c){
     var cd=(c.data||'').split('T')[0];
     return c.equipe_id===eqId && (cd===data||c.data===data);
@@ -25272,8 +25445,21 @@ function progGetVeiculo(eqId, data){
 
 function progSetVeiculo(eqId, data, veiculoObj){
   _progVeiculos[progVeiculoKey(eqId, data)] = veiculoObj;
-  // Persistir
   try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+
+  // Verificar conflito de horário de veículo compartilhado
+  if(veiculoObj && veiculoObj.id){
+    var eq = equipes_disp.find(function(e){return e.id===eqId;});
+    if(eq && eq.hora_inicio && eq.hora_fim){
+      var conflito = verificarConflitoVeiculo(veiculoObj.id, eqId, eq.hora_inicio, eq.hora_fim, data);
+      if(conflito){
+        progShowToast('⚠️ Veículo já alocado para '+conflito.codigo
+          +' ('+conflito.hora_inicio+'–'+conflito.hora_fim
+          +'). Horários conflitantes. Verifique antes de confirmar.');
+      }
+    }
+  }
+
   if(!DEMO && veiculoObj){
     var payload = {
       equipe_id: eqId,
