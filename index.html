@@ -16298,7 +16298,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.9.0',
+  numero: '3.9.1',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -20538,10 +20538,262 @@ function _abrirDetalheDiarioEquipe(sessaoId, data){
 
     +'<div style="margin-top:.75rem;display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +'<button class="btn" onclick="_dbGerarPDF(\''+sessaoId+'\',\''+data+'\')" style="flex:1;background:#185FA5;color:#fff;border-color:#185FA5;font-weight:600">🖨 Gerar PDF</button>'
     +'</div>'
     +'</div></div>';
 
   setModal(html);
+}
+
+function _dbGerarPDF(sessaoId, data){
+  var s=sessoes_disp.find(function(x){return x.id===sessaoId;});
+  if(!s){progShowToast('⚠ Sessão não encontrada');return;}
+  var eq=equipes_disp.find(function(e){return e.id===s.equipe_id;})
+        ||equipes.find(function(e){return e.id===s.equipe_id;});
+  var nomeEq=eq?((eq.codigo||eq.nome_equipe||'')+(eq.nome?' — '+eq.nome:'')):'Equipe';
+  var turno=turnos_abertos.find(function(t){return t.equipe_id===s.equipe_id&&t.data===data;});
+  var ordens=ordens_db.filter(function(o){return o.equipe_id===s.equipe_id&&o.data===data;})
+    .sort(function(a,b){return (a.criado_em||0)>(b.criado_em||0)?1:-1;});
+  var placa=(turno&&turno.placa)||(s.placa)||'—';
+  var veicObj=frt_veiculos&&frt_veiculos.find(function(v){return v.placa===placa;})||null;
+  var veicDesc=veicObj?(placa+' — '+veicObj.modelo+' '+( veicObj.cor?'('+veicObj.cor+')':'')):placa;
+  var kmIni=(turno&&turno.km_inicial)||(s.km_inicial)||0;
+  var kmFim=(turno&&turno.km_final)||(s.km_final)||0;
+  var minFat=s.minutos_faturados||0;
+  var hFat=Math.floor(minFat/60); var mFat=minFat%60;
+  var cont=contratos.find(function(c){return c.id===(eq&&eq.contrato_id);});
+
+  function fmtTs(ts){if(!ts)return '—';var d=new Date(ts);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
+  function fmtDt(dt){if(!dt)return '—';var p=dt.split('-');return p[2]+'/'+p[1]+'/'+p[0];}
+  function fmtDur(ms){if(!ms||ms<0)return '—';var m=Math.round(ms/60000);return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'min';}
+
+  // ── Membros ────────────────────────────────────
+  var membros=colaboradores.filter(function(c){return c.equipe_id===s.equipe_id&&c.ativo!==false;});
+
+  // ── Checklists ─────────────────────────────────
+  var epiItems=parseJsonField(turno&&turno.respostas_epi,[]);
+  var veiItems=parseJsonField(turno&&turno.respostas_vei,[]);
+
+  // ── APR ────────────────────────────────────────
+  var aprs=ordens.filter(function(o){return o.apr_preenchida||o.apr_obs;});
+
+  // ── Timeline ───────────────────────────────────
+  var evIcons={'a_caminho':'→','Chegou_local':'📍','Inicio_ativ':'▶','Encerramento_ativ':'⏹',
+    'Atividade_encerrada':'✅','Equipe_disponivel':'🟢','APR preenchida':'⚠',
+    'Início do dia':'▶','Início do almoço':'⏸','Retorno do almoço':'▶','Encerramento do dia':'⏹'};
+
+  var timeline=[];
+  if(s.login_ts) timeline.push({ts:new Date(s.login_ts).getTime(),ico:'▶',
+    titulo:'Início do Turno',
+    det:'Veículo: '+veicDesc+' | KM inicial: '+kmIni
+    +((turno&&turno.checklist_epi_ok!==undefined)?' | EPI: '+(turno.checklist_epi_ok?'✓ OK':'✗ Pendente'):'')
+    +((turno&&turno.checklist_vei_ok!==undefined)?' | Vei: '+(turno.checklist_vei_ok?'✓ OK':'✗ Pendente'):''),
+    cor:'#3B6D11'});
+
+  ordens.forEach(function(o){
+    parseJsonField(o.eventos,[]).forEach(function(ev){
+      var titulo=({a_caminho:'A caminho',Chegou_local:'Chegou ao local',
+        Inicio_ativ:'Início das atividades',Encerramento_ativ:'Encerrando',
+        Atividade_encerrada:'Ordem encerrada','APR preenchida':'APR preenchida'})[ev.tipo]||(ev.tipo||'Evento');
+      var det='OS #'+(o.numero_ordem||'—')+(o.endereco?' | '+o.endereco:'')+(ev.obs?' | Obs: '+ev.obs:'');
+      timeline.push({ts:ev.ts?new Date(ev.ts).getTime():0,ico:evIcons[ev.tipo]||'•',titulo:titulo,det:det,cor:'#185FA5'});
+    });
+  });
+
+  parseJsonField(s.eventos,[]).forEach(function(ev){
+    var tsMs=ev.ts?new Date(ev.ts).getTime():0;
+    if(!tsMs&&ev.hora){var p=ev.hora.split(':');tsMs=new Date(data).setHours(parseInt(p[0]||0),parseInt(p[1]||0),0,0);}
+    timeline.push({ts:tsMs,ico:'📌',titulo:ev.desc||ev.tipo||'Evento',det:ev.obs||'',cor:'#555'});
+  });
+
+  if(s.almoco_ts) timeline.push({ts:new Date(s.almoco_ts).getTime(),ico:'⏸',titulo:'Início do Almoço',det:'',cor:'#854F0B'});
+  if(s.retorno_ts) timeline.push({ts:new Date(s.retorno_ts).getTime(),ico:'▶',titulo:'Retorno do Almoço',
+    det:fmtDur(new Date(s.retorno_ts).getTime()-new Date(s.almoco_ts).getTime())+' de intervalo',cor:'#854F0B'});
+  if(s.logout_ts) timeline.push({ts:new Date(s.logout_ts).getTime(),ico:'⏹',titulo:'Encerramento do Turno',
+    det:'KM final: '+kmFim+' | Km rodado: '+(kmFim&&kmIni?kmFim-kmIni:0)+'km | Tempo faturável: '
+    +String(hFat).padStart(2,'0')+':'+String(mFat).padStart(2,'0')+'h'
+    +(s.obs_encerramento?' | Obs: '+s.obs_encerramento:''),cor:'#A32D2D'});
+
+  timeline.sort(function(a,b){return (a.ts||0)-(b.ts||0);});
+
+  // ── Montar HTML de impressão ────────────────────
+  var css=`
+    @page { size: A4; margin: 15mm 15mm 20mm 15mm; }
+    @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+    * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body { margin: 0; padding: 0; color: #1a1a18; font-size: 11px; line-height: 1.4; background: #fff; }
+    .page-break { page-break-before: always; }
+    h1 { font-size: 18px; margin: 0 0 2px 0; }
+    h2 { font-size: 13px; margin: 12px 0 6px 0; border-bottom: 1.5px solid #185FA5; padding-bottom: 4px; color: #185FA5; }
+    h3 { font-size: 12px; margin: 10px 0 5px 0; color: #555; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+    th { background: #f0f0f0; padding: 5px 8px; text-align: left; font-size: 10px; color: #555; text-transform: uppercase; border: .5px solid #ddd; }
+    td { padding: 5px 8px; border: .5px solid #e0dfd8; font-size: 11px; vertical-align: top; }
+    tr:nth-child(even) td { background: #fafafa; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #1a1a18; padding-bottom: 8px; margin-bottom: 12px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; }
+    .badge-ok { background: #EAF3DE; color: #3B6D11; }
+    .badge-err { background: #FFF0F0; color: #A32D2D; }
+    .badge-info { background: #EBF4FD; color: #185FA5; }
+    .badge-warn { background: #FFF8EC; color: #854F0B; }
+    .metrics { display: flex; gap: 8px; margin-bottom: 12px; }
+    .metric { flex: 1; border: .5px solid #e0dfd8; border-radius: 6px; padding: 8px; text-align: center; }
+    .metric-val { font-size: 20px; font-weight: 700; }
+    .metric-lbl { font-size: 9px; color: #888; }
+    .timeline-row { display: flex; gap: 10px; padding: 5px 0; border-bottom: .5px solid #f5f5f3; }
+    .tl-time { min-width: 40px; font-weight: 700; color: #185FA5; font-size: 11px; }
+    .tl-ico { min-width: 18px; text-align: center; }
+    .tl-title { font-weight: 600; font-size: 11px; }
+    .tl-det { font-size: 10px; color: #888; }
+    .section { background: #f9f9f7; border: .5px solid #e0dfd8; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+    .checklist-item { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; }
+    .footer { position: fixed; bottom: 0; left: 0; right: 0; text-align: center; font-size: 9px; color: #aaa; border-top: .5px solid #e0dfd8; padding: 4px; background: #fff; }
+    .logo-txt { font-size: 20px; font-weight: 900; color: #185FA5; letter-spacing: -1px; }
+  `;
+
+  var membrosHtml2=membros.map(function(c,i){
+    return '<tr><td>'+(i+1)+'</td><td><b>'+c.nome+'</b></td><td>'+(c.re||'—')+'</td><td>'+(c.cargo||'—')+'</td></tr>';
+  }).join('')||'<tr><td colspan="4" style="color:#aaa;text-align:center">Sem membros cadastrados</td></tr>';
+
+  var checkEpiHtml2=epiItems.map(function(it){
+    var ok=it.ok||it.resposta==='Sim'||it.resposta===true;
+    return '<div class="checklist-item"><span style="color:'+(ok?'#3B6D11':'#A32D2D')+';font-weight:700">'+(ok?'✓':'✗')+'</span>'+(it.item||it.descricao||'Item')+'</div>';
+  }).join('')||'<div style="color:#aaa">Não registrado</div>';
+
+  var checkVeiHtml2=veiItems.map(function(it){
+    var ok=it.ok||it.resposta==='Sim'||it.resposta===true;
+    return '<div class="checklist-item"><span style="color:'+(ok?'#3B6D11':'#A32D2D')+';font-weight:700">'+(ok?'✓':'✗')+'</span>'+(it.item||it.descricao||'Item')+'</div>';
+  }).join('')||'<div style="color:#aaa">Não registrado</div>';
+
+  var aprHtml2=aprs.map(function(o){
+    return '<div style="border:.5px solid #e0dfd8;border-radius:4px;padding:5px 8px;margin-bottom:4px">'
+      +'<b>OS #'+(o.numero_ordem||'—')+'</b>'+(o.apr_obs?' — '+o.apr_obs:'')+'</div>';
+  }).join('')||'<div style="color:#aaa">Sem APR registrada</div>';
+
+  var timelineHtml2=timeline.map(function(ev){
+    return '<div class="timeline-row">'
+      +'<div class="tl-time">'+fmtTs(ev.ts)+'</div>'
+      +'<div class="tl-ico">'+ev.ico+'</div>'
+      +'<div><div class="tl-title" style="color:'+ev.cor+'">'+ev.titulo+'</div>'
+      +(ev.det?'<div class="tl-det">'+ev.det+'</div>':'')
+      +'</div></div>';
+  }).join('')||'<div style="color:#aaa">Sem eventos registrados</div>';
+
+  var ordensHtml2=ordens.map(function(o,oi){
+    var evs=parseJsonField(o.eventos,[]);
+    var stCor={encerrada:'#3B6D11',cancelada:'#A32D2D',em_andamento:'#185FA5',a_caminho:'#854F0B'}[o.status]||'#555';
+    return '<div style="border:.5px solid #e0dfd8;border-radius:6px;padding:8px;margin-bottom:6px'+(oi>0?';page-break-inside:avoid':'')+'">'
+      +'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+      +'<b>OS #'+(o.numero_ordem||'—')+'</b>'
+      +'<span class="badge" style="background:'+(stCor+'22')+';color:'+stCor+'">'+o.status+'</span>'
+      +'</div>'
+      +(o.endereco?'<div>📍 <b>Endereço:</b> '+o.endereco+'</div>':'')
+      +(o.tipo_servico?'<div>🔧 <b>Serviço:</b> '+o.tipo_servico+'</div>':'')
+      +(o.cliente?'<div>🏭 <b>Cliente:</b> '+o.cliente+'</div>':'')
+      +(o.obs_encerramento?'<div style="margin-top:4px;font-style:italic;color:#555">📝 '+o.obs_encerramento+'</div>':'')
+      +(evs.length?'<div style="margin-top:6px;padding-top:4px;border-top:.5px solid #f0f0f0">'
+        +evs.map(function(ev){return '<div style="font-size:10px;color:#888;padding:1px 0">'+fmtTs(ev.ts)+' — '+(ev.tipo||ev.desc||'Evento')+(ev.obs?' | '+ev.obs:'')+'</div>';}).join('')
+        +'</div>':'')
+      +'</div>';
+  }).join('')||'<div style="color:#aaa">Sem ordens registradas</div>';
+
+  var printHtml='<!DOCTYPE html><html><head><meta charset="UTF-8">'
+    +'<title>Diário de Bordo — '+nomeEq+' — '+fmtDt(data)+'</title>'
+    +'<style>'+css+'</style></head><body>'
+
+    // Cabeçalho
+    +'<div class="header">'
+    +'<div>'
+    +'<div class="logo-txt">CENA</div>'
+    +'<div style="font-size:9px;color:#888">Sistema de Gestão de Campo</div>'
+    +'</div>'
+    +'<div style="text-align:right">'
+    +'<h1>Diário de Bordo</h1>'
+    +'<div style="font-size:11px;color:#555">'+fmtDt(data)+' | Gerado em '+new Date().toLocaleString('pt-BR')+'</div>'
+    +'</div></div>'
+
+    // Identif. da equipe
+    +'<div class="section" style="margin-bottom:12px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+    +'<div>'
+    +'<div style="font-size:16px;font-weight:700">'+nomeEq+'</div>'
+    +(cont?'<div style="font-size:11px;color:#888">Contrato: '+cont.codigo+' — '+cont.nome+'</div>':'')
+    +(eq&&eq.supervisor?'<div style="font-size:11px;color:#555">Supervisor: <b>'+eq.supervisor+'</b></div>':'')
+    +'</div>'
+    +'<div style="text-align:right">'
+    +'<div style="font-size:11px"><b>Veículo:</b> '+veicDesc+'</div>'
+    +'<div style="font-size:11px"><b>KM inicial:</b> '+kmIni+' → <b>KM final:</b> '+kmFim+'</div>'
+    +'<div style="font-size:11px"><b>Km rodado:</b> '+(kmFim&&kmIni?kmFim-kmIni:0)+' km</div>'
+    +(eq&&eq.turno_tipo?'<div style="font-size:11px"><b>Turno:</b> '+eq.turno_tipo+(eq.hora_inicio?' ('+eq.hora_inicio+' – '+(eq.hora_fim||'—')+')':'')+'</div>':'')
+    +'<div style="font-size:11px"><b>Início:</b> '+fmtTs(s.login_ts)+' | <b>Encerramento:</b> '+fmtTs(s.logout_ts)+'</div>'
+    +'<div style="font-size:11px"><b>Almoço:</b> '+fmtTs(s.almoco_ts)+' → '+fmtTs(s.retorno_ts)+'</div>'
+    +'</div></div></div>'
+
+    // Métricas
+    +'<div class="metrics">'
+    +[
+      {l:'Tempo de turno',  v:fmtDur(s.logout_ts?(new Date(s.logout_ts)-new Date(s.login_ts)):0), c:'#185FA5'},
+      {l:'Horas faturáveis',v:String(hFat).padStart(2,'0')+':'+String(mFat).padStart(2,'0')+'h',  c:'#3B6D11'},
+      {l:'Ordens',          v:ordens.filter(function(o){return o.status==='encerrada';}).length+'/'+ordens.length, c:'#554D2D'},
+      {l:'Km rodado',       v:(kmFim&&kmIni?kmFim-kmIni:0)+' km', c:'#555'},
+      {l:'Status',          v:s.logout_ts?'Encerrado':'Em campo',  c:s.logout_ts?'#3B6D11':'#185FA5'},
+    ].map(function(m){
+      return '<div class="metric"><div class="metric-val" style="color:'+m.c+'">'+m.v+'</div><div class="metric-lbl">'+m.l+'</div></div>';
+    }).join('')
+    +'</div>'
+
+    // Composição da equipe
+    +'<h2>👥 Composição da Equipe</h2>'
+    +'<table><thead><tr><th>#</th><th>Nome</th><th>RE / Matrícula</th><th>Cargo / Função</th></tr></thead>'
+    +'<tbody>'+membrosHtml2+'</tbody></table>'
+
+    // Checklists
+    +'<h2>✅ Checklists de Campo</h2>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:8px">'
+    +'<div class="section">'
+    +'<h3 style="margin-top:0">📋 Checklist de EPI</h3>'
+    +'<div style="margin-bottom:4px"><span class="badge '+(turno&&turno.checklist_epi_ok?'badge-ok':'badge-err')+'">'+((turno&&turno.checklist_epi_ok)?'✓ Aprovado':'✗ Pendente/Reprovado')+'</span></div>'
+    +checkEpiHtml2
+    +'</div>'
+    +'<div class="section">'
+    +'<h3 style="margin-top:0">🚗 Checklist Veicular</h3>'
+    +'<div style="margin-bottom:4px"><span class="badge '+(turno&&turno.checklist_vei_ok?'badge-ok':'badge-err')+'">'+((turno&&turno.checklist_vei_ok)?'✓ Aprovado':'✗ Pendente/Reprovado')+'</span></div>'
+    +checkVeiHtml2
+    +'</div></div>'
+
+    // APR
+    +'<h2>⚠️ APR — Análise Preliminar de Risco</h2>'
+    +'<div class="section">'+aprHtml2+'</div>'
+
+    // Timeline
+    +'<h2>📅 Timeline — Histórico Completo do Turno</h2>'
+    +'<div class="section">'+timelineHtml2+'</div>'
+
+    // Ordens
+    +'<h2 class="page-break">📋 Ordens de Serviço</h2>'
+    +ordensHtml2
+
+    // Assinaturas
+    +'<div style="margin-top:20px;page-break-inside:avoid">'
+    +'<h2>✍️ Assinaturas</h2>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:10px">'
+    +['Encarregado / Líder de Equipe','Supervisor'].map(function(role){
+      return '<div style="border-top:1px solid #1a1a18;padding-top:6px;text-align:center">'
+        +'<div style="font-size:11px;color:#555">'+role+'</div>'
+        +'<div style="font-size:10px;color:#aaa;margin-top:4px">Nome / RE:</div>'
+        +'</div>';
+    }).join('')
+    +'</div></div>'
+
+    +'<div class="footer">CENA — Diário de Bordo | '+nomeEq+' | '+fmtDt(data)+'</div>'
+    +'</body></html>';
+
+  // Abrir em nova janela e imprimir
+  var w=window.open('','_blank','width=900,height=700');
+  if(!w){progShowToast('⚠ Permita pop-ups para gerar o PDF');return;}
+  w.document.write(printHtml);
+  w.document.close();
+  setTimeout(function(){ w.focus(); w.print(); },600);
 }
 
 function _dbDetalheTab(btn, tab){
