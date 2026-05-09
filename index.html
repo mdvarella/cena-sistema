@@ -7510,37 +7510,50 @@ function renderDiario(){
     // Colaborador de campo sem equipe fixa — buscar na programação do dia
     if(!DEMO && usuarioLogado.id){
       var hoje2 = dataHoje();
-      var colabId = usuarioLogado.id;
-
-      // Mostrar mensagem de carregamento no header do diário
-      var dbNome = document.getElementById('db-equipe-nome');
-      if(dbNome) dbNome.textContent = '⏳ Buscando sua programação...';
 
       var _cids = (usuarioLogado.contrato_id||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
       var _cidFilter = _cids.length===1 ? 'contrato_id=eq.'+_cids[0] : 'contrato_id=in.('+_cids.join(',')+')';
 
-      // Buscar em composicao_dia onde este colaborador está programado hoje
+      var dbNome = document.getElementById('db-equipe-nome');
+      if(dbNome) dbNome.textContent = '⏳ Buscando sua programação...';
+
+      // Buscar colaborador pelo email ou usuario_id para obter o ID correto
       Promise.all([
         sbFetch('composicao_dia', {filters:['data=eq.'+hoje2]}),
         sbFetch('equipes', {filters:[_cidFilter,'status=eq.Ativo']}),
-        sbFetch('equipes_disp', {filters:['status=eq.Ativo']})
+        sbFetch('equipes_disp', {filters:['status=eq.Ativo']}),
+        sbFetch('colaboradores', {filters:[_cidFilter,'ativo=eq.true']})
       ]).then(function(res){
         var comps   = res[0]||[];
         var eqsPlpt = res[1]||[];
         var eqsDisp = res[2]||[];
+        var colabs  = res[3]||[];
 
         // Atualizar arrays globais
         eqsPlpt.forEach(function(e){ if(!equipes.find(function(x){return x.id===e.id;})) equipes.push(e); });
         eqsDisp.forEach(function(e){ if(!equipes_disp.find(function(x){return x.id===e.id;})) equipes_disp.push(e); });
+        colabs.forEach(function(c){ if(!colaboradores.find(function(x){return x.id===c.id;})) colaboradores.push(c); });
         comps.forEach(function(c){
           c.colaborador_ids = parseJsonField(c.colaborador_ids, []);
           if(!composicao_dia.find(function(x){return x.id===c.id;})) composicao_dia.push(c);
         });
 
+        // Determinar o ID do colaborador — pode ser usuario.id OU colaboradores.id
+        // Tentar pelo email/nome no array de colaboradores
+        var colabPorEmail = colabs.find(function(c){
+          return c.email===usuarioLogado.email
+            || c.usuario_id===usuarioLogado.id
+            || c.nome===usuarioLogado.nome;
+        });
+        var colabId = colabPorEmail ? colabPorEmail.id : usuarioLogado.id;
+        // Tentar ambos os IDs na busca
+        var idsParaBuscar = [colabId];
+        if(colabPorEmail && colabPorEmail.id !== usuarioLogado.id) idsParaBuscar.push(usuarioLogado.id);
+
         // Encontrar composição onde este colaborador está escalado hoje
         var compDoColaborador = comps.find(function(c){
           var ids = parseJsonField(c.colaborador_ids, []);
-          return ids.indexOf(colabId) >= 0;
+          return idsParaBuscar.some(function(bid){ return ids.indexOf(bid) >= 0; });
         });
 
         if(compDoColaborador){
@@ -15524,7 +15537,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.6.6',
+  numero: '3.6.7',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
@@ -24547,11 +24560,15 @@ function progSetVeiculo(eqId, data, veiculoObj){
     sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data]})
       .then(function(res){
         if(res&&res.length>0){
-          sbUpdate('prog_veiculos_dia', payload, 'equipe_id=eq.'+eqId+',data=eq.'+data);
+          // Atualizar registro existente pelo id
+          sbUpdate('prog_veiculos_dia', payload, 'id=eq.'+res[0].id);
         } else {
           sbInsert('prog_veiculos_dia', payload);
         }
-      }).catch(function(){});
+      }).catch(function(){
+        // Se falhou a busca, tentar inserir diretamente
+        sbInsert('prog_veiculos_dia', payload).catch(function(){});
+      });
   }
 }
 
