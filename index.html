@@ -3226,7 +3226,7 @@ async function carregarDados(){
     if(res3[0]&&res3[0].length)adiantamentos=res3[0];
     if(res3[1]&&res3[1].length)parcelas_adi=res3[1];
     var res4=await Promise.all([
-      sbFetch('equipes',{filters:['status=eq.Ativo']}),
+      sbFetch('equipes',{filters:['status=neq.Inativo']}),
       sbFetch('causas_codx',{filters:['ativa=eq.true']}),
       sbFetch('servicos_contrato'),
       sbFetch('prod_diaria',{order:'data.desc'}),
@@ -7460,7 +7460,7 @@ function renderDiario(){
     // Buscar em equipes_disp E equipes (PLPT) em paralelo
     Promise.all([
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
-      sbFetch('equipes',{filters:['status=eq.Ativo']})
+      sbFetch('equipes',{filters:['status=neq.Inativo']})
     ]).then(function(res){
       var resDisp  = res[0]||[];
       var resPlpt  = res[1]||[];
@@ -7609,19 +7609,42 @@ function renderDiario(){
 
         // Não está programado hoje — verificar se é PLPT (fluxo projeto)
         if(contratoTemFluxoProjeto(usuarioLogado.contrato_id)){
-          // Usuário PLPT sem programação — criar equipe mínima e mostrar diário PLPT
+          // Usar equipe_id do usuário ou da composição encontrada
+          var eqIdFallback = (compDoColaborador && compDoColaborador.equipe_id)
+            || usuarioLogado.equipe_id || null;
+
           if(!_dbEquipe){
+            // Tentar encontrar nome real da equipe nos arrays
+            var eqReal = equipes.find(function(e){return e.id===eqIdFallback;});
             _dbEquipe = {
-              id: usuarioLogado.equipe_id || 'sem-equipe',
-              nome: usuarioLogado.nome || 'Equipe PLPT',
-              tipo: 'PLPT',
-              codigo: '',
-              supervisor: '',
+              id:          eqIdFallback || 'sem-equipe',
+              nome:        (eqReal && (eqReal.nome_equipe||eqReal.nome)) || usuarioLogado.nome || 'Equipe PLPT',
+              tipo:        (eqReal && (eqReal.cargo||eqReal.tipo)) || 'PLPT',
+              codigo:      (eqReal && (eqReal.codigo||eqReal.nome_equipe)) || '',
+              supervisor:  (eqReal && eqReal.supervisor) || '',
               contrato_id: usuarioLogado.contrato_id,
-              _plpt: true
+              _plpt:       true
             };
           }
-          if(!_plptModalTurnoAberto) renderDiarioPlpt();
+
+          // Carregar veículos antes de renderizar
+          var _hojeFallback = dataHoje();
+          if(!DEMO && eqIdFallback){
+            sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqIdFallback,'data=eq.'+_hojeFallback]})
+              .then(function(rows){
+                if(rows&&rows.length){
+                  rows.forEach(function(r){
+                    _progVeiculos[r.equipe_id+'_'+_hojeFallback]={
+                      placa:r.placa,modelo:r.modelo,id:r.veiculo_id,
+                      justificativa:r.justificativa,alterado_por:r.alterado_por
+                    };
+                  });
+                }
+                if(!_plptModalTurnoAberto) renderDiarioPlpt();
+              }).catch(function(){ if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
+          } else {
+            if(!_plptModalTurnoAberto) renderDiarioPlpt();
+          }
           return;
         }
         // TMA sem programação — mostrar mensagem no HTML estático
@@ -15557,7 +15580,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.6.8',
+  numero: '3.7.0',
   data:   '02/05/2026',
   build:  '20260502-245',
   log: [
