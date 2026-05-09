@@ -8835,7 +8835,9 @@ function plptBaixaSubAba(projId, subAba){
 function plptSalvarBaixa(projId, idx, tipo){
   var pj = _plptDiario.projetoAtivo; if(!pj) return;
   var mat = (pj._materiais||[])[idx]; if(!mat) return;
-  var val = parseFloat((document.getElementById('baixa-'+tipo+'-'+idx)||{}).value)||0;
+  var rawVal = (document.getElementById('baixa-'+tipo+'-'+idx)||{}).value;
+  var val = rawVal===''?0:parseFloat(rawVal);
+  if(isNaN(val)) val=0;
   if(tipo==='viabilidade'){
     mat._qtdViab = val;
     if(!DEMO&&mat.id) sbUpdate('sot_materiais',{qtd_viabilizada:val},'id=eq.'+mat.id);
@@ -9120,94 +9122,169 @@ function plptExcluirAdicional(projId, idx, tipo){
 function plptGerarDePara(projId){
   var pj  = _plptDiario.projetoAtivo; if(!pj) return;
   var sot = (typeof sot_projetos!=='undefined'?sot_projetos.find(function(x){return x.id===projId;}):null)||{};
-  var mats = pj._materiais||[];
-  var adics = (pj._adicionais||[]).filter(function(a){return a.tipo==='material';});
-
-  // Saídas: material zerado ou reduzido
-  var saidas = mats.filter(function(m){
-    var viab = m._qtdViab!==undefined ? m._qtdViab : (m.qtd_viabilizada||0);
-    var prev = m.qtd||m.qtd_prevista||0;
-    return prev>0 && viab<prev;
-  }).map(function(m){
-    var viab = m._qtdViab!==undefined ? m._qtdViab : (m.qtd_viabilizada||0);
-    var prev = m.qtd||m.qtd_prevista||0;
-    return {desc:m.descricao||m.codigo_sap||'—', sap:m.codigo_sap||'—',
-      un:m.unidade||'UN', prev:prev, viab:viab,
-      tipo: viab===0?'Saída total':'Redução de '+prev+' → '+viab};
-  });
-
-  // Entradas: materiais adicionais não previstos
-  var entradas = adics.map(function(a){
-    return {desc:a.descricao||'—', sap:a.codigo_sap||'—',
-      un:a.unidade||'UN', qtd:a.qtd_solicitada||0,
-      obs:a.observacoes||''};
-  });
-
+  var mats  = pj._materiais  || [];
+  var ativs = pj._atividades || [];
+  var adics = pj._adicionais || [];
+  var adicMats  = adics.filter(function(a){return a.tipo==='material';});
+  var adicAtivs = adics.filter(function(a){return a.tipo==='atividade';});
   var hoje = dataHoje();
-  var saidaRows = saidas.map(function(s){
-    return '<tr><td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8">'+s.sap+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8">'+s.desc+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8;text-align:center">'+s.prev+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8;text-align:center">'+s.viab+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8;color:#A32D2D">'+s.tipo+'</td></tr>';
-  }).join('') || '<tr><td colspan="5" style="padding:8px;text-align:center;color:#aaa;font-size:11px">Nenhuma saída</td></tr>';
 
-  var entradaRows = entradas.map(function(e){
-    return '<tr><td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8">'+e.sap+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8">'+e.desc+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8;text-align:center" colspan="2">'+e.qtd+' '+e.un+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;border-bottom:.5px solid #f0efe8;color:#3B6D11">Entrada</td></tr>';
-  }).join('') || '<tr><td colspan="5" style="padding:8px;text-align:center;color:#aaa;font-size:11px">Nenhuma entrada adicional</td></tr>';
+  // ── Helpers ─────────────────────────────────────
+  function statusCor(st){
+    return {saida_total:'#A32D2D',reducao:'#854F0B',mantido:'#3B6D11',adicional:'#185FA5'}[st]||'#555';
+  }
+  function statusLabel(st){
+    return {saida_total:'Saída total',reducao:'Redução',mantido:'Mantido',adicional:'Adicional'}[st]||st;
+  }
+  function statusBg(st){
+    return {saida_total:'#FFF0F0',reducao:'#FFF8EC',mantido:'#F0FAF0',adicional:'#EBF4FD'}[st]||'#fff';
+  }
 
+  // ── Processar Materiais ──────────────────────────
+  var linhasMats = mats.map(function(m){
+    var prev = m.qtd||m.qtd_prevista||0;
+    var viab = m._qtdViab!==undefined ? m._qtdViab : (m.qtd_viabilizada||0);
+    var st = viab===0&&prev>0 ? 'saida_total' : viab<prev ? 'reducao' : 'mantido';
+    return {
+      sap:  m.codigo_sap||'—', desc: m.descricao||'—', un: m.unidade||'UN',
+      de: prev, para: viab, status: st, obs: ''
+    };
+  });
+  adicMats.forEach(function(a){
+    linhasMats.push({
+      sap: a.codigo_sap||'—', desc: a.descricao||'—', un: a.unidade||'UN',
+      de: 0, para: a.qtd_solicitada||0, status: 'adicional', obs: a.observacoes||''
+    });
+  });
+
+  // ── Processar Atividades ─────────────────────────
+  var linhasAtivs = ativs.map(function(a){
+    var prev = a.qtd_prevista||0;
+    var viab = a._qtdViab!==undefined ? a._qtdViab : (a.qtd_viabilizada||0);
+    var st = viab===0&&prev>0 ? 'saida_total' : viab<prev ? 'reducao' : 'mantido';
+    return {
+      cod: a.codigo||'—', desc: a.descricao||'—', un: a.unidade||'UN',
+      de: prev, para: viab, status: st, obs: ''
+    };
+  });
+  adicAtivs.forEach(function(a){
+    linhasAtivs.push({
+      cod: a.codigo_sap||'—', desc: a.descricao||'—', un: a.unidade||'UN',
+      de: 0, para: a.qtd_solicitada||0, status: 'adicional', obs: a.observacoes||''
+    });
+  });
+
+  // ── Resumo ───────────────────────────────────────
+  function contarStatus(linhas, st){ return linhas.filter(function(l){return l.status===st;}).length; }
+  var resMats  = {total:mats.length+adicMats.length,  saidas:contarStatus(linhasMats,'saida_total'),  reduc:contarStatus(linhasMats,'reducao'),  adic:adicMats.length};
+  var resAtivs = {total:ativs.length+adicAtivs.length, saidas:contarStatus(linhasAtivs,'saida_total'), reduc:contarStatus(linhasAtivs,'reducao'), adic:adicAtivs.length};
+
+  // ── Builder de tabela ────────────────────────────
+  function buildTabela(linhas, colCod, titulo, corTitulo){
+    if(!linhas.length) return '<div style="font-size:12px;color:#aaa;text-align:center;padding:.75rem">Nenhum item</div>';
+    return '<table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:#f9f9f7">'
+      +'<th style="padding:5px 6px;text-align:left;border-bottom:.5px solid #e0dfd8;color:'+corTitulo+'">'+colCod+'</th>'
+      +'<th style="padding:5px 6px;text-align:left;border-bottom:.5px solid #e0dfd8;color:'+corTitulo+'">Descrição</th>'
+      +'<th style="padding:5px 6px;text-align:center;border-bottom:.5px solid #e0dfd8;color:#854F0B">DE</th>'
+      +'<th style="padding:5px 6px;text-align:center;border-bottom:.5px solid #e0dfd8;color:#3B6D11">PARA</th>'
+      +'<th style="padding:5px 6px;text-align:center;border-bottom:.5px solid #e0dfd8;color:'+corTitulo+'">Unid.</th>'
+      +'<th style="padding:5px 6px;text-align:center;border-bottom:.5px solid #e0dfd8;color:'+corTitulo+'">Status</th>'
+      +'</tr></thead><tbody>'
+      +linhas.map(function(l){
+        var cor=statusCor(l.status), bg=statusBg(l.status);
+        var seta = l.status==='mantido'?'→':l.status==='adicional'?'⬆':l.para<l.de?'⬇':'→';
+        return '<tr style="background:'+bg+'">'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3;font-weight:600;color:#185FA5">'+(l.sap||l.cod||'—')+'</td>'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3">'+(l.desc)+(l.obs?'<br><span style="font-size:10px;color:#888;font-style:italic">'+l.obs+'</span>':'')+'</td>'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3;text-align:center;color:#854F0B;font-weight:600">'+(l.de||'—')+'</td>'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3;text-align:center;font-weight:700;color:'+cor+'">'+seta+' '+l.para+'</td>'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3;text-align:center;color:#888">'+l.un+'</td>'
+          +'<td style="padding:5px 6px;border-bottom:.5px solid #f5f5f3;text-align:center">'
+          +'<span style="background:'+bg+';color:'+cor+';border:.5px solid '+cor+';border-radius:4px;padding:1px 5px;font-size:10px;font-weight:600;white-space:nowrap">'+statusLabel(l.status)+'</span>'
+          +'</td></tr>';
+      }).join('')
+      +'</tbody></table>';
+  }
+
+  // ── Texto para copiar ────────────────────────────
+  function tabelaTexto(linhas, colCod){
+    return linhas.map(function(l){
+      var cod=l.sap||l.cod||'—';
+      return cod+' | '+l.desc+' | DE: '+l.de+' → PARA: '+l.para+' '+l.un+' | '+statusLabel(l.status)+(l.obs?' | '+l.obs:'');
+    }).join('\n');
+  }
   var textoSimples =
-    'DE PARA — AJUSTE DE PROJETO\n'
-    +'Projeto: '+(sot.codigo_cliente||sot.codigo||projId)+'\n'
+    '============================================\n'
+    +'DE PARA — VIABILIZAÇÃO DE PROJETO\n'
+    +'============================================\n'
+    +'Projeto : '+(sot.codigo_cliente||sot.codigo||projId)+'\n'
     +(sot.nome?'Descrição: '+sot.nome+'\n':'')
-    +'Data: '+hoje+'\n'
-    +(sot.cidade?'Cidade: '+sot.cidade+'\n':'')
-    +'\n--- SAÍDAS (redução/remoção de materiais) ---\n'
-    +saidas.map(function(s){return s.sap+' | '+s.desc+' | Prev: '+s.prev+' → Viab: '+s.viab+' | '+s.tipo;}).join('\n')
-    +'\n\n--- ENTRADAS (materiais adicionais) ---\n'
-    +entradas.map(function(e){return e.sap+' | '+e.desc+' | Qtd: '+e.qtd+' '+e.un+(e.obs?' | '+e.obs:'');}).join('\n')
-    +'\n\nTotal saídas: '+saidas.length+' | Total entradas: '+entradas.length;
+    +(sot.cidade?'Cidade   : '+sot.cidade+'\n':'')
+    +'Data    : '+hoje+'\n'
+    +'\n--- MATERIAIS ('+linhasMats.length+' itens) ---\n'
+    +(linhasMats.length?tabelaTexto(linhasMats,'Cód.SAP'):'Sem materiais')
+    +'\n\n--- ATIVIDADES ('+linhasAtivs.length+' itens) ---\n'
+    +(linhasAtivs.length?tabelaTexto(linhasAtivs,'Código'):'Sem atividades')
+    +'\n============================================\n'
+    +'Resumo Materiais : '+resMats.saidas+' saídas, '+resMats.reduc+' reduções, '+resMats.adic+' adicionais\n'
+    +'Resumo Atividades: '+resAtivs.saidas+' saídas, '+resAtivs.reduc+' reduções, '+resAtivs.adic+' adicionais\n';
 
-  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
-    +'<h3 style="margin:0">📋 De Para — Ajuste de Projeto</h3>'
-    +'<div style="display:flex;gap:6px">'
+  // ── HTML final ───────────────────────────────────
+  var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:680px;max-height:92vh;overflow-y:auto;padding:1.25rem">'
+
+    // Cabeçalho
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.75rem">'
+    +'<div>'
+    +'<h3 style="margin:0 0 2px 0;font-size:15px">📋 De Para — Viabilização</h3>'
+    +'<div style="font-size:11px;color:#888">'+(sot.codigo_cliente||sot.codigo||projId)+(sot.nome?' — '+sot.nome:'')+(sot.cidade?' | '+sot.cidade:'')+'</div>'
+    +'</div>'
+    +'<div style="display:flex;gap:6px;flex-shrink:0">'
     +'<button onclick="plptCopiarDePara()" class="btn btn-sm" style="font-size:11px">📋 Copiar</button>'
     +'<button onclick="window.print()" class="btn btn-sm" style="font-size:11px">🖨 Imprimir</button>'
     +'<button onclick="closeModal()" class="btn btn-sm" style="font-size:11px">✕</button>'
     +'</div></div>'
-    // Info do projeto
-    +'<div style="background:#f9f9f7;border-radius:8px;padding:.75rem;margin-bottom:.75rem;font-size:12px">'
-    +'<b>Projeto:</b> '+(sot.codigo_cliente||sot.codigo||projId)
-    +(sot.nome?' — '+sot.nome:'')
-    +(sot.cidade?' | '+sot.cidade:'')
-    +' | Data: '+hoje
+
+    // Resumo visual
+    +'<div style="display:flex;gap:6px;margin-bottom:1rem;flex-wrap:wrap">'
+    +[
+      {l:'Mat. Saídas',   v:resMats.saidas,  c:'#A32D2D', bg:'#FFF0F0'},
+      {l:'Mat. Reduções', v:resMats.reduc,   c:'#854F0B', bg:'#FFF8EC'},
+      {l:'Mat. Adicionais',v:resMats.adic,   c:'#185FA5', bg:'#EBF4FD'},
+      {l:'Ativ. Saídas',  v:resAtivs.saidas, c:'#A32D2D', bg:'#FFF0F0'},
+      {l:'Ativ. Reduções',v:resAtivs.reduc,  c:'#854F0B', bg:'#FFF8EC'},
+      {l:'Ativ. Adicionais',v:resAtivs.adic, c:'#185FA5', bg:'#EBF4FD'},
+    ].map(function(r){
+      return '<div style="background:'+r.bg+';color:'+r.c+';border:.5px solid '+r.c+';border-radius:6px;padding:3px 8px;font-size:11px;font-weight:600">'
+        +r.l+': '+r.v+'</div>';
+    }).join('')
     +'</div>'
-    // Tabela saídas
-    +'<div style="font-size:12px;font-weight:700;color:#A32D2D;margin-bottom:.25rem">⬇ Saídas ('+saidas.length+')</div>'
-    +'<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden">'
-    +'<thead><tr style="background:#FCEBEB;font-size:10px;color:#A32D2D">'
-    +'<th style="padding:6px 8px;text-align:left">Cód. SAP</th>'
-    +'<th style="padding:6px 8px;text-align:left">Descrição</th>'
-    +'<th style="padding:6px 8px;text-align:center">Prev.</th>'
-    +'<th style="padding:6px 8px;text-align:center">Viab.</th>'
-    +'<th style="padding:6px 8px;text-align:left">Tipo</th>'
-    +'</tr></thead><tbody>'+saidaRows+'</tbody></table>'
-    // Tabela entradas
-    +'<div style="font-size:12px;font-weight:700;color:#3B6D11;margin-bottom:.25rem">⬆ Entradas ('+entradas.length+')</div>'
-    +'<table style="width:100%;border-collapse:collapse;margin-bottom:1rem;border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden">'
-    +'<thead><tr style="background:#EAF3DE;font-size:10px;color:#3B6D11">'
-    +'<th style="padding:6px 8px;text-align:left">Cód. SAP</th>'
-    +'<th style="padding:6px 8px;text-align:left">Descrição</th>'
-    +'<th style="padding:6px 8px;text-align:center" colspan="2">Quantidade</th>'
-    +'<th style="padding:6px 8px;text-align:left">Tipo</th>'
-    +'</tr></thead><tbody>'+entradaRows+'</tbody></table>'
-    // Texto copiável oculto
-    +'<textarea id="depara-txt" style="position:absolute;opacity:0;pointer-events:none">'+textoSimples+'</textarea>'
+
+    // Seção Materiais
+    +'<div style="font-size:12px;font-weight:700;color:#854F0B;margin-bottom:.4rem;padding-bottom:.25rem;border-bottom:1.5px solid #854F0B">📦 Materiais</div>'
+    +'<div style="margin-bottom:1rem;overflow-x:auto">'
+    +buildTabela(linhasMats, 'Cód. SAP', 'Materiais', '#854F0B')
+    +'</div>'
+
+    // Seção Atividades
+    +(linhasAtivs.length
+      ? '<div style="font-size:12px;font-weight:700;color:#185FA5;margin-bottom:.4rem;padding-bottom:.25rem;border-bottom:1.5px solid #185FA5">⚡ Atividades</div>'
+        +'<div style="margin-bottom:1rem;overflow-x:auto">'
+        +buildTabela(linhasAtivs, 'Código', 'Atividades', '#185FA5')
+        +'</div>'
+      : ''
+    )
+
+    // Legenda
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:#888;margin-bottom:.5rem">'
+    +'<span>🔴 Saída total = qty viabilizada = 0</span>'
+    +'<span>🟠 Redução = qty viabilizada menor que projetada</span>'
+    +'<span>🟢 Mantido = mesma qty</span>'
+    +'<span>🔵 Adicional = não estava no projeto</span>'
+    +'</div>'
+
+    +'<textarea id="depara-txt" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px">'+textoSimples+'</textarea>'
     +'</div></div>';
 
   window._plptDeParaTxt = textoSimples;
@@ -9258,18 +9335,16 @@ function plptLancarAtividade(projId, idx){
     +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box">'+( a._obsViab||'')+'</textarea>'
     +'</div>'
 
-    // Seção Execução (bloqueada se sem viabilidade)
-    +'<div style="background:'+(temViab?'#EAF3DE':'#f5f5f3')+';border-radius:8px;padding:.75rem;margin-bottom:1rem">'
-    +'<div style="font-size:11px;font-weight:700;color:'+(temViab?'#3B6D11':'#aaa')+';margin-bottom:.5rem">2️⃣ Quantidade Executada '+(temViab?'':'<span style="font-weight:400">(preencha a viabilização primeiro)</span>')+'</div>'
+    // Seção Execução — sempre habilitada, pode ser zerada
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
+    +'<div style="font-size:11px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">2️⃣ Quantidade Executada</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem">'
     +'<input type="number" id="plpt-exec-qtd" min="0" step="0.01" value="'+exec+'" '
-    +(temViab?'':'disabled ')
-    +'style="flex:1;padding:.5rem;border:.5px solid '+(temViab?'#3B6D11':'#ddd')+';border-radius:6px;font-size:14px;text-align:center;background:'+(temViab?'#fff':'#eee')+'"/>'
+    +'style="flex:1;padding:.5rem;border:.5px solid #3B6D11;border-radius:6px;font-size:14px;text-align:center"/>'
     +'<span style="font-size:12px;color:#555">'+(a.unidade||'UN')+'</span>'
     +'</div>'
     +'<textarea id="plpt-exec-obs" placeholder="Observação da execução (opcional)..." '
-    +(temViab?'':'disabled ')
-    +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box;background:'+(temViab?'#fff':'#eee')+'">'+( a._obsExec||'')+'</textarea>'
+    +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box">'+( a._obsExec||'')+'</textarea>'
     +'</div>'
 
     +'<div style="display:flex;gap:8px">'
@@ -9278,15 +9353,19 @@ function plptLancarAtividade(projId, idx){
     +'</div>'
     +'</div></div>');
 
-  // Habilitar execução quando viabilização for preenchida
+  // Habilitar execução sempre (pode zerar)
   setTimeout(function(){
     var inpViab = document.getElementById('plpt-viab-qtd');
     var inpExec = document.getElementById('plpt-exec-qtd');
     var obsExec = document.getElementById('plpt-exec-obs');
+    // Desbloquear execução — permite lançar 0 na viabilidade
+    if(inpExec){ inpExec.disabled=false; inpExec.style.background='#fff'; inpExec.style.borderColor='#3B6D11'; }
+    if(obsExec){ obsExec.disabled=false; obsExec.style.background='#fff'; }
     if(inpViab) inpViab.oninput = function(){
-      var v = parseFloat(this.value)||0;
-      if(inpExec){ inpExec.disabled = v<=0; inpExec.style.background=v>0?'#fff':'#eee'; inpExec.style.borderColor=v>0?'#3B6D11':'#ddd'; }
-      if(obsExec){ obsExec.disabled = v<=0; obsExec.style.background=v>0?'#fff':'#eee'; }
+      var v = this.value===''?null:parseFloat(this.value);
+      var isZero = v===0;
+      // Ao zerar viab, zera exec automaticamente
+      if(isZero && inpExec) inpExec.value='0';
     };
   }, 50);
 }
@@ -9294,8 +9373,10 @@ function plptLancarAtividade(projId, idx){
 function plptConfirmarAtividade(projId, idx){
   var pj = _plptDiario.projetoAtivo; if(!pj||!pj._atividades) return;
   var a  = pj._atividades[idx]; if(!a) return;
-  var viab    = parseFloat((document.getElementById('plpt-viab-qtd')||{}).value)||0;
-  var exec    = parseFloat((document.getElementById('plpt-exec-qtd')||{}).value)||0;
+  var viab    = parseFloat((document.getElementById('plpt-viab-qtd')||{}).value);
+  var exec    = parseFloat((document.getElementById('plpt-exec-qtd')||{}).value);
+  if(isNaN(viab)) viab = 0;
+  if(isNaN(exec)) exec = 0;
   var obsViab = ((document.getElementById('plpt-viab-obs')||{}).value||'').trim();
   var obsExec = ((document.getElementById('plpt-exec-obs')||{}).value||'').trim();
 
@@ -9374,18 +9455,16 @@ function plptLancarMaterial(projId, idx){
     +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box">'+( m._obsViab||'')+'</textarea>'
     +'</div>'
 
-    // Aplicação
-    +'<div style="background:'+(temViab?'#EAF3DE':'#f5f5f3')+';border-radius:8px;padding:.75rem;margin-bottom:1rem">'
-    +'<div style="font-size:11px;font-weight:700;color:'+(temViab?'#3B6D11':'#aaa')+';margin-bottom:.5rem">2️⃣ Quantidade Aplicada '+(temViab?'':'<span style="font-weight:400">(preencha a viabilização primeiro)</span>')+'</div>'
+    // Aplicação — sempre habilitada, pode ser zerada
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
+    +'<div style="font-size:11px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">2️⃣ Quantidade Aplicada</div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem">'
     +'<input type="number" id="plpt-maplic-qtd" min="0" step="0.01" value="'+aplic+'" '
-    +(temViab?'':'disabled ')
-    +'style="flex:1;padding:.5rem;border:.5px solid '+(temViab?'#3B6D11':'#ddd')+';border-radius:6px;font-size:14px;text-align:center;background:'+(temViab?'#fff':'#eee')+'"/>'
+    +'style="flex:1;padding:.5rem;border:.5px solid #3B6D11;border-radius:6px;font-size:14px;text-align:center"/>'
     +'<span style="font-size:12px;color:#555">'+(m.unidade||'UN')+'</span>'
     +'</div>'
     +'<textarea id="plpt-maplic-obs" placeholder="Observação (opcional)..." '
-    +(temViab?'':'disabled ')
-    +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box;background:'+(temViab?'#fff':'#eee')+'">'+( m._obsAplic||'')+'</textarea>'
+    +'style="width:100%;padding:.4rem;border:.5px solid #ddd;border-radius:6px;font-size:12px;height:50px;resize:none;box-sizing:border-box">'+( m._obsAplic||'')+'</textarea>'
     +'</div>'
 
     +'<div style="display:flex;gap:8px">'
@@ -9398,10 +9477,12 @@ function plptLancarMaterial(projId, idx){
     var inpViab = document.getElementById('plpt-mviab-qtd');
     var inpAplic = document.getElementById('plpt-maplic-qtd');
     var obsAplic = document.getElementById('plpt-maplic-obs');
+    // Desbloquear — permite zerar
+    if(inpAplic){ inpAplic.disabled=false; inpAplic.style.background='#fff'; inpAplic.style.borderColor='#3B6D11'; }
+    if(obsAplic){ obsAplic.disabled=false; obsAplic.style.background='#fff'; }
     if(inpViab) inpViab.oninput = function(){
-      var v = parseFloat(this.value)||0;
-      if(inpAplic){ inpAplic.disabled=v<=0; inpAplic.style.background=v>0?'#fff':'#eee'; inpAplic.style.borderColor=v>0?'#3B6D11':'#ddd'; }
-      if(obsAplic){ obsAplic.disabled=v<=0; obsAplic.style.background=v>0?'#fff':'#eee'; }
+      var v = this.value===''?null:parseFloat(this.value);
+      if(v===0 && inpAplic) inpAplic.value='0';
     };
   }, 50);
 }
@@ -9409,8 +9490,10 @@ function plptLancarMaterial(projId, idx){
 function plptConfirmarMaterial(projId, idx){
   var pj = _plptDiario.projetoAtivo; if(!pj||!pj._materiais) return;
   var m  = pj._materiais[idx]; if(!m) return;
-  var viab    = parseFloat((document.getElementById('plpt-mviab-qtd')||{}).value)||0;
-  var aplic   = parseFloat((document.getElementById('plpt-maplic-qtd')||{}).value)||0;
+  var viab    = parseFloat((document.getElementById('plpt-mviab-qtd')||{}).value);
+  var aplic   = parseFloat((document.getElementById('plpt-maplic-qtd')||{}).value);
+  if(isNaN(viab)) viab = 0;
+  if(isNaN(aplic)) aplic = 0;
   var obsViab = ((document.getElementById('plpt-mviab-obs')||{}).value||'').trim();
   var obsAplic= ((document.getElementById('plpt-maplic-obs')||{}).value||'').trim();
 
@@ -16132,7 +16215,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.8.3',
+  numero: '3.8.5',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
