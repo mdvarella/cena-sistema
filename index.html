@@ -16571,7 +16571,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '3.9.8',
+  numero: '3.9.9',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -25505,6 +25505,7 @@ function ppRenderEquipeRow(eq, data, cid, maxSlots){
       ?'<button onclick="ppAutorizarHoraExtra(\''+eq.id+'\')" style="font-size:10px;padding:3px 6px;border:.5px solid #854F0B;color:#854F0B;background:#fff;border-radius:4px;cursor:pointer;white-space:nowrap">⚠ HE</button>'
       :confirmada
         ?'<button class="btn btn-sm" onclick="ppDesprogramarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap;color:#A32D2D;border-color:#A32D2D">↩ Desprog.</button>'
+         +'<button onclick="ppEnviarWhatsApp(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;border:.5px solid #25D366;color:#25D366;background:#fff;border-radius:4px;cursor:pointer;white-space:nowrap">📲</button>'
         :'<button class="btn btn-sm" onclick="ppAutoEscalarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
          +'<button class="btn btn-sm btn-pri" onclick="ppSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
     )+'</td></tr>';
@@ -25907,6 +25908,138 @@ function ppEqRemoverProjeto(eqId, projetoId){
   comp.projeto_ids=JSON.stringify(ids);
   if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{projeto_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
   progProjRenderQuadro();
+}
+
+function ppEnviarWhatsApp(eqId){
+  var data = progProjGetData();
+  var eq   = equipes.find(function(e){return e.id===eqId;});
+  if(!eq) return;
+
+  var comp = composicao_dia.find(function(c){
+    var cd=(c.data||'').split('T')[0];
+    return c.equipe_id===eqId && (cd===data||c.data===data);
+  });
+  if(!comp){ alert('Equipe sem composição para enviar.'); return; }
+
+  var ids = parseJsonField(comp.colaborador_ids,[]).filter(Boolean);
+  var cols = ids.map(function(id){
+    var col=colaboradores.find(function(c){return c.id===id;});
+    return col ? col.nome+' (RE '+( col.re||'—')+')' : 'Colaborador';
+  });
+
+  // Projetos do dia
+  var projIds = parseJsonField(comp.projeto_ids,[]).filter(Boolean);
+  var projs = projIds.map(function(pid){
+    var p = sot_projetos.find(function(x){return x.id===pid;})||{};
+    return (p.codigo_cliente||p.codigo||p.nome||pid);
+  });
+
+  // Veículo
+  var veic = progGetVeiculo(eqId, data);
+  var veicStr = veic ? (veic.placa+' — '+(veic.modelo||'')) : '—';
+
+  var urlSistema = window.location.href.split('?')[0];
+  var ds = ['Domingo','Segunda','Terca','Quarta','Quinta','Sexta','Sabado'];
+  var diaSemana = ds[new Date(data+'T12:00:00').getDay()];
+  var dataFmt = fmtD(data);
+  var NL='%0A', B='*', T='-';
+
+  var turno = eq.turno_tipo||calcularTurnoTipo(eq.hora_inicio||'');
+  var horario = eq.hora_inicio ? eq.hora_inicio+(eq.hora_fim?'–'+eq.hora_fim:'') : '';
+
+  var msg = B+'CENA — Programação de Projetos'+B+NL+NL;
+  msg += 'Data: '+B+diaSemana+', '+dataFmt+B+NL;
+  msg += 'Equipe: '+B+eq.nome_equipe+B+NL;
+  msg += 'Turno: '+turno+(horario?' ('+horario+')':'')+NL;
+  if(eq.escala) msg += 'Escala: '+eq.escala+NL;
+  msg += 'Veículo: '+veicStr+NL+NL;
+
+  if(cols.length){
+    msg += B+'Composição:'+B+NL;
+    cols.forEach(function(n,i){ msg += (i+1)+'. '+n+NL; });
+    msg += NL;
+  }
+
+  if(projs.length){
+    msg += B+'Projetos do dia:'+B+NL;
+    projs.forEach(function(p,i){ msg += (i+1)+'. '+p+NL; });
+    msg += NL;
+  }
+
+  msg += 'Acesse o sistema:'+NL+urlSistema+NL;
+  msg += 'Faça login e registre seu turno.';
+
+  window.open('https://wa.me/?text='+msg,'_blank');
+}
+
+function ppEnviarWhatsAppTodos(){
+  var data = progProjGetData();
+  var cid  = progProjGetCid();
+  if(!cid){ alert('Selecione um contrato primeiro.'); return; }
+
+  var eqs = equipes.filter(function(e){
+    return e.status==='Ativo' && e.contrato_id===cid;
+  });
+  var programadas = eqs.filter(function(eq){
+    return composicao_dia.some(function(c){
+      var cd=(c.data||'').split('T')[0];
+      return c.equipe_id===eq.id && (cd===data||c.data===data) && c.confirmada;
+    });
+  });
+
+  if(!programadas.length){ alert('Nenhuma equipe confirmada para enviar.'); return; }
+
+  var ds = ['Domingo','Segunda','Terca','Quarta','Quinta','Sexta','Sabado'];
+  var diaSemana = ds[new Date(data+'T12:00:00').getDay()];
+  var dataFmt = fmtD(data);
+  var urlSistema = window.location.href.split('?')[0];
+  var NL='%0A', B='*';
+
+  var msg = B+'CENA — Programação de Projetos'+B+NL;
+  msg += 'Data: '+B+diaSemana+', '+dataFmt+B+NL;
+  msg += programadas.length+' equipe(s) programada(s)'+NL+NL;
+
+  // Agrupar por turno
+  var porTurno = {};
+  programadas.forEach(function(eq){
+    var turno = eq.turno_tipo||calcularTurnoTipo(eq.hora_inicio||'')||'Manhã';
+    if(!porTurno[turno]) porTurno[turno]=[];
+    porTurno[turno].push(eq);
+  });
+
+  ['Manhã','Tarde','Noite'].forEach(function(turno){
+    var eqsT = porTurno[turno]||[];
+    if(!eqsT.length) return;
+    msg += B+'Turno '+turno+B+NL;
+    eqsT.forEach(function(eq){
+      var comp = composicao_dia.find(function(c){
+        var cd=(c.data||'').split('T')[0];
+        return c.equipe_id===eq.id&&(cd===data||c.data===data);
+      });
+      var ids = comp?parseJsonField(comp.colaborador_ids,[]).filter(Boolean):[];
+      var veic = progGetVeiculo(eq.id, data);
+      var projIds = comp?parseJsonField(comp.projeto_ids,[]).filter(Boolean):[];
+      var projs = projIds.map(function(pid){
+        var p=sot_projetos.find(function(x){return x.id===pid;})||{};
+        return (p.codigo_cliente||p.codigo||p.nome||'');
+      }).filter(Boolean);
+
+      msg += B+eq.nome_equipe+B;
+      if(eq.hora_inicio) msg += ' ('+eq.hora_inicio+(eq.hora_fim?'–'+eq.hora_fim:'')+')';
+      msg += NL;
+      if(veic) msg += '🚗 '+veic.placa+(veic.modelo?' — '+veic.modelo:'')+NL;
+      if(projs.length) msg += '📋 '+projs.join(', ')+NL;
+      ids.forEach(function(id){
+        var col=colaboradores.find(function(c){return c.id===id;});
+        if(col) msg += '- '+col.nome+(col.re?' (RE '+col.re+')':'')+NL;
+      });
+      msg += NL;
+    });
+  });
+
+  msg += 'Acesse: '+urlSistema+NL+'Faça login e registre seu turno.';
+
+  window.open('https://wa.me/?text='+msg,'_blank');
 }
 
 function ppAutoEscalarEquipe(eqId){
@@ -34333,6 +34466,7 @@ return [a,b,c,d].map(function(n){return ('00000000'+(n<0?n+4294967296:n).toStrin
         </select>
         <button class="btn btn-pri" onclick="progProjAutoEscalar()">⚡ Auto-escalar</button>
         <button class="btn" onclick="progProjVerificarSemEscala()" style="color:#854F0B;border-color:#854F0B">⚠ Sem escala</button>
+        <button class="btn" onclick="ppEnviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366">📲 WhatsApp Todos</button>
       </div>
     </div>
     <!-- Filtro por tipo de equipe -->
