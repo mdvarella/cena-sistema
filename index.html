@@ -14113,9 +14113,22 @@ function projMostrarTab(tab){
     verificarContratoObras('fa896e2c-7c2c-47f4-a696-e86d62102db7');
     window._filtroContrato = 'fa896e2c-7c2c-47f4-a696-e86d62102db7';
     sotInit();
+  } else if(tab==='plpt'){
+    coAbrirContrato('430df4d5-6d0a-459f-ae82-92546ff9e57f');
   } else if(cid){
-    // Todos os contratos de obras abrem a interface completa (coAbrirContrato)
-    coAbrirContrato(cid);
+    if(!DEMO && isContratoObras(cid)){
+      sbFetchPaged('sot_projetos',{filters:['contrato_id=eq.'+cid],order:'criado_em.desc'}).then(function(rows){
+        if(rows&&rows.length){
+          rows.forEach(function(p){
+            var idx=sot_projetos.findIndex(function(x){return x.id===p.id;});
+            if(idx>=0) sot_projetos[idx]=p; else sot_projetos.push(p);
+          });
+        }
+        renderProjetosPorContrato(tab, cid);
+      }).catch(function(){ renderProjetosPorContrato(tab, cid); });
+    } else {
+      renderProjetosPorContrato(tab, cid);
+    }
   }
 }
 
@@ -14124,86 +14137,98 @@ function renderProjetosPorContrato(tab, contrato_id){
   var wrap = document.getElementById('proj-lista-'+tab);
   if(!wrap) return;
 
-  // Popular select de status
   var stSel = document.getElementById('fil-proj-status-'+tab);
   if(stSel && stSel.options.length <= 1){
     ['Planejado','Em execução','Concluído','Suspenso','Cancelado'].forEach(function(s){
       var o=document.createElement('option');o.value=s;o.textContent=s;stSel.appendChild(o);
     });
   }
-  var stFil = stSel ? stSel.value : '';
 
-  // ETD ou contrato não mapeado — mostrar aviso
   if(!contrato_id){
-    wrap.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">'
-      + '<div style="font-size:32px;margin-bottom:.5rem">⚠</div>'
-      + '<b>Contrato ETD não localizado no banco.</b><br>'
-      + '<span style="font-size:12px">Informe o número do contrato para vincular esta aba.</span>'
-      + '</div>';
+    wrap.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Contrato não localizado no banco.</div>';
     return;
   }
 
-  // Contratos de obras usam sot_projetos; outros usam projetos
-  var fonte = isContratoObras(contrato_id) ? sot_projetos : projetos;
+  var stFil  = stSel ? stSel.value : '';
+  var buscaEl = document.getElementById('fil-proj-busca-'+tab);
+  var busca   = buscaEl ? (buscaEl.value||'').toLowerCase() : '';
+
+  var isSot = isContratoObras(contrato_id);
+  var fonte  = isSot ? sot_projetos : projetos;
+
   var rows = fonte.filter(function(p){
     if(p.contrato_id !== contrato_id) return false;
     if(stFil && p.status !== stFil) return false;
+    if(busca && (p.nome||'').toLowerCase().indexOf(busca)<0 &&
+       (p.codigo||p.codigo_cliente||'').toLowerCase().indexOf(busca)<0) return false;
     return true;
   });
 
+  // Métricas
+  var total  = rows.length;
+  var emExec = rows.filter(function(p){return p.status==='Em execução'||p.status==='Executado';}).length;
+  var concl  = rows.filter(function(p){return p.status==='Concluído'||p.status==='Faturado';}).length;
+  var valPrev= rows.reduce(function(s,p){return s+(p.valor_previsto||0);},0);
+
+  var metrHtml = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:.75rem">'
+    +[{l:'Total',v:total,c:'#555'},{l:'Em execução',v:emExec,c:'#3B6D11'},
+      {l:'Concluídos',v:concl,c:'#085041'},{l:'Valor previsto',v:'R$\u00a0'+fmtMoeda(valPrev),c:'#185FA5'}]
+    .map(function(m){
+      return '<div style="background:#f9f9f7;border-radius:8px;padding:.6rem;text-align:center">'
+        +'<div style="font-size:10px;color:#888">'+m.l+'</div>'
+        +'<div style="font-size:18px;font-weight:700;color:'+m.c+'">'+m.v+'</div></div>';
+    }).join('')+'</div>';
+
   if(!rows.length){
-    var _cid_vazio = contrato_id;
-    wrap.innerHTML = '<div style="padding:3rem;text-align:center;color:#aaa">'
-      + 'Nenhum projeto encontrado.<br><br>'
-      + '<button class="btn btn-pri" id="proj-novo-btn-'+tab+'">+ Criar primeiro projeto</button>'
-      + '</div>';
-    var nb = document.getElementById('proj-novo-btn-'+tab);
-    if(nb) nb.onclick = function(){ openNovoProjetoContrato(_cid_vazio); };
+    wrap.innerHTML = metrHtml
+      +'<div style="padding:3rem;text-align:center;color:#aaa">Nenhum projeto encontrado.<br><br>'
+      +'<button class="btn btn-pri" id="proj-novo-btn-'+tab+'">+ Criar primeiro projeto</button></div>';
+    var nb=document.getElementById('proj-novo-btn-'+tab);
+    if(nb)nb.onclick=function(){openNovoProjetoContrato(contrato_id);};
     return;
   }
 
-  // Adicionar banner de acesso ao painel
-  if(isContratoObras(contrato_id)){
-    var bannerEl = document.getElementById('proj-banner-painel-'+tab);
-    if(!bannerEl){
-      var cont=contratos.find(function(c){return c.id===contrato_id;})||{nome:''};
-      var bannerWrap=document.createElement('div');
-      bannerWrap.id='proj-banner-painel-'+tab;
-      bannerWrap.style.cssText='background:#1a1a18;color:#fff;padding:.6rem 1rem;border-radius:8px;margin-bottom:.75rem;display:flex;align-items:center;justify-content:space-between';
-      bannerWrap.innerHTML='<span style="font-size:13px">🏗 <b>'+cont.nome+'</b> — Painel completo</span>'
-        +'<button id="proj-btn-painel-'+tab+'" style="background:#fff;color:#1a1a18;border:none;border-radius:6px;padding:4px 12px;font-size:12px;font-weight:700;cursor:pointer">Abrir painel →</button>';
-      var parentDiv = document.getElementById('proj-tab-content-'+tab);
-      if(parentDiv) parentDiv.insertBefore(bannerWrap, parentDiv.firstChild);
-      // Vincular agora que o elemento existe
-      var bb=document.getElementById('proj-btn-painel-'+tab);
-      if(bb)bb.onclick=function(){coAbrirContrato(contrato_id);};
-    }
-  }
-
-  wrap.innerHTML = '<div style="overflow-x:auto"><table class="tbl tbl-responsive">'
-    + '<thead><tr><th>Código</th><th>Nome</th><th>Início</th><th>Fim</th><th>Status</th><th></th></tr></thead>'
-    + '<tbody>'
-    + rows.map(function(p){
-        var stCor={Planejado:'#185FA5',  'Em execução':'#3B6D11',
-          Concluído:'#085041', Suspenso:'#854F0B', Cancelado:'#A32D2D'}[p.status]||'#555';
+  // Cards ricos para contratos SOT / Obras
+  if(isSot){
+    wrap.innerHTML = metrHtml
+      +'<div style="display:flex;flex-direction:column;gap:.75rem">'
+      +rows.map(sotRenderCardProjeto).join('')+'</div>';
+    rows.forEach(function(p){
+      var el=document.getElementById('sot-card-'+p.id);
+      if(el)el.onclick=function(e){if(e.target.tagName==='BUTTON')return;sotAbrirProjeto(p.id);};
+      var btnSt=document.getElementById('sot-btn-status-'+p.id);
+      if(btnSt)btnSt.onclick=function(e){e.stopPropagation();sotAlterarStatus(p.id);};
+    });
+  } else {
+    // Tabela para contratos não SOT
+    var hoje=dataHoje();
+    wrap.innerHTML = metrHtml
+      +'<div style="overflow-x:auto"><table class="tbl tbl-responsive">'
+      +'<thead><tr><th>Código</th><th>Nome</th><th>Cliente</th><th>Início</th><th>Prazo</th><th>Status</th><th></th></tr></thead>'
+      +'<tbody>'
+      +rows.map(function(p){
+        var stCor={Planejado:'#185FA5','Em execução':'#3B6D11',Concluído:'#085041',
+          Suspenso:'#854F0B',Cancelado:'#A32D2D'}[p.status]||'#555';
+        var atrasado=p.data_fim&&p.data_fim<hoje&&p.status!=='Concluído'&&p.status!=='Cancelado';
         return '<tr>'
           +'<td style="font-family:monospace;font-size:12px">'+(p.codigo||'—')+'</td>'
           +'<td style="font-weight:500">'+p.nome+'</td>'
+          +'<td style="font-size:12px;color:#888">'+(p.cliente||'—')+'</td>'
           +'<td style="font-size:12px">'+(p.data_inicio?fmtD(p.data_inicio):'—')+'</td>'
-          +'<td style="font-size:12px">'+(p.data_fim?fmtD(p.data_fim):'—')+'</td>'
+          +'<td style="font-size:12px;color:'+(atrasado?'#A32D2D':'inherit')+'">'
+            +(p.data_fim?fmtD(p.data_fim):'—')+(atrasado?' ⚠':'')+'</td>'
           +'<td><span style="background:'+stCor+'22;color:'+stCor+';border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+(p.status||'—')+'</span></td>'
           +'<td><button class="btn btn-sm" data-pid="'+p.id+'">Ver</button></td>'
           +'</tr>';
       }).join('')
-    + '</tbody></table></div>';
-
-  // Vincular botões "Ver" dos projetos
-  setTimeout(function(){
-    rows.forEach(function(p){
-      var btns = wrap.querySelectorAll('[data-pid="'+p.id+'"]');
-      btns.forEach(function(b){b.onclick=function(){abrirDetalhesProjeto(p.id);};});
-    });
-  },50);
+      +'</tbody></table></div>';
+    setTimeout(function(){
+      rows.forEach(function(p){
+        var btns=wrap.querySelectorAll('[data-pid="'+p.id+'"]');
+        btns.forEach(function(b){b.onclick=function(){abrirDetalhesProjeto(p.id);};});
+      });
+    },50);
+  }
 }
 
 function openNovoProjetoContrato(contrato_id){
@@ -16746,7 +16771,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.1.8',
+  numero: '4.1.9',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
