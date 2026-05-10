@@ -10491,16 +10491,31 @@ function _dbIniciarTurnoConfirmado(){
 
   sessoes_disp.push(_dbSessao);
   if(!DEMO && !(_dbEquipe&&_dbEquipe._plpt)){
-    // sessoes_disponibilidade é só para TMA — PLPT usa plpt_sessoes_dia
-    sbInsert('sessoes_disponibilidade',_semId(_dbSessao)).then(function(res){
+    var payloadSessao = {
+      equipe_id:         _dbSessao.equipe_id,
+      data:              _dbSessao.data,
+      login_ts:          new Date(_dbSessao.login_ts).toISOString(),
+      almoco_ts:         null,
+      retorno_ts:        null,
+      logout_ts:         null,
+      km_inicial:        _dbSessao.km_inicial||0,
+      placa:             _dbSessao.placa||'',
+      minutos_faturados: 0,
+      eventos:           JSON.stringify(_dbSessao.eventos||[])
+    };
+    sbInsert('sessoes_disponibilidade', payloadSessao).then(function(res){
       if(res&&res[0]&&res[0].id){
         _dbSessao.id=res[0].id;
         var local=sessoes_disp.find(function(x){return x.equipe_id===_dbSessao.equipe_id&&x.data===_dbSessao.data;});
-        if(local)local.id=res[0].id;
+        if(local) local.id=res[0].id;
+        // Salvar qualquer atualização que aconteceu antes do UUID chegar
+        if(_dbSessao._pendingSave){
+          dbSalvarSessao();
+          delete _dbSessao._pendingSave;
+        }
       }
     }).catch(function(e){console.error('Erro ao salvar sessão:',e);});
   } else if(!DEMO && _dbEquipe&&_dbEquipe._plpt){
-    // PLPT: gerar UUID local e salvar em plpt_sessoes_dia depois
     _dbSessao.id = 'plpt_sess_'+_dbEquipe.id+'_'+dataHoje();
   }
 
@@ -10536,6 +10551,22 @@ function _dbIniciarTurnoConfirmado(){
   renderDiarioPlpt();
 }
 
+// ── Salvar estado atual da sessão TMA no banco ──────────────────────────
+function dbSalvarSessao(){
+  if(DEMO || !_dbSessao) return;
+  if(_dbEquipe && _dbEquipe._plpt) return;
+  if(!isUUID(_dbSessao.id)){
+    _dbSessao._pendingSave = true;
+    return;
+  }
+  var payload = { eventos: JSON.stringify(_dbSessao.eventos||[]), minutos_faturados: _dbSessao.minutos_faturados||0 };
+  if(_dbSessao.almoco_ts)  payload.almoco_ts  = new Date(_dbSessao.almoco_ts).toISOString();
+  if(_dbSessao.retorno_ts) payload.retorno_ts = new Date(_dbSessao.retorno_ts).toISOString();
+  if(_dbSessao.logout_ts)  payload.logout_ts  = new Date(_dbSessao.logout_ts).toISOString();
+  if(_dbSessao.km_final!=null) payload.km_final = _dbSessao.km_final;
+  sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+_dbSessao.id);
+}
+
 function dbAlmoco(){
   if(!_dbSessao||_dbSessao.almoco_ts)return;
   if(_dbOrdemAtual&&_dbOrdemAtual.status==='em_andamento'){
@@ -10544,7 +10575,7 @@ function dbAlmoco(){
   _dbSessao.almoco_ts=Date.now();
   if(!_dbSessao.eventos)_dbSessao.eventos=[];
   _dbSessao.eventos.push({tipo:'Início do almoço',ts:_dbSessao.almoco_ts});
-  if(!DEMO&&isUUID(_dbSessao.id))sbUpdate('sessoes_disponibilidade',{almoco_ts:_dbSessao.almoco_ts,eventos:JSON.stringify(_dbSessao.eventos)},'id=eq.'+_dbSessao.id);
+  dbSalvarSessao();
   clearInterval(_dbTimer);
   dbAtualizarBotoes();
   var sl=document.getElementById('db-status-label');if(sl)sl.textContent='Almoço';
@@ -10573,7 +10604,7 @@ function dbRetomar(){
   if(!_dbSessao.eventos)_dbSessao.eventos=[];
   var durMin=Math.round((_dbSessao.retorno_ts-_dbSessao.almoco_ts)/60000);
   _dbSessao.eventos.push({tipo:'Retorno do almoço',ts:_dbSessao.retorno_ts,obs:durMin+' min de almoço'});
-  if(!DEMO&&isUUID(_dbSessao.id))sbUpdate('sessoes_disponibilidade',{retorno_ts:_dbSessao.retorno_ts,eventos:JSON.stringify(_dbSessao.eventos)},'id=eq.'+_dbSessao.id);
+  dbSalvarSessao();
   clearInterval(_dbAlmocoTimer);
   // Esconder timer de almoço
   var elAT=document.getElementById('db-almoco-timer');
@@ -10700,12 +10731,7 @@ function _dbEncerrarTurnoConfirmado(kmFim, obs){
   });
   if(turno){turno.km_final=kmFim;turno.status='encerrado';}
 
-  if(!DEMO&&isUUID(_dbSessao.id))sbUpdate('sessoes_disponibilidade',{
-    logout_ts:_dbSessao.logout_ts,
-    minutos_faturados:_dbSessao.minutos_faturados,
-    km_final:kmFim,
-    eventos:JSON.stringify(_dbSessao.eventos)
-  },'id=eq.'+_dbSessao.id);
+  dbSalvarSessao();
 
   dbAtualizarBotoes();
   var sl=document.getElementById('db-status-label');if(sl)sl.textContent='Dia encerrado';
@@ -10751,8 +10777,7 @@ function dbConfirmarReabrir(){
     });
   }
   if(!DEMO&&isUUID(_dbSessao.id)) sbUpdate('sessoes_disponibilidade',{
-    logout_ts: null,
-    km_final: null,
+    logout_ts: null, km_final: null,
     eventos: JSON.stringify(_dbSessao.eventos||[])
   },'id=eq.'+_dbSessao.id);
   // Esconder botão reabrir
@@ -16571,7 +16596,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.0.1',
+  numero: '4.0.2',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
