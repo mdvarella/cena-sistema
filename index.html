@@ -3170,6 +3170,12 @@ function setModal(html){
   ma.innerHTML=html;
   ma.style.pointerEvents=html?'auto':'none';
   if(html){
+    // Ordenar selects do modal alfabeticamente
+    setTimeout(function(){
+      ma.querySelectorAll('select:not([data-nosort])').forEach(function(sel){
+        sortarOpts(sel, true);
+      });
+    }, 30);
     // Se estiver no diário de bordo, scrollar para o modal
     var pgDiario=document.getElementById('pg-diario');
     var isDiario = pgDiario && !pgDiario.classList.contains('hidden');
@@ -3249,6 +3255,12 @@ async function carregarDados(){
     if(res5[1]&&res5[1].length)tipos_equipe=res5[1];
     if(res5[2]&&res5[2].length)equipes_disp=res5[2];
     if(res5[3]&&res5[3].length)colaboradores=res5[3];
+    // Garantir ordenação alfabética dos arrays principais
+    colaboradores.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'}); });
+    equipes.sort(function(a,b){ return (a.nome_equipe||'').localeCompare(b.nome_equipe||'','pt-BR',{sensitivity:'base'}); });
+    equipes_disp.sort(function(a,b){ return (a.nome||a.codigo||'').localeCompare(b.nome||b.codigo||'','pt-BR',{sensitivity:'base'}); });
+    fornecedores.sort(function(a,b){ return (a.razao_social||a.nome||'').localeCompare(b.razao_social||b.nome||'','pt-BR',{sensitivity:'base'}); });
+    contratos.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'}); });
     // Módulo obras e campo
     var res6=await Promise.all([
       sbFetch('projetos_obra',{order:'criado_em.desc'}),
@@ -5516,6 +5528,34 @@ async function permSalvarTodas(){
   progShowToast('✅ Permissões salvas com sucesso!');
 }
 
+// ── Ordenação alfabética de selects ─────────────────────────────────────
+function sortarOpts(selectEl, manterPrimeiro){
+  if(!selectEl) return;
+  var opts = Array.from(selectEl.options);
+  var inicio = (manterPrimeiro!==false && opts.length && !opts[0].value) ? 1 : 0;
+  var fixos  = opts.slice(0, inicio);
+  var paraOrdenar = opts.slice(inicio);
+  paraOrdenar.sort(function(a,b){
+    return (a.text||'').localeCompare((b.text||''), 'pt-BR', {sensitivity:'base'});
+  });
+  // Limpar e repopular
+  while(selectEl.options.length) selectEl.remove(0);
+  fixos.concat(paraOrdenar).forEach(function(o){ selectEl.appendChild(o); });
+}
+
+function sortarSelectId(id, manterPrimeiro){
+  sortarOpts(document.getElementById(id), manterPrimeiro);
+}
+
+// Ordenar todos os selects de uma vez (chame após renders)
+function sortarTodosSelects(){
+  var sels = document.querySelectorAll('select.inp, select.select, .modal select, .fg select');
+  sels.forEach(function(sel){
+    if(sel.dataset.nosort) return; // [data-nosort] para excluir
+    sortarOpts(sel, true);
+  });
+}
+
 function renderCadastros(){
   var CAD_CARDS = [
     {id:'usuarios',       icon:'👤', titulo:'Usuários do sistema'},
@@ -6766,9 +6806,10 @@ function _buildSupOpts(cid, selected){
     return '<option value="">Nenhum supervisor cadastrado para este contrato</option>';
   }
   return '<option value="">Selecione o supervisor...</option>'
-    + sups.map(function(s){
-        return '<option value="'+s+'"'+(s===selected?' selected':'')+'>'+s+'</option>';
-      }).join('');
+    + sups.slice().sort(function(a,b){ return a.localeCompare(b,'pt-BR',{sensitivity:'base'}); })
+        .map(function(s){
+          return '<option value="'+s+'"'+(s===selected?' selected':'')+'>'+s+'</option>';
+        }).join('');
 }
 function openNovaEquipe(){
   var contOpts=contratos.map(function(c){return '<option value="'+c.id+'">'+c.codigo+' — '+c.nome+'</option>';}).join('');
@@ -10650,34 +10691,42 @@ function dbSalvarSessao(){
 }
 
 function dbAlmoco(){
-  if(!_dbSessao||_dbSessao.almoco_ts)return;
-  if(_dbOrdemAtual&&_dbOrdemAtual.status==='em_andamento'){
-    alert('Encerre a ordem atual antes de ir para o almoço.');return;
+  if(!_dbSessao){
+    progShowToast('⚠ Nenhuma sessão ativa. Inicie o turno primeiro.');
+    return;
   }
-  _dbSessao.almoco_ts=Date.now();
-  if(!_dbSessao.eventos)_dbSessao.eventos=[];
-  _dbSessao.eventos.push({tipo:'Início do almoço',ts:_dbSessao.almoco_ts});
+  if(_dbSessao.almoco_ts){
+    progShowToast('⚠ Almoço já registrado nesta sessão.');
+    return;
+  }
+  if(_dbOrdemAtual && ['em_andamento','no_local','a_caminho','encerrando'].indexOf(_dbOrdemAtual.status)>=0){
+    if(!confirm('Existe uma OS em andamento. Deseja ir para o almoço mesmo assim?')) return;
+  }
+  _dbSessao.almoco_ts = Date.now();
+  if(!_dbSessao.eventos) _dbSessao.eventos = [];
+  _dbSessao.eventos.push({tipo:'Início do almoço', ts:_dbSessao.almoco_ts});
   dbSalvarSessao();
-  clearInterval(_dbTimer);
+  if(typeof _dbTimer !== 'undefined') clearInterval(_dbTimer);
   dbAtualizarBotoes();
-  var sl=document.getElementById('db-status-label');if(sl)sl.textContent='Almoço';
+  var sl = document.getElementById('db-status-label'); if(sl) sl.textContent = 'Almoço';
   renderDbHistoricoSessao();
-  // Mostrar timer regressivo de almoço
-  var elTimer=document.getElementById('db-almoco-timer');
-  if(elTimer)elTimer.style.display='';
-  // Contar 55 minutos
-  var fim=_dbSessao.almoco_ts+55*60*1000;
-  _dbAlmocoTimer=setInterval(function(){
-    var restante=fim-Date.now();
-    var el=document.getElementById('db-almoco-timer');
-    if(restante<=0){
+  // Timer regressivo de 55 min
+  var elTimer = document.getElementById('db-almoco-timer');
+  if(elTimer) elTimer.style.display = '';
+  var fim = _dbSessao.almoco_ts + 55*60*1000;
+  if(typeof _dbAlmocoTimer !== 'undefined') clearInterval(_dbAlmocoTimer);
+  _dbAlmocoTimer = setInterval(function(){
+    var restante = fim - Date.now();
+    var el = document.getElementById('db-almoco-timer');
+    if(restante <= 0){
       clearInterval(_dbAlmocoTimer);
-      if(el){el.textContent='🍽 Almoço encerrado — clique em Retomar';el.style.background='#A32D2D';}
+      if(el){el.textContent = '🍽 Almoço encerrado — clique em Retomar'; el.style.background = '#A32D2D';}
       return;
     }
-    var m=Math.floor(restante/60000);var s=Math.floor((restante%60000)/1000);
-    if(el)el.textContent='🍽 Almoço — '+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+' restantes';
-  },1000);
+    var m = Math.floor(restante/60000); var s = Math.floor((restante%60000)/1000);
+    if(el) el.textContent = '🍽 Almoço — '+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+' restantes';
+  }, 1000);
+  progShowToast('🍽 Almoço registrado');
 }
 
 function dbRetomar(){
@@ -16692,7 +16741,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.1.4',
+  numero: '4.1.5',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
