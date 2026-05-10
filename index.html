@@ -8238,14 +8238,16 @@ function renderDiario(){
       _plptDiario.prog = prog;
 
       if(!prog){
-        // Sem plpt_prog_dia — buscar colaboradores E sessão do dia (de sessoes_disponibilidade)
+        // Sem plpt_prog_dia — buscar colaboradores E sessão do dia
         Promise.all([
           sbFetch('colaboradores',{filters:['contrato_id=eq.'+CID_FETCH,'equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
-          sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje,'logout_ts=is.null']}),
+          sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc',limit:1}),
           sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]})
         ]).then(function(resArr){
           var cols = resArr[0]||[];
-          var sessRow = resArr[1]&&resArr[1][0] ? resArr[1][0] : null;
+          // Pegar sessão ativa (sem logout ou logout=0)
+          var sessRows = resArr[1]||[];
+          var sessRow = sessRows.find(function(s){ return !s.logout_ts||s.logout_ts===0||s.logout_ts==='0'; })||sessRows[0]||null;
           var compRow = resArr[2]&&resArr[2][0] ? resArr[2][0] : null;
           cols.forEach(function(c){
             var ci=colaboradores.findIndex(function(x){return x.id===c.id;});
@@ -8303,9 +8305,8 @@ function renderDiario(){
         var buscarSessao = !DEMO
           ? sbFetch('sessoes_disponibilidade',{filters:[
               'equipe_id=eq.'+_dbEquipe.id,
-              'data=eq.'+dataHoje(),
-              'logout_ts=is.null'
-            ]})
+              'data=eq.'+dataHoje()
+            ],order:'login_ts.desc',limit:1})
           : Promise.resolve([]);
 
         Promise.all([
@@ -8315,13 +8316,16 @@ function renderDiario(){
           buscarSessao
         ]).then(function(r2){
           var projRows  = r2[0]||[];
-          var sessaoRow = r2[1]&&r2[1][0] ? r2[1][0] : null;
+          var sessRows  = r2[1]||[];
+          // Pegar sessão ativa (sem logout ou logout=0)
+          var sessaoRow = sessRows.find(function(s){
+            return !s.logout_ts || s.logout_ts===0 || s.logout_ts==='0';
+          }) || sessRows[0] || null;
 
           projRows.forEach(function(p){
             if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p);
           });
 
-          // Restaurar sessão se já iniciada hoje
           if(sessaoRow && !_plptDiario.sessao){
             var loginTs = sessaoRow.login_ts;
             var inicioIso = loginTs
@@ -8331,14 +8335,11 @@ function renderDiario(){
               id:        sessaoRow.id,
               login_ts:  loginTs,
               inicio_ts: inicioIso,
-              fim_ts:    sessaoRow.fim_ts||null,
+              fim_ts:    sessaoRow.logout_ts ? new Date(sessaoRow.logout_ts).toISOString() : null,
               logout_ts: sessaoRow.logout_ts||null,
               almoco_ts: sessaoRow.almoco_ts||null,
               retorno_ts:sessaoRow.retorno_ts||null,
-              eventos:   typeof sessaoRow.eventos==='string'
-                         ? JSON.parse(sessaoRow.eventos||'[]')
-                         : (sessaoRow.eventos||[]),
-              status:    sessaoRow.status||'em andamento'
+              eventos:   parseJsonField(sessaoRow.eventos,[])
             };
             _plptDiario.composConfirm = true;
           }
@@ -8803,8 +8804,12 @@ function plptDiarioIniciarDia(){
       equipe_id:   _dbEquipe.id,
       data:        hoje,
       login_ts:    _plptDiario.sessao.login_ts,
+      almoco_ts:   null,
+      retorno_ts:  null,
+      logout_ts:   null,
       placa:       '',
       km_inicial:  0,
+      minutos_faturados: 0,
       eventos:     JSON.stringify(_plptDiario.sessao.eventos)
     }).then(function(r){
       if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id;
@@ -16606,7 +16611,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.0.8',
+  numero: '4.0.9',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
