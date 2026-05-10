@@ -8797,11 +8797,11 @@ function plptDiarioIniciarDia(){
     return c.equipe_id===_dbEquipe.id && c.data===hoje && !c._local;
   });
   if(!DEMO){
-    // Inserir com campos corretos de sessoes_disponibilidade
+    // Inserir em sessoes_disponibilidade com timestamps ISO
     sbInsert('sessoes_disponibilidade', {
       equipe_id:   _dbEquipe.id,
       data:        hoje,
-      login_ts:    _plptDiario.sessao.login_ts,
+      login_ts:    new Date(_plptDiario.sessao.login_ts).toISOString(),
       placa:       '',
       km_inicial:  0,
       eventos:     JSON.stringify(_plptDiario.sessao.eventos)
@@ -8829,16 +8829,30 @@ function plptDiarioIniciarDia(){
 var _plptAlmocoTimer    = null;
 var _plptAlmocoInicioTs = null;
 
+// ── Salvar estado da sessão PLPT no banco ────────────────────────────────
+function plptSalvarSessao(){
+  if(DEMO || !_plptDiario.sessao) return;
+  var sess = _plptDiario.sessao;
+  if(!sess.id || !isUUID(sess.id)){
+    sess._pendingSave = true;
+    return;
+  }
+  var payload = { eventos: JSON.stringify(sess.eventos||[]) };
+  if(sess.almoco_ts)  payload.almoco_ts  = new Date(sess.almoco_ts).toISOString();
+  if(sess.retorno_ts) payload.retorno_ts = new Date(sess.retorno_ts).toISOString();
+  if(sess.logout_ts)  payload.logout_ts  = new Date(sess.logout_ts).toISOString();
+  if(sess.minutos_faturados!=null) payload.minutos_faturados = sess.minutos_faturados;
+  sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+sess.id);
+}
+
 function plptDiarioAlmoco(){
   if(_plptAlmocoInicioTs){ alert('Você já está em almoço.'); return; }
   var agora = new Date();
   _plptAlmocoInicioTs = Date.now();
   if(_plptDiario.sessao && _plptDiario.sessao.eventos)
     _plptDiario.sessao.eventos.push({hora:agora.toTimeString().slice(0,5), desc:'Início do almoço'});
-
-  // Salvar no banco
-  if(!DEMO && _plptDiario.sessao && _plptDiario.sessao.id)
-    sbUpdate('plpt_sessoes_dia',{almoco_ts:new Date(_plptAlmocoInicioTs).toISOString()},'id=eq.'+_plptDiario.sessao.id);
+  if(_plptDiario.sessao) _plptDiario.sessao.almoco_ts = _plptAlmocoInicioTs;
+  plptSalvarSessao();
 
   // Parar cronômetro principal
   if(_plptCronometroInterval){ clearInterval(_plptCronometroInterval); _plptCronometroInterval=null; }
@@ -8875,8 +8889,8 @@ function plptDiarioRetornarAlmoco(){
   _plptAlmocoInicioTs = null;
   if(_plptDiario.sessao && _plptDiario.sessao.eventos)
     _plptDiario.sessao.eventos.push({hora:agora.toTimeString().slice(0,5), desc:'Retorno do almoço ('+durMin+' min)'});
-  if(!DEMO && _plptDiario.sessao && _plptDiario.sessao.id)
-    sbUpdate('plpt_sessoes_dia',{retorno_ts:(function(){var _d=agora;var off=-_d.getTimezoneOffset();var s=off>=0?'+':'-';var hh=String(Math.floor(Math.abs(off)/60)).padStart(2,'0');var mm=String(Math.abs(off)%60).padStart(2,'0');return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0')+'T'+String(_d.getHours()).padStart(2,'0')+':'+String(_d.getMinutes()).padStart(2,'0')+':'+String(_d.getSeconds()).padStart(2,'0')+s+hh+':'+mm;})()},'id=eq.'+_plptDiario.sessao.id);
+  if(_plptDiario.sessao) _plptDiario.sessao.retorno_ts = Date.now();
+  plptSalvarSessao();
   progShowToast('✅ Retorno registrado — '+durMin+' min de almoço');
   renderDiarioPlpt();
   _plptIniciarCronometro();
@@ -8887,16 +8901,11 @@ function plptDiarioEncerrar(){
   var agora = new Date();
   var hora  = agora.toTimeString().slice(0,5);
   if(_plptDiario.sessao){
-    _plptDiario.sessao.fim_ts = (function(){var _d=agora;var off=-_d.getTimezoneOffset();var s=off>=0?'+':'-';var hh=String(Math.floor(Math.abs(off)/60)).padStart(2,'0');var mm=String(Math.abs(off)%60).padStart(2,'0');return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0')+'T'+String(_d.getHours()).padStart(2,'0')+':'+String(_d.getMinutes()).padStart(2,'0')+':'+String(_d.getSeconds()).padStart(2,'0')+s+hh+':'+mm;})();
+    _plptDiario.sessao.fim_ts = agora.toISOString();
+    _plptDiario.sessao.logout_ts = agora.getTime();
     if(!_plptDiario.sessao.eventos) _plptDiario.sessao.eventos = [];
     _plptDiario.sessao.eventos.push({hora:hora, desc:'Encerramento do turno'});
-    if(!DEMO && _plptDiario.sessao.id){
-      sbUpdate('plpt_sessoes_dia',{
-        fim_ts:  (function(){var _d=agora;var off=-_d.getTimezoneOffset();var s=off>=0?'+':'-';var hh=String(Math.floor(Math.abs(off)/60)).padStart(2,'0');var mm=String(Math.abs(off)%60).padStart(2,'0');return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0')+'T'+String(_d.getHours()).padStart(2,'0')+':'+String(_d.getMinutes()).padStart(2,'0')+':'+String(_d.getSeconds()).padStart(2,'0')+s+hh+':'+mm;})(),
-        status:  'encerrado',
-        eventos: JSON.stringify(_plptDiario.sessao.eventos)
-      },'id=eq.'+_plptDiario.sessao.id);
-    }
+    plptSalvarSessao();
   }
   if(_plptCronometroInterval){ clearInterval(_plptCronometroInterval); _plptCronometroInterval=null; }
   progShowToast('■ Turno encerrado');
@@ -16596,7 +16605,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.0.2',
+  numero: '4.0.3',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
