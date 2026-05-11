@@ -7816,6 +7816,7 @@ function parseJsonField(val, defaultVal){
 }
 function renderDiario(){
   if(!usuarioLogado) return;
+  console.log('[renderDiario] chamado — perfil:', usuarioLogado.perfil, 'contrato:', usuarioLogado.contrato_id, '_dbEquipe:', _dbEquipe&&_dbEquipe.id);
 
   var hoje = dataHojeLocal(); // DEVE ficar aqui — usado em TODOS os fluxos (TMA, PLPT, admin)
 
@@ -8331,8 +8332,21 @@ function renderDiario(){
           if(sessRow && !_plptDiario.sessao){
             _plptRestaurarSessao(sessRow);
             _plptDiario.composConfirm = true;
+          } else if(!sessRow && !_plptDiario.sessao){
+            // Fallback: tentar restaurar do localStorage
+            var localEstado = _plptCarregarLocal();
+            if(localEstado && localEstado.sessao && localEstado.sessao.inicio_ts){
+              console.log('[PLPT RELOAD] restaurando do localStorage');
+              _plptDiario.sessao = localEstado.sessao;
+              _plptDiario.composConfirm = true;
+              if(localEstado.projetoAtivo && localEstado.projetoAtivo._pjId){
+                var pj = localEstado.projetoAtivo;
+                _plptDiario.projetos.push(pj);
+                _plptDiario.projetoAtivo = pj;
+              }
+            }
           }
-          _plptDiario.projetos=[];
+          if(!_plptDiario.projetos) _plptDiario.projetos = [];
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
         }).catch(function(err){ console.error('[PLPT RELOAD] ERRO no fetch sem prog:', err); _plptDiario.projetos=[]; if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
         return;
@@ -8388,6 +8402,19 @@ function renderDiario(){
 
           if(sessaoRow && !_plptDiario.sessao){
             _plptRestaurarSessao(sessaoRow);
+          } else if(!sessaoRow && !_plptDiario.sessao){
+            var localEstadoProg = _plptCarregarLocal();
+            if(localEstadoProg && localEstadoProg.sessao && localEstadoProg.sessao.inicio_ts){
+              console.log('[PLPT RELOAD] restaurando do localStorage (com prog)');
+              _plptDiario.sessao = localEstadoProg.sessao;
+              _plptDiario.composConfirm = true;
+              if(localEstadoProg.projetoAtivo && localEstadoProg.projetoAtivo._pjId){
+                var pjProg = localEstadoProg.projetoAtivo;
+                if(!_plptDiario.projetos.find(function(p){return p._pjId===pjProg._pjId;}))
+                  _plptDiario.projetos.push(pjProg);
+                _plptDiario.projetoAtivo = pjProg;
+              }
+            }
           }
 
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
@@ -8892,6 +8919,51 @@ var _plptAlmocoTimer    = null;
 var _plptAlmocoInicioTs = null;
 
 // ── Salvar estado da sessão PLPT no banco ────────────────────────────────
+function _plptSalvarLocal(){
+  if(!_plptDiario.sessao || !usuarioLogado) return;
+  var key = 'plpt_sessao_' + (usuarioLogado.id||usuarioLogado.equipe_id||'x');
+  var estado = {
+    ts: Date.now(),
+    data: dataHojeLocal(),
+    sessao: {
+      id:         _plptDiario.sessao.id,
+      login_ts:   _plptDiario.sessao.login_ts,
+      inicio_ts:  _plptDiario.sessao.inicio_ts,
+      almoco_ts:  _plptDiario.sessao.almoco_ts,
+      retorno_ts: _plptDiario.sessao.retorno_ts,
+      logout_ts:  _plptDiario.sessao.logout_ts,
+      eventos:    _plptDiario.sessao.eventos||[]
+    },
+    projetoAtivo: _plptDiario.projetoAtivo ? {
+      _pjId:     _plptDiario.projetoAtivo._pjId,
+      projeto_id:_plptDiario.projetoAtivo._pjId,
+      _timeline: _plptDiario.projetoAtivo._timeline||[]
+    } : null
+  };
+  try{ localStorage.setItem(key, JSON.stringify(estado)); } catch(e){}
+}
+
+function _plptCarregarLocal(){
+  if(!usuarioLogado) return null;
+  var key = 'plpt_sessao_' + (usuarioLogado.id||usuarioLogado.equipe_id||'x');
+  try{
+    var raw = localStorage.getItem(key);
+    if(!raw) return null;
+    var estado = JSON.parse(raw);
+    // Só usar se for do mesmo dia
+    if(estado.data !== dataHojeLocal()) return null;
+    // Não restaurar sessão já encerrada
+    if(estado.sessao && estado.sessao.logout_ts) return null;
+    return estado;
+  } catch(e){ return null; }
+}
+
+function _plptLimparLocal(){
+  if(!usuarioLogado) return;
+  var key = 'plpt_sessao_' + (usuarioLogado.id||usuarioLogado.equipe_id||'x');
+  try{ localStorage.removeItem(key); } catch(e){}
+}
+
 function _plptRestaurarSessao(sessaoRow){
   console.log('[PLPT RESTORE] entrou', sessaoRow&&sessaoRow.id, 'já tem sessao?', !!_plptDiario.sessao);
   if(!sessaoRow || _plptDiario.sessao) return;
@@ -8959,6 +9031,7 @@ function plptSalvarSessao(){
   if(sess.logout_ts)  payload.logout_ts  = sess.logout_ts;
   if(sess.minutos_faturados!=null) payload.minutos_faturados = sess.minutos_faturados;
   console.log('[PLPT] salvar sessão', {id: sess.id, eventos: eventosParaSalvar.length, projetoAtivo: _plptDiario.projetoAtivo&&_plptDiario.projetoAtivo._pjId});
+  _plptSalvarLocal(); // backup localStorage
   sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+sess.id)
     .then(function(res){ console.log('[PLPT] update sessão OK', res); })
     .catch(function(e){ console.error('[PLPT] update sessão ERRO', e, payload); });
@@ -9025,6 +9098,7 @@ function plptDiarioEncerrar(){
     if(!_plptDiario.sessao.eventos) _plptDiario.sessao.eventos = [];
     _plptDiario.sessao.eventos.push({hora:hora, desc:'Encerramento do turno'});
     plptSalvarSessao();
+    _plptLimparLocal(); // apagar backup ao encerrar
   }
   if(_plptCronometroInterval){ clearInterval(_plptCronometroInterval); _plptCronometroInterval=null; }
   progShowToast('■ Turno encerrado');
@@ -16847,7 +16921,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.2.5',
+  numero: '4.2.7',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -29291,6 +29365,7 @@ window.addEventListener('load',function(){
       }
 
       carregarDados().then(function(){
+      console.log('[INIT] carregarDados OK — perfil:', usuarioLogado.perfil, 'equipe_id:', usuarioLogado.equipe_id);
       if(usuarioLogado.perfil==='equipe'){
         // Re-buscar dados atualizados do usuário do banco (equipe_id pode ter mudado)
         if(!DEMO){
@@ -29310,6 +29385,7 @@ window.addEventListener('load',function(){
               }));}catch(e){}
             }
             if(usuarioLogado.equipe_id||usuarioLogado.equipe_codigo){
+              console.log('[INIT] showPageDiario (banco OK) equipe:', usuarioLogado.equipe_id, 'equipes[]:', equipes.length);
               showPageDiario();
             } else {
               localStorage.removeItem('cena_user');
@@ -29319,6 +29395,7 @@ window.addEventListener('load',function(){
           }).catch(function(){
             // Sem rede - usar dados do localStorage
             if(usuarioLogado.equipe_id||usuarioLogado.equipe_codigo){
+              console.log('[INIT] showPageDiario (offline) equipe:', usuarioLogado.equipe_id);
               showPageDiario();
             } else {
               localStorage.removeItem('cena_user');
@@ -29334,7 +29411,7 @@ window.addEventListener('load',function(){
         }
         return;
       }
-      if(usuarioLogado.perfil==='encarregado'){showMain('campo');}else if(false){/*skip*/}else{
+      if(usuarioLogado.perfil==='encarregado'){console.log('[INIT] encarregado → showMain campo');showMain('campo');}else if(false){/*skip*/}else{
       if(usuarioLogado.perfil==='gestor'){
         var cids=(usuarioLogado.contrato_id||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
         _gestorContratos=cids;_gestorContAtivo=null;
