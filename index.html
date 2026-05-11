@@ -8347,13 +8347,22 @@ function renderDiario(){
         // Sem plpt_prog_dia — buscar colaboradores E sessão do dia
         Promise.all([
           sbFetch('colaboradores',{filters:['contrato_id=eq.'+CID_FETCH,'equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
-          sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc',limit:1}),
+          sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'}),
           sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]})
         ]).then(function(resArr){
           var cols = resArr[0]||[];
           var sessRows = resArr[1]||[];
-          var sessRow = sessRows.find(function(s){ return !s.logout_ts||s.logout_ts===0||s.logout_ts==='0'; })||sessRows[0]||null;
-          console.log('[PLPT RELOAD] (sem prog) sessRows retornadas:', sessRows.length, 'sessRow escolhida:', sessRow&&sessRow.id, 'eventos brutos:', sessRow&&sessRow.eventos);
+          // Escolher sessão ativa com mais eventos (ignora sessões vazias criadas por restores falhos)
+          var sessRow = null;
+          var melhorScore = -1;
+          sessRows.forEach(function(s){
+            if(s.logout_ts && s.logout_ts !== 0 && s.logout_ts !== '0') return; // encerrada
+            var evs = parseJsonField(s.eventos, []);
+            var score = evs.length + (evs.some(function(e){ return e.tipo==='_PROJ_STATE'; }) ? 100 : 0);
+            if(score > melhorScore){ melhorScore = score; sessRow = s; }
+          });
+          if(!sessRow && sessRows.length) sessRow = sessRows[0]; // fallback: mais recente
+          console.log('[PLPT RELOAD] (sem prog) sessRows retornadas:', sessRows.length, 'sessRow escolhida:', sessRow&&sessRow.id, 'score:', melhorScore, 'eventos brutos:', sessRow&&sessRow.eventos);
           var compRow = resArr[2]&&resArr[2][0] ? resArr[2][0] : null;
           cols.forEach(function(c){
             var ci=colaboradores.findIndex(function(x){return x.id===c.id;});
@@ -8426,11 +8435,15 @@ function renderDiario(){
         ]).then(function(r2){
           var projRows  = r2[0]||[];
           var sessRows  = r2[1]||[];
-          // Pegar sessão ativa (sem logout ou logout=0)
-          var sessaoRow = sessRows.find(function(s){
-            return !s.logout_ts || s.logout_ts===0 || s.logout_ts==='0';
-          }) || sessRows[0] || null;
-          console.log('[PLPT RELOAD] (com prog) sessRows:', sessRows.length, 'sessaoRow:', sessaoRow&&sessaoRow.id, 'eventos brutos:', sessaoRow&&sessaoRow.eventos);
+          var sessaoRow = null; var _sc2 = -1;
+          sessRows.forEach(function(s){
+            if(s.logout_ts && s.logout_ts !== 0 && s.logout_ts !== '0') return;
+            var evs = parseJsonField(s.eventos, []);
+            var score = evs.length + (evs.some(function(e){ return e.tipo==='_PROJ_STATE'; }) ? 100 : 0);
+            if(score > _sc2){ _sc2 = score; sessaoRow = s; }
+          });
+          if(!sessaoRow && sessRows.length) sessaoRow = sessRows[0];
+          console.log('[PLPT RELOAD] (com prog) sessRows:', sessRows.length, 'sessaoRow:', sessaoRow&&sessaoRow.id, 'score:', _sc2);
 
           projRows.forEach(function(p){
             if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p);
@@ -8705,7 +8718,7 @@ function renderDiarioPlpt(){
   if(sessao&&sessao.eventos&&sessao.eventos.length){
     histHtml='<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:1rem">'
       +'<div style="font-size:12px;font-weight:700;color:#555;margin-bottom:.5rem">Histórico do turno</div>'
-      +sessao.eventos.map(function(ev){
+      +(sessao.eventos||[]).filter(function(ev){ return ev.tipo !== '_PROJ_STATE'; }).map(function(ev){
         var hora=ev.hora||(ev.ts?new Date(ev.ts).toTimeString().slice(0,5):'—');
         var desc=ev.desc||ev.tipo||ev.obs||'—';
         return '<div style="display:flex;gap:8px;padding:4px 0;font-size:12px">'
@@ -10820,38 +10833,59 @@ function _dbIniciarTurnoConfirmado(){
   _plptDiario.composConfirm = true;
   _plptModalTurnoAberto = false;
 
-  // Inserir sessão PLPT no banco (sessoes_disponibilidade)
+  // Inserir sessão PLPT no banco — verificar se já existe uma hoje
   if(!DEMO){
-    var payloadSessaoPLPT = {
-      equipe_id:         _dbEquipe.id,
-      data:              dataHojeLocal(),
-      login_ts:          loginTs,
-      almoco_ts:         null,
-      retorno_ts:        null,
-      logout_ts:         null,
-      km_inicial:        _dbSessao.km_inicial||0,
-      placa:             _dbSessao.placa||'',
-      minutos_faturados: 0,
-      eventos:           JSON.stringify(_plptDiario.sessao.eventos)
-    };
-    console.log('[PLPT] insert sessão iniciado', payloadSessaoPLPT);
-    sbInsert('sessoes_disponibilidade', payloadSessaoPLPT).then(function(res){
-      console.log('[PLPT] insert sessão retorno', res);
-      if(res&&res[0]&&res[0].id){
-        var uuid = res[0].id;
-        _plptDiario.sessao.id = uuid;
-        _dbSessao.id          = uuid; // sincronizar também _dbSessao
-        console.log('[PLPT] id válido?', isUUID(_plptDiario.sessao.id));
-        // Salvar estado pendente (ações feitas antes do UUID chegar)
-        if(_plptDiario.sessao._pendingSave){
-          delete _plptDiario.sessao._pendingSave;
-        }
-        plptSalvarSessao(); // sempre salvar após receber UUID
-      } else {
-        progShowToast('⚠ Sessão não foi salva no banco. Verifique a conexão.');
-        console.warn('[PLPT] insert sessão falhou', res);
+    // Verificar se já há sessão ativa hoje para esta equipe
+    sbFetch('sessoes_disponibilidade',{
+      filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+dataHojeLocal()],
+      order:'login_ts.desc'
+    }).then(function(existentes){
+      // Procurar sessão ativa com dados úteis
+      var sessExistente = null; var melhorSc = -1;
+      (existentes||[]).forEach(function(s){
+        if(s.logout_ts && s.logout_ts !== 0) return;
+        var evs = parseJsonField(s.eventos,[]);
+        var sc = evs.length + (evs.some(function(e){return e.tipo==='_PROJ_STATE';}) ? 100 : 0);
+        if(sc > melhorSc){ melhorSc=sc; sessExistente=s; }
+      });
+
+      if(sessExistente && melhorSc > 0){
+        // Reusar sessão existente em vez de criar nova
+        console.log('[PLPT] reutilizando sessão existente', sessExistente.id, 'score:', melhorSc);
+        _plptDiario.sessao.id = sessExistente.id;
+        _dbSessao.id = sessExistente.id;
+        plptSalvarSessao(); // atualizar com dados atuais
+        return;
       }
-    }).catch(function(e){ console.error('Erro ao salvar sessão PLPT:', e); });
+
+      var payloadSessaoPLPT = {
+        equipe_id:         _dbEquipe.id,
+        data:              dataHojeLocal(),
+        login_ts:          loginTs,
+        almoco_ts:         null,
+        retorno_ts:        null,
+        logout_ts:         null,
+        km_inicial:        _dbSessao.km_inicial||0,
+        placa:             _dbSessao.placa||'',
+        minutos_faturados: 0,
+        eventos:           JSON.stringify(_plptDiario.sessao.eventos)
+      };
+      console.log('[PLPT] insert sessão iniciado', payloadSessaoPLPT);
+      sbInsert('sessoes_disponibilidade', payloadSessaoPLPT).then(function(res){
+        console.log('[PLPT] insert sessão retorno', res);
+        if(res&&res[0]&&res[0].id){
+          var uuid = res[0].id;
+          _plptDiario.sessao.id = uuid;
+          _dbSessao.id          = uuid;
+          console.log('[PLPT] id válido?', isUUID(_plptDiario.sessao.id));
+          if(_plptDiario.sessao._pendingSave) delete _plptDiario.sessao._pendingSave;
+          plptSalvarSessao();
+        } else {
+          progShowToast('⚠ Sessão não foi salva no banco. Verifique a conexão.');
+          console.warn('[PLPT] insert sessão falhou', res);
+        }
+      }).catch(function(e){ console.error('Erro ao salvar sessão PLPT:', e); });
+    });
   }
 
   renderDiarioPlpt();
@@ -16957,7 +16991,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.3.4',
+  numero: '4.3.5',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
