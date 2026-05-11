@@ -8028,11 +8028,10 @@ function renderDiario(){
         });
 
       // Buscar colaborador pelo email/nome/usuario_id para obter o ID correto
+        var _reLogin = (usuarioLogado.email||'').split('@')[0];
         var colabPorEmail = colabs.find(function(c){
           if(!c) return false;
-          return c.email===usuarioLogado.email
-            || c.usuario_id===usuarioLogado.id
-            || c.nome===usuarioLogado.nome;
+          return (_reLogin && c.re===_reLogin) || c.re===usuarioLogado.re;
         });
         var colabId = colabPorEmail ? colabPorEmail.id : usuarioLogado.id;
         var idsParaBuscar = [colabId];
@@ -17038,7 +17037,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.3.8',
+  numero: '4.4.2',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -25224,10 +25223,10 @@ async function resolveEquipeUsuario(){
     if(found){ _dbEquipe = _buildDbEquipeObj(found); _salvarEquipeLocal(); return; }
   }
 
-  // 2. Tentar por colaborador vinculado ao usuário
+  // 2. Tentar por colaborador pelo RE (extraído do email ex: "1078@cenabr.com.br" → re="1078")
+  var reFromEmail = (usuarioLogado.email||'').split('@')[0];
   var colab = colaboradores.find(function(c){
-    return c.usuario_id===usuarioLogado.id || c.re===usuarioLogado.re ||
-           (c.email&&c.email===usuarioLogado.email);
+    return (reFromEmail && c.re === reFromEmail) || c.re === usuarioLogado.re;
   });
   if(colab && colab.equipe_id){
     var found2 = equipes_disp.find(function(e){ return e.id===colab.equipe_id; })
@@ -25238,15 +25237,28 @@ async function resolveEquipeUsuario(){
       found2 = (r3&&r3[0]) || (r4&&r4[0]);
     }
     if(found2){ _dbEquipe = _buildDbEquipeObj(found2); usuarioLogado.equipe_id = found2.id; _salvarEquipeLocal(); return; }
+    // Equipe não encontrada em nenhuma tabela — usar equipe_id do colab diretamente
+    _dbEquipe = { id:colab.equipe_id, nome:'Equipe', tipo:'PLPT', codigo:colab.equipe_codigo||'', supervisor:'', contrato_id:usuarioLogado.contrato_id||colab.contrato_id||'', _plpt:true };
+    usuarioLogado.equipe_id = colab.equipe_id;
+    _salvarEquipeLocal();
+    return;
   }
+  // colab sem equipe_id — continua para Step 3 (composicao_dia)
 
   // 3. Tentar por composição do dia (PLPT)
   if(!DEMO){
     var hoje = dataHojeLocal();
     var comps = await sbFetch('composicao_dia', {filters:['data=eq.'+hoje,'equipe_id=neq.null'], limit:50});
     if(comps && comps.length){
-      var myIds = [usuarioLogado.id];
+      // composicao_dia.colaborador_ids contém IDs da tabela colaboradores
+      var myIds = [];
       if(colab) myIds.push(colab.id);
+      // Também buscar por outros colaboradores com mesmo RE
+      if(reFromEmail){
+        colaboradores.filter(function(c){ return c.re===reFromEmail; })
+          .forEach(function(c){ if(myIds.indexOf(c.id)<0) myIds.push(c.id); });
+      }
+      if(!myIds.length) myIds.push(usuarioLogado.id); // fallback
       var compMatch = comps.find(function(c){
         var ids = parseJsonField(c.colaborador_ids, []);
         return myIds.some(function(bid){ return ids.indexOf(bid)>=0; });
