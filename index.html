@@ -8327,18 +8327,8 @@ function renderDiario(){
             if(compRow.confirmada) _plptDiario.composConfirm=true;
           }
           if(sessRow && !_plptDiario.sessao){
-            var lts = sessRow.login_ts;
-            _plptDiario.sessao={
-              id:        sessRow.id,
-              login_ts:  lts,
-              inicio_ts: lts ? new Date(typeof lts==='number'?lts:lts).toISOString() : null,
-              fim_ts:    sessRow.fim_ts||null,
-              logout_ts: sessRow.logout_ts||null,
-              almoco_ts: sessRow.almoco_ts||null,
-              eventos:   parseJsonField(sessRow.eventos,[]),
-              status:    sessRow.status||'em andamento'
-            };
-            _plptDiario.composConfirm=true;
+            _plptRestaurarSessao(sessRow);
+            _plptDiario.composConfirm = true;
           }
           _plptDiario.projetos=[];
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
@@ -8394,21 +8384,7 @@ function renderDiario(){
           });
 
           if(sessaoRow && !_plptDiario.sessao){
-            var loginTs = sessaoRow.login_ts;
-            var inicioIso = loginTs
-              ? (typeof loginTs==='number' ? new Date(loginTs).toISOString() : loginTs)
-              : null;
-            _plptDiario.sessao = {
-              id:        sessaoRow.id,
-              login_ts:  loginTs,
-              inicio_ts: inicioIso,
-              fim_ts:    sessaoRow.logout_ts ? new Date(sessaoRow.logout_ts).toISOString() : null,
-              logout_ts: sessaoRow.logout_ts||null,
-              almoco_ts: sessaoRow.almoco_ts||null,
-              retorno_ts:sessaoRow.retorno_ts||null,
-              eventos:   parseJsonField(sessaoRow.eventos,[])
-            };
-            _plptDiario.composConfirm = true;
+            _plptRestaurarSessao(sessaoRow);
           }
 
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
@@ -8911,6 +8887,43 @@ var _plptAlmocoTimer    = null;
 var _plptAlmocoInicioTs = null;
 
 // ── Salvar estado da sessão PLPT no banco ────────────────────────────────
+function _plptRestaurarSessao(sessaoRow){
+  if(!sessaoRow || _plptDiario.sessao) return;
+  var loginTs = sessaoRow.login_ts;
+  var inicioIso = loginTs ? (typeof loginTs==='number' ? new Date(loginTs).toISOString() : loginTs) : null;
+  var todosEventos = parseJsonField(sessaoRow.eventos, []);
+
+  // Separar estado do projeto dos eventos visuais
+  var projState   = todosEventos.find(function(e){ return e.tipo === '_PROJ_STATE'; });
+  var eventosVisuais = todosEventos.filter(function(e){ return e.tipo !== '_PROJ_STATE'; });
+
+  _plptDiario.sessao = {
+    id:         sessaoRow.id,
+    login_ts:   loginTs,
+    inicio_ts:  inicioIso,
+    fim_ts:     sessaoRow.logout_ts ? new Date(sessaoRow.logout_ts).toISOString() : null,
+    logout_ts:  sessaoRow.logout_ts  || null,
+    almoco_ts:  sessaoRow.almoco_ts  || null,
+    retorno_ts: sessaoRow.retorno_ts || null,
+    eventos:    eventosVisuais
+  };
+  _plptDiario.composConfirm = true;
+
+  // Restaurar projeto ativo com timeline
+  if(projState && projState.projId){
+    var pjExist = _plptDiario.projetos.find(function(p){
+      return p.projeto_id === projState.projId || p._pjId === projState.projId;
+    });
+    if(!pjExist){
+      pjExist = {projeto_id: projState.projId, _pjId: projState.projId, status: 'em andamento'};
+      _plptDiario.projetos.push(pjExist);
+    }
+    pjExist._pjId     = projState.projId;
+    pjExist._timeline = projState.timeline || [];
+    _plptDiario.projetoAtivo = pjExist;
+  }
+}
+
 function plptSalvarSessao(){
   if(DEMO || !_plptDiario.sessao) return;
   var sess = _plptDiario.sessao;
@@ -8918,7 +8931,21 @@ function plptSalvarSessao(){
     sess._pendingSave = true;
     return;
   }
-  var payload = { eventos: JSON.stringify(sess.eventos||[]) };
+
+  // Eventos visíveis (sem marcadores internos)
+  var eventosVisuais = (sess.eventos||[]).filter(function(e){ return e.tipo !== '_PROJ_STATE'; });
+
+  // Embutir estado do projeto ativo para restauração após reload
+  var eventosParaSalvar = eventosVisuais.slice();
+  if(_plptDiario.projetoAtivo && _plptDiario.projetoAtivo._pjId){
+    eventosParaSalvar.push({
+      tipo:     '_PROJ_STATE',
+      projId:   _plptDiario.projetoAtivo._pjId,
+      timeline: _plptDiario.projetoAtivo._timeline || []
+    });
+  }
+
+  var payload = { eventos: JSON.stringify(eventosParaSalvar) };
   if(sess.almoco_ts)  payload.almoco_ts  = sess.almoco_ts;
   if(sess.retorno_ts) payload.retorno_ts = sess.retorno_ts;
   if(sess.logout_ts)  payload.logout_ts  = sess.logout_ts;
@@ -10690,11 +10717,13 @@ function _dbIniciarTurnoConfirmado(){
     }).then(function(res){
       if(res&&res[0]&&res[0].id){
         _plptDiario.sessao.id = res[0].id;
-        // Salvar estados pendentes que chegaram antes do UUID
+        // Salvar estado pendente (ex: projeto já aberto antes do UUID chegar)
+        plptSalvarSessao();
         if(_plptDiario.sessao._pendingSave){
-          plptSalvarSessao();
           delete _plptDiario.sessao._pendingSave;
         }
+      } else {
+        progShowToast('⚠ Sessão não foi salva no banco. Verifique a conexão.');
       }
     }).catch(function(e){ console.error('Erro ao salvar sessão PLPT:', e); });
   }
@@ -16802,7 +16831,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.2.2',
+  numero: '4.2.3',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
