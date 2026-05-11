@@ -8291,9 +8291,11 @@ function renderDiario(){
     // Marcar equipe como "fluxo projeto" se ainda não marcada
     if(!_dbEquipe){
       // _dbEquipe ainda não chegou do banco — aguardar (fetch async vai chamar renderDiario novamente)
+      console.log('[PLPT RELOAD] _dbEquipe nulo — aguardando fetch async');
       return;
     }
     if(!_dbEquipe._plpt) _dbEquipe._plpt = true;
+    console.log('[PLPT RELOAD] equipe_id', _dbEquipe.id, 'data hoje', hoje, 'dataHojeLocal=', dataHojeLocal());
     var CID_FETCH = (_dbEquipe && _dbEquipe.contrato_id) || (usuarioLogado && usuarioLogado.contrato_id) || '';
     // Buscar programação do dia para esta equipe específica
     sbFetch('plpt_prog_dia',{filters:[
@@ -8312,9 +8314,9 @@ function renderDiario(){
           sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]})
         ]).then(function(resArr){
           var cols = resArr[0]||[];
-          // Pegar sessão ativa (sem logout ou logout=0)
           var sessRows = resArr[1]||[];
           var sessRow = sessRows.find(function(s){ return !s.logout_ts||s.logout_ts===0||s.logout_ts==='0'; })||sessRows[0]||null;
+          console.log('[PLPT RELOAD] (sem prog) sessRows retornadas:', sessRows.length, 'sessaoRow escolhida:', sessaoRow&&sessaoRow.id, 'eventos brutos:', sessRow&&sessRow.eventos);
           var compRow = resArr[2]&&resArr[2][0] ? resArr[2][0] : null;
           cols.forEach(function(c){
             var ci=colaboradores.findIndex(function(x){return x.id===c.id;});
@@ -8332,7 +8334,7 @@ function renderDiario(){
           }
           _plptDiario.projetos=[];
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
-        }).catch(function(){ _plptDiario.projetos=[]; if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
+        }).catch(function(err){ console.error('[PLPT RELOAD] ERRO no fetch sem prog:', err); _plptDiario.projetos=[]; if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
         return;
       }
 
@@ -8378,6 +8380,7 @@ function renderDiario(){
           var sessaoRow = sessRows.find(function(s){
             return !s.logout_ts || s.logout_ts===0 || s.logout_ts==='0';
           }) || sessRows[0] || null;
+          console.log('[PLPT RELOAD] (com prog) sessRows:', sessRows.length, 'sessaoRow:', sessaoRow&&sessaoRow.id, 'eventos brutos:', sessaoRow&&sessaoRow.eventos);
 
           projRows.forEach(function(p){
             if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p);
@@ -8388,13 +8391,15 @@ function renderDiario(){
           }
 
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
-        }).catch(function(){ if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
-      }).catch(function(){
+        }).catch(function(err){ console.error('[PLPT RELOAD] ERRO no fetch com prog:', err); if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
+      }).catch(function(err){
+        console.error('[PLPT RELOAD] ERRO no fetch prog_projetos:', err);
         _plptDiario.projetos = [];
         if(!_plptModalTurnoAberto) renderDiarioPlpt();
       });
 
-    }).catch(function(){
+    }).catch(function(err){
+      console.error('[PLPT RELOAD] ERRO no fetch plpt_prog_dia:', err);
       _plptDiario.prog     = null;
       _plptDiario.projetos = [];
       if(!_plptModalTurnoAberto) renderDiarioPlpt();
@@ -8888,14 +8893,16 @@ var _plptAlmocoInicioTs = null;
 
 // ── Salvar estado da sessão PLPT no banco ────────────────────────────────
 function _plptRestaurarSessao(sessaoRow){
+  console.log('[PLPT RESTORE] entrou', sessaoRow&&sessaoRow.id, 'já tem sessao?', !!_plptDiario.sessao);
   if(!sessaoRow || _plptDiario.sessao) return;
   var loginTs = sessaoRow.login_ts;
   var inicioIso = loginTs ? (typeof loginTs==='number' ? new Date(loginTs).toISOString() : loginTs) : null;
   var todosEventos = parseJsonField(sessaoRow.eventos, []);
+  console.log('[PLPT RESTORE] eventos parseados:', todosEventos.length, todosEventos);
 
-  // Separar estado do projeto dos eventos visuais
-  var projState   = todosEventos.find(function(e){ return e.tipo === '_PROJ_STATE'; });
+  var projState      = todosEventos.find(function(e){ return e.tipo === '_PROJ_STATE'; });
   var eventosVisuais = todosEventos.filter(function(e){ return e.tipo !== '_PROJ_STATE'; });
+  console.log('[PLPT RESTORE] projState:', projState);
 
   _plptDiario.sessao = {
     id:         sessaoRow.id,
@@ -8908,8 +8915,8 @@ function _plptRestaurarSessao(sessaoRow){
     eventos:    eventosVisuais
   };
   _plptDiario.composConfirm = true;
+  console.log('[PLPT RESTORE] sessao restaurada:', _plptDiario.sessao.id, 'inicio_ts:', inicioIso);
 
-  // Restaurar projeto ativo com timeline
   if(projState && projState.projId){
     var pjExist = _plptDiario.projetos.find(function(p){
       return p.projeto_id === projState.projId || p._pjId === projState.projId;
@@ -8921,6 +8928,7 @@ function _plptRestaurarSessao(sessaoRow){
     pjExist._pjId     = projState.projId;
     pjExist._timeline = projState.timeline || [];
     _plptDiario.projetoAtivo = pjExist;
+    console.log('[PLPT RESTORE] projeto ativo restaurado:', projState.projId, 'timeline:', pjExist._timeline.length, 'etapas');
   }
 }
 
@@ -8951,7 +8959,9 @@ function plptSalvarSessao(){
   if(sess.logout_ts)  payload.logout_ts  = sess.logout_ts;
   if(sess.minutos_faturados!=null) payload.minutos_faturados = sess.minutos_faturados;
   console.log('[PLPT] salvar sessão', {id: sess.id, eventos: eventosParaSalvar.length, projetoAtivo: _plptDiario.projetoAtivo&&_plptDiario.projetoAtivo._pjId});
-  sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+sess.id);
+  sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+sess.id)
+    .then(function(res){ console.log('[PLPT] update sessão OK', res); })
+    .catch(function(e){ console.error('[PLPT] update sessão ERRO', e, payload); });
 }
 
 function plptDiarioAlmoco(){
@@ -16837,7 +16847,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.2.4',
+  numero: '4.2.5',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
