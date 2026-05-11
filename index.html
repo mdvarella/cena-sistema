@@ -3308,21 +3308,19 @@ async function carregarDados(){
     var res7=await Promise.all([
       sbFetch('composicao_dia',{order:'data.desc'}),
       sbFetch('sessoes_disponibilidade',{order:'data.desc'}),
+      sbFetch('plpt_sessoes',{order:'data.desc'}),
       sbFetch('ordens_diario',{order:'data.desc'}),
       sbFetch('sol_composicao',{filters:['status=eq.Pendente']}),
     ]);
     if(res7[0]&&res7[0].length)composicao_dia=res7[0].map(function(c){
       c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);return c;});
-    if(res7[1]&&res7[1].length)sessoes_disp=res7[1].map(function(s){
-      s.eventos=parseJsonField(s.eventos,[]);
-      s.placa=s.placa||'';
-      s.km_inicial=s.km_inicial||0;
-      s.km_final=s.km_final||0;
-      return s;
-    });
-    if(res7[2]&&res7[2].length)ordens_db=res7[2].map(function(o){
+    // Mesclar sessoes TMA + PLPT no array sessoes_disp
+    var _sessTMA  = (res7[1]||[]).map(function(s){ s.eventos=parseJsonField(s.eventos,[]); s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0; s._tipo='TMA'; return s; });
+    var _sessPLPT = (res7[2]||[]).map(function(s){ s.eventos=parseJsonField(s.eventos,[]); s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0; s._tipo='PLPT'; return s; });
+    sessoes_disp = _sessTMA.concat(_sessPLPT);
+    if(res7[3]&&res7[3].length)ordens_db=res7[3].map(function(o){
       o.eventos=parseJsonField(o.eventos,[]);return o;});
-    if(res7[3]&&res7[3].length)sol_comp=res7[3];
+    if(res7[4]&&res7[4].length)sol_comp=res7[4];
 
     // ── Carregar tabelas adicionais ──────────────────────────
     var res8=await Promise.all([
@@ -7829,38 +7827,41 @@ function renderDiario(){
     if(!DEMO && _dbEquipe){
       Promise.all([
         sbFetch('sessoes_disponibilidade',{filters:['data=eq.'+hoje],order:'login_ts.desc'}),
+        sbFetch('plpt_sessoes',{filters:['data=eq.'+hoje],order:'login_ts.desc'}),
         sbFetch('turnos_abertos',{filters:['data=eq.'+hoje]}),
         sbFetch('ordens_diario',{filters:['data=eq.'+hoje]}),
         sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]}),
         sbFetch('colaboradores',{filters:['equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
       ]).then(function(res){
+        // Mesclar sessoes TMA + PLPT
+        var sessTMA  = (res[0]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s._tipo='TMA';return s;});
+        var sessPLPT = (res[1]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s._tipo='PLPT';return s;});
+        var todasSess = sessTMA.concat(sessPLPT);
+        todasSess.forEach(function(s){
+          var idx=sessoes_disp.findIndex(function(x){return x.id===s.id;});
+          if(idx>=0) sessoes_disp[idx]=s; else sessoes_disp.push(s);
+        });
         // Atualizar composicao_dia com dados frescos
-        if(res[3]&&res[3].length){
-          var c=res[3][0];
+        if(res[4]&&res[4].length){
+          var c=res[4][0];
           c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
           var ci=composicao_dia.findIndex(function(x){return x.equipe_id===_dbEquipe.id&&x.data===hoje;});
           if(ci>=0) composicao_dia[ci]=c; else composicao_dia.push(c);
         }
         // Atualizar colaboradores da equipe
-        if(res[4]&&res[4].length){
-          res[4].forEach(function(c){
+        if(res[5]&&res[5].length){
+          res[5].forEach(function(c){
             var ci=colaboradores.findIndex(function(x){return x.id===c.id;});
             if(ci>=0) colaboradores[ci]=c; else colaboradores.push(c);
           });
         }
-        if(res[0]&&res[0].length) res[0].forEach(function(s){
-          s.eventos=parseJsonField(s.eventos,[]);
-          s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0;
-          var i=sessoes_disp.findIndex(function(x){return x.id===s.id;});
-          if(i>=0) sessoes_disp[i]=s; else sessoes_disp.push(s);
-        });
-        if(res[1]&&res[1].length) res[1].forEach(function(t){
+        if(res[2]&&res[2].length) res[2].forEach(function(t){
           t.respostas_epi=parseJsonField(t.respostas_epi,[]);
           t.respostas_vei=parseJsonField(t.respostas_vei,[]);
           var i=turnos_abertos.findIndex(function(x){return x.id===t.id;});
           if(i>=0) turnos_abertos[i]=t; else turnos_abertos.push(t);
         });
-        if(res[2]&&res[2].length) res[2].forEach(function(o){
+        if(res[3]&&res[3].length) res[3].forEach(function(o){
           o.eventos=parseJsonField(o.eventos,[]);
           if(!ordens_db.find(function(x){return x.id===o.id;})) ordens_db.push(o);
         });
@@ -8347,7 +8348,7 @@ function renderDiario(){
         // Sem plpt_prog_dia — buscar colaboradores E sessão do dia
         Promise.all([
           sbFetch('colaboradores',{filters:['contrato_id=eq.'+CID_FETCH,'equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
-          sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'}),
+          sbFetch('plpt_sessoes',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'}),
           sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]})
         ]).then(function(resArr){
           var cols = resArr[0]||[];
@@ -8421,7 +8422,7 @@ function renderDiario(){
 
         // 4. Recuperar sessão existente do dia — sempre via sessoes_disponibilidade
         var buscarSessao = !DEMO
-          ? sbFetch('sessoes_disponibilidade',{filters:[
+          ? sbFetch('plpt_sessoes',{filters:[
               'equipe_id=eq.'+_dbEquipe.id,
               'data=eq.'+hoje
             ],order:'login_ts.desc',limit:1})
@@ -8932,7 +8933,7 @@ function plptDiarioIniciarDia(){
   });
   if(!DEMO){
     // Inserir em sessoes_disponibilidade com timestamps ISO
-    sbInsert('sessoes_disponibilidade', {
+    sbInsert('plpt_sessoes', {
       equipe_id:   _dbEquipe.id,
       data:        hoje,
       login_ts:    _plptDiario.sessao.login_ts,
@@ -8945,7 +8946,7 @@ function plptDiarioIniciarDia(){
       eventos:     JSON.stringify(_plptDiario.sessao.eventos)
     }).then(function(r){
       if(r&&r[0]&&r[0].id) _plptDiario.sessao.id = r[0].id;
-    }).catch(function(e){ console.warn('sessoes_disponibilidade insert erro:', e); });
+    }).catch(function(e){ console.warn('plpt_sessoes insert erro:', e); });
 
     // Salvar também em plpt_sessoes_dia se tiver prog
     if(_plptDiario.prog){
@@ -9081,7 +9082,7 @@ function plptSalvarSessao(){
   if(sess.minutos_faturados!=null) payload.minutos_faturados = sess.minutos_faturados;
   console.log('[PLPT] salvar sessão', {id: sess.id, eventos: eventosParaSalvar.length, projetoAtivo: _plptDiario.projetoAtivo&&_plptDiario.projetoAtivo._pjId});
   _plptSalvarLocal(); // backup localStorage
-  sbUpdate('sessoes_disponibilidade', payload, 'id=eq.'+sess.id)
+  sbUpdate('plpt_sessoes', payload, 'id=eq.'+sess.id)
     .then(function(res){ console.log('[PLPT] update sessão OK', res); })
     .catch(function(e){ console.error('[PLPT] update sessão ERRO', e, payload); });
 }
@@ -10836,7 +10837,7 @@ function _dbIniciarTurnoConfirmado(){
   // Inserir sessão PLPT no banco — verificar se já existe uma hoje
   if(!DEMO){
     // Verificar se já há sessão ativa hoje para esta equipe
-    sbFetch('sessoes_disponibilidade',{
+    sbFetch('plpt_sessoes',{
       filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+dataHojeLocal()],
       order:'login_ts.desc'
     }).then(function(existentes){
@@ -10894,7 +10895,7 @@ function _dbIniciarTurnoConfirmado(){
         eventos:           JSON.stringify(_plptDiario.sessao.eventos)
       };
       console.log('[PLPT] insert sessão iniciado', payloadSessaoPLPT);
-      sbInsert('sessoes_disponibilidade', payloadSessaoPLPT).then(function(res){
+      sbInsert('plpt_sessoes', payloadSessaoPLPT).then(function(res){
         console.log('[PLPT] insert sessão retorno', res);
         if(res&&res[0]&&res[0].id){
           var uuid = res[0].id;
@@ -17014,7 +17015,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.3.6',
+  numero: '4.3.7',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
