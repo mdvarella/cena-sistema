@@ -8353,17 +8353,26 @@ function renderDiario(){
         ]).then(function(resArr){
           var cols = resArr[0]||[];
           var sessRows = resArr[1]||[];
-          // Escolher sessão ativa com mais eventos (ignora sessões vazias criadas por restores falhos)
-          var sessRow = null;
-          var melhorScore = -1;
-          sessRows.forEach(function(s){
-            if(s.logout_ts && s.logout_ts !== 0 && s.logout_ts !== '0') return; // encerrada
-            var evs = parseJsonField(s.eventos, []);
-            var score = evs.length + (evs.some(function(e){ return e.tipo==='_PROJ_STATE'; }) ? 100 : 0);
-            if(score > melhorScore){ melhorScore = score; sessRow = s; }
-          });
-          if(!sessRow && sessRows.length) sessRow = sessRows[0]; // fallback: mais recente
-          console.log('[PLPT RELOAD] (sem prog) sessRows retornadas:', sessRows.length, 'sessRow escolhida:', sessRow&&sessRow.id, 'score:', melhorScore, 'eventos brutos:', sessRow&&sessRow.eventos);
+
+          // Função para escolher melhor sessão da lista
+          function _escolherMelhorSessao(rows){
+            var melhor = null; var sc = -1;
+            rows.forEach(function(s){
+              if(s.logout_ts && s.logout_ts !== 0 && s.logout_ts !== '0') return;
+              var evs = parseJsonField(s.eventos, []);
+              var score = evs.length + (evs.some(function(e){ return e.tipo==='_PROJ_STATE'; }) ? 100 : 0);
+              if(score > sc){ sc = score; melhor = s; }
+            });
+            if(!melhor && rows.length) melhor = rows[0];
+            return {row: melhor, score: sc};
+          }
+
+          var res1 = _escolherMelhorSessao(sessRows);
+          var sessRow = res1.row; var melhorScore = res1.score;
+          console.log('[PLPT RELOAD] plpt_sessoes:', sessRows.length, 'escolhida:', sessRow&&sessRow.id, 'score:', melhorScore);
+
+          // Continuar com o resto independentemente — fallback para sessoes_disponibilidade se necessário
+          function _continuarComSessao(sr){
           var compRow = resArr[2]&&resArr[2][0] ? resArr[2][0] : null;
           cols.forEach(function(c){
             var ci=colaboradores.findIndex(function(x){return x.id===c.id;});
@@ -8375,10 +8384,10 @@ function renderDiario(){
             if(ci>=0) composicao_dia[ci]=compRow; else composicao_dia.push(compRow);
             if(compRow.confirmada) _plptDiario.composConfirm=true;
           }
-          if(sessRow && !_plptDiario.sessao){
-            _plptRestaurarSessao(sessRow);
+          if(sr && !_plptDiario.sessao){
+            _plptRestaurarSessao(sr);
             _plptDiario.composConfirm = true;
-          } else if(!sessRow && !_plptDiario.sessao){
+          } else if(!sr && !_plptDiario.sessao){
             // Fallback: tentar restaurar do localStorage
             var localEstado = _plptCarregarLocal();
             if(localEstado && localEstado.sessao && localEstado.sessao.inicio_ts){
@@ -8394,6 +8403,20 @@ function renderDiario(){
           }
           if(!_plptDiario.projetos) _plptDiario.projetos = [];
           if(!_plptModalTurnoAberto) renderDiarioPlpt();
+          } // fim _continuarComSessao
+
+          if(sessRow){
+            _continuarComSessao(sessRow);
+          } else {
+            // plpt_sessoes vazia — checar sessoes_disponibilidade (sessões antigas/migração)
+            console.log('[PLPT RELOAD] plpt_sessoes vazia, verificando sessoes_disponibilidade...');
+            sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'})
+              .then(function(rowsAntigos){
+                var res2 = _escolherMelhorSessao(rowsAntigos||[]);
+                console.log('[PLPT RELOAD] sessoes_disponibilidade:', (rowsAntigos||[]).length, 'score:', res2.score);
+                _continuarComSessao(res2.row);
+              }).catch(function(){ _continuarComSessao(null); });
+          }
         }).catch(function(err){ console.error('[PLPT RELOAD] ERRO no fetch sem prog:', err); _plptDiario.projetos=[]; if(!_plptModalTurnoAberto) renderDiarioPlpt(); });
         return;
       }
@@ -17015,7 +17038,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.3.7',
+  numero: '4.3.8',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
