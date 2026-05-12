@@ -15455,27 +15455,26 @@ function wlAnalisarIA(){
   wlSetStatus('Enviando croqui para análise por IA...');
 
   var imgUrl = _wlProjAtual.croqui_url;
-  // Converter URL para base64 se necessário
   var loadImg = imgUrl.startsWith('data:') ? Promise.resolve(imgUrl) : fetch(imgUrl).then(function(r){return r.blob();}).then(function(b){return new Promise(function(res){var rd=new FileReader();rd.onload=function(e){res(e.target.result);};rd.readAsDataURL(b);});});
 
   loadImg.then(function(dataUrl){
     var base64 = dataUrl.split(',')[1];
     var mime = dataUrl.startsWith('data:image/png')?'image/png':'image/jpeg';
-    return fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',max_tokens:2000,
-        messages:[{role:'user',content:[
-          {type:'image',source:{type:'base64',media_type:mime,data:base64}},
-          {type:'text',text:'Analise este croqui elétrico. Identifique TODAS as WLs (números em amarelo, em círculos/caixas). Retorne SOMENTE JSON:\n{"wls":[{"numero":"1","x":0.45,"y":0.32,"complexidade":"Média","regiao":"Centro"}],"total":27}\nx e y são posições relativas (0 a 1). Complexidade: Baixa/Média/Alta/Crítica. APENAS JSON.'}
-        ]}]
-      })
+    // Chamar via Supabase Edge Function (evita CORS)
+    var edgeFnUrl = SB.url + '/functions/v1/analisar-wl';
+    return fetch(edgeFnUrl, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','apikey':SB.key,'Authorization':'Bearer '+SB.key},
+      body:JSON.stringify({imageBase64:base64, mimeType:mime})
     });
-  }).then(function(r){return r.json();}).then(function(data){
+  }).then(function(r){
+    if(!r.ok) throw new Error('Edge function retornou '+r.status+'. Verifique se está publicada.');
+    return r.json();
+  }).then(function(data){
     var text = (data.content||[]).find(function(c){return c.type==='text';})||{};
     var raw = (text.text||'').replace(/```json|```/g,'').trim();
     var parsed;
-    try{parsed=JSON.parse(raw);}catch(e){var m=raw.match(/\{[\s\S]*\}/);if(m)parsed=JSON.parse(m[0]);else throw new Error('Resposta inválida');}
+    try{parsed=JSON.parse(raw);}catch(e){var m=raw.match(/\{[\s\S]*\}/);if(m)parsed=JSON.parse(m[0]);else throw new Error('JSON inválido na resposta');}
     _wlDados=(parsed.wls||[]).map(function(w,i){return{id:i+1,numero:String(w.numero||i+1),x:Math.max(0.02,Math.min(0.98,Number(w.x)||0.5)),y:Math.max(0.02,Math.min(0.98,Number(w.y)||0.5)),complexidade:w.complexidade||'Média',regiao:w.regiao||'',equipe:0,bloqueada:false};});
     var nt=suggestTeamCountWL(_wlDados.length);
     _wlNumEquipes=nt;
@@ -15485,9 +15484,8 @@ function wlAnalisarIA(){
     wlRenderMarcadores();
     if(btn){btn.textContent='✓ Analisado';btn.disabled=false;}
   }).catch(function(e){
-    wlSetStatus('Erro: '+e.message);
-    if(btn){btn.textContent='🤖 Tentar novamente';btn.disabled=false;}
-    progShowToast('⚠ Erro na análise: '+e.message);
+    wlSetStatus('IA indisponível — use o modo manual. ('+e.message+')');
+    if(btn){btn.textContent='⚠ IA indisponível';btn.disabled=false;}
   });
 }
 
@@ -17484,7 +17482,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.5.3',
+  numero: '4.5.4',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
