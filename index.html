@@ -5480,23 +5480,6 @@ function openEditarEqDisp(eid){
     +' <span style="font-size:10px;color:#aaa">(calculado automaticamente)</span></div>'
     +'</div>'
 
-    // Bloco de escala
-    +'<div style="background:#EAF3DE;border-radius:8px;padding:.75rem;margin-top:.5rem">'
-    +'<div style="font-size:11px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">📅 Escala Operacional</div>'
-    +'<select id="ned-escala" class="inp" style="width:100%">'
-    +'<option value="">Sem escala definida</option>'
-    +['4x1','4x2','3x2','3x3'].map(function(esc){
-      var desc={
-        '4x1':'4x1 — Folga na sexta-feira',
-        '4x2':'4x2 — Folga quarta e quinta',
-        '3x2':'3x2 — Folga segunda e terça',
-        '3x3':'3x3 — Folga sábado e domingo'
-      }[esc];
-      return '<option value="'+esc+'"'+(e.escala===esc?' selected':'')+'>'+desc+'</option>';
-    }).join('')
-    +'</select>'
-    +'</div>'
-
     // Veículo padrão
     +'<div style="margin-top:.5rem">'
     +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🚗 Veículo padrão <span style="color:#888;font-size:10px">(do contrato)</span></label>'
@@ -7191,17 +7174,6 @@ function openEditarEquipe(eid){
     +'<div style="margin-top:.5rem;font-size:12px">Turno: <b id="ne-turno-label" style="color:#185FA5">'+turnoAtual+'</b>'
     +' <span style="font-size:10px;color:#aaa">(calculado automaticamente)</span></div>'
     +'</div>'
-
-    +'<div style="background:#EAF3DE;border-radius:8px;padding:.75rem;margin-top:.5rem">'
-    +'<div style="font-size:11px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">📅 Escala Operacional</div>'
-    +'<select id="ne-escala" class="inp" style="width:100%">'
-    +'<option value="">Sem escala definida</option>'
-    +['4x1','4x2','3x2','3x3'].map(function(esc){
-      var desc={'4x1':'4x1 — Folga na sexta-feira','4x2':'4x2 — Folga quarta e quinta',
-        '3x2':'3x2 — Folga segunda e terça','3x3':'3x3 — Folga sábado e domingo'}[esc];
-      return '<option value="'+esc+'"'+(e.escala===esc?' selected':'')+'>'+desc+'</option>';
-    }).join('')
-    +'</select></div>'
 
     +'<div style="margin-top:.5rem">'
     +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🚗 Veículo padrão <span style="color:#888;font-size:10px">(do contrato)</span></label>'
@@ -17636,7 +17608,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.7.3',
+  numero: '4.8.0',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -18692,17 +18664,47 @@ function progRenderPainelDisp(eqs, data, cid){
   });
 
   var disp = grupos_st['disponivel'];
-  // Escalados = quem está em qualquer composicao_dia desta data (incluindo locais)
+  // Escalados = quem está em qualquer composicao_dia desta data
   var escalados = {};
   composicao_dia.forEach(function(comp){
     if(comp.data !== data) return;
     var ids=[]; try{ids=JSON.parse(comp.colaborador_ids||'[]');}catch(e){}
     ids.filter(Boolean).forEach(function(id){ escalados[id]=true; });
   });
-  var livres = disp.filter(function(c){ return !escalados[c.id]; });
+
+  // Verificar retorno automático de férias com data prevista
+  var hoje = dataHojeLocal();
+  cols.forEach(function(c){
+    var st = _progStatus[c.id];
+    if(st === 'ferias' && c.data_retorno && c.data_retorno <= hoje){
+      // Auto-retornar se data de retorno já passou
+      _progStatus[c.id] = 'disponivel';
+    }
+  });
+
+  // Colaboradores indisponíveis (folga, ferias, afastado, treinamento, faltou) — ficam no painel lateral
+  var STATUS_INDISPONIVEIS = ['folga','ferias','afastado','treinamento','faltou'];
+  // Também considerar folga por calendário como indisponível no pool
+  var corDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  var indisponiveis = cols.filter(function(c){
+    var st = _progStatus[c.id] || 'disponivel';
+    if(STATUS_INDISPONIVEIS.indexOf(st) >= 0) return true;
+    if(corDia && c.cor_escala && c.cor_escala === corDia && st === 'disponivel') return true;
+    return false;
+  });
+
+  var livres = disp.filter(function(c){
+    if(escalados[c.id]) return false;
+    // Excluir folga por calendário
+    if(corDia && c.cor_escala && c.cor_escala === corDia) return false;
+    return true;
+  });
 
   var countHtml = Object.keys(PROG_STATUS).map(function(k){
-    var n = grupos_st[k].length;
+    var n = grupos_st[k] ? grupos_st[k].filter(function(c){
+      if(k==='disponivel') return true;
+      return true;
+    }).length : 0;
     if(!n) return '';
     var s = PROG_STATUS[k];
     return '<div id="prog-count-'+k+'" style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:'+s.bg
@@ -18710,6 +18712,35 @@ function progRenderPainelDisp(eqs, data, cid){
       +'border:.5px solid '+s.cor+'44" title="Clique para ver lista">'
       +n+' '+s.label+' ▾</div>';
   }).join('');
+
+  // Painel de indisponíveis
+  var indispHtml = '';
+  if(indisponiveis.length){
+    var INDISP_LABEL = {
+      folga:'📅 Folga', ferias:'🏖 Férias', afastado:'🏥 Afastado',
+      treinamento:'📚 Treinamento', faltou:'❌ Faltou'
+    };
+    indispHtml = '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
+      +'<div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:#888">Indisponíveis hoje ('+indisponiveis.length+')</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+      +indisponiveis.map(function(c){
+        var st = _progStatus[c.id]||'folga';
+        var isCal = corDia && c.cor_escala && c.cor_escala === corDia && st==='disponivel';
+        var label = isCal ? '📅 Folga '+corDia : (INDISP_LABEL[st]||st);
+        var podeAuto = (st==='ferias');
+        var podeManual = true;
+        var stInfo = PROG_STATUS[st]||PROG_STATUS.folga;
+        return '<div style="display:inline-flex;align-items:center;gap:4px;background:'+stInfo.bg
+          +';border:.5px solid '+stInfo.cor+'44;border-radius:6px;padding:3px 7px;font-size:11px;margin:1px">'
+          +'<span style="color:'+stInfo.cor+';font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
+          +'<span style="font-size:9px;color:'+stInfo.cor+'">'+label+'</span>'
+          +(podeManual && !isCal
+            ? '<span onclick="progRelevarIndisponivel(\''+c.id+'\')" style="cursor:pointer;color:#185FA5;font-size:10px;margin-left:2px" title="Liberar manualmente">↩</span>'
+            : '')
+          +'</div>';
+      }).join('')
+      +'</div></div>';
+  }
 
   var livresHtml = livres.length
     ? livres.map(function(c){
@@ -18728,7 +18759,8 @@ function progRenderPainelDisp(eqs, data, cid){
       }).join('')
     : '<div style="color:#aaa;font-size:12px">Todos escalados</div>';
 
-  return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
+  return indispHtml
+    +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
     +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados ('+livres.length+')</span>'
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
@@ -18739,6 +18771,19 @@ function progRenderPainelDisp(eqs, data, cid){
     + livresHtml
     +'</div>'
     +'</div>';
+}
+
+// Liberar colaborador indisponível manualmente
+function progRelevarIndisponivel(colabId){
+  var col = colaboradores.find(function(c){return c.id===colabId;});
+  if(!col) return;
+  var st = _progStatus[colabId]||'';
+  if(st === 'afastado'){
+    if(!confirm('Afastados só podem ser liberados manualmente.\nDeseja liberar '+col.nome.split(' ')[0]+' como Disponível?')) return;
+  }
+  _progStatus[colabId] = 'disponivel';
+  progRenderQuadro();
+  progShowToast('✅ '+col.nome.split(' ')[0]+' liberado como disponível.');
 }
 
 // ── Drag & Drop ──────────────────────────────────────────────
