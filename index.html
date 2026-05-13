@@ -18000,7 +18000,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.8.5',
+  numero: '4.9.0',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -18696,16 +18696,31 @@ function progRenderEquipeRow(eq, data){
     var partes=(col.nome||'').split(' ');
     var nomeExib=partes.length>=3?partes[0]+' '+partes[1]+' '+partes[partes.length-1]:col.nome;
 
+    // CNH badge
+    var cnhBadge = '';
+    if(col.cnh_categoria && col.cnh_categoria !== 'Não'){
+      var cnhCor = col.cnh_categoria==='D'||col.cnh_categoria==='E' ? '#185FA5' : '#3B6D11';
+      cnhBadge = '<span style="background:'+cnhCor+';color:#fff;border-radius:3px;padding:0 4px;font-size:9px;font-weight:700;margin-right:3px">'+col.cnh_categoria+'</span>';
+    }
+
     // Verificar folga por calendário de escala
     var corDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
     var corColab = col.cor_escala || '';
     var isFolgaCalendario = corDia && corColab && corDia === corColab;
     var folgaBadge = '';
     if(isFolgaCalendario && st === 'disponivel'){
-      // Sugerir folga visualmente mas não forçar
       var corSt = {verde:{bg:'#92D050',cl:'#fff'},azul:{bg:'#00B0F0',cl:'#fff'},amarelo:{bg:'#FFD700',cl:'#555'}};
       var cs = corSt[corDia]||{bg:'#e0dfd8',cl:'#555'};
       folgaBadge = '<div style="margin-top:2px;background:'+cs.bg+';color:'+cs.cl+';border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block" title="Folga por escala '+corDia+'">📅 Folga '+corDia+'</div>';
+    }
+
+    // Alerta 2x CNH D na mesma equipe
+    var alertaCnhD = '';
+    if(col.cnh_categoria==='D'){
+      var cntD = slots.filter(function(s){return s && s.cnh_categoria==='D' && s.id!==col.id;}).length;
+      if(cntD >= 1){
+        alertaCnhD = '<div style="margin-top:2px;background:#FFF0F0;border:.5px solid #ffaaaa;color:#A32D2D;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block" title="Atenção: 2 CNH D na mesma equipe">⚠ 2x CNH D</div>';
+      }
     }
 
     return '<td style="padding:4px 8px">'
@@ -18713,13 +18728,13 @@ function progRenderEquipeRow(eq, data){
       +'data-colab="'+col.id+'" data-eq="'+eqId+'" data-pos="'+pos+'" '
       +'ondragstart="progDragStart(event,\''+col.id+'\',\''+eqId+'\')" '
       +'ondragover="progDragOver(event)" ondrop="progDrop(event,\''+eqId+'\','+pos+')" '
-      +'style="background:'+(isFolgaCalendario&&st==='disponivel'?'#FFFBEB':stInfo.bg)+';border:.5px solid '+(isFolgaCalendario&&st==='disponivel'?'#FFD70088':stInfo.cor+'44')+';border-radius:6px;'
+      +'style="background:'+(isFolgaCalendario&&st==='disponivel'?'#FFFBEB':stInfo.bg)+';border:.5px solid '+(isFolgaCalendario&&st==='disponivel'?'#FFD70088':alertaCnhD?'#ff444488':stInfo.cor+'44')+(alertaCnhD?';outline:1px solid #ff444422':'')+';border-radius:6px;'
       +'padding:4px 8px;min-width:110px;cursor:grab;font-size:11px;position:relative">'
-      +'<div style="font-weight:600;color:'+stInfo.cor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px;font-size:11px;padding-right:14px">'+nomeExib+'</div>'
+      +'<div style="font-weight:600;color:'+stInfo.cor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px;font-size:11px;padding-right:14px">'+cnhBadge+nomeExib+'</div>'
       +'<div style="font-size:9px;color:#888;margin-top:1px">RE '+(col.re||'—')+'</div>'
       +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">'+(col.cargo||'')+'</div>'
       +'<div style="font-size:9px;color:'+stInfo.cor+';margin-top:1px">'+stInfo.label+'</div>'
-      +folgaBadge
+      +folgaBadge+alertaCnhD
       +'<div style="position:absolute;top:2px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#555;line-height:1;user-select:none" '
       +'onclick="progMenuSlot(\''+col.id+'\',\''+eqId+'\','+pos+')">⋮</div>'
       +'</div></td>';
@@ -18849,18 +18864,29 @@ function progSalvarEquipe(eqId){
     return;
   }
   comp.confirmada = true;
+  // Registrar se havia folga na escala no momento do save
+  var corDiaSave = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  var temFolga = ids.some(function(id){
+    var c = colaboradores.find(function(x){return x.id===id;});
+    var st = _progStatus[id]||'disponivel';
+    if(!c) return false;
+    if(st==='folga'||st==='ferias'||st==='afastado') return true;
+    if(corDiaSave && c.cor_escala && c.cor_escala===corDiaSave) return true;
+    return false;
+  });
   if(!DEMO){
     var isLocal = comp._local || !comp.id || comp.id.startsWith('local_');
     if(isLocal){
       sbInsert('composicao_dia',{equipe_id:eqId,data:data,
-        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true})
+        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true,tem_folga:temFolga})
         .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
     } else {
-      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids),tem_folga:temFolga},'id=eq.'+comp.id);
     }
   }
+  if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
+  else progShowToast('✅ Equipe programada com sucesso');
   progRenderQuadro();
-  progShowToast('✅ Equipe programada com sucesso');
 }
 
 
@@ -19157,24 +19183,27 @@ function progRenderPainelDisp(eqs, data, cid){
   var livresHtml = livres.length
     ? livres.map(function(c){
         var isMot = c.motorista || c.cnh_categoria;
+        var cnhLabel = c.cnh_categoria && c.cnh_categoria!=='Não' ? ' <span style="background:#185FA5;color:#fff;border-radius:3px;padding:0 3px;font-size:8px;font-weight:700">'+c.cnh_categoria+'</span>' : '';
         return '<div class="prog-colab-chip" draggable="true" '
           +'id="chip-'+c.id+'" '
           +'data-colab="'+c.id+'" '
           +'ondragstart="progDragStart(event,\''+c.id+'\',null)" '
           +'style="display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;'
-          +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;'
+          +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 6px;'
           +'font-size:11px;cursor:grab;margin:2px">'
-          +(isMot?'<span style="font-size:9px;background:#185FA5;color:#fff;border-radius:2px;padding:0 2px">CNH</span>':'')
-          +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
-          +'<span style="color:#aaa;font-size:9px">'+( c.equipe_codigo||'')+'</span>'
+          +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+cnhLabel+'</span>'
+          +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||'')+'</span>'
+          +'<span onclick="progAlterarStatusPool(\''+c.id+'\')" title="Alterar status" '
+          +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
+          +'ondragstart="event.stopPropagation()">⋮</span>'
           +'</div>';
       }).join('')
-    : '<div style="color:#aaa;font-size:12px">Todos escalados</div>';
+    : '<div style="color:#aaa;font-size:12px;padding:4px">Todos os disponíveis já foram escalados</div>';
 
   return indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
-    +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados ('+livres.length+')</span>'
+    +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados (<b>'+livres.length+'</b>)</span>'
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
     +'</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
@@ -19184,6 +19213,35 @@ function progRenderPainelDisp(eqs, data, cid){
     +'</div>'
     +'</div>';
 }
+
+// Alterar status de colaborador direto do pool de não escalados
+function progAlterarStatusPool(colabId){
+  var col = colaboradores.find(function(c){return c.id===colabId;});
+  if(!col) return;
+  var stAtual = _progStatus[colabId]||'disponivel';
+  var opcoes = Object.keys(PROG_STATUS).map(function(k){
+    var s = PROG_STATUS[k];
+    return '<button onclick="progDefinirStatusPool(\''+colabId+'\',\''+k+'\')" '
+      +'style="display:block;width:100%;text-align:left;padding:8px 12px;border:none;'
+      +'background:'+(k===stAtual?s.bg:'#fff')+';color:'+(k===stAtual?s.cor:'#555')+';'
+      +'cursor:pointer;font-size:12px;border-bottom:.5px solid #f0efe8">'
+      +s.label+(k===stAtual?' ✓':'')+'</button>';
+  }).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:280px">'
+    +'<div style="font-weight:600;font-size:14px;margin-bottom:.75rem">'+col.nome.split(' ').slice(0,3).join(' ')+'</div>'
+    +'<div style="border-radius:8px;overflow:hidden;border:.5px solid #e0dfd8">'+opcoes+'</div>'
+    +'<div style="margin-top:.75rem;text-align:right">'
+    +'<button class="btn" onclick="closeModal()">Fechar</button></div>'
+    +'</div></div>');
+}
+
+function progDefinirStatusPool(colabId, novoStatus){
+  _progStatus[colabId] = novoStatus;
+  closeModal();
+  progRenderQuadro();
+}
+
+// ── Drag & Drop ──────────────────────────────────────────────
 
 // Liberar colaborador indisponível manualmente
 function progRelevarIndisponivel(colabId){
