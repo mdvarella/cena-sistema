@@ -8698,12 +8698,18 @@ function renderDiario(){
           var idx=sessoes_disp.findIndex(function(x){return x.id===s.id;});
           if(idx>=0) sessoes_disp[idx]=s; else sessoes_disp.push(s);
         });
-        // Atualizar composicao_dia com dados frescos
+        // Atualizar composicao_dia com dados frescos — preservar motorista_id em memória
         if(res[4]&&res[4].length){
           var c=res[4][0];
           c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
           var ci=composicao_dia.findIndex(function(x){return x.equipe_id===_dbEquipe.id&&x.data===hoje;});
-          if(ci>=0) composicao_dia[ci]=c; else composicao_dia.push(c);
+          if(ci>=0){
+            // Preservar motorista_id se o banco ainda não tiver
+            if(!c.motorista_id && composicao_dia[ci].motorista_id) c.motorista_id=composicao_dia[ci].motorista_id;
+            composicao_dia[ci]=c;
+          } else {
+            composicao_dia.push(c);
+          }
         }
         // Atualizar colaboradores da equipe
         if(res[5]&&res[5].length){
@@ -18215,7 +18221,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.9.2',
+  numero: '4.9.3',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -19120,12 +19126,19 @@ function progSalvarEquipe(eqId){
   });
   if(!DEMO){
     var isLocal = comp._local || !comp.id || comp.id.startsWith('local_');
+    var payload = {
+      equipe_id:eqId, data:data,
+      colaborador_ids:JSON.stringify(ids),
+      turno:'Manha', confirmada:true,
+      tem_folga:temFolga,
+      motorista_id:comp.motorista_id||null
+    };
     if(isLocal){
-      sbInsert('composicao_dia',{equipe_id:eqId,data:data,
-        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true,tem_folga:temFolga})
+      sbInsert('composicao_dia', payload)
         .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
     } else {
-      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids),tem_folga:temFolga},'id=eq.'+comp.id);
+      delete payload.equipe_id; delete payload.data; // não mudar chaves
+      sbUpdate('composicao_dia', payload, 'id=eq.'+comp.id);
     }
   }
   if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
@@ -19752,11 +19765,24 @@ function progSetStatusMenu(colabId, status){
 }
 
 function progSalvarMenuStatus(colabId){
+  var novoSt = _progStatus[colabId]||'disponivel';
   var retorno = (document.getElementById('retorno-data')||{}).value||'';
   var justif  = (document.getElementById('retorno-justif')||{}).value||'';
-  if(retorno||justif){
-    if(!_progStatusInfo) window._progStatusInfo={};
-    _progStatusInfo[colabId] = {retorno:retorno, justificativa:justif};
+  if(!window._progStatusInfo) window._progStatusInfo={};
+  if(retorno||justif) _progStatusInfo[colabId]={retorno:retorno, justificativa:justif};
+  // Persistir no banco
+  if(!DEMO){
+    var data = progGetData();
+    sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
+      var payload={colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null};
+      if(rows&&rows.length){
+        sbUpdate('prog_status_diario',payload,'colaborador_id=eq.'+colabId+',data=eq.'+data);
+      } else {
+        sbInsert('prog_status_diario',payload);
+      }
+    }).catch(function(){
+      sbInsert('prog_status_diario',{colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null});
+    });
   }
   closeModal();
   progRenderQuadro();
