@@ -544,6 +544,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
 #cad-grid>div:hover{background:#f5f5f3;}
 #cad-conteudo{flex:1;overflow-y:auto;min-width:0;}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -2945,6 +2946,23 @@ function plrShowToast(msg){
 var SB_URL='https://qxexyghcennllrmjqafg.supabase.co';
 var SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF4ZXh5Z2hjZW5ubGxybWpxYWZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3MjEyOTMsImV4cCI6MjA5MTI5NzI5M30.RFuWO0QeBXwUqZtR3c5qpdcn7feiZTB71_Ecs-2zPsI';
 var SB={url:SB_URL,key:SB_KEY};
+
+// ── Supabase Auth client ─────────────────────────────────────────────────
+// _sbAuthToken: null = usa anon key (MD5/demo); string = JWT do usuário autenticado
+var _sbAuthToken = null;
+var supabaseClient = null;
+try{
+  if(window.supabase && window.supabase.createClient){
+    supabaseClient = window.supabase.createClient(SB_URL, SB_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true }
+    });
+    // Mantém o token sempre atualizado quando a sessão renova automaticamente
+    supabaseClient.auth.onAuthStateChange(function(event, session){
+      _sbAuthToken = session ? session.access_token : null;
+      if(event === 'SIGNED_OUT'){ _sbAuthToken = null; }
+    });
+  }
+}catch(e){ console.warn('[Auth] Supabase client init falhou:',e); }
 var DEMO=false;
 
 // ── INTEGRAÇÃO ERP CENABR ─────────────────────────────────────────────
@@ -3205,7 +3223,7 @@ async function sbFetch(table,opts){
   filters.forEach(function(f){url+='&'+f;});
   if(order)url+='&order='+order;
   url+='&limit='+limit;
-  var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key};
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
   try{var r=await fetch(url,{headers:h});if(!r.ok)return null;var t=await r.text();return t?JSON.parse(t):[];}
   catch(e){return null;}
 }
@@ -3220,7 +3238,7 @@ async function sbFetchPaged(table, opts){
   var all     = [];
   var page    = 0;
   var size    = 1000;
-  var h = {'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Range-Unit':'items'};
+  var h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Range-Unit':'items'};
   while(true){
     var from = page * size;
     var to   = from + size - 1;
@@ -3257,7 +3275,7 @@ async function sbFetchAll(table,opts){
     filters.forEach(function(f){url+='&'+f;});
     url+='&order='+order;
     url+='&limit='+pageSize+'&offset='+offset;
-    var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key};
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
     try{
       var r=await fetch(url,{headers:h});
       if(!r.ok)break;
@@ -3273,7 +3291,7 @@ async function sbFetchAll(table,opts){
 }
 async function sbInsert(table,data){
   if(DEMO)return null;
-  var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json','Prefer':'return=representation'};
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json','Prefer':'return=representation'};
   try{
     console.log('[sbInsert] tabela:',table,'payload:',JSON.stringify(data));
     var r=await fetch(SB.url+'/rest/v1/'+table,{method:'POST',headers:h,body:JSON.stringify(Array.isArray(data)?data:[data])});;
@@ -3306,7 +3324,7 @@ async function sbDelete(table,filter){
   // Extrair ID do filtro para verificar se é UUID válido
   var m=filter.match(/id=eq\.(.+)/);
   if(m&&!isUUID(m[1])){console.warn('sbDelete ignorado — ID não é UUID:',m[1]);return;}
-  var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key};
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
   try{
     var r=await fetch(SB.url+'/rest/v1/'+table+'?'+filter,{method:'DELETE',headers:h});
     if(!r.ok){var err=await r.text();console.error('sbDelete erro ['+table+']',r.status,err);}
@@ -3317,7 +3335,7 @@ async function sbUpdate(table,data,filter){
   // Só bloquear se o filtro for EXATAMENTE id=eq.ALGO e ALGO não for UUID
   var mSimples=filter.match(/^id=eq\.(.+)$/);
   if(mSimples&&!isUUID(mSimples[1])){console.warn('sbUpdate ignorado — ID não é UUID:',mSimples[1]);return;}
-  var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json'};
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
   try{
     var r=await fetch(SB.url+'/rest/v1/'+table+'?'+filter,{method:'PATCH',headers:h,body:JSON.stringify(data)});
     if(!r.ok){var err=await r.text();console.error('sbUpdate erro ['+table+']',r.status,err);}
@@ -3374,154 +3392,185 @@ function closeModal(){
   ma.style.pointerEvents='none';
 }
 
-async function carregarDados(){
+// ── Helpers de data e flags de módulos lazy ───────────────────────────────
+function _diasAtras(n){
+  var d=new Date(Date.now()-n*86400000);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+var _modFinanceiro=false,_modObras=false,_modDiario=false,_modSESMT=false;
+
+// ── Carregamento BASE: tabelas essenciais para todos os perfis ────────────
+// Login vai de ~8s para ~2s — apenas 13 tabelas sem data limit
+async function carregarDadosBase(){
   if(DEMO){
     contratos=DD.contratos.slice();categorias=DD.categorias.slice();
     subcategorias=DD.subcategorias.slice();verbas=DD.verbas.slice();
     lancamentos=DD.lancamentos.slice();fornecedores=DD.fornecedores.slice();
   }else{
-    var res=await Promise.all([
+    var resA=await Promise.all([
       sbFetch('contratos',{filters:['status=neq.Cancelado'],order:'nome'}),
       sbFetch('categorias_despesa',{filters:['ativa=eq.true'],order:'nome'}),
       sbFetch('subcategorias_despesa',{filters:['ativa=eq.true']}),
       sbFetch('verbas_contrato'),
-      sbFetch('lancamentos',{order:'data_emissao.desc'}),
       sbFetch('fornecedores',{filters:['status=eq.Ativo'],order:'razao_social'}),
-    ]);
-    // Só atualizar se Supabase retornou dados válidos (não null)
-    if(res[0]&&res[0].length)contratos=res[0];
-    if(res[1]&&res[1].length)categorias=res[1];
-    if(res[2]&&res[2].length)subcategorias=res[2];
-    if(res[3]&&res[3].length)verbas=res[3];
-    if(res[4]&&res[4].length)lancamentos=res[4];
-    if(res[5]&&res[5].length)fornecedores=res[5];
-    var res2=await Promise.all([
-      sbFetch('produtividade',{order:'mes_ano.desc'}),
-      sbFetch('aditivos_contrato',{order:'data_aditivo.desc'}),
-      sbFetch('requisicoes_compra',{filters:['status=eq.Pendente']}),
-    ]);
-    if(res2[0]&&res2[0].length)produtividade=res2[0];
-    if(res2[1]&&res2[1].length)aditivos=res2[1];
-    if(res2[2]&&res2[2].length)requisicoes=res2[2];
-    var res3=await Promise.all([
-      sbFetch('adiantamentos',{order:'criado_em.desc'}),
-      sbFetch('parcelas_adiantamento',{order:'numero'}),
-    ]);
-    if(res3[0]&&res3[0].length)adiantamentos=res3[0];
-    if(res3[1]&&res3[1].length)parcelas_adi=res3[1];
-    var res4=await Promise.all([
       sbFetch('equipes',{filters:['status=neq.Inativo']}),
       sbFetch('causas_codx',{filters:['ativa=eq.true']}),
       sbFetch('servicos_contrato'),
-      sbFetch('prod_diaria',{order:'data.desc'}),
-      sbFetch('cod_x_lancamentos',{order:'data.desc'}),
     ]);
-    if(res4[0]&&res4[0].length)equipes=res4[0];
-    if(res4[1]&&res4[1].length)causas_codx=res4[1];
-    if(res4[2]&&res4[2].length)servicos=res4[2];
-    if(res4[3]&&res4[3].length)prod_diaria=res4[3];
-    if(res4[4]&&res4[4].length)cod_x_lanc=res4[4];
-    var res5=await Promise.all([
+    if(resA[0]&&resA[0].length)contratos=resA[0];
+    if(resA[1]&&resA[1].length)categorias=resA[1];
+    if(resA[2]&&resA[2].length)subcategorias=resA[2];
+    if(resA[3]&&resA[3].length)verbas=resA[3];
+    if(resA[4]&&resA[4].length)fornecedores=resA[4];
+    if(resA[5]&&resA[5].length)equipes=resA[5];
+    if(resA[6]&&resA[6].length)causas_codx=resA[6];
+    if(resA[7]&&resA[7].length)servicos=resA[7];
+    var resB=await Promise.all([
       sbFetch('usuarios_sistema',{filters:['ativo=eq.true'],order:'nome'}),
       sbFetch('tipos_equipe',{order:'nome'}),
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
       sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome'}),
+      sbFetch('veiculos',{order:'placa'}),
+      sbFetch('checklists_templates',{order:'nome'}),
     ]);
     _usuariosCarregadosDB=true;
-    if(res5[0]&&res5[0].length)usuarios_lista=res5[0];
+    if(resB[0]&&resB[0].length)usuarios_lista=resB[0];
     _equipsCarregadasDB=true;
-    if(res5[1]&&res5[1].length)tipos_equipe=res5[1];
-    if(res5[2]&&res5[2].length)equipes_disp=res5[2];
-    if(res5[3]&&res5[3].length)colaboradores=res5[3];
-    // Garantir ordenação alfabética dos arrays principais
-    colaboradores.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'}); });
-    equipes.sort(function(a,b){ return (a.nome_equipe||'').localeCompare(b.nome_equipe||'','pt-BR',{sensitivity:'base'}); });
-    equipes_disp.sort(function(a,b){ return (a.nome||a.codigo||'').localeCompare(b.nome||b.codigo||'','pt-BR',{sensitivity:'base'}); });
-    fornecedores.sort(function(a,b){ return (a.razao_social||a.nome||'').localeCompare(b.razao_social||b.nome||'','pt-BR',{sensitivity:'base'}); });
-    contratos.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'}); });
-    // Módulo obras e campo
-    var res6=await Promise.all([
-      sbFetch('projetos_obra',{order:'criado_em.desc'}),
-      sbFetch('proj_encarregados'),
-      sbFetch('materiais_sap',{order:'descricao'}),
-      sbFetch('execucoes_obra',{order:'data.desc'}),
-      sbFetch('medicoes_obra',{order:'criado_em.desc'}),
-      sbFetch('medicoes_obra_itens',{}),
-      sbFetch('exec_servicos'),
-      sbFetch('mov_sap',{order:'data.desc'}),
-      sbFetch('sol_materiais',{filters:['status=eq.Pendente']}),
-    ]);
-    if(res6[0]&&res6[0].length)projetos=res6[0];
-    if(res6[1]&&res6[1].length)proj_encarregados=res6[1];
-    if(res6[2]&&res6[2].length)mat_sap=res6[2];
-    if(res6[3]&&res6[3].length)execucoes=res6[3];
-    if(res6[4]&&res6[4].length)medicoes=res6[4].map(function(m){m.itens=[];return m;});
-    if(res6[5]&&res6[5].length) medicoes_itens=res6[5];
-    if(res6[6]&&res6[6].length)exec_servicos=res6[6];
-    if(res6[7]&&res6[7].length)mov_sap=res6[7];
-    if(res6[8]&&res6[8].length)sol_materiais=res6[8];
-    // Diário de bordo
-    var res7=await Promise.all([
-      sbFetch('composicao_dia',{order:'data.desc'}),
-      sbFetch('sessoes_disponibilidade',{order:'data.desc'}),
-      sbFetch('plpt_sessoes',{order:'data.desc'}),
-      sbFetch('ordens_diario',{order:'data.desc'}),
-      sbFetch('sol_composicao',{filters:['status=eq.Pendente']}),
-    ]);
-    if(res7[0]&&res7[0].length)composicao_dia=res7[0].map(function(c){
-      c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);return c;});
-    // Mesclar sessoes TMA + PLPT no array sessoes_disp
-    var _sessTMA  = (res7[1]||[]).map(function(s){ s.eventos=parseJsonField(s.eventos,[]); s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0; s._tipo='TMA'; return s; });
-    var _sessPLPT = (res7[2]||[]).map(function(s){ s.eventos=parseJsonField(s.eventos,[]); s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0; s._tipo='PLPT'; return s; });
-    sessoes_disp = _sessTMA.concat(_sessPLPT);
-    if(res7[3]&&res7[3].length)ordens_db=res7[3].map(function(o){
-      o.eventos=parseJsonField(o.eventos,[]);return o;});
-    if(res7[4]&&res7[4].length)sol_comp=res7[4];
-
-    // ── Carregar tabelas adicionais ──────────────────────────
-    var res8=await Promise.all([
-      sbFetch('veiculos',{order:'placa'}),
-      sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome'}),
-      sbFetch('checklists_templates',{order:'nome'}),
-      sbFetch('turnos_abertos',{order:'data.desc',filters:['data=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-7*86400000)]}),
-      sbFetch('aprs_registradas',{order:'data.desc',filters:['data=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-7*86400000)]}),
-    ]);
-    if(res8[0]&&res8[0].length)veiculos=res8[0].map(function(v){
-      v.contratos_ids=parseJsonField(v.contratos_ids,[]);return v;
-    });
-    if(res8[1]&&res8[1].length)colaboradores=res8[1];
-    if(res8[2]&&res8[2].length){
-      checklists_templates=res8[2].map(function(c){
-        c.itens=parseJsonField(c.itens,[]);return c;
-      });
-    }
-    // Se banco vazio, preservar templates padrão (já definidos antes)
-    if(res8[3]&&res8[3].length)turnos_abertos=res8[3].map(function(t){
-      t.respostas_epi=parseJsonField(t.respostas_epi,[]);
-      t.respostas_vei=parseJsonField(t.respostas_vei,[]);
-      t.placa=t.placa||'';
-      t.km_inicial=t.km_inicial||0;
-      t.km_final=t.km_final||0;
-      t.checklist_epi_ok=t.checklist_epi_ok||false;
-      t.checklist_vei_ok=t.checklist_vei_ok||false;
-      return t;
-    });
-    if(res8[4]&&res8[4].length)aprs_registradas=res8[4].map(function(a){
-      a.respostas=parseJsonField(a.respostas,[]);return a;
-    });
-
-    // ── Catálogo único de itens e movimentações ──────────────────
-    var res9 = await Promise.all([
-      sbFetch('itens_catalogo',{order:'nome'}),
-      sbFetch('movimentacoes_itens',{order:'data_mov.desc'}),
-    ]);
-    if(res9[0]&&res9[0].length) itens_catalogo = res9[0];
-    if(res9[1]&&res9[1].length) movimentacoes_itens = res9[1];
+    if(resB[1]&&resB[1].length)tipos_equipe=resB[1];
+    if(resB[2]&&resB[2].length)equipes_disp=resB[2];
+    if(resB[3]&&resB[3].length)colaboradores=resB[3];
+    if(resB[4]&&resB[4].length)veiculos=resB[4].map(function(v){v.contratos_ids=parseJsonField(v.contratos_ids,[]);return v;});
+    if(resB[5]&&resB[5].length)checklists_templates=resB[5].map(function(c){c.itens=parseJsonField(c.itens,[]);return c;});
+    // Ordenações
+    colaboradores.sort(function(a,b){return(a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'});});
+    equipes.sort(function(a,b){return(a.nome_equipe||'').localeCompare(b.nome_equipe||'','pt-BR',{sensitivity:'base'});});
+    equipes_disp.sort(function(a,b){return(a.nome||a.codigo||'').localeCompare(b.nome||b.codigo||'','pt-BR',{sensitivity:'base'});});
+    fornecedores.sort(function(a,b){return(a.razao_social||a.nome||'').localeCompare(b.razao_social||b.nome||'','pt-BR',{sensitivity:'base'});});
+    contratos.sort(function(a,b){return(a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'});});
   }
   atualizarMetricas();
   popularSelects();
   carregarCadastrosAuxiliares();
   projVerificarContratosNovos();
+}
+
+// ── Módulo FINANCEIRO: últimos 90 dias — carregado ao acessar lancamentos/verbas/etc ─
+async function carregarModuloFinanceiro(){
+  if(_modFinanceiro)return;
+  _modFinanceiro=true;
+  if(DEMO)return;
+  var d90=_diasAtras(90);
+  var res=await Promise.all([
+    sbFetch('lancamentos',{order:'data_emissao.desc',filters:['data_emissao=gte.'+d90]}),
+    sbFetch('produtividade',{order:'mes_ano.desc'}),
+    sbFetch('aditivos_contrato',{order:'data_aditivo.desc'}),
+    sbFetch('requisicoes_compra',{filters:['status=eq.Pendente']}),
+    sbFetch('adiantamentos',{order:'criado_em.desc'}),
+    sbFetch('parcelas_adiantamento',{order:'numero'}),
+    sbFetch('prod_diaria',{order:'data.desc',filters:['data=gte.'+d90]}),
+    sbFetch('cod_x_lancamentos',{order:'data.desc',filters:['data=gte.'+d90]}),
+  ]);
+  if(res[0]&&res[0].length)lancamentos=res[0];
+  if(res[1]&&res[1].length)produtividade=res[1];
+  if(res[2]&&res[2].length)aditivos=res[2];
+  if(res[3]&&res[3].length)requisicoes=res[3];
+  if(res[4]&&res[4].length)adiantamentos=res[4];
+  if(res[5]&&res[5].length)parcelas_adi=res[5];
+  if(res[6]&&res[6].length)prod_diaria=res[6];
+  if(res[7]&&res[7].length)cod_x_lanc=res[7];
+}
+
+// ── Módulo OBRAS: últimos 180 dias — carregado ao acessar obras/campo ────
+async function carregarModuloObras(){
+  if(_modObras)return;
+  _modObras=true;
+  if(DEMO)return;
+  var d180=_diasAtras(180);
+  var res=await Promise.all([
+    sbFetch('projetos_obra',{order:'criado_em.desc'}),
+    sbFetch('proj_encarregados'),
+    sbFetch('materiais_sap',{order:'descricao'}),
+    sbFetch('execucoes_obra',{order:'data.desc',filters:['data=gte.'+d180]}),
+    sbFetch('medicoes_obra',{order:'criado_em.desc',filters:['criado_em=gte.'+d180]}),
+    sbFetch('medicoes_obra_itens',{}),
+    sbFetch('exec_servicos'),
+    sbFetch('mov_sap',{order:'data.desc',filters:['data=gte.'+d180]}),
+    sbFetch('sol_materiais',{filters:['status=eq.Pendente']}),
+  ]);
+  if(res[0]&&res[0].length)projetos=res[0];
+  if(res[1]&&res[1].length)proj_encarregados=res[1];
+  if(res[2]&&res[2].length)mat_sap=res[2];
+  if(res[3]&&res[3].length)execucoes=res[3];
+  if(res[4]&&res[4].length)medicoes=res[4].map(function(m){m.itens=[];return m;});
+  if(res[5]&&res[5].length)medicoes_itens=res[5];
+  if(res[6]&&res[6].length)exec_servicos=res[6];
+  if(res[7]&&res[7].length)mov_sap=res[7];
+  if(res[8]&&res[8].length)sol_materiais=res[8];
+}
+
+// ── Módulo DIÁRIO: últimos 60 dias — carregado ao acessar programação/diário ─
+async function carregarModuloDiario(){
+  if(_modDiario)return;
+  _modDiario=true;
+  if(DEMO)return;
+  var d60=_diasAtras(60),d7=_diasAtras(7);
+  var res=await Promise.all([
+    sbFetch('composicao_dia',{order:'data.desc',filters:['data=gte.'+d60]}),
+    sbFetch('sessoes_disponibilidade',{order:'data.desc',filters:['data=gte.'+d60]}),
+    sbFetch('plpt_sessoes',{order:'data.desc',filters:['data=gte.'+d60]}),
+    sbFetch('ordens_diario',{order:'data.desc',filters:['data=gte.'+d60]}),
+    sbFetch('sol_composicao',{filters:['status=eq.Pendente']}),
+    sbFetch('turnos_abertos',{order:'data.desc',filters:['data=gte.'+d7]}),
+    sbFetch('aprs_registradas',{order:'data.desc',filters:['data=gte.'+d7]}),
+  ]);
+  if(res[0]&&res[0].length)composicao_dia=res[0].map(function(c){c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);return c;});
+  var _sessTMA=(res[1]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s.placa=s.placa||'';s.km_inicial=s.km_inicial||0;s.km_final=s.km_final||0;s._tipo='TMA';return s;});
+  var _sessPLPT=(res[2]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s.placa=s.placa||'';s.km_inicial=s.km_inicial||0;s.km_final=s.km_final||0;s._tipo='PLPT';return s;});
+  sessoes_disp=_sessTMA.concat(_sessPLPT);
+  if(res[3]&&res[3].length)ordens_db=res[3].map(function(o){o.eventos=parseJsonField(o.eventos,[]);return o;});
+  if(res[4]&&res[4].length)sol_comp=res[4];
+  if(res[5]&&res[5].length)turnos_abertos=res[5].map(function(t){
+    t.respostas_epi=parseJsonField(t.respostas_epi,[]);t.respostas_vei=parseJsonField(t.respostas_vei,[]);
+    t.placa=t.placa||'';t.km_inicial=t.km_inicial||0;t.km_final=t.km_final||0;
+    t.checklist_epi_ok=t.checklist_epi_ok||false;t.checklist_vei_ok=t.checklist_vei_ok||false;
+    return t;
+  });
+  if(res[6]&&res[6].length)aprs_registradas=res[6].map(function(a){a.respostas=parseJsonField(a.respostas,[]);return a;});
+}
+
+// ── Módulo SESMT/Almox: últimos 90 dias — carregado ao acessar SESMT ─────
+async function carregarModuloSESMT(){
+  if(_modSESMT)return;
+  _modSESMT=true;
+  if(DEMO)return;
+  var d90=_diasAtras(90);
+  var res=await Promise.all([
+    sbFetch('itens_catalogo',{order:'nome'}),
+    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90]}),
+  ]);
+  if(res[0]&&res[0].length)itens_catalogo=res[0];
+  if(res[1]&&res[1].length)movimentacoes_itens=res[1];
+}
+
+// ── Helper para garantir módulo carregado antes de renderizar ─────────────
+function _precisaModulo(modName,cb){
+  var carregado={'financeiro':function(){return _modFinanceiro;},'obras':function(){return _modObras;},'diario':function(){return _modDiario;},'sesmt':function(){return _modSESMT;}};
+  var loader={'financeiro':carregarModuloFinanceiro,'obras':carregarModuloObras,'diario':carregarModuloDiario,'sesmt':carregarModuloSESMT};
+  if(carregado[modName]()){cb();return;}
+  var spinId='_spin_mod_'+Date.now();
+  var spinEl=document.createElement('div');
+  spinEl.id=spinId;spinEl.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a18;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;opacity:.9';
+  spinEl.textContent='Carregando...';document.body.appendChild(spinEl);
+  loader[modName]().then(function(){var el=document.getElementById(spinId);if(el)el.remove();cb();}).catch(function(e){console.error('Erro módulo',modName,e);var el=document.getElementById(spinId);if(el)el.remove();cb();});
+}
+
+// ── carregarDados: mantido por compatibilidade — chama base + diário (TMA) ──
+async function carregarDados(){
+  await carregarDadosBase();
+  // Para perfil equipe/encarregado/campo: pré-carregar diário imediatamente
+  if(usuarioLogado&&(['equipe','encarregado','campo'].indexOf(usuarioLogado.perfil)>=0)){
+    await carregarModuloDiario();
+  }
 }
 
 function atualizarMetricas(){
@@ -4099,7 +4148,7 @@ function relTmaNaoEscalados(){
     (comps||[]).forEach(function(c){parseColabIds(c.colaborador_ids).forEach(function(id){if(id)escIds[id]=true;});});
     var corDia=(_calDados&&_calDados[data])||CAL_CORES_2026[data]||'';
     return sbFetch('prog_status_diario',{filters:['data=eq.'+data]}).then(function(stRows){
-      var stMap={};(stRows||[]).forEach(function(r){stMap[r.colaborador_id]=(r.status==='falta'?'faltou':r.status);});
+      var stMap={};(stRows||[]).forEach(function(r){stMap[r.colaborador_id]=r.status;});
       var corBgs={verde:'#92D050',azul:'#00B0F0',amarelo:'#FFD700'};
       var naoEsc=colaboradores.filter(function(c){
         if(c.ativo===false||c.contrato_id!==TMA_CID) return false;
@@ -4160,26 +4209,8 @@ function relTmaStatus(){
     var escIds={};
     comps.forEach(function(c){parseColabIds(c.colaborador_ids).forEach(function(id){if(id)escIds[id]=true;});});
     var stMap={};
-    // 1. Memória atual
-    Object.keys(_progStatus||{}).forEach(function(id){if(_progStatus[id]&&_progStatus[id]!=='disponivel')stMap[id]=_progStatus[id];});
-    // 2. localStorage para a data — captura sessões anteriores
-    try{
-      var lsRaw=localStorage.getItem('prog_status_'+data);
-      if(lsRaw){var lsObj=JSON.parse(lsRaw);if(lsObj&&lsObj.status)Object.keys(lsObj.status).forEach(function(id){if(lsObj.status[id]&&lsObj.status[id]!=='disponivel')stMap[id]=lsObj.status[id];});}
-    }catch(e){}
-    // 3. Banco tem prioridade final — normalizar 'falta' → 'faltou'
-    stRows.forEach(function(r){
-      var st = r.status==='falta'?'faltou':r.status;
-      if(st&&st!=='disponivel') stMap[r.colaborador_id]=st;
-    });
-    // Persistir no banco qualquer status que veio só do localStorage
-    if(!DEMO && Object.keys(stMap).length){
-      var paraSalvar=Object.keys(stMap).filter(function(id){return stMap[id]&&stMap[id]!=='disponivel';})
-        .map(function(id){return{colaborador_id:id,data:data,status:stMap[id]};});
-      if(paraSalvar.length) fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
-        method:'POST',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},
-        body:JSON.stringify(paraSalvar)}).catch(function(){});
-    }
+    stRows.forEach(function(r){stMap[r.colaborador_id]=r.status;});
+    Object.keys(_progStatus||{}).forEach(function(id){if(!stMap[id])stMap[id]=_progStatus[id];});
     var corDia=(_calDados&&_calDados[data])||CAL_CORES_2026[data]||'';
     var ST_LABEL={escalado:'Escalado',faltou:'Faltou',folga:'Folga',ferias:'Férias',afastado:'Afastado',treinamento:'Treinamento'};
     var ST_COR={escalado:'#3B6D11',faltou:'#A32D2D',folga:'#854F0B',ferias:'#185FA5',afastado:'#A32D2D',treinamento:'#533AB7'};
@@ -6461,7 +6492,7 @@ function statusProjExcluir(id){
   status_projetos_db = status_projetos_db.filter(function(s){return s.id!==id;});
   if(!DEMO) sbFetch('status_projetos',{filters:['id=eq.'+id]}).then(function(){
     // usar delete via fetch direto
-    var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json'};
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
     fetch(SB.url+'/rest/v1/status_projetos?id=eq.'+id,{method:'DELETE',headers:h}).catch(function(){});
   });
   progShowToast('🗑 Status removido.');
@@ -6973,7 +7004,7 @@ async function sbUpload(file, path){
   try{
     var SB_BUCKET='cena-docs';
     var url=SB.url+'/storage/v1/object/'+SB_BUCKET+'/'+path;
-    var h={'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':file.type};
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':file.type};
     var r=await fetch(url,{method:'POST',headers:h,body:file});
     if(r.ok) return SB.url+'/storage/v1/object/public/'+SB_BUCKET+'/'+path;
     // Fallback: converter para base64 e salvar inline
@@ -10701,7 +10732,7 @@ function plptExcluirAdicional(projId, idx, tipo){
   var item=lista[idx];
   if(item&&item.id&&!DEMO) sbFetch('sot_adicionais',{filters:['id=eq.'+item.id]}).then(function(){
     fetch(SB.url+'/rest/v1/sot_adicionais?id=eq.'+item.id,{method:'DELETE',
-      headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}});
+      headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}});
   });
   pj._adicionais=pj._adicionais.filter(function(a,i){
     if(a.tipo!==tipo) return true;
@@ -16230,7 +16261,7 @@ function wlAnalisarIA(){
     var edgeFnUrl = SB.url + '/functions/v1/analisar-wl';
     return fetch(edgeFnUrl, {
       method:'POST',
-      headers:{'Content-Type':'application/json','apikey':SB.key,'Authorization':'Bearer '+SB.key},
+      headers:{'Content-Type':'application/json','apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)},
       body:JSON.stringify({imageBase64:base64, mimeType:mime})
     });
   }).then(function(r){
@@ -18199,7 +18230,7 @@ function cenaAjudaLimpar(){
 function enviarWhatsAppProg(eqId, data){
   var eq=equipes_disp.find(function(e){return e.id===eqId;});
   if(!eq)return;
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp){alert('Equipe sem programacao para enviar.');return;}
   var tipo=tipos_equipe.find(function(t){return t.id===eq.tipo_id;});
   var tNome=tipo?tipo.nome:'';
@@ -18234,7 +18265,7 @@ function enviarWhatsAppTodos(){
   msg+='Data: '+B+diaSemana+', '+dataFmt+B+NL;
   msg+=comps.length+' equipe(s) programada(s)'+NL+NL;
   comps.forEach(function(eq){
-    var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+    var comp=composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     var ids=parseColabIds(comp.colaborador_ids)
     var cols=ids.map(function(cid){var col=colaboradores.find(function(x){return x.id===cid;});return col?col.nome:'Colaborador';});
     msg+=B+eq.codigo+B+(tipo_map[eq.tipo_id]?' ('+tipo_map[eq.tipo_id]+')':'')+' - '+(comp.turno||'Manha')+NL;
@@ -18253,11 +18284,11 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '4.9.9',
+  numero: '5.1.4',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
-    {v:'3.7.5', d:'08/05/2026', itens:[
+    {v:'5.1.0', d:'14/05/2026', itens:[      'Migração Supabase Auth: login tenta Auth primeiro, MD5 como fallback',      'Token JWT dinâmico em todos os 22 headers de requisição',      'Session restore via supabase.auth.getSession() com fallback localStorage',      'fazerLogout() encerra sessão no servidor (não só no browser)',      'onAuthStateChange: token renovado automaticamente a cada hora',    ]},    {v:'5.0.0', d:'14/05/2026', itens:[      'Lazy loading: 41 tabelas → 13 no boot (login ~2s vs ~12s anterior)',      'Filtros de data: lancamentos/execucoes/diario/sesmt limitados a 60-180 dias',      'Módulos independentes: financeiro/obras/diario/sesmt carregam sob demanda',      'Segurança: perfil sempre validado no servidor ao restaurar sessão',      'Segurança: bloqueio automático após 5 tentativas de login erradas',    ]},    {v:'3.7.5', d:'08/05/2026', itens:[
       'PLPT: fix sbUpdate sessoes_disponibilidade com ID não UUID',
       'Suprimido aviso de ID local para equipes PLPT',
     ]},
@@ -18430,7 +18461,7 @@ function progSalvarStatus(){
       // Se não há status não-default, limpar registros do dia no banco
       fetch(SB.url+'/rest/v1/prog_status_diario?data=eq.'+data,{
         method:'DELETE',
-        headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+        headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
       }).catch(function(){});
       return;
     }
@@ -18438,7 +18469,7 @@ function progSalvarStatus(){
     fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
       method:'POST',
       headers:{
-        'apikey':SB.key,'Authorization':'Bearer '+SB.key,
+        'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),
         'Content-Type':'application/json',
         'Prefer':'resolution=merge-duplicates,return=minimal'
       },
@@ -18447,12 +18478,12 @@ function progSalvarStatus(){
       // Fallback: DELETE + INSERT
       fetch(SB.url+'/rest/v1/prog_status_diario?data=eq.'+data,{
         method:'DELETE',
-        headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+        headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
       }).then(function(){
         if(!registros.length) return;
         fetch(SB.url+'/rest/v1/prog_status_diario',{
           method:'POST',
-          headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json','Prefer':'return=minimal'},
+          headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json','Prefer':'return=minimal'},
           body:JSON.stringify(registros)
         }).catch(function(e){ console.warn('progSalvarStatus fallback erro:',e); });
       });
@@ -18471,14 +18502,17 @@ function progCarregarStatus(data){
     if(saved.info)   _progStatusInfo = Object.assign({}, saved.info);
   }
 
-  // 2. Banco (autoritativo) — sobrescreve localStorage
+  // 2. Banco (autoritativo) — sobrescreve localStorage só se retornar dados válidos
   if(!DEMO){
     sbFetch('prog_status_diario',{filters:['data=eq.'+data]})
       .then(function(rows){
+        // rows===null significa erro de API — preservar localStorage, não resetar
+        if(rows === null){ progRenderQuadro(); return; }
+        // Só reseta se banco respondeu (array vazio = dia sem registros, também válido)
         _progStatus = {}; _progStatusInfo = {};
         if(rows&&rows.length){
           rows.forEach(function(r){
-            _progStatus[r.colaborador_id] = r.status==='falta'?'faltou':r.status;
+            _progStatus[r.colaborador_id] = r.status;
             if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
             if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
           });
@@ -18661,7 +18695,7 @@ function progRenderQuadro(){
   // Filtro por colaborador
   if(_progFiltroColab){
     eqs = eqs.filter(function(eq){
-      var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+      var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var idsComp = [];
       if(comp){idsComp=parseColabIds(comp.colaborador_ids)}
       var vinc = colaboradores.filter(function(c){return c.equipe_id===eq.id&&c.ativo!==false;});
@@ -18677,7 +18711,7 @@ function progRenderQuadro(){
     var STATUS_BLOQ_F = ['ferias','afastado','treinamento','falta'];
     eqs = eqs.filter(function(eq){
       if(equipeEstaEmFolga(eq,data)) return false; // folgas ignorar no filtro de incompletas
-      var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+      var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var ids = [];
       if(comp){ids=parseColabIds(comp.colaborador_ids)}
       if(!comp||!ids.filter(Boolean).length) return true;
@@ -18988,7 +19022,7 @@ function progRenderEquipeRow(eq, data){
     }
 
     // Motorista do dia
-    var compSlot = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+    var compSlot = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
     var isMotoristaDia = compSlot && compSlot.motorista_id === col.id;
     var motoristaBadge = isMotoristaDia ? '<div style="margin-top:2px;background:#185FA5;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block">🚗 Dirigida</div>' : '';
 
@@ -19251,6 +19285,7 @@ function progBuscarParaSlot(eqId, pos){
   var disponiveis = colaboradores.filter(function(c){
     if(c.ativo===false||c.dispensado)return false;
     if(cid&&c.contrato_id!==cid)return false;
+    if((c.vinculo||'campo')!=='campo')return false;
     if(STATUS_BLOQ.indexOf(_progStatus[c.id]||'disponivel')>=0)return false;
     return true;
   });
@@ -19378,6 +19413,8 @@ function progRenderPainelDisp(eqs, data, cid){
   var cols = colaboradores.filter(function(c){
     if(c.ativo === false) return false;
     if(cid && c.contrato_id !== cid) return false;
+    // Apenas colaboradores de campo aparecem na programação TMA
+    if((c.vinculo||'campo') !== 'campo') return false;
     return true;
   });
 
@@ -19634,7 +19671,7 @@ function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
       if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(idsC)},'id=eq.'+comp.id);
     });
   }
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===toEqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   var ids=comp?parseColabIds(comp.colaborador_ids):[]
   while(ids.length<3) ids.push(null);
   ids[toPos]=colabId;
@@ -19709,7 +19746,7 @@ function progMenuSlot(colabId, eqId, pos){
   // Motorista do dia — verificar compatibilidade CNH
   var motHtml = '';
   if(!fromPool && eqId){
-    var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+    var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
     var eq = equipes_disp.find(function(e){return e.id===eqId;});
     var veic = eq && frt_veiculos ? frt_veiculos.find(function(v){return v.id===eq.veiculo_padrao_id;}) : null;
     var tipoVeic = veic ? (veic.tipo||veic.modelo||'').toLowerCase() : '';
@@ -19815,7 +19852,7 @@ function progSalvarMenuStatus(colabId){
 
 function progDefinirMotorista(colabId, eqId, checked){
   var data = progGetData();
-  var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp) return;
   comp.motorista_id = checked ? colabId : null;
   if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{motorista_id:checked?colabId:null},'id=eq.'+comp.id);
@@ -19828,7 +19865,7 @@ function progEqSelecionarProjetos(eqId){
   var projs = typeof progProjGetProjetos==='function' ? progProjGetProjetos(cid) : [];
   if(!projs.length){ alert('Nenhum projeto encontrado para este contrato.'); return; }
 
-  var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   var selecionados=[]; try{selecionados=JSON.parse((comp&&comp.projeto_ids)||'[]');}catch(e){}
   if(!Array.isArray(selecionados)) selecionados=[];
 
@@ -19878,7 +19915,7 @@ function progEqSelecionarProjetos(eqId){
 
 function progEqRemoverProjeto(eqId, projetoId){
   var data=progGetData();
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp) return;
   var ids=[]; try{ids=JSON.parse(comp.projeto_ids||'[]');}catch(e){}
   ids=ids.filter(function(id){return id!==projetoId;});
@@ -19891,19 +19928,15 @@ var _progRemovidosEq = {};
 
 function progRetirarDaEquipe(colabId, eqId, pos){
   var data = progGetData();
-  var comp = composicao_dia.find(function(c){
-    var cd=(c.data||'').split('T')[0];
-    return c.equipe_id===eqId && (cd===data||c.data===data);
-  });
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp){
     comp={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,
       colaborador_ids:'[]',turno:'Manha',confirmada:false,_local:true};
     composicao_dia.push(comp);
   }
-  var ids = parseColabIds(comp.colaborador_ids);
-  ids = ids.filter(function(id){return id!==colabId;});
-  comp.colaborador_ids = JSON.stringify(ids);
-  comp.confirmada = false; // desprogramar ao retirar
+  var ids=[]; ids=parseColabIds(comp.colaborador_ids)
+  ids=ids.filter(function(id){return id!==colabId;});
+  comp.colaborador_ids=JSON.stringify(ids);
   if(!DEMO){
     if(comp._local){
       comp._local=false;
@@ -19911,7 +19944,7 @@ function progRetirarDaEquipe(colabId, eqId, pos){
         colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:false})
         .then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});
     } else {
-      sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids),confirmada:false},'id=eq.'+comp.id);
+      sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
     }
   }
   _progStatus[colabId]='disponivel';
@@ -20324,7 +20357,7 @@ function progAutoEscalar(eqId){
     if(!usados[c.id]){ids.push(c.id);usados[c.id]=true;}
   });
 
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(comp){
     comp.colaborador_ids=JSON.stringify(ids);
     if(!DEMO)sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
@@ -20365,7 +20398,7 @@ function progAutoEscalarTodas(){
     vinc.slice(0,3).forEach(function(c){if(!usados2[c.id]){ids.push(c.id);usados2[c.id]=true;}});
     // Marcar estes como escalados para as próximas equipes
     ids.forEach(function(id){if(id) jaEscaladoAll[id]=true;});
-    var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+    var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     if(comp){
       comp.colaborador_ids = JSON.stringify(ids);
       if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
@@ -20583,7 +20616,7 @@ function calSalvar(){
     p = p.then(function(){
       return fetch(SB.url+'/rest/v1/calendario_escala', {
         method: 'POST',
-        headers: {'apikey':SB.key,'Authorization':'Bearer '+SB.key,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
+        headers: {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
         body: JSON.stringify(lote)
       });
     });
@@ -20616,7 +20649,7 @@ function renderProgEquipes(){
 
   lista.innerHTML=eqs.map(function(eq){
     var tipo=tipos_equipe.find(function(t){return t.id===eq.tipo_id;});
-    var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+    var comp=composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     var colsSel=comp?(parseJsonField(comp.colaborador_ids,[])):[];
     var confirmada=comp&&comp.confirmada;
     var erroRep=comp&&comp.erro_reportado;
@@ -20800,7 +20833,7 @@ async function openProgEquipe(eqId, data){
   await garantirColaboradoresCarregados(eq.contrato_id);
 
   var tipo=tipos_equipe.find(function(t){return t.id===eq.tipo_id;});
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   var jaSelec=comp?(parseJsonField(comp.colaborador_ids,[])):[];
 
   // Colaboradores do contrato
@@ -23283,11 +23316,20 @@ function openEditarColaborador(cid){
     +'</div>'
     +'<div class="fg"><label>Nome completo <span style="color:#A32D2D">*</span></label>'
     +'<input id="nc-nome" value="'+c.nome+'" style="width:100%"/></div>'
+    +'<div class="g2">'
+    +'<div class="fg"><label>Tipo</label>'
+    +'<select id="nc-vinculo" style="width:100%">'
+    +'<option value="campo">⚡ Campo</option>'
+    +'<option value="escritorio">🏢 Escritório</option>'
+    +'<option value="interno">🏢 Interno</option>'
+    +'<option value="externo">🤝 Externo</option>'
+    +'</select></div>'
     +'<div class="fg"><label>Status</label>'
     +'<select id="nc-ativo" style="width:100%">'
-    +'<option value="true"'+(c.ativo!==false?' selected':'')+'>Ativo</option>'
-    +'<option value="false"'+(c.ativo===false?' selected':'')+'>Inativo</option>'
+    +'<option value="true">Ativo</option>'
+    +'<option value="false">Inativo</option>'
     +'</select></div>'
+    +'</div>'
     // Equipe vinculada
     +'<div class="fg" style="grid-column:1/-1">'
     +'<label>⚡ Equipe vinculada</label>'
@@ -23324,6 +23366,12 @@ function openEditarColaborador(cid){
   setModal(html);
   setTimeout(function(){
     var selCnh=document.getElementById('nc-cnh');
+    // ── Setar selects via JS — mais confiável que o atributo selected no innerHTML ──
+    var selAtivo=document.getElementById('nc-ativo');
+    var selVinculo=document.getElementById('nc-vinculo');
+    var isAtivo=c.ativo!==false&&c.ativo!==0&&c.ativo!=='false'&&c.ativo!==null;
+    if(selAtivo)selAtivo.value=isAtivo?'true':'false';
+    if(selVinculo)selVinculo.value=c.vinculo||'campo';
     if(selCnh) selCnh.onchange=function(){
       var w=document.getElementById('nc-cnh-wrap');
       if(w) w.style.display=this.value?'block':'none';
@@ -23357,6 +23405,7 @@ function openEditarColaborador(cid){
       c.re=(document.getElementById('nc-re')||{}).value.trim()||c.re;
       c.cargo=(document.getElementById('nc-cargo')||{}).value.trim()||c.cargo;
       c.bro=(document.getElementById('nc-bro')||{}).value.trim()||null;
+      c.vinculo=(document.getElementById('nc-vinculo')||{}).value||c.vinculo||'campo';
       c.ativo=(document.getElementById('nc-ativo')||{}).value!=='false';
       c.cnh_categoria=(document.getElementById('nc-cnh')||{}).value||'';
       c.motorista=!!c.cnh_categoria;
@@ -23367,6 +23416,7 @@ function openEditarColaborador(cid){
 
       if(!DEMO) sbUpdate('colaboradores',{
         nome:c.nome, re:c.re, cargo:c.cargo, bro:c.bro||null, ativo:c.ativo,
+        vinculo:c.vinculo||'campo',
         motorista:c.motorista, cnh_categoria:c.cnh_categoria,
         cnh_validade:c.cnh_validade||null,
         equipe_id:c.equipe_id||null,
@@ -26239,79 +26289,89 @@ function showPage(pageId){
 
   if(pageId==='dashboard')renderDashboard();
   else if(pageId==='contratos-lista')renderContratos();
-  else if(pageId==='adiantamentos')renderAdiantamentos();
+  else if(pageId==='adiantamentos'){_precisaModulo('financeiro',function(){renderAdiantamentos();});}
   else if(pageId==='operacional-prod'){
-    popularFiltrosOper();renderOperacional();
-    var cidOper=(document.getElementById('fil-oper-cont')||{}).value||'';
-    if(cidOper)verificarContratoObras(cidOper);
+    _precisaModulo('financeiro',function(){
+      popularFiltrosOper();renderOperacional();
+      var cidOper=(document.getElementById('fil-oper-cont')||{}).value||'';
+      if(cidOper)verificarContratoObras(cidOper);
+    });
   }
-  else if(pageId==='metas'){popularFiltrosProd();renderProdutividade();}
+  else if(pageId==='metas'){_precisaModulo('financeiro',function(){popularFiltrosProd();renderProdutividade();});}
   else if(pageId==='verbas')renderVerbas();
-  else if(pageId==='lancamentos')renderLancamentos();
-  else if(pageId==='aprovacao')renderAprovacao();
-  else if(pageId==='relatorios'){popularSelects();renderRelatorio();}
+  else if(pageId==='lancamentos'){_precisaModulo('financeiro',function(){renderLancamentos();});}
+  else if(pageId==='aprovacao'){_precisaModulo('financeiro',function(){renderAprovacao();});}
+  else if(pageId==='relatorios'){_precisaModulo('financeiro',function(){popularSelects();renderRelatorio();});}
   else if(pageId==='cadastros')renderCadastros();
   else if(pageId==='sugestoes'){sug_init();}
-  else if(pageId==='plpt-programacao'){plptProgInit();}
+  else if(pageId==='plpt-programacao'){_precisaModulo('diario',function(){plptProgInit();});}
   else if(pageId==='alm-dashboard'){
-    ocultarPaginasSESMTAlmoxarifado();
-    var pgAlm = document.getElementById('pg-alm-dashboard');
-    if(pgAlm) pgAlm.classList.remove('hidden');
-    _almShowAbaInterna(_sesmtAbaAtiva||'alm');
+    _precisaModulo('sesmt',function(){
+      ocultarPaginasSESMTAlmoxarifado();
+      var pgAlm = document.getElementById('pg-alm-dashboard');
+      if(pgAlm) pgAlm.classList.remove('hidden');
+      _almShowAbaInterna(_sesmtAbaAtiva||'alm');
+    });
   }
-  else if(pageId==='sesmt-alm')        { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('alm'); }
-  else if(pageId==='sesmt-estoque')    { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('estoque'); }
-  else if(pageId==='sesmt-epis')       { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('epis'); }
-  else if(pageId==='sesmt-uniformes')  { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('uniformes'); }
-  else if(pageId==='sesmt-lavagem')    { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('lavagem'); }
-  else if(pageId==='sesmt-ferramentas'){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('ferramentas'); }
-  else if(pageId==='sesmt-locacoes')   { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('locacoes'); }
-  else if(pageId==='sesmt-vales')      { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('vales'); }
-  else if(pageId==='sesmt-filiais')    { ocultarPaginasSESMTAlmoxarifado(); _almShowAba('filiais'); }
-  else if(pageId==='sesmt-treinamentos'){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('treinamentos'); }
-  else if(pageId==='sesmt-nr6')        { ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('nr6'); }
-  else if(pageId==='sesmt-ocorrencias'){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('ocorrencias'); }
-  else if(pageId==='sesmt-aprovacoes') { ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('aprovacoes'); }
-  else if(pageId==='sesmt-dashboard')  { ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('alm'); }
+  else if(pageId==='sesmt-alm')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('alm'); }); }
+  else if(pageId==='sesmt-estoque')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('estoque'); }); }
+  else if(pageId==='sesmt-epis')       { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('epis'); }); }
+  else if(pageId==='sesmt-uniformes')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('uniformes'); }); }
+  else if(pageId==='sesmt-lavagem')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('lavagem'); }); }
+  else if(pageId==='sesmt-ferramentas'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('ferramentas'); }); }
+  else if(pageId==='sesmt-locacoes')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('locacoes'); }); }
+  else if(pageId==='sesmt-vales')      { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('vales'); }); }
+  else if(pageId==='sesmt-filiais')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('filiais'); }); }
+  else if(pageId==='sesmt-treinamentos'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('treinamentos'); }); }
+  else if(pageId==='sesmt-nr6')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('nr6'); }); }
+  else if(pageId==='sesmt-ocorrencias'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('ocorrencias'); }); }
+  else if(pageId==='sesmt-aprovacoes') { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('aprovacoes'); }); }
+  else if(pageId==='sesmt-dashboard')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('alm'); }); }
   else if(pageId==='sesmt-mobilizacao'){
-    ocultarPaginasSESMTAlmoxarifado();
-    var pgM = document.getElementById('pg-sesmt-mobilizacao');
-    if(pgM) pgM.classList.remove('hidden');
-    renderSesmtMobilizacao();
+    _precisaModulo('sesmt',function(){
+      ocultarPaginasSESMTAlmoxarifado();
+      var pgM = document.getElementById('pg-sesmt-mobilizacao');
+      if(pgM) pgM.classList.remove('hidden');
+      renderSesmtMobilizacao();
+    });
   }
   else if(pageId==='sesmt-evolucao'){
-    ocultarPaginasSESMTAlmoxarifado();
-    var pgE = document.getElementById('pg-sesmt-evolucao');
-    if(pgE) pgE.classList.remove('hidden');
-    renderSesmtEvolucao();
+    _precisaModulo('sesmt',function(){
+      ocultarPaginasSESMTAlmoxarifado();
+      var pgE = document.getElementById('pg-sesmt-evolucao');
+      if(pgE) pgE.classList.remove('hidden');
+      renderSesmtEvolucao();
+    });
   }
   else if(pageId==='sesmt-aptidao'){
-    ocultarPaginasSESMTAlmoxarifado();
-    var pgA = document.getElementById('pg-sesmt-aptidao');
-    if(pgA) pgA.classList.remove('hidden');
-    renderSesmtAptidao();
+    _precisaModulo('sesmt',function(){
+      var pgA = document.getElementById('pg-sesmt-aptidao');
+      if(pgA) pgA.classList.remove('hidden');
+      renderSesmtAptidao();
+    });
   }
   else if(pageId==='plr'){plrInit();}
   else if(pageId&&pageId.indexOf('frotas-')===0){frtInit(pageId);}
-  else if(pageId==='campo')renderCampo();
-  else if(pageId==='obras-projetos'){popularFiltrosObras();projMostrarTab('tma');}
-  else if(pageId==='obras-sap'){almInit();}
-  else if(pageId==='obras-execucao'){popularFiltrosExec();renderExecucao();}
-  else if(pageId==='obras-movSAP'){popularFiltrosMovSAP();renderMovSAP();}
-  else if(pageId==='programacao-equipes'){progInit();}
-  else if(pageId==='programacao-projetos'){progProjInit();}
-  else if(pageId==='campo-diario'){showPageDiario();}
+  else if(pageId==='campo'){_precisaModulo('obras',function(){renderCampo();});}
+  else if(pageId==='obras-projetos'){_precisaModulo('obras',function(){popularFiltrosObras();projMostrarTab('tma');});}
+  else if(pageId==='obras-sap'){_precisaModulo('obras',function(){almInit();});}
+  else if(pageId==='obras-execucao'){_precisaModulo('obras',function(){popularFiltrosExec();renderExecucao();});}
+  else if(pageId==='obras-movSAP'){_precisaModulo('obras',function(){popularFiltrosMovSAP();renderMovSAP();});}
+  else if(pageId==='programacao-equipes'){_precisaModulo('diario',function(){progInit();});}
+  else if(pageId==='programacao-projetos'){_precisaModulo('diario',function(){progProjInit();});}
+  else if(pageId==='campo-diario'){_precisaModulo('diario',function(){showPageDiario();});}
   else if(pageId==='campo-turno'||pageId==='campo-checklist'||pageId==='campo-apr'||pageId==='campo-execucao-field'){
-    // Sub-páginas de campo agora são independentes (fora de pg-campo)
-    var pgSub=document.getElementById('pg-'+pageId);
-    if(pgSub)pgSub.classList.remove('hidden');
-    if(pageId==='campo-turno')renderAberturaTurno();
-    else if(pageId==='campo-checklist')renderChecklistsTemplates();
-    else if(pageId==='campo-apr')renderAPRs();
-    else if(pageId==='campo-execucao-field')renderCampoEncarregado();
+    _precisaModulo('diario',function(){
+      var pgSub=document.getElementById('pg-'+pageId);
+      if(pgSub)pgSub.classList.remove('hidden');
+      if(pageId==='campo-turno')renderAberturaTurno();
+      else if(pageId==='campo-checklist')renderChecklistsTemplates();
+      else if(pageId==='campo-apr')renderAPRs();
+      else if(pageId==='campo-execucao-field')renderCampoEncarregado();
+    });
   }
-  else if(pageId==='obras-requisicao'){renderRequisicaoObras();}
-  else if(pageId==='obras-medicao'){popularFiltrosMedicao();renderMedicoes();}
+  else if(pageId==='obras-requisicao'){_precisaModulo('obras',function(){renderRequisicaoObras();});}
+  else if(pageId==='obras-medicao'){_precisaModulo('obras',function(){popularFiltrosMedicao();renderMedicoes();});}
 }
 
 
@@ -26868,6 +26928,9 @@ function renderMovSAP(){
 function usarDemo(){DEMO=true;usuarioLogado={id:'u0',nome:'Demo Admin',perfil:'admin'};
   if(!usuarios_lista.length)usuarios_lista=[{id:'u0',nome:'Demo Admin',email:'admin@demo.com',perfil:'admin',equipe_id:'',equipe_codigo:'',ativo:true}];document.getElementById('pg-login').classList.add('hidden');document.getElementById('pg-app').classList.remove('hidden');document.getElementById('topbar-user').textContent='Demo Admin';document.getElementById('db-status').textContent='Modo demo';carregarDados().then(function(){showMain('dashboard');});}
 function fazerLogout(){
+  // Encerrar sessão no Supabase Auth (se existir)
+  _sbAuthToken = null;
+  try{ if(supabaseClient) supabaseClient.auth.signOut(); }catch(e){}
   document.body.classList.remove('perfil-equipe');
   // Resetar estado do diário de bordo completamente
   _dbEquipe=null;
@@ -26990,19 +27053,50 @@ function _salvarEquipeLocal(){
   }catch(e){}
 }
 
+var _loginTentativas=0,_loginBloqueadoAte=0;
 async function fazerLogin(){
   var email=document.getElementById('login-email').value.trim();
   var senha=document.getElementById('login-senha').value;
+  // Verificar bloqueio por tentativas
+  if(Date.now()<_loginBloqueadoAte){
+    var segs=Math.ceil((_loginBloqueadoAte-Date.now())/1000);
+    var elErr=document.getElementById('login-err');
+    elErr.textContent='Muitas tentativas. Aguarde '+segs+'s antes de tentar novamente.';
+    elErr.classList.remove('hidden');return;
+  }
   if(!email||!senha){document.getElementById('login-err').textContent='Preencha e-mail e senha.';document.getElementById('login-err').classList.remove('hidden');return;}
   try{
     var user=null;
     if(DEMO){user={id:'u0',nome:'Demo Admin',email:email,perfil:'admin'};}
     else{
-      var hash=md5js(senha);
-      var res=await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'senha_hash=eq.'+hash,'ativo=eq.true']});
-      if(res&&res.length>0)user=res[0];
+      // ── 1ª tentativa: Supabase Auth (usuários migrados) ──────────────
+      if(supabaseClient){
+        try{
+          var authRes = await supabaseClient.auth.signInWithPassword({email:email,password:senha});
+          if(!authRes.error && authRes.data && authRes.data.session){
+            _sbAuthToken = authRes.data.session.access_token;
+            var uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'ativo=eq.true']});
+            if(uRes&&uRes.length) user = uRes[0];
+          }
+        }catch(e){ console.warn('[Auth] signInWithPassword falhou:',e); }
+      }
+      // ── 2ª tentativa: MD5 legado (usuários ainda não migrados) ───────
+      if(!user){
+        var hash=md5js(senha);
+        var res=await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'senha_hash=eq.'+hash,'ativo=eq.true']});
+        if(res&&res.length>0) user=res[0];
+        // MD5 bem-sucedido: garantir que não fica com token de sessão anterior
+        if(user) _sbAuthToken=null;
+      }
     }
-    if(!user){document.getElementById('login-err').textContent='E-mail ou senha incorretos.';document.getElementById('login-err').classList.remove('hidden');return;}
+    if(!user){
+      _loginTentativas++;
+      if(_loginTentativas>=5){_loginBloqueadoAte=Date.now()+60000;_loginTentativas=0;}
+      var restam=5-_loginTentativas;
+      document.getElementById('login-err').textContent='E-mail ou senha incorretos.'+(restam>0?' ('+restam+' tentativa'+(restam>1?'s':'')+' restante'+(restam>1?'s':'')+')':'');
+      document.getElementById('login-err').classList.remove('hidden');return;
+    }
+    _loginTentativas=0;_loginBloqueadoAte=0;
     usuarioLogado=user;
     try{localStorage.setItem('cena_user',JSON.stringify({id:user.id,nome:user.nome,email:user.email,perfil:user.perfil,contrato_id:user.contrato_id||'',equipe_id:user.equipe_id||'',equipe_codigo:user.equipe_codigo||'',ts:Date.now()}));}catch(e){}
     document.getElementById('pg-login').classList.add('hidden');
@@ -27415,7 +27509,7 @@ function _progProjRenderQuadroInterno(data, cid){
   // Filtro por colaborador
   if(_pp.filtroColab){
     eqs = eqs.filter(function(eq){
-      var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+      var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var ids = comp?parseJsonField(comp.colaborador_ids,[]):[];
       var vinc = colaboradores.filter(function(c){return c.equipe_id===eq.id&&c.ativo!==false;});
       var todos = vinc.concat(ids.map(function(id){ return colaboradores.find(function(c){return c.id===id;}); }).filter(Boolean));
@@ -27428,7 +27522,7 @@ function _progProjRenderQuadroInterno(data, cid){
     var BLOQ = ['ferias','afastado','treinamento','falta'];
     eqs = eqs.filter(function(eq){
       if(equipeEstaEmFolga(eq,data)) return false;
-      var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+      var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
       var ids = comp?parseJsonField(comp.colaborador_ids,[]):[];
       if(!comp||!ids.filter(Boolean).length) return true;
       var ativos = ids.filter(function(id){ return id&&BLOQ.indexOf(_ppStatus[id]||'disponivel')<0; }).length;
@@ -27446,7 +27540,7 @@ function _progProjRenderQuadroInterno(data, cid){
   todasEqsCid.forEach(function(eq){
     rTotal++;
     if(equipeEstaEmFolga(eq,data)){rFolga++;return;}
-    var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+    var comp=composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     if(!comp){ rParadas++; return; }
     if(comp.confirmada){ rProgramadas++; return; }
     var ids=parseJsonField(comp.colaborador_ids,[]).filter(Boolean);
@@ -27771,7 +27865,7 @@ function ppRenderEquipeRow(eq, data, cid, maxSlots){
 function ppAdicionarSlot(eqId){
   var data = progProjGetData() || dataHoje();
   if(!data){ progShowToast('⚠ Selecione uma data primeiro'); return; }
-  var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp){
     comp = {id:'local_pp_'+eqId+'_'+data, equipe_id:eqId, data:data,
       colaborador_ids:JSON.stringify([null,null,null]), confirmada:false, _local:true};
@@ -28008,7 +28102,7 @@ function ppEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
       if(!DEMO&&isUUID(comp.id)) sbUpdate('composicao_dia',{colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
     });
   }
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===toEqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   var ids=comp?parseJsonField(comp.colaborador_ids,[]):[];
   while(ids.length<=toPos) ids.push(null);
   ids[toPos]=colabId;
@@ -28106,7 +28200,7 @@ function ppEqSelecionarProjetos(eqId){
   var projs = typeof progProjGetProjetos==='function' ? progProjGetProjetos(cid) : [];
   if(!projs.length){ alert('Nenhum projeto encontrado para este contrato.'); return; }
 
-  var comp = composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   var selecionados=[]; try{selecionados=JSON.parse((comp&&comp.projeto_ids)||'[]');}catch(e){}
   if(!Array.isArray(selecionados)) selecionados=[];
 
@@ -28158,7 +28252,7 @@ function ppEqSelecionarProjetos(eqId){
 
 function ppEqRemoverProjeto(eqId, projetoId){
   var data=progProjGetData();
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp) return;
   var ids=[]; try{ids=JSON.parse(comp.projeto_ids||'[]');}catch(e){}
   ids=ids.filter(function(id){return id!==projetoId;});
@@ -28313,7 +28407,7 @@ function ppAutoEscalarEquipe(eqId){
   }).slice(0,3);
   if(!disponiveis.length){ progShowToast('Nenhum colaborador disponível'); return; }
   var novosIds=disponiveis.map(function(c){return c.id;});
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(comp){
     comp.colaborador_ids=JSON.stringify(novosIds);
     comp.confirmada=false;
@@ -28360,7 +28454,7 @@ function ppMenuSlot(colabId, eqId, pos){
 
 function ppRetirarDaEquipe(colabId, eqId, pos){
   var data=progProjGetData();
-  var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eqId&&(cd===data||c.data===data);});
+  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(comp){
     var ids=parseJsonField(comp.colaborador_ids,[]);
     ids=ids.map(function(id){return id===colabId?null:id;});
@@ -28460,7 +28554,7 @@ function progProjAutoEscalar(){
   var eqs=equipes.filter(function(e){return e.contrato_id===cid&&e.status==='Ativo';});
   var idx=0;
   eqs.forEach(function(eq){
-    var comp=composicao_dia.find(function(c){var cd=(c.data||'').split('T')[0];return c.equipe_id===eq.id&&(cd===data||c.data===data);});
+    var comp=composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data;});
     var ids=comp?parseJsonField(comp.colaborador_ids,[]):[null,null,null];
     while(ids.length<3) ids.push(null);
     var mudou=false;
@@ -31279,19 +31373,73 @@ function frtRegistrarKMDiario(placa,km_inicial,km_final,data){
 }
 
 
-window.addEventListener('load',function(){
+window.addEventListener('load',async function(){
   var elSenha=document.getElementById('login-senha');
   var elEmail=document.getElementById('login-email');
   if(elSenha)elSenha.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin();});
   if(elEmail)elEmail.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin();});
-  // DIAGNÓSTICO
-  // verifica sessão salva
-  try{
-    var saved=localStorage.getItem('cena_user');
-    if(saved){
-      usuarioLogado=JSON.parse(saved);
-      document.getElementById('topbar-user').textContent=usuarioLogado.nome;
 
+  // ── Tentar restaurar sessão Supabase Auth ────────────────────────────
+  var _restoredViaAuth = false;
+  if(supabaseClient && !DEMO){
+    try{
+      var sessRes = await supabaseClient.auth.getSession();
+      if(sessRes.data && sessRes.data.session){
+        _sbAuthToken = sessRes.data.session.access_token;
+        var userEmail = sessRes.data.session.user.email;
+        var uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(userEmail),'ativo=eq.true']});
+        if(uRes && uRes.length){
+          usuarioLogado = uRes[0];
+          _restoredViaAuth = true;
+          console.log('[Auth] Sessão Supabase restaurada — perfil:',usuarioLogado.perfil);
+          // Atualizar localStorage com dados do banco
+          try{localStorage.setItem('cena_user',JSON.stringify({
+            id:usuarioLogado.id,nome:usuarioLogado.nome,email:usuarioLogado.email,
+            perfil:usuarioLogado.perfil,contrato_id:usuarioLogado.contrato_id||'',
+            equipe_id:usuarioLogado.equipe_id||'',equipe_codigo:usuarioLogado.equipe_codigo||'',
+            ts:Date.now()
+          }));}catch(e){}
+        }
+      }
+    }catch(e){ console.warn('[Auth] Restore Supabase Auth falhou:',e); }
+  }
+
+  // ── Se não restaurou via Auth, tentar localStorage (MD5 legado) ─────
+  if(!_restoredViaAuth){
+    try{
+      var saved=localStorage.getItem('cena_user');
+      if(saved){
+        usuarioLogado=JSON.parse(saved);
+        // Validar perfil no servidor para evitar escalada via DevTools
+        if(!DEMO&&usuarioLogado.id){
+          sbFetch('usuarios_sistema',{filters:['id=eq.'+usuarioLogado.id,'ativo=eq.true']}).then(function(dbRes){
+            if(!dbRes||!dbRes.length){
+              localStorage.removeItem('cena_user');usuarioLogado=null;
+              document.getElementById('pg-app').classList.add('hidden');
+              document.getElementById('pg-login').classList.remove('hidden');
+              return;
+            }
+            var dbUser=dbRes[0];
+            usuarioLogado.perfil=dbUser.perfil;
+            usuarioLogado.contrato_id=dbUser.contrato_id||'';
+            usuarioLogado.equipe_id=dbUser.equipe_id||'';
+            usuarioLogado.equipe_codigo=dbUser.equipe_codigo||'';
+            try{localStorage.setItem('cena_user',JSON.stringify(usuarioLogado));}catch(e){}
+          }).catch(function(){});
+        }
+      }
+    }catch(e){}
+  }
+
+  // ── Se não tem usuário, mostrar login e sair ─────────────────────────
+  if(!usuarioLogado){ return; }
+
+  // ── A partir daqui: usuário restaurado (Auth ou MD5) ─────────────────
+  document.getElementById('topbar-user').textContent=usuarioLogado.nome;
+
+  // ── Fluxo unificado: usuarioLogado já foi definido acima (Auth ou MD5) ─
+  try{
+    if(usuarioLogado){
       // Aplicar blindagem ANTES de mostrar pg-app
       if(usuarioLogado.perfil==='equipe'){
         document.body.classList.add('perfil-equipe');
@@ -32150,7 +32298,7 @@ function plptProgSalvarEquipe(eqId){
     var salvarProjs = function(progId){
       if(!projs.length) return;
       fetch(SB.url+'/rest/v1/plpt_prog_projetos?prog_dia_id=eq.'+progId,{
-        method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+        method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
       }).then(function(){
         sbInsert('plpt_prog_projetos', projs.map(function(p){
           return Object.assign({prog_dia_id:progId},p);
@@ -32356,7 +32504,7 @@ function plptSalvarMembros(eqId){
   _plptProgDados[eqId].membros=sel.map(function(cid){return{equipe_id:eqId,colaborador_id:cid,funcao:'eletricista'};});
   if(!DEMO){
     fetch(SB.url+'/rest/v1/plpt_equipe_membros?equipe_id=eq.'+eqId,{
-      method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+      method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
     }).then(function(){
       if(sel.length)sbInsert('plpt_equipe_membros',_plptProgDados[eqId].membros);
     });
@@ -32387,7 +32535,7 @@ function plptProgSalvarTudo(){
       if(dado.prog&&dado.prog.id){
         sbUpdate('plpt_prog_dia',payload,'id=eq.'+dado.prog.id);
         fetch(SB.url+'/rest/v1/plpt_prog_projetos?prog_dia_id=eq.'+dado.prog.id,{
-          method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+          method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
         }).then(function(){
           if(projs.length)sbInsert('plpt_prog_projetos',projs.map(function(p){return Object.assign({prog_dia_id:dado.prog.id},p);}));
         });
@@ -32977,7 +33125,7 @@ function plptProgSalvarEquipe(eqId){
     var salvarProjs = function(progId){
       if(!projs.length) return;
       fetch(SB.url+'/rest/v1/plpt_prog_projetos?prog_dia_id=eq.'+progId,{
-        method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+        method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
       }).then(function(){
         sbInsert('plpt_prog_projetos', projs.map(function(p){
           return Object.assign({prog_dia_id:progId},p);
@@ -33146,7 +33294,7 @@ function plptSalvarMembros(eqId){
   _plptProgDados[eqId].membros=sel.map(function(cid){return{equipe_id:eqId,colaborador_id:cid,funcao:'eletricista'};});
   if(!DEMO){
     fetch(SB.url+'/rest/v1/plpt_equipe_membros?equipe_id=eq.'+eqId,{
-      method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+      method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
     }).then(function(){
       if(sel.length)sbInsert('plpt_equipe_membros',_plptProgDados[eqId].membros);
     });
@@ -33177,7 +33325,7 @@ function plptProgSalvarTudo(){
       if(dado.prog&&dado.prog.id){
         sbUpdate('plpt_prog_dia',payload,'id=eq.'+dado.prog.id);
         fetch(SB.url+'/rest/v1/plpt_prog_projetos?prog_dia_id=eq.'+dado.prog.id,{
-          method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}
+          method:'DELETE',headers:{'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)}
         }).then(function(){
           if(projs.length)sbInsert('plpt_prog_projetos',projs.map(function(p){return Object.assign({prog_dia_id:dado.prog.id},p);}));
         });
