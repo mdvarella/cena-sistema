@@ -16352,15 +16352,21 @@ function sotIniciarAnaliseWL(projetoId){
     +'<button class="btn" onclick="closeModal()" style="padding:4px 10px">✕</button>'
     +'</div>'
     // Upload multi-arquivo
-    +'<div id="wl-upload-area" style="border:2px dashed #e0dfd8;border-radius:10px;padding:1.5rem;text-align:center;margin-bottom:1rem;cursor:pointer;transition:border-color .2s" '
-    +'onclick="document.getElementById(\'wl-file-input\').click()" '
+    // Área de upload com dois inputs separados
+    +'<div style="margin-bottom:1rem">'
+    +'<div id="wl-upload-area" style="border:2px dashed #e0dfd8;border-radius:10px;padding:1rem;text-align:center;transition:border-color .2s;margin-bottom:8px" '
     +'ondragover="event.preventDefault();this.style.borderColor=\'#185FA5\'" '
     +'ondragleave="this.style.borderColor=\'#e0dfd8\'" '
     +'ondrop="event.preventDefault();this.style.borderColor=\'#e0dfd8\';wlHandleFiles(event.dataTransfer.files)">'
     +'<input type="file" id="wl-file-input" multiple style="display:none" onchange="wlHandleFiles(this.files)">'
-    +'<div style="font-size:24px;margin-bottom:6px">📂</div>'
-    +'<div style="font-size:13px;font-weight:500;color:#444">Arraste ou clique para carregar os arquivos de WL</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-top:4px">PDF, PNG, JPG, DXF, XLSX ou CSV · múltiplos arquivos aceitos</div>'
+    +'<input type="file" id="wl-dxf-input" style="display:none" onchange="wlHandleFiles(this.files)">'
+    +'<div style="font-size:20px;margin-bottom:6px">📂</div>'
+    +'<div style="font-size:12px;font-weight:500;color:#444;margin-bottom:8px">Arraste arquivos aqui ou use os botões</div>'
+    +'<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">'
+    +'<button type="button" class="btn" onclick="document.getElementById(\'wl-file-input\').click()" style="font-size:11px;padding:5px 14px">📄 PDF / Imagem</button>'
+    +'<button type="button" class="btn" onclick="wlAbrirDXF()" style="font-size:11px;padding:5px 14px;background:#E6F1FB;color:#185FA5;border-color:#185FA5">📐 DXF</button>'
+    +'</div>'
+    +'</div>'
     +'</div>'
     // Lista de arquivos carregados
     +'<div id="wl-files-list" style="margin-bottom:.75rem"></div>'
@@ -16530,15 +16536,8 @@ function dxfToPromptText(parsed, nomeArquivo){
 
 function wlHandleFiles(files){
   if(!files || !files.length) return;
-  var TIPOS_SUPORTADOS = /\.(pdf|png|jpg|jpeg|xlsx|xls|csv|dxf)$/i;
   Array.from(files).forEach(function(f){
     if(_wlArquivos.find(function(a){return a.nome===f.name;})) return;
-
-    // Validar extensão
-    if(!TIPOS_SUPORTADOS.test(f.name)){
-      wlSetStatus('⚠ Formato não suportado: '+f.name+' — use PDF, imagem, DXF, XLSX ou CSV');
-      return;
-    }
 
     // DXF: ler como texto com fallback de encoding
     if(f.name.match(/\.dxf$/i)){
@@ -16549,29 +16548,20 @@ function wlHandleFiles(files){
         var reader = new FileReader();
         reader.onload = function(ev){
           var txt = ev.target.result;
-          // Verificar se parece um DXF válido
-          if(txt.indexOf('SECTION') < 0 && txt.indexOf('ENTITIES') < 0){
-            if(encIdx < tryEncodings.length - 1){
-              encIdx++; tryRead(); return;
-            }
+          if(txt.indexOf('SECTION')<0 && txt.indexOf('ENTITIES')<0 && encIdx<tryEncodings.length-1){
+            encIdx++; tryRead(); return;
           }
           try{
             var parsed = parseDXF(txt);
             var preview = dxfToPromptText(parsed, f.name);
-            _wlArquivos.push({nome:f.name, tipo:'dxf', tamanho:f.size, dxfParsed:parsed, dxfPreview:preview});
+            _wlArquivos.push({nome:f.name,tipo:'dxf',tamanho:f.size,dxfParsed:parsed,dxfPreview:preview});
             wlRenderFilesList();
-            var nEnt = parsed.entities.length;
-            var nLay = Object.keys(parsed.layers).length;
-            wlSetStatus('✓ DXF carregado — '+nEnt+' entidades em '+nLay+' layers');
+            wlSetStatus('✓ DXF — '+parsed.entities.length+' entidades / '+Object.keys(parsed.layers).length+' layers');
             var btn=document.getElementById('wl-btn-analisar');
             if(btn)btn.style.display='';
-          }catch(e){
-            wlSetStatus('⚠ Erro ao processar DXF: '+e.message);
-          }
+          }catch(e){ wlSetStatus('⚠ Erro DXF: '+e.message); }
         };
-        reader.onerror = function(){
-          wlSetStatus('⚠ Erro ao ler o arquivo DXF');
-        };
+        reader.onerror=function(){ wlSetStatus('⚠ Erro ao ler o arquivo'); };
         reader.readAsText(f, tryEncodings[encIdx]);
       }
       tryRead();
@@ -16581,7 +16571,7 @@ function wlHandleFiles(files){
     // Outros formatos: base64
     var reader = new FileReader();
     reader.onload = function(ev){
-      _wlArquivos.push({nome:f.name, tipo:f.type||'application/octet-stream', tamanho:f.size, base64:ev.target.result.split(',')[1], dataUrl:ev.target.result});
+      _wlArquivos.push({nome:f.name,tipo:f.type||'application/octet-stream',tamanho:f.size,base64:ev.target.result.split(',')[1],dataUrl:ev.target.result});
       wlRenderFilesList();
       var btn=document.getElementById('wl-btn-analisar');
       if(btn)btn.style.display='';
@@ -16614,6 +16604,17 @@ function wlRemoverArquivo(idx){
   _wlArquivos.splice(idx,1);
   wlRenderFilesList();
   if(!_wlArquivos.length){var btn=document.getElementById('wl-btn-analisar');if(btn)btn.style.display='none';}
+}
+
+function wlAbrirDXF(){
+  // Criar input temporário sem accept para garantir que DXF aparece no seletor do OS
+  var inp = document.createElement('input');
+  inp.type = 'file';
+  inp.multiple = true;
+  inp.style.display = 'none';
+  inp.onchange = function(){ if(this.files && this.files.length) wlHandleFiles(this.files); document.body.removeChild(inp); };
+  document.body.appendChild(inp);
+  inp.click();
 }
 
 function wlAnalisarIA(){
@@ -18930,7 +18931,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.2.0',
+  numero: '5.2.1',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
