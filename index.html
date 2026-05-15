@@ -16357,7 +16357,7 @@ function sotIniciarAnaliseWL(projetoId){
     +'ondragover="event.preventDefault();this.style.borderColor=\'#185FA5\'" '
     +'ondragleave="this.style.borderColor=\'#e0dfd8\'" '
     +'ondrop="event.preventDefault();this.style.borderColor=\'#e0dfd8\';wlHandleFiles(event.dataTransfer.files)">'
-    +'<input type="file" id="wl-file-input" multiple accept=".pdf,.png,.jpg,.jpeg,.xlsx,.csv,.dxf" style="display:none" onchange="wlHandleFiles(this.files)">'
+    +'<input type="file" id="wl-file-input" multiple style="display:none" onchange="wlHandleFiles(this.files)">'
     +'<div style="font-size:24px;margin-bottom:6px">📂</div>'
     +'<div style="font-size:13px;font-weight:500;color:#444">Arraste ou clique para carregar os arquivos de WL</div>'
     +'<div style="font-size:11px;color:#aaa;margin-top:4px">PDF, PNG, JPG, DXF, XLSX ou CSV · múltiplos arquivos aceitos</div>'
@@ -16530,30 +16530,51 @@ function dxfToPromptText(parsed, nomeArquivo){
 
 function wlHandleFiles(files){
   if(!files || !files.length) return;
+  var TIPOS_SUPORTADOS = /\.(pdf|png|jpg|jpeg|xlsx|xls|csv|dxf)$/i;
   Array.from(files).forEach(function(f){
     if(_wlArquivos.find(function(a){return a.nome===f.name;})) return;
 
-    // DXF: ler como texto e parsear
+    // Validar extensão
+    if(!TIPOS_SUPORTADOS.test(f.name)){
+      wlSetStatus('⚠ Formato não suportado: '+f.name+' — use PDF, imagem, DXF, XLSX ou CSV');
+      return;
+    }
+
+    // DXF: ler como texto com fallback de encoding
     if(f.name.match(/\.dxf$/i)){
-      var reader = new FileReader();
-      reader.onload = function(ev){
-        wlSetStatus('Analisando DXF...');
-        try{
-          var parsed = parseDXF(ev.target.result);
-          var preview = dxfToPromptText(parsed, f.name);
-          _wlArquivos.push({
-            nome:f.name, tipo:'dxf', tamanho:f.size,
-            dxfParsed:parsed, dxfPreview:preview
-          });
-          wlRenderFilesList();
-          wlSetStatus('DXF carregado — '+parsed.entities.length+' entidades em '+Object.keys(parsed.layers).length+' layers');
-          var btn=document.getElementById('wl-btn-analisar');
-          if(btn)btn.style.display='';
-        }catch(e){
-          wlSetStatus('⚠ Erro ao ler DXF: '+e.message);
-        }
-      };
-      reader.readAsText(f, 'utf-8');
+      wlSetStatus('Lendo DXF...');
+      var tryEncodings = ['utf-8','windows-1252','iso-8859-1'];
+      var encIdx = 0;
+      function tryRead(){
+        var reader = new FileReader();
+        reader.onload = function(ev){
+          var txt = ev.target.result;
+          // Verificar se parece um DXF válido
+          if(txt.indexOf('SECTION') < 0 && txt.indexOf('ENTITIES') < 0){
+            if(encIdx < tryEncodings.length - 1){
+              encIdx++; tryRead(); return;
+            }
+          }
+          try{
+            var parsed = parseDXF(txt);
+            var preview = dxfToPromptText(parsed, f.name);
+            _wlArquivos.push({nome:f.name, tipo:'dxf', tamanho:f.size, dxfParsed:parsed, dxfPreview:preview});
+            wlRenderFilesList();
+            var nEnt = parsed.entities.length;
+            var nLay = Object.keys(parsed.layers).length;
+            wlSetStatus('✓ DXF carregado — '+nEnt+' entidades em '+nLay+' layers');
+            var btn=document.getElementById('wl-btn-analisar');
+            if(btn)btn.style.display='';
+          }catch(e){
+            wlSetStatus('⚠ Erro ao processar DXF: '+e.message);
+          }
+        };
+        reader.onerror = function(){
+          wlSetStatus('⚠ Erro ao ler o arquivo DXF');
+        };
+        reader.readAsText(f, tryEncodings[encIdx]);
+      }
+      tryRead();
       return;
     }
 
@@ -18909,7 +18930,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.1.9',
+  numero: '5.2.0',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
