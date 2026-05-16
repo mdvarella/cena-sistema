@@ -18889,7 +18889,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.2.5',
+  numero: '5.2.6',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -19155,7 +19155,7 @@ function progCarregarStatus(data){
     sbFetch('prog_status_diario',{filters:['data=eq.'+data]})
       .then(function(rows){
         // rows===null significa erro de API — preservar localStorage, não resetar
-        if(rows === null){ progRenderQuadro(); return; }
+        if(rows === null){ progRenderQuadro(); return null; }
         // Só reseta se banco respondeu (array vazio = dia sem registros, também válido)
         _progStatus = {}; _progStatusInfo = {};
         if(rows&&rows.length){
@@ -19166,8 +19166,35 @@ function progCarregarStatus(data){
           });
         }
         progAplicarPersistentes(data);
+        // Buscar status persistentes de dias ANTERIORES que ainda estão ativos hoje
+        // (afastado/férias/treinamento com data_retorno > data atual)
+        return sbFetch('prog_status_diario',{
+          filters:[
+            'status=in.(ferias,afastado,treinamento)',
+            'data_retorno=gt.'+data,
+            'data=lt.'+data
+          ],
+          order:'data.desc'
+        });
+      })
+      .then(function(persistRows){
+        if(!persistRows) return;
+        var jaVisto = {};
+        persistRows.forEach(function(r){
+          // Aplicar só se ainda não tem status explícito para hoje
+          if(!jaVisto[r.colaborador_id] &&
+             (!_progStatus[r.colaborador_id] || _progStatus[r.colaborador_id]==='disponivel')){
+            jaVisto[r.colaborador_id] = true;
+            _progStatus[r.colaborador_id] = r.status==='faltou'?'falta':r.status;
+            if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+            if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+            // Atualizar localStorage persistente para futuras visitas
+            progSalvarPersistente(r.colaborador_id, r.status, r.data, r.data_retorno, r.obs||'');
+          }
+        });
         progRenderQuadro();
-      }).catch(function(){ progRenderQuadro(); });
+      })
+      .catch(function(){ progRenderQuadro(); });
   }
 }
 
