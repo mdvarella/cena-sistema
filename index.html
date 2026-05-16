@@ -7349,10 +7349,9 @@ function cadNovoCurso(id){
     +'</select></div>'
     +'</div>'
 
-    // ── Norma e Pré-requisito ──
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    // ── Norma ──
+    +'<div style="display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:1rem">'
     +'<div class="fg"><label style="font-size:11px">Norma Relacionada</label><input class="inp" id="cc-norma" value="'+vl('norma_relacionada')+'" placeholder="Ex: NR-35, NR-10" style="width:100%"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Pré-requisito (curso)</label><select class="inp" id="cc-pre" style="width:100%"><option value="">Nenhum</option>'+optsPre+'</select></div>'
     +'</div>'
 
     // ── Flags / switches ──
@@ -39995,6 +39994,16 @@ function openNovoTrein(){
     +'<label style="font-size:11px;font-weight:500">Qtd. de Participantes <span style="color:#A32D2D">*</span></label>'
     +'<input class="inp" type="number" id="tr-qtd" min="1" style="width:100%" placeholder="Total de participantes" oninput="trAtualizarContratos()"/></div>'
 
+    // ── Colaboradores ──
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:500">Colaboradores</label>'
+    +'<div style="position:relative">'
+    +'<input class="inp" id="tr-colab-busca" style="width:100%" placeholder="Buscar por nome ou RE..." oninput="trBuscarColaboradores(this.value)" autocomplete="off"/>'
+    +'<div id="tr-colab-drop" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:.5px solid #e0dfd8;border-radius:0 0 8px 8px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>'
+    +'</div>'
+    +'<div id="tr-colab-selecionados" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;min-height:10px"></div>'
+    +'</div>'
+
     // ── Contratos ──
     +'<div class="fg" style="margin-bottom:.75rem">'
     +'<label style="font-size:11px;font-weight:500">Contratos</label>'
@@ -40015,6 +40024,8 @@ function openNovoTrein(){
 
   // Vincular checkboxes de contrato após render
   setTimeout(function(){
+    _trColabsSel = []; // reset ao abrir
+    trRenderColabsSel();
     // Marcar evento nos checkboxes de contrato
     document.querySelectorAll('.tr-cont-ck').forEach(function(ck){
       ck.addEventListener('change', trAtualizarContratos);
@@ -40093,6 +40104,131 @@ window.trValidarQtdContratos=function(){
   }
 };
 
+// ── Lista de colaboradores selecionados para o treinamento ──
+var _trColabsSel = []; // [{id, nome, re, status_curso}]
+
+window.trBuscarColaboradores = function(q){
+  var drop = document.getElementById('tr-colab-drop'); if(!drop) return;
+  q = (q||'').toLowerCase().trim();
+  if(q.length < 2){ drop.style.display='none'; return; }
+
+  var cursoId = (document.getElementById('tr-curso')||{}).value||'';
+  var hoje    = dataHojeLocal();
+  var em30    = _diasAdiante(30);
+
+  // Filtrar colaboradores
+  var resultados = (colaboradores||[]).filter(function(c){
+    if(!c.ativo && c.ativo !== undefined) return false;
+    var nome = (c.nome||'').toLowerCase();
+    var re   = (c.re||c.matricula||'').toLowerCase();
+    return nome.includes(q) || re.includes(q);
+  }).slice(0, 30);
+
+  // Para cada colaborador, verificar status do curso selecionado
+  function getStatusCurso(colabId){
+    if(!cursoId) return null;
+    var treins = (treinamentos||[]).filter(function(t){
+      return t.funcionario_id===colabId || t.colab_id===colabId;
+    }).filter(function(t){
+      var cId = t.curso_id||'';
+      var nr  = (t.nr||'').toUpperCase();
+      if(cursoId && cId === cursoId) return true;
+      // fallback: comparar sigla do curso com NR do treinamento
+      var curso = _cad_cursos.find(function(x){return x.id===cursoId;});
+      return curso && (nr.includes((curso.sigla||'').toUpperCase()) || nr.includes((curso.norma_relacionada||'').toUpperCase()));
+    });
+    if(!treins.length) return 'sem_curso';
+    var val = treins.map(function(t){return t.val||t.validade||'';}).filter(Boolean).sort().pop();
+    if(!val) return 'sem_curso';
+    if(val < hoje)  return 'vencido';
+    if(val <= em30) return 'proximo';
+    return 'valido';
+  }
+
+  // Priorizar vencidos/próximos no topo
+  resultados.sort(function(a,b){
+    var ord = {vencido:0, proximo:1, sem_curso:2, valido:3};
+    return (ord[getStatusCurso(a.id)]||2) - (ord[getStatusCurso(b.id)]||2);
+  });
+
+  var STATUS_ICON = {
+    vencido:   {icon:'🔴', cor:'#A32D2D', bg:'#FCEBEB', label:'Vencido'},
+    proximo:   {icon:'🟡', cor:'#854F0B', bg:'#FFFAE0', label:'Vence em breve'},
+    sem_curso: {icon:'⚪', cor:'#888',    bg:'#f9f9f7', label:'Sem curso'},
+    valido:    {icon:'🟢', cor:'#3B6D11', bg:'#EAF3DE', label:'Válido (>30d)'},
+  };
+
+  var jaSel = _trColabsSel.map(function(x){return x.id;});
+
+  drop.style.display = '';
+  drop.innerHTML = resultados.map(function(c){
+    var st = getStatusCurso(c.id);
+    var si = STATUS_ICON[st] || STATUS_ICON.sem_curso;
+    var jaSelecionado = jaSel.indexOf(c.id) >= 0;
+    var rowBg = (st==='vencido'||st==='proximo') ? si.bg : '#fff';
+    return '<div onclick="trAdicionarColab(\''+c.id+'\',\''+escHtml(c.nome)+'\',\''+escHtml(c.re||c.matricula||'')+'\',\''+st+'\')"'
+      +' style="display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:'+(jaSelecionado?'default':'pointer')+';background:'+rowBg+';opacity:'+(jaSelecionado?.45:1)+';border-bottom:.5px solid #f0efe8"'
+      +' onmouseenter="if(!'+jaSelecionado+')this.style.filter=\'brightness(.95)\'"'
+      +' onmouseleave="this.style.filter=\'\'">'
+      +'<span title="'+si.label+'">'+si.icon+'</span>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-size:12px;font-weight:'+(st==='vencido'||st==='proximo'?600:400)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(c.nome)+'</div>'
+      +(c.re||c.matricula?'<div style="font-size:10px;color:#aaa">RE: '+escHtml(c.re||c.matricula||'')+'</div>':'')
+      +'</div>'
+      +'<span style="font-size:10px;font-weight:600;color:'+si.cor+';flex-shrink:0;white-space:nowrap">'+si.label+'</span>'
+      +(jaSelecionado?'<span style="font-size:10px;color:#aaa">Já adicionado</span>':'')
+      +'</div>';
+  }).join('') || '<div style="padding:12px;color:#aaa;font-size:12px;text-align:center">Nenhum colaborador encontrado.</div>';
+};
+
+window.trAdicionarColab = function(id, nome, re, statusCurso){
+  // Não duplicar
+  if(_trColabsSel.some(function(x){return x.id===id;})) return;
+  _trColabsSel.push({id:id, nome:nome, re:re, status:statusCurso});
+
+  // Fechar dropdown
+  var drop=document.getElementById('tr-colab-drop');
+  var busca=document.getElementById('tr-colab-busca');
+  if(drop) drop.style.display='none';
+  if(busca){ busca.value=''; busca.focus(); }
+
+  // Atualizar qtd automaticamente
+  var qtdEl=document.getElementById('tr-qtd');
+  if(qtdEl && !qtdEl.value) qtdEl.value=_trColabsSel.length;
+  else if(qtdEl) qtdEl.value=Math.max(parseInt(qtdEl.value)||0, _trColabsSel.length);
+
+  trRenderColabsSel();
+  trAtualizarContratos();
+};
+
+window.trRemoverColab = function(id){
+  _trColabsSel = _trColabsSel.filter(function(x){return x.id!==id;});
+  trRenderColabsSel();
+};
+
+function trRenderColabsSel(){
+  var wrap=document.getElementById('tr-colab-selecionados'); if(!wrap) return;
+  var STATUS_ICON={vencido:'🔴',proximo:'🟡',sem_curso:'⚪',valido:'🟢'};
+  var STATUS_BG  ={vencido:'#FCEBEB',proximo:'#FFFAE0',sem_curso:'#f5f5f3',valido:'#EAF3DE'};
+  if(!_trColabsSel.length){wrap.innerHTML='<span style="font-size:11px;color:#aaa">Nenhum colaborador selecionado.</span>';return;}
+  wrap.innerHTML=_trColabsSel.map(function(c){
+    var bg=STATUS_BG[c.status]||'#f5f5f3';
+    return '<div style="display:flex;align-items:center;gap:5px;background:'+bg+';border-radius:20px;padding:3px 10px;font-size:11px">'
+      +(STATUS_ICON[c.status]||'⚪')+' '
+      +'<span style="font-weight:500">'+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>'
+      +(c.re?'<span style="color:#aaa;font-size:10px">'+escHtml(c.re)+'</span>':'')
+      +'<span onclick="trRemoverColab(\''+c.id+'\')" style="cursor:pointer;color:#888;margin-left:2px;font-size:13px;line-height:1" title="Remover">×</span>'
+      +'</div>';
+  }).join('');
+}
+
+// Fechar dropdown ao clicar fora
+document.addEventListener('click',function(e){
+  var drop=document.getElementById('tr-colab-drop');
+  var busca=document.getElementById('tr-colab-busca');
+  if(drop&&busca&&!busca.contains(e.target)&&!drop.contains(e.target)) drop.style.display='none';
+});
+
 function trSalvarTreinamento(){
   var cursoId=(document.getElementById('tr-curso')||{}).value||'';
   var escola =(document.getElementById('tr-escola')||{}).value||'';
@@ -40139,6 +40275,7 @@ function trSalvarTreinamento(){
     data_fim:fim,
     val:validade, validade:validade,
     qtd_participantes:qtd,
+    colaboradores:_trColabsSel.map(function(c){return c.id;}),
     contratos:contratosAlocados,
     status:status,
     criado_em:new Date().toISOString()
