@@ -19581,7 +19581,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.3.4',
+  numero: '5.3.6',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -31283,6 +31283,7 @@ var frt_manutencoes = [];
 var frt_combustivel = [];
 var frt_multas = [];
 var frt_avarias = [];
+var frt_reservas = [];
 var frt_documentos = [];
 var frt_riscos = [];
 var frt_custos = [];
@@ -31730,6 +31731,404 @@ function frtScoreChip(score){
 }
 
 // ── PORTARIA ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// PORTARIA INTELIGENTE — CONTROLE DE ACESSO E RESERVAS
+// ═══════════════════════════════════════════════════════════
+
+var frt_reservas = []; // reservas de veículos compartilhados
+
+// Perfis com flexibilidade de saída rápida
+var PORT_PERFIS_FLEX = ['Supervisor','Coordenador','Gerente','Diretor','supervisor','coordenador','gerente','diretor'];
+
+function portMostrarAba(aba){
+  ['equipes','saida','registros','reservas'].forEach(function(a){
+    var el=document.getElementById('port-aba-'+a);
+    var btn=document.getElementById('port-tab-'+a);
+    if(el) el.style.display = a===aba?'':'none';
+    if(btn){ btn.style.color=a===aba?'#185FA5':'#888'; btn.style.borderBottomColor=a===aba?'#185FA5':'transparent'; btn.style.fontWeight=a===aba?'600':'500'; }
+  });
+  if(aba==='equipes')   portRenderEquipesDia();
+  if(aba==='saida')     portRenderAguardando();
+  if(aba==='registros') frtPortariaRender();
+  if(aba==='reservas')  portRenderReservas();
+}
+
+// ── Aba: Equipes do Dia ──────────────────────────────────
+function portRenderEquipesDia(){
+  var wrap = document.getElementById('port-eq-lista'); if(!wrap) return;
+  var data   = (document.getElementById('port-eq-data')||{}).value||dataHojeLocal();
+  var turno  = (document.getElementById('port-eq-turno')||{}).value||'';
+  var cid    = (document.getElementById('port-eq-contrato')||{}).value||'';
+
+  // Popular select de contratos
+  var selCont = document.getElementById('port-eq-contrato');
+  if(selCont && selCont.options.length<=1 && contratos.length){
+    contratos.sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');}).forEach(function(c){
+      var o=document.createElement('option');o.value=c.id;o.textContent=c.codigo||c.nome;selCont.appendChild(o);
+    });
+  }
+
+  // Buscar composições do dia
+  var comps = composicao_dia.filter(function(c){
+    var d=(c.data||'').split('T')[0];
+    if(d!==data)return false;
+    if(turno&&c.turno!==turno)return false;
+    return true;
+  });
+
+  // Filtrar por contrato via equipe
+  if(cid){
+    comps = comps.filter(function(c){
+      var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;});
+      return eq && eq.contrato_id===cid;
+    });
+  }
+
+  var nProg=comps.length;
+  var nLiberados=comps.filter(function(c){return c._portaria_liberado;}).length;
+  var nAguard=comps.filter(function(c){return !c._portaria_liberado&&!c._portaria_bloqueado;}).length;
+  var nBloq=comps.filter(function(c){return c._portaria_bloqueado;}).length;
+
+  var metEl=document.getElementById('port-eq-metricas');
+  if(metEl) metEl.innerHTML=[
+    {l:'Equipes programadas', v:nProg,       c:'#555'},
+    {l:'Aguardando saída',    v:nAguard,     c:'#854F0B'},
+    {l:'Liberadas',           v:nLiberados,  c:'#3B6D11'},
+    {l:'Bloqueadas',          v:nBloq,       c:'#A32D2D'},
+  ].map(function(x){
+    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem;text-align:center">'
+      +'<div style="font-size:10px;color:#888;margin-bottom:2px">'+x.l+'</div>'
+      +'<div style="font-size:18px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
+  }).join('');
+
+  if(!comps.length){
+    wrap.innerHTML='<div style="text-align:center;color:#aaa;padding:2rem;font-size:13px">Nenhuma equipe programada para '+data.split('-').reverse().join('/')+'. Verifique a programação de equipes.</div>';
+    return;
+  }
+
+  // Horários por turno
+  var TURNO_HR={Manha:'06:00',Tarde:'14:00',Noite:'20:00'};
+
+  wrap.innerHTML = comps.map(function(comp){
+    var eq   = equipes_disp.find(function(e){return e.id===comp.equipe_id;})||{codigo:'—'};
+    var ids  = parseColabIds(comp.colaborador_ids).filter(Boolean);
+    var cols = ids.map(function(id){return colaboradores.find(function(c){return c.id===id;});}).filter(Boolean);
+    var hrSaida = TURNO_HR[comp.turno]||'—';
+
+    // Buscar saída na portaria pelo código da equipe
+    var jaLiberado = comp._portaria_liberado;
+    var jaBloqueado= comp._portaria_bloqueado;
+    var saida      = frt_portaria.find(function(p){return p.equipe===eq.codigo&&(p.data_saida||'').startsWith(data);});
+
+    var statusBg = jaLiberado?'#EAF3DE':jaBloqueado?'#FCEBEB':'#FEF3E2';
+    var statusCor= jaLiberado?'#3B6D11':jaBloqueado?'#A32D2D':'#854F0B';
+    var statusTxt= jaLiberado?'✅ Liberada':jaBloqueado?'🚫 Bloqueada':'⏳ Aguardando';
+
+    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.85rem 1rem">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.6rem">'
+      +'<span style="font-size:16px;font-weight:700;color:#185FA5">'+escHtml(eq.codigo)+'</span>'
+      +'<span style="font-size:11px;color:#888">'+escHtml(comp.turno||'—')+' · Saída prevista: <b>'+hrSaida+'</b></span>'
+      +'<span style="margin-left:auto;background:'+statusBg+';color:'+statusCor+';border-radius:5px;padding:2px 10px;font-size:11px;font-weight:600">'+statusTxt+'</span>'
+      +'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.5rem">'
+      + cols.map(function(c){
+          return '<div style="display:flex;align-items:center;gap:5px;background:#f5f5f3;border-radius:6px;padding:3px 8px;font-size:11px">'
+            +'<span>👷</span><span>'+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>'
+            +(c.cnh_categoria?'<span style="background:#185FA522;color:#185FA5;border-radius:3px;padding:0 4px;font-size:10px">'+c.cnh_categoria+'</span>':'')
+            +'</div>';
+        }).join('')
+      +'</div>'
+      +(comp.placa?'<div style="font-size:12px;color:#555;margin-bottom:.4rem">🚗 <b style="font-family:monospace">'+escHtml(comp.placa)+'</b></div>':'')
+      +(saida?'<div style="font-size:11px;color:#3B6D11">Saída registrada às '+fmtDT(saida.data_saida)+'</div>':'')
+      +'<div style="display:flex;gap:6px;margin-top:.5rem">'
+      +(jaLiberado||jaBloqueado?''
+        :'<button class="btn btn-pri btn-sm" onclick="portLiberarEquipe(\''+comp.equipe_id+'\',\''+data+'\')" style="font-size:11px">✅ Liberar</button>'
+         +'<button class="btn btn-sm" onclick="portBloquearEquipe(\''+comp.equipe_id+'\',\''+data+'\')" style="font-size:11px;color:#A32D2D;border-color:#A32D2D">🚫 Bloquear</button>')
+      +'</div></div>';
+  }).join('');
+}
+
+// ── Verificação de placa pelo controlador ───────────────
+function portVerificarPlaca(){
+  var placa = ((document.getElementById('port-chk-placa')||{}).value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  var res   = document.getElementById('port-chk-resultado'); if(!res) return;
+  if(placa.length<5){res.style.display='none';return;}
+
+  var data = dataHojeLocal();
+  res.style.display='';
+
+  // 1. Verificar se é veículo de supervisor/gestor
+  var veiculo = frt_veiculos.find(function(v){return(v.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')===placa;});
+
+  // 2. Verificar reserva ativa para compartilhado
+  var reserva = frt_reservas.find(function(r){
+    return (r.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')=== placa
+      && r.status==='Ativa'
+      && r.data_inicio<=data
+      && r.data_fim>=data;
+  });
+
+  // 3. Verificar equipe programada com essa placa
+  var comp = composicao_dia.find(function(c){
+    var d=(c.data||'').split('T')[0];
+    return d===data && (c.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')=== placa;
+  });
+
+  var html='';
+
+  if(comp){
+    var eq   = equipes_disp.find(function(e){return e.id===comp.equipe_id;})||{};
+    var ids  = parseColabIds(comp.colaborador_ids).filter(Boolean);
+    var cols = ids.map(function(id){return colaboradores.find(function(c){return c.id===id;});}).filter(Boolean);
+    var TURNO_HR={Manha:'06:00',Tarde:'14:00',Noite:'20:00'};
+    html+='<div style="background:#EAF3DE;border-radius:8px;padding:10px 12px;margin-bottom:.6rem">'
+      +'<div style="font-size:12px;font-weight:600;color:#3B6D11;margin-bottom:6px">✅ Equipe programada encontrada: '+escHtml(eq.codigo||'—')+'</div>'
+      +'<div style="font-size:11px;color:#555;margin-bottom:4px">Turno: <b>'+escHtml(comp.turno||'—')+'</b> · Saída prevista: <b>'+(TURNO_HR[comp.turno]||'—')+'</b></div>'
+      +'<div style="font-size:11px;margin-bottom:6px"><b>Integrantes esperados:</b> '
+      +cols.map(function(c){return '<span style="background:#fff;border-radius:4px;padding:1px 7px;margin:1px;display:inline-block">'+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>';}).join('')
+      +'</div>'
+      +'<div style="font-size:11px;margin-bottom:8px"><b>Destino / atividade:</b></div>'
+      +'<textarea id="port-chk-destino" style="width:100%;height:56px;font-size:12px;padding:6px 8px;border:.5px solid #92D050;border-radius:6px;resize:vertical" placeholder="Descreva o destino e a atividade a realizar... (obrigatório)"></textarea>'
+      +'<div style="font-size:11px;margin-bottom:4px;margin-top:6px"><b>KM atual do veículo:</b></div>'
+      +'<input id="port-chk-km" type="number" style="width:100%;font-size:13px;padding:5px 8px;border:.5px solid #92D050;border-radius:6px" placeholder="Quilometragem atual"/>'
+      +'<div style="display:flex;gap:6px;margin-top:.6rem">'
+      +'<button class="btn btn-pri" onclick="portLiberar(\'equipe\',\''+comp.equipe_id+'\',\''+placa+'\')" style="flex:1;background:#3B6D11;border-color:#3B6D11">✅ Liberar saída</button>'
+      +'<button class="btn" onclick="portBloquear(\''+placa+'\')" style="flex:1;color:#A32D2D;border-color:#A32D2D">🚫 Bloquear</button>'
+      +'</div></div>';
+  } else if(reserva){
+    html+='<div style="background:#EAF3DE;border-radius:8px;padding:10px 12px;margin-bottom:.6rem">'
+      +'<div style="font-size:12px;font-weight:600;color:#3B6D11;margin-bottom:4px">📅 Reserva ativa encontrada</div>'
+      +'<div style="font-size:11px;color:#555">Autorizado: <b>'+escHtml(reserva.colaborador_nome||'—')+'</b></div>'
+      +'<div style="font-size:11px;color:#555;margin-bottom:.5rem">Período: <b>'+escHtml(reserva.data_inicio)+'</b> até <b>'+escHtml(reserva.data_fim)+'</b></div>'
+      +'<div style="font-size:11px;margin-bottom:6px"><b>Destino / atividade <span style="color:#A32D2D">*</span>:</b></div>'
+      +'<textarea id="port-chk-destino" style="width:100%;height:56px;font-size:12px;padding:6px 8px;border:.5px solid #92D050;border-radius:6px;resize:vertical" placeholder="Descreva o destino e a atividade..."></textarea>'
+      +'<button class="btn btn-pri" onclick="portLiberar(\'reserva\',\''+reserva.id+'\',\''+placa+'\')" style="width:100%;margin-top:.5rem;background:#3B6D11;border-color:#3B6D11">✅ Liberar saída (por reserva)</button>'
+      +'</div>';
+  } else if(veiculo && PORT_PERFIS_FLEX.some(function(p){return(veiculo.perfil_usuario||veiculo.tipo_usuario||'').toLowerCase().indexOf(p.toLowerCase())>=0;})){
+    html+='<div style="background:#FEF3E2;border-radius:8px;padding:10px 12px;margin-bottom:.6rem">'
+      +'<div style="font-size:12px;font-weight:600;color:#854F0B;margin-bottom:4px">⚡ Veículo de gestor/supervisor</div>'
+      +'<div style="font-size:11px;color:#555">Autorizado: <b>'+escHtml(veiculo.usuario_autorizado||'—')+'</b></div>'
+      +'<div style="font-size:11px;margin-top:.5rem;margin-bottom:6px"><b>Destino / atividade <span style="color:#A32D2D">*</span>:</b></div>'
+      +'<textarea id="port-chk-destino" style="width:100%;height:56px;font-size:12px;padding:6px 8px;border:.5px solid #F4A261;border-radius:6px;resize:vertical" placeholder="Descreva o destino e a atividade..."></textarea>'
+      +'<div class="fg" style="margin-top:.5rem"><label style="font-size:11px">Quem está saindo?</label>'
+      +'<input id="port-chk-quem" style="width:100%;font-size:12px;padding:5px 8px;border:.5px solid #e0dfd8;border-radius:6px" placeholder="Nome ou matrícula"/></div>'
+      +'<button class="btn btn-pri" onclick="portLiberar(\'gestor\',\'\',\''+placa+'\')" style="width:100%;margin-top:.5rem">✅ Liberar saída</button>'
+      +'</div>';
+  } else {
+    html='<div style="background:#FCEBEB;border-radius:8px;padding:10px 12px">'
+      +'<div style="font-size:13px;font-weight:600;color:#A32D2D;margin-bottom:4px">🚫 Saída não autorizada</div>'
+      +'<div style="font-size:12px;color:#555">O veículo <b>'+placa+'</b> não possui:<br>'
+      +'• Equipe programada para hoje com esta placa<br>'
+      +'• Reserva ativa cadastrada<br>'
+      +'• Vínculo com supervisor/gestor</div>'
+      +'<div style="font-size:11px;color:#A32D2D;margin-top:.5rem">Acione a supervisão ou programe a equipe antes de liberar a saída.</div>'
+      +'</div>';
+  }
+
+  res.innerHTML=html;
+}
+
+function portLimparVerificacao(){
+  var el=document.getElementById('port-chk-placa'); if(el)el.value='';
+  var r=document.getElementById('port-chk-resultado'); if(r){r.style.display='none';r.innerHTML='';}
+}
+
+function portLiberar(tipo, id, placa){
+  var destino=((document.getElementById('port-chk-destino')||{}).value||'').trim();
+  var km=parseInt((document.getElementById('port-chk-km')||{}).value||'0')||0;
+  var quem=((document.getElementById('port-chk-quem')||{}).value||'').trim();
+  if(!destino){progShowToast('⚠ Informe o destino/atividade antes de liberar.');return;}
+  var saida={
+    id:Date.now().toString(), placa:placa, tipo_liberacao:tipo,
+    destino:destino, km_saida:km, data_saida:new Date().toISOString(),
+    status:'Em campo', equipe:id, quem_saiu:quem,
+    liberado_por:usuarioLogado?usuarioLogado.nome:'Portaria'
+  };
+  frt_portaria.unshift(saida);
+  if(!DEMO)sbInsert('frotas_portaria_saidas',_semId(saida));
+  if(tipo==='equipe'){
+    var c=composicao_dia.find(function(x){return x.equipe_id===id;});
+    if(c)c._portaria_liberado=true;
+  }
+  portLimparVerificacao();
+  progShowToast('✅ Saída liberada — '+placa+' · '+destino);
+  portRenderAguardando();
+}
+
+function portBloquear(placa){
+  var motivo=prompt('Motivo do bloqueio:','');
+  if(!motivo)return;
+  progShowToast('🚫 Saída bloqueada — '+placa+'. Motivo: '+motivo);
+  if(!DEMO)sbInsert('frotas_portaria_bloqueios',{placa:placa,motivo:motivo,data:new Date().toISOString()});
+}
+
+function portLiberarEquipe(eqId, data){
+  var c=composicao_dia.find(function(x){return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data;});
+  if(c){c._portaria_liberado=true;portRenderEquipesDia();}
+}
+
+function portBloquearEquipe(eqId, data){
+  var motivo=prompt('Motivo do bloqueio da equipe:','');
+  if(!motivo)return;
+  var c=composicao_dia.find(function(x){return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data;});
+  if(c){c._portaria_bloqueado=true;c._motivo_bloqueio=motivo;portRenderEquipesDia();}
+}
+
+function portRenderAguardando(){
+  var wrap=document.getElementById('port-aguardando'); if(!wrap) return;
+  var data=dataHojeLocal();
+  var aguard=composicao_dia.filter(function(c){
+    return (c.data||'').split('T')[0]===data && !c._portaria_liberado && !c._portaria_bloqueado;
+  });
+  if(!aguard.length){wrap.innerHTML='<div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">Nenhuma equipe aguardando saída.</div>';return;}
+  wrap.innerHTML='<div style="display:grid;gap:.5rem">'+aguard.slice(0,10).map(function(c){
+    var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;})||{codigo:'—'};
+    var ids=parseColabIds(c.colaborador_ids).filter(Boolean);
+    var nomes=ids.map(function(id){var col=colaboradores.find(function(x){return x.id===id;});return col?col.nome.split(' ')[0]:'?';}).join(', ');
+    return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#FEF9EE;border-radius:7px;border:.5px solid #e0dfd8">'
+      +'<span style="font-weight:700;color:#185FA5;width:80px;flex-shrink:0">'+escHtml(eq.codigo)+'</span>'
+      +'<span style="font-size:11px;color:#555;flex:1">'+escHtml(nomes)+'</span>'
+      +(c.placa?'<span style="font-family:monospace;font-size:11px;color:#888">'+escHtml(c.placa)+'</span>':'')
+      +'<button class="btn btn-sm" onclick="portLiberarEquipe(\''+c.equipe_id+'\',\''+data+'\')" style="font-size:10px;color:#3B6D11;border-color:#3B6D11">✅ Liberar</button>'
+      +'</div>';
+  }).join('')+(aguard.length>10?'<div style="font-size:11px;color:#aaa;text-align:center">e mais '+(aguard.length-10)+' equipes...</div>':'')+'</div>';
+}
+
+// ── Aba: Reservas ────────────────────────────────────────
+function portNovaReserva(){ portAbrirModalReserva(null); }
+function portEditarReserva(id){ portAbrirModalReserva(frt_reservas.find(function(r){return r.id===id;})); }
+
+function portAbrirModalReserva(r){
+  var isNew=!r; r=r||{};
+  var hoje=dataHojeLocal();
+  var optsVeic=frt_veiculos.map(function(v){
+    return '<option value="'+escHtml(v.placa)+'"'+(r.placa===v.placa?' selected':'')+'>'+escHtml(v.placa)+' — '+escHtml(v.modelo||'')+'</option>';
+  }).join('');
+  var optsStatus=['Ativa','Em uso','Concluída','Cancelada'].map(function(s){return '<option'+(r.status===s?' selected':'')+'>'+s+'</option>';}).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin-bottom:1rem">'+(isNew?'📅 Nova Reserva':'✏ Editar Reserva')+'</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Veículo (placa)</label>'
+    +'<select class="inp" id="rsv-placa" style="width:100%"><option value="">Selecione o veículo</option>'+optsVeic+'</select></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Colaborador autorizado <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="rsv-colab" style="width:100%" value="'+escHtml(r.colaborador_nome||'')+'" placeholder="Nome ou matrícula do colaborador autorizado"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Data início <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" type="date" id="rsv-data-ini" value="'+(r.data_inicio||hoje)+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Data fim <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" type="date" id="rsv-data-fim" value="'+(r.data_fim||hoje)+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Hora início</label>'
+    +'<input class="inp" type="time" id="rsv-hr-ini" value="'+(r.hora_inicio||'07:00')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Hora fim</label>'
+    +'<input class="inp" type="time" id="rsv-hr-fim" value="'+(r.hora_fim||'18:00')+'" style="width:100%"/></div>'
+    +(isNew?''
+      :'<div class="fg"><label style="font-size:11px">Status</label><select class="inp" id="rsv-status" style="width:100%">'+optsStatus+'</select></div><div></div>')
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Justificativa <span style="color:#A32D2D">*</span></label>'
+    +'<textarea class="inp" id="rsv-just" style="width:100%;height:64px;resize:vertical" placeholder="Motivo da reserva ou alteração de uso...">'+escHtml(r.justificativa||'')+'</textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="rsv-salvar-btn" style="flex:2">Salvar reserva</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn=document.getElementById('rsv-salvar-btn');
+    if(!btn)return;
+    btn.onclick=function(){
+      var placa   =(document.getElementById('rsv-placa')||{}).value||'';
+      var colab   =(document.getElementById('rsv-colab')||{}).value||'';
+      var dIni    =(document.getElementById('rsv-data-ini')||{}).value||'';
+      var dFim    =(document.getElementById('rsv-data-fim')||{}).value||'';
+      var hIni    =(document.getElementById('rsv-hr-ini')||{}).value||'07:00';
+      var hFim    =(document.getElementById('rsv-hr-fim')||{}).value||'18:00';
+      var just    =(document.getElementById('rsv-just')||{}).value||'';
+      var status  =isNew?'Ativa':((document.getElementById('rsv-status')||{}).value||'Ativa');
+      if(!placa||!colab||!dIni||!dFim||!just){progShowToast('⚠ Preencha todos os campos obrigatórios.');return;}
+      if(dFim<dIni){progShowToast('⚠ Data fim deve ser igual ou posterior ao início.');return;}
+      var dados={
+        placa:placa, colaborador_nome:colab,
+        data_inicio:dIni, data_fim:dFim,
+        hora_inicio:hIni, hora_fim:hFim,
+        justificativa:just, status:status,
+        criado_por:usuarioLogado?usuarioLogado.nome:'Portaria',
+        created_at:new Date().toISOString()
+      };
+      if(isNew){
+        dados.id=Date.now().toString();
+        frt_reservas.unshift(dados);
+        if(!DEMO)sbInsert('frotas_reservas_veiculos',_semId(dados));
+      } else {
+        var idx=frt_reservas.findIndex(function(x){return x.id===r.id;});
+        if(idx>=0)frt_reservas[idx]=Object.assign({},r,dados);
+        if(!DEMO)sbUpdate('frotas_reservas_veiculos',dados,'id=eq.'+r.id);
+      }
+      closeModal();
+      portRenderReservas();
+      progShowToast('✅ Reserva '+(isNew?'criada':'atualizada')+' para '+placa+'.');
+    };
+  },50);
+}
+
+function portRenderReservas(){
+  var tb=document.getElementById('rsv-tbody'); if(!tb) return;
+  var hoje=dataHojeLocal();
+  var filtStatus=(document.getElementById('rsv-fil-status')||{}).value||'';
+  var filtData  =(document.getElementById('rsv-fil-data')||{}).value||'';
+
+  // Carregar reservas do banco se ainda não carregou
+  if(!frt_reservas.length && !DEMO){
+    sbFetch('frotas_reservas_veiculos',{order:'data_inicio.desc'}).then(function(rows){
+      if(rows&&rows.length){frt_reservas=rows;portRenderReservas();}
+    });
+  }
+
+  // Auto-atualizar status vencidas
+  frt_reservas.forEach(function(r){
+    if(r.status==='Ativa'&&r.data_fim<hoje)r.status='Concluída';
+    if(r.status==='Ativa'&&r.data_inicio<=hoje&&r.data_fim>=hoje){}
+  });
+
+  var lista=frt_reservas.filter(function(r){
+    if(filtStatus&&r.status!==filtStatus)return false;
+    if(filtData&&r.data_inicio>filtData)return false;
+    return true;
+  });
+
+  var nAtivas=frt_reservas.filter(function(r){return r.status==='Ativa';}).length;
+  var nHoje  =frt_reservas.filter(function(r){return r.data_inicio<=hoje&&r.data_fim>=hoje&&r.status==='Ativa';}).length;
+  var metEl=document.getElementById('rsv-metricas');
+  if(metEl)metEl.innerHTML=[
+    {l:'Total reservas',   v:frt_reservas.length, c:'#555'},
+    {l:'Ativas',           v:nAtivas,             c:'#3B6D11'},
+    {l:'Válidas hoje',     v:nHoje,               c:'#185FA5'},
+    {l:'Concluídas',       v:frt_reservas.filter(function(r){return r.status==='Concluída';}).length,c:'#888'},
+  ].map(function(x){
+    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem;text-align:center">'
+      +'<div style="font-size:10px;color:#888;margin-bottom:2px">'+x.l+'</div>'
+      +'<div style="font-size:18px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
+  }).join('');
+
+  if(!lista.length){
+    tb.innerHTML='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma reserva encontrada. Clique em "+ Nova reserva" para criar.</td></tr>';
+    return;
+  }
+
+  tb.innerHTML=lista.map(function(r){
+    var stCor={Ativa:'#3B6D11',['Em uso']:'#185FA5',Concluída:'#888',Cancelada:'#A32D2D'}[r.status]||'#555';
+    var stBg ={Ativa:'#EAF3DE',['Em uso']:'#E6F1FB',Concluída:'#f5f5f3',Cancelada:'#FCEBEB'}[r.status]||'#f5f5f3';
+    var vHoje = r.data_inicio<=hoje&&r.data_fim>=hoje&&r.status==='Ativa';
+    return '<tr style="background:'+(vHoje?'#F0FDE4':'')+';">'
+      +'<td style="font-family:monospace;font-weight:700">'+escHtml(r.placa)+'</td>'
+      +'<td style="font-size:12px">'+(function(){var v=frt_veiculos.find(function(x){return x.placa===r.placa;});return v?escHtml(v.modelo||'—'):'—';})()+'</td>'
+      +'<td style="font-size:12px;font-weight:500">'+escHtml(r.colaborador_nome||'—')+'</td>'
+      +'<td style="font-size:12px">'+escHtml(r.data_inicio||'—').split('-').reverse().join('/')+' '+escHtml(r.hora_inicio||'')+'</td>'
+      +'<td style="font-size:12px">'+escHtml(r.data_fim||'—').split('-').reverse().join('/')+' '+escHtml(r.hora_fim||'')+'</td>'
+      +'<td style="font-size:11px;color:#888;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(r.justificativa||'')+'">'+escHtml(r.justificativa||'—')+'</td>'
+      +'<td><span style="background:'+stBg+';color:'+stCor+';border-radius:5px;padding:2px 8px;font-size:11px;font-weight:600">'+escHtml(r.status)+'</span>'+(vHoje?' <span style="font-size:10px;color:#3B6D11">● Hoje</span>':'')+'</td>'
+      +'<td style="font-size:11px;color:#888">'+escHtml(r.criado_por||'—')+'</td>'
+      +'<td><button class="btn btn-sm" onclick="portEditarReserva(\''+r.id+'\')" style="font-size:10px">✎</button></td>'
+      +'</tr>';
+  }).join('');
+}
+
 function frtPortariaRender(){
   var tb = document.getElementById('frt-port-tbody'); if(!tb) return;
   var data   = (document.getElementById('frt-port-data')||{}).value||dataHojeLocal();
@@ -31997,51 +32396,235 @@ function frtDocRender(){
 }
 
 // ── OCIOSIDADE ────────────────────────────────────────────────
+// ── Helpers de ociosidade ────────────────────────────────
+function ocioMostrarAba(aba){
+  ['ociosos','ranking','frequencia'].forEach(function(a){
+    var el=document.getElementById('ocio-aba-'+a);
+    var btn=document.getElementById('ocio-tab-'+a);
+    if(el) el.style.display = a===aba?'':'none';
+    if(btn){
+      var isAtivo = a===aba;
+      var corAtivo = a==='ranking'?'#3B6D11':a==='frequencia'?'#185FA5':'#854F0B';
+      btn.style.color = isAtivo?corAtivo:'#888';
+      btn.style.borderBottomColor = isAtivo?corAtivo:'transparent';
+      btn.style.fontWeight = isAtivo?'600':'500';
+    }
+  });
+}
+
+function _ocioCalcMetricas(veiculos, portariaRows, diasPeriodo){
+  return veiculos.map(function(v){
+    var saidas = portariaRows.filter(function(p){ return p.placa===v.placa; });
+    var nSaidas = saidas.length;
+    var kmTotal = saidas.reduce(function(s,p){
+      return s + Math.max(0,(p.km_retorno||0)-(p.km_saida||0));
+    },0);
+    var kmMedio = nSaidas>0 ? Math.round(kmTotal/nSaidas) : 0;
+    // Dias distintos com uso
+    var diasUsados = new Set(saidas.map(function(p){return (p.data_saida||'').split('T')[0];})).size;
+    var taxaUtilizacao = diasPeriodo>0 ? Math.round((diasUsados/diasPeriodo)*100) : 0;
+    // Último uso
+    var ult = saidas.map(function(p){return p.data_saida||p.data_retorno||'';}).sort().pop()||null;
+    var diasSemUso = ult
+      ? Math.floor((new Date(dataHojeLocal())-new Date(ult.split('T')[0]))/86400000)
+      : (v.dias_sem_uso||diasPeriodo);
+    return Object.assign({},v,{
+      nSaidas:nSaidas, kmTotal:kmTotal, kmMedio:kmMedio,
+      diasUsados:diasUsados, taxaUtilizacao:taxaUtilizacao,
+      ultimo_uso:ult, dias_sem_uso:diasSemUso
+    });
+  });
+}
+
 function frtOcioRender(){
-  var tb=document.getElementById('frt-ocio-tbody');if(!tb)return;
-  var met=document.getElementById('frt-ocio-metricas');
-  var hoje=dataHoje();
+  var hoje  = dataHojeLocal();
+  var dias  = parseInt((document.getElementById('ocio-fil-periodo')||{}).value||'90')||90;
+  var cid   = (document.getElementById('ocio-fil-cont')||{}).value||'';
+  var tipo  = (document.getElementById('ocio-fil-tipo')||{}).value||'';
+  var iniPeriodo = _diasAtras(dias);
 
-  // Calcular dias sem uso por veículo
-  var veiculosOciosos=frt_veiculos.map(function(v){
-    var ult=frt_portaria.filter(function(p){return p.placa===v.placa&&p.status==='Retornado';})
-      .map(function(p){return p.data_retorno||p.data_saida;}).sort().pop()||null;
-    var dias=ult?Math.floor((new Date(hoje)-new Date(ult.split('T')[0]))/86400000):v.dias_sem_uso||0;
-    return Object.assign({},v,{ultimo_uso:ult,dias_sem_uso:dias});
-  }).filter(function(v){return v.dias_sem_uso>0&&v.status!=='Baixado'&&v.status!=='Em quarentena';})
-    .sort(function(a,b){return b.dias_sem_uso-a.dias_sem_uso;});
-
-  if(met){
-    met.innerHTML=[
-      {l:'Sem uso hoje',v:veiculosOciosos.filter(function(v){return v.dias_sem_uso>=1;}).length,c:'#854F0B'},
-      {l:'3+ dias',v:veiculosOciosos.filter(function(v){return v.dias_sem_uso>=3;}).length,c:'#854F0B'},
-      {l:'7+ dias',v:veiculosOciosos.filter(function(v){return v.dias_sem_uso>=7;}).length,c:'#A32D2D'},
-      {l:'Crítico 30+d',v:veiculosOciosos.filter(function(v){return v.dias_sem_uso>=30;}).length,c:'#A32D2D'},
-    ].map(function(x){
-      return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem;text-align:center">'
-        +'<div style="font-size:10px;color:#888">'+x.l+'</div>'
-        +'<div style="font-size:20px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
-    }).join('');
+  // Popular select de contratos
+  var selCont=document.getElementById('ocio-fil-cont');
+  if(selCont&&selCont.options.length<=1&&contratos.length){
+    contratos.sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');}).forEach(function(c){
+      var o=document.createElement('option');o.value=c.id;o.textContent=c.codigo||(c.nome||'').slice(0,30);selCont.appendChild(o);
+    });
   }
 
-  if(!veiculosOciosos.length){tb.innerHTML='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum veículo ocioso.</td></tr>';return;}
-  tb.innerHTML=veiculosOciosos.map(function(v){
-    var dias=v.dias_sem_uso;
-    var sit=dias>=30?'Crítico':dias>=15?'Alto':dias>=7?'Verificar':dias>=3?'Atenção':'Normal';
-    var cor=dias>=30?'#A32D2D':dias>=15?'#A32D2D':dias>=7?'#854F0B':dias>=3?'#854F0B':'#555';
-    var cont=contratos.find(function(c){return c.id===v.contrato_id;})||{codigo:'—'};
-    return '<tr style="background:'+(dias>=7?'#FFF5F5':'')+';">'
-      +'<td style="font-family:monospace;font-weight:600">'+v.placa+'</td>'
-      +'<td style="font-size:12px">'+v.modelo+'</td>'
-      +'<td style="font-size:12px">'+cont.codigo+'</td>'
-      +'<td style="font-size:12px">'+(v.ultimo_uso?fmtD(v.ultimo_uso.split('T')[0]):'—')+'</td>'
-      +'<td style="text-align:center;font-weight:700;color:'+cor+';font-size:16px">'+dias+'d</td>'
-      +'<td><span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+sit+'</span></td>'
-      +'<td style="font-size:11px;color:#888">'+(v.motivo_ociosidade||'—')+'</td>'
-      +'<td><button class="btn btn-sm" style="font-size:10px">Justificar</button></td>'
-      +'</tr>';
+  // Filtrar veículos e saídas do período
+  var veics = frt_veiculos.filter(function(v){
+    if(v.status==='Baixado')return false;
+    if(cid&&v.contrato_id!==cid)return false;
+    if(tipo&&(v.tipo||'').toUpperCase().indexOf(tipo.toUpperCase())<0)return false;
+    return true;
+  });
+  var portPeriodo = frt_portaria.filter(function(p){
+    return (p.data_saida||'')>=iniPeriodo;
+  });
+
+  var metricas = _ocioCalcMetricas(veics, portPeriodo, dias);
+
+  // ── Indicadores ──────────────────────────────────────
+  var nTotal   = metricas.length;
+  var nSemUso  = metricas.filter(function(v){return v.nSaidas===0;}).length;
+  var nBaixo   = metricas.filter(function(v){return v.taxaUtilizacao>0&&v.taxaUtilizacao<20;}).length;
+  var nAdequado= metricas.filter(function(v){return v.taxaUtilizacao>=20;}).length;
+  var txMedia  = nTotal?Math.round(metricas.reduce(function(s,v){return s+v.taxaUtilizacao;},0)/nTotal):0;
+  var totalSaidas=metricas.reduce(function(s,v){return s+v.nSaidas;},0);
+  var totalKm  = metricas.reduce(function(s,v){return s+v.kmTotal;},0);
+
+  var met=document.getElementById('frt-ocio-metricas');
+  if(met) met.innerHTML=[
+    {l:'Veículos analisados', v:nTotal,                   c:'#555'},
+    {l:'Sem nenhum uso',      v:nSemUso,                  c:'#A32D2D'},
+    {l:'Uso baixo (<20%)',    v:nBaixo,                   c:'#854F0B'},
+    {l:'Uso adequado (≥20%)', v:nAdequado,                c:'#3B6D11'},
+    {l:'Taxa média de uso',   v:txMedia+'%',              c:txMedia>=30?'#3B6D11':txMedia>=15?'#854F0B':'#A32D2D'},
+    {l:'Total saídas',        v:totalSaidas,               c:'#185FA5'},
+    {l:'KM rodado total',     v:totalKm.toLocaleString('pt-BR')+'km', c:'#085041'},
+  ].map(function(x){
+    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .5rem;text-align:center">'
+      +'<div style="font-size:9px;color:#888;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+x.l+'</div>'
+      +'<div style="font-size:16px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
   }).join('');
+
+  // ── Aba Ociosos ───────────────────────────────────────
+  var tb=document.getElementById('frt-ocio-tbody');
+  var ociosos = metricas.filter(function(v){return v.dias_sem_uso>0;})
+    .sort(function(a,b){return b.dias_sem_uso-a.dias_sem_uso;});
+
+  if(tb){
+    if(!ociosos.length){
+      tb.innerHTML='<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum veículo ocioso no período.</td></tr>';
+    } else {
+      tb.innerHTML=ociosos.map(function(v){
+        var d=v.dias_sem_uso;
+        var sit=d>=30?'Crítico':d>=15?'Alto':d>=7?'Verificar':d>=3?'Atenção':'Normal';
+        var cor=d>=30?'#A32D2D':d>=15?'#A32D2D':d>=7?'#854F0B':d>=3?'#854F0B':'#555';
+        var cont=contratos.find(function(c){return c.id===v.contrato_id;})||{codigo:'—'};
+        return '<tr style="background:'+(d>=7?'#FFF5F5':'')+';">'
+          +'<td style="font-family:monospace;font-weight:600">'+v.placa+'</td>'
+          +'<td style="font-size:12px">'+escHtml(v.modelo||'—')+'</td>'
+          +'<td style="font-size:11px;color:#888">'+escHtml(v.tipo||'—')+'</td>'
+          +'<td style="font-size:12px">'+cont.codigo+'</td>'
+          +'<td style="font-size:12px">'+(v.ultimo_uso?fmtD(v.ultimo_uso.split('T')[0]):'Nunca')+'</td>'
+          +'<td style="text-align:center;font-weight:700;color:'+cor+';font-size:15px">'+d+'d</td>'
+          +'<td style="text-align:center;font-size:12px;color:#888">'+v.nSaidas+'</td>'
+          +'<td><span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+sit+'</span></td>'
+          +'<td style="font-size:11px;color:#aaa">'+escHtml(v.motivo_ociosidade||'—')+'</td>'
+          +'<td><button class="btn btn-sm" style="font-size:10px" onclick="frtOcioJustificar(\''+v.placa+'\')">Justificar</button></td>'
+          +'</tr>';
+      }).join('');
+    }
+  }
+
+  // ── Aba Ranking ───────────────────────────────────────
+  var ordenados = metricas.slice().sort(function(a,b){return b.nSaidas-a.nSaidas;});
+  var top10  = ordenados.slice(0,10);
+  var bot10  = ordenados.slice().reverse().slice(0,10);
+
+  var elMais=document.getElementById('ocio-rank-mais');
+  var elMenos=document.getElementById('ocio-rank-menos');
+  var maxSaidas=top10.length?top10[0].nSaidas:1;
+
+  function renderRankItem(v,i,corBarra){
+    var pct=maxSaidas>0?Math.round((v.nSaidas/maxSaidas)*100):0;
+    var medalha=i===0?'🥇':i===1?'🥈':i===2?'🥉':'<span style="color:#aaa;font-size:11px">'+(i+1)+'°</span>';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid #f5f5f3">'
+      +'<div style="width:24px;text-align:center">'+medalha+'</div>'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">'
+      +'<span style="font-family:monospace;font-size:12px;font-weight:600">'+v.placa+'</span>'
+      +'<span style="font-size:10px;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(v.modelo||'')+'</span>'
+      +'</div>'
+      +'<div style="background:#f0efe8;border-radius:20px;height:5px;width:100%">'
+      +'<div style="background:'+corBarra+';width:'+pct+'%;height:100%;border-radius:20px"></div>'
+      +'</div>'
+      +'</div>'
+      +'<div style="text-align:right;flex-shrink:0">'
+      +'<div style="font-size:13px;font-weight:700;color:'+corBarra+'">'+v.nSaidas+'</div>'
+      +'<div style="font-size:10px;color:#aaa">saídas</div>'
+      +'</div>'
+      +'<div style="text-align:right;flex-shrink:0;min-width:44px">'
+      +'<div style="font-size:11px;font-weight:600;color:#555">'+v.taxaUtilizacao+'%</div>'
+      +'<div style="font-size:10px;color:#aaa">uso</div>'
+      +'</div></div>';
+  }
+
+  if(elMais){
+    document.getElementById('ocio-rank-n-mais').textContent='Top '+top10.length+' de '+nTotal+' veículos';
+    elMais.innerHTML = top10.map(function(v,i){return renderRankItem(v,i,'#3B6D11');}).join('');
+  }
+  if(elMenos){
+    document.getElementById('ocio-rank-n-menos').textContent='Piores '+bot10.length+' de '+nTotal+' veículos';
+    elMenos.innerHTML = bot10.map(function(v,i){return renderRankItem(v,i,'#A32D2D');}).join('');
+  }
+
+  // ── Aba Frequência ────────────────────────────────────
+  var ftb=document.getElementById('ocio-freq-tbody');
+  if(ftb){
+    var sorted=metricas.slice().sort(function(a,b){return b.taxaUtilizacao-a.taxaUtilizacao;});
+    ftb.innerHTML=sorted.map(function(v,i){
+      var tx=v.taxaUtilizacao;
+      var cor=tx>=40?'#3B6D11':tx>=20?'#185FA5':tx>=5?'#854F0B':'#A32D2D';
+      var sit=tx>=40?'Ótimo':tx>=20?'Bom':tx>=5?'Baixo':v.nSaidas===0?'Ocioso':'Crítico';
+      var cont=contratos.find(function(c){return c.id===v.contrato_id;})||{codigo:'—'};
+      return '<tr>'
+        +'<td style="color:#888;font-size:11px;text-align:center">'+( i+1)+'</td>'
+        +'<td style="font-family:monospace;font-weight:600">'+v.placa+'</td>'
+        +'<td style="font-size:12px">'+escHtml(v.modelo||'—')+'</td>'
+        +'<td style="font-size:11px;color:#888">'+escHtml(v.tipo||'—')+'</td>'
+        +'<td style="font-size:12px">'+cont.codigo+'</td>'
+        +'<td style="text-align:center;font-weight:700;color:#185FA5">'+v.nSaidas+'</td>'
+        +'<td style="text-align:right;font-size:12px">'+v.kmTotal.toLocaleString('pt-BR')+'km</td>'
+        +'<td style="text-align:right;font-size:12px;color:#888">'+v.kmMedio+'km</td>'
+        +'<td style="text-align:center;font-size:12px">'+v.diasUsados+'d</td>'
+        +'<td style="text-align:center">'
+        +'<div style="display:flex;align-items:center;gap:5px;justify-content:flex-end">'
+        +'<div style="background:#f0efe8;border-radius:20px;height:5px;width:60px;overflow:hidden">'
+        +'<div style="background:'+cor+';width:'+tx+'%;height:100%;border-radius:20px"></div></div>'
+        +'<span style="font-weight:700;color:'+cor+';font-size:12px">'+tx+'%</span>'
+        +'</div></td>'
+        +'<td style="font-size:11px">'+(v.ultimo_uso?fmtD(v.ultimo_uso.split('T')[0]):'Nunca')+'</td>'
+        +'<td><span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 6px;font-size:10px;font-weight:600">'+sit+'</span></td>'
+        +'</tr>';
+    }).join('');
+  }
 }
+
+function frtOcioJustificar(placa){
+  var v=frt_veiculos.find(function(x){return x.placa===placa;});
+  var motivo=prompt('Informe o motivo da ociosidade de '+placa+':',v&&v.motivo_ociosidade||'');
+  if(motivo===null)return;
+  if(v)v.motivo_ociosidade=motivo;
+  if(!DEMO)sbUpdate('frotas_veiculos',{motivo_ociosidade:motivo},'placa=eq.'+placa);
+  frtOcioRender();
+  progShowToast('✅ Motivo registrado para '+placa);
+}
+
+function frtOcioExportar(){
+  var dias  = parseInt((document.getElementById('ocio-fil-periodo')||{}).value||'90')||90;
+  var iniPeriodo=_diasAtras(dias);
+  var portPeriodo=frt_portaria.filter(function(p){return(p.data_saida||'')>=iniPeriodo;});
+  var metricas=_ocioCalcMetricas(frt_veiculos.filter(function(v){return v.status!=='Baixado';}),portPeriodo,dias);
+  var sorted=metricas.slice().sort(function(a,b){return b.taxaUtilizacao-a.taxaUtilizacao;});
+  var linhas=['Ranking;Placa;Modelo;Tipo;Contrato;Saídas;KM Total;KM Médio;Dias Usados;Taxa Utilização %;Último Uso;Situação'];
+  sorted.forEach(function(v,i){
+    var cont=contratos.find(function(c){return c.id===v.contrato_id;})||{codigo:'—'};
+    var tx=v.taxaUtilizacao;
+    var sit=tx>=40?'Ótimo':tx>=20?'Bom':tx>=5?'Baixo':v.nSaidas===0?'Ocioso':'Crítico';
+    linhas.push([i+1,v.placa,v.modelo||'',v.tipo||'',cont.codigo,
+      v.nSaidas,v.kmTotal,v.kmMedio,v.diasUsados,tx+'%',
+      v.ultimo_uso?v.ultimo_uso.split('T')[0]:'Nunca',sit].join(';'));
+  });
+  var csv=linhas.join('\n');
+  var blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');a.href=url;a.download='relatorio_ociosidade_'+dataHojeLocal()+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  progShowToast('✅ Relatório exportado.');
+}
+
 
 // ── CUSTOS MENSAIS ────────────────────────────────────────────
 function frtCustosRender(){
@@ -33232,32 +33815,143 @@ window.addEventListener('load',async function(){
 
 <!-- PORTARIA -->
 <div id="pg-frotas-portaria" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🏠 Portaria</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <input type="date" class="inp" id="frt-port-data" style="width:145px" onchange="frtPortariaRender()"/>
-        <select class="inp" id="frt-port-base" style="width:160px" onchange="frtPortariaRender()">
-          <option value="">Todas as bases</option>
-        </select>
-        <select class="inp" id="frt-port-status" style="width:160px" onchange="frtPortariaRender()">
-          <option value="">Todos</option>
-          <option>Aguardando saída</option><option>Em campo</option><option>Retornado</option><option>Atrasado</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtPortariaAbrirSaida()">▶ Registrar saída</button>
-        <button class="btn" onclick="frtPortariaAbrirRetorno()" style="color:#3B6D11;border-color:#3B6D11">↩ Registrar retorno</button>
+
+  <!-- Abas da Portaria -->
+  <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
+    <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">📋 Equipes do Dia</button>
+    <button class="port-tab-btn" id="port-tab-saida"     onclick="portMostrarAba('saida')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🚦 Controle de Saída</button>
+    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📝 Registros</button>
+    <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
+  </div>
+
+  <!-- ABA: EQUIPES DO DIA -->
+  <div id="port-aba-equipes">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">📋 Equipes Programadas</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="date" class="inp" id="port-eq-data" style="width:145px" onchange="portRenderEquipesDia()"/>
+          <select class="inp" id="port-eq-turno" style="width:130px" onchange="portRenderEquipesDia()">
+            <option value="">Todos os turnos</option>
+            <option>Manha</option><option>Tarde</option><option>Noite</option>
+          </select>
+          <select class="inp" id="port-eq-contrato" style="width:180px" onchange="portRenderEquipesDia()">
+            <option value="">Todos os contratos</option>
+          </select>
+          <button class="btn btn-pri" onclick="portMostrarAba('saida')">🚦 Ir para Controle de Saída</button>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:1rem" id="port-eq-metricas"></div>
+    <div id="port-eq-lista" style="display:grid;gap:.75rem"></div>
+  </div>
+
+  <!-- ABA: CONTROLE DE SAÍDA -->
+  <div id="port-aba-saida" style="display:none">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
+
+      <!-- Painel de verificação -->
+      <div class="card">
+        <div class="ch"><span class="ct">🔍 Verificação de saída</span></div>
+        <div style="padding:.75rem 1rem">
+          <div class="fg" style="margin-bottom:.75rem">
+            <label style="font-size:11px;font-weight:500">Placa do veículo</label>
+            <div style="display:flex;gap:6px">
+              <input class="inp" id="port-chk-placa" style="font-family:monospace;font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:2px;flex:1" placeholder="EX: AAA-0A00" oninput="portVerificarPlaca()"/>
+              <button class="btn" onclick="portLimparVerificacao()" title="Limpar">✕</button>
+            </div>
+          </div>
+          <div id="port-chk-resultado" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Saída rápida / autorização extra -->
+      <div class="card">
+        <div class="ch"><span class="ct">⚡ Saída rápida — Supervisores / Gestores</span></div>
+        <div style="padding:.75rem 1rem">
+          <div class="fg" style="margin-bottom:.75rem">
+            <label style="font-size:11px">Placa</label>
+            <input class="inp" id="port-rap-placa" style="font-family:monospace;font-size:14px;text-transform:uppercase;width:100%" placeholder="Placa do veículo"/>
+          </div>
+          <div class="fg" style="margin-bottom:.75rem">
+            <label style="font-size:11px">Usuário / Motorista</label>
+            <input class="inp" id="port-rap-usuario" style="width:100%" placeholder="Nome ou matrícula"/>
+          </div>
+          <div class="fg" style="margin-bottom:.75rem">
+            <label style="font-size:11px">Destino / O que vai fazer <span style="color:#A32D2D">*</span></label>
+            <textarea class="inp" id="port-rap-destino" style="width:100%;height:60px;resize:vertical" placeholder="Descreva o destino e a atividade a realizar..."></textarea>
+          </div>
+          <div class="fg" style="margin-bottom:.75rem">
+            <label style="font-size:11px">KM atual do veículo</label>
+            <input class="inp" type="number" id="port-rap-km" style="width:100%" placeholder="0"/>
+          </div>
+          <button class="btn btn-pri" onclick="portLiberar('rapido')" style="width:100%">✅ Liberar saída</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Aguardando liberação -->
+    <div class="card">
+      <div class="ch"><span class="ct" style="color:#854F0B">⏳ Aguardando liberação agora</span></div>
+      <div id="port-aguardando" style="padding:.75rem 1rem">
+        <div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">Nenhuma equipe aguardando saída.</div>
       </div>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem" id="frt-port-metricas"></div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Motorista</th><th>Equipe</th><th>Contrato</th>
-      <th>Base saída</th><th>Saída</th><th>Prev. retorno</th><th>KM saída</th>
-      <th>Status</th><th>Alertas</th><th></th>
-    </tr></thead>
-    <tbody id="frt-port-tbody"></tbody>
-  </table></div>
+
+  <!-- ABA: REGISTROS -->
+  <div id="port-aba-registros" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">📝 Registros de Saída/Retorno</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input type="date" class="inp" id="frt-port-data" style="width:145px" onchange="frtPortariaRender()"/>
+          <select class="inp" id="frt-port-base" style="width:160px" onchange="frtPortariaRender()">
+            <option value="">Todas as bases</option>
+          </select>
+          <select class="inp" id="frt-port-status" style="width:160px" onchange="frtPortariaRender()">
+            <option value="">Todos</option>
+            <option>Aguardando saída</option><option>Em campo</option><option>Retornado</option><option>Atrasado</option>
+          </select>
+          <button class="btn" onclick="frtPortariaAbrirRetorno()" style="color:#3B6D11;border-color:#3B6D11">↩ Registrar retorno</button>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem" id="frt-port-metricas"></div>
+    <div style="overflow-x:auto"><table class="tbl tbl-responsive">
+      <thead><tr>
+        <th>Placa</th><th>Modelo</th><th>Motorista</th><th>Equipe</th><th>Contrato</th>
+        <th>Base saída</th><th>Saída</th><th>Prev. retorno</th><th>KM saída</th>
+        <th>Status</th><th>Alertas</th><th></th>
+      </tr></thead>
+      <tbody id="frt-port-tbody"></tbody>
+    </table></div>
+  </div>
+
+  <!-- ABA: RESERVAS -->
+  <div id="port-aba-reservas" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">📅 Reservas de Veículos</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="date" class="inp" id="rsv-fil-data" style="width:145px" onchange="portRenderReservas()"/>
+          <select class="inp" id="rsv-fil-status" style="width:145px" onchange="portRenderReservas()">
+            <option value="">Todos os status</option>
+            <option>Ativa</option><option>Em uso</option><option>Concluída</option><option>Cancelada</option>
+          </select>
+          <button class="btn btn-pri" onclick="portNovaReserva()">+ Nova reserva</button>
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:1rem" id="rsv-metricas"></div>
+    <div style="overflow-x:auto"><table class="tbl">
+      <thead><tr>
+        <th>Placa</th><th>Veículo</th><th>Colaborador autorizado</th><th>Início</th><th>Fim</th><th>Justificativa</th><th>Status</th><th>Criado por</th><th></th>
+      </tr></thead>
+      <tbody id="rsv-tbody"></tbody>
+    </table></div>
+  </div>
+
 </div>
 
 <!-- PROGRAMAÇÃO FROTAS -->
@@ -33438,19 +34132,85 @@ window.addEventListener('load',async function(){
 
 <!-- OCIOSIDADE -->
 <div id="pg-frotas-ociosidade" class="hidden">
+
+  <!-- Filtros globais -->
   <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">💤 Ociosidade / Quarentena</span>
-      <button class="btn btn-pri" onclick="frtAbrirQuarentena()">+ Quarentena</button>
+    <div class="ch" style="flex-wrap:wrap;gap:8px">
+      <span class="ct">💤 Ociosidade &amp; Frequência de Uso</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select class="inp" id="ocio-fil-periodo" style="width:145px" onchange="frtOcioRender()">
+          <option value="30">Últimos 30 dias</option>
+          <option value="60">Últimos 60 dias</option>
+          <option value="90" selected>Últimos 90 dias</option>
+          <option value="180">Últimos 180 dias</option>
+          <option value="365">Último ano</option>
+        </select>
+        <select class="inp" id="ocio-fil-cont" style="width:185px" onchange="frtOcioRender()">
+          <option value="">Todos os contratos</option>
+        </select>
+        <select class="inp" id="ocio-fil-tipo" style="width:145px" onchange="frtOcioRender()">
+          <option value="">Todos os tipos</option>
+          <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
+          <option>Motocicleta</option><option>Van</option>
+        </select>
+        <button class="btn" onclick="frtOcioExportar()">⬇ Exportar relatório</button>
+        <button class="btn btn-pri" onclick="frtAbrirQuarentena()">+ Quarentena</button>
+      </div>
     </div>
   </div>
-  <div id="frt-ocio-metricas" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem"></div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Contrato</th><th>Último uso</th>
-      <th>Dias sem uso</th><th>Situação</th><th>Motivo</th><th></th>
-    </tr></thead>
-    <tbody id="frt-ocio-tbody"></tbody>
-  </table></div>
+
+  <!-- Indicadores -->
+  <div id="frt-ocio-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:1rem"></div>
+
+  <!-- Abas internas -->
+  <div style="display:flex;border-bottom:.5px solid #e0dfd8;margin-bottom:1rem">
+    <button class="ocio-tab" id="ocio-tab-ociosos"   onclick="ocioMostrarAba('ociosos')"  style="padding:.45rem .8rem;border:none;border-bottom:2px solid #854F0B;color:#854F0B;font-weight:600;background:none;cursor:pointer;font-size:12px">💤 Ociosos</button>
+    <button class="ocio-tab" id="ocio-tab-ranking"   onclick="ocioMostrarAba('ranking')"  style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🏆 Ranking de uso</button>
+    <button class="ocio-tab" id="ocio-tab-frequencia" onclick="ocioMostrarAba('frequencia')" style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📊 Frequência</button>
+  </div>
+
+  <!-- ABA: OCIOSOS -->
+  <div id="ocio-aba-ociosos">
+    <div style="overflow-x:auto"><table class="tbl tbl-responsive">
+      <thead><tr>
+        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Contrato</th><th>Último uso</th>
+        <th>Dias sem uso</th><th>Usos no período</th><th>Situação</th><th>Motivo</th><th></th>
+      </tr></thead>
+      <tbody id="frt-ocio-tbody"></tbody>
+    </table></div>
+  </div>
+
+  <!-- ABA: RANKING DE USO -->
+  <div id="ocio-aba-ranking" style="display:none">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+      <!-- Mais usados -->
+      <div class="card">
+        <div class="ch"><span class="ct" style="color:#3B6D11">🏆 Mais utilizados</span><span id="ocio-rank-n-mais" style="font-size:11px;color:#888"></span></div>
+        <div id="ocio-rank-mais" style="padding:.5rem"></div>
+      </div>
+      <!-- Menos usados (ociosos) -->
+      <div class="card">
+        <div class="ch"><span class="ct" style="color:#A32D2D">💤 Menos utilizados</span><span id="ocio-rank-n-menos" style="font-size:11px;color:#888"></span></div>
+        <div id="ocio-rank-menos" style="padding:.5rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ABA: FREQUÊNCIA -->
+  <div id="ocio-aba-frequencia" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch"><span class="ct">📊 Frequência de uso — todos os veículos</span></div>
+      <div style="overflow-x:auto"><table class="tbl">
+        <thead><tr>
+          <th>#</th><th>Placa</th><th>Modelo</th><th>Tipo</th><th>Contrato</th>
+          <th>Saídas</th><th>KM total</th><th>KM médio/saída</th>
+          <th>Dias usados</th><th>Taxa utilização</th><th>Último uso</th><th>Situação</th>
+        </tr></thead>
+        <tbody id="ocio-freq-tbody"></tbody>
+      </table></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- CUSTOS MENSAIS -->
