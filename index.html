@@ -14636,6 +14636,19 @@ function isContratoObras(contrato_id){
   return palavrasChave.some(function(p){ return cod.indexOf(p)>=0 || nome.indexOf(p)>=0; });
 }
 
+// Identifica se o contrato é do tipo PLPT (usa esteira produtiva)
+function isContratoPLPT(contrato_id){
+  if(!contrato_id) return false;
+  // Verificar pelo _plptProgCid ativo
+  if(typeof _plptProgCid!=='undefined' && _plptProgCid && contrato_id===_plptProgCid) return true;
+  var cont = contratos.find(function(c){ return c.id===contrato_id; });
+  if(!cont) return false;
+  var cod  = (cont.codigo||'').toUpperCase();
+  var nome = (cont.nome||'').toUpperCase();
+  var mod  = (cont.modalidade_trabalho||cont.modalidade||cont.tipo||'').toUpperCase();
+  return cod.indexOf('PLPT')>=0 || nome.indexOf('PLPT')>=0 || mod.indexOf('PLPT')>=0;
+}
+
 // ── Entrar no painel de contrato ─────────────────────────────
 function coVoltarParaObras(){
   // Voltar para pg-obras-projetos sem chamar showMain que esconde tudo
@@ -15228,114 +15241,129 @@ function plptAlterarStatusEsteira(projetoId){
   var p = sot_projetos.find(function(x){return x.id===projetoId;});
   if(!p) return;
 
-  var depAtual = plptGetDep(p.status);
-  var _depSel = depAtual;
-  var _stSel  = p.status;
+  var depAtual  = plptGetDep(p.status) || 'Projeto';
+  var _depSel   = depAtual;
+  var _stSel    = p.status;
+  var DEPS      = PLPT_ESTEIRA.deps;
+  var depIdxAtual = DEPS.indexOf(depAtual);
+
+  // Índice linear do status atual dentro da esteira completa
+  function idxGlobal(st){
+    var tot=0;
+    for(var d=0;d<DEPS.length;d++){
+      var ss=PLPT_ESTEIRA.status[DEPS[d]]||[];
+      for(var s=0;s<ss.length;s++){ if(ss[s]===st) return tot+s; tot++; }
+      tot+=ss.length;
+    }
+    return -1;
+  }
+  var totalStatuses = DEPS.reduce(function(s,d){return s+(PLPT_ESTEIRA.status[d]||[]).length;},0);
+  var idxAtual = idxGlobal(p.status);
+  var pctProgresso = idxAtual>=0 ? Math.round((idxAtual+1)/totalStatuses*100) : 0;
 
   function buildHtml(){
-    var deps = PLPT_ESTEIRA.deps;
-    var depIdxAtual = deps.indexOf(depAtual);
+    var c = PLPT_ESTEIRA.cores[_depSel]||PLPT_ESTEIRA.cores['Projeto'];
+    var depCurC = PLPT_ESTEIRA.cores[depAtual]||PLPT_ESTEIRA.cores['Projeto'];
+    var sts = PLPT_ESTEIRA.status[_depSel]||[];
+    var idxDep = DEPS.indexOf(_depSel);
 
-    // ── Pipeline header ──────────────────────────────────────
-    var pipeline = '<div style="display:flex;align-items:stretch;margin-bottom:1.25rem;border-radius:10px;overflow:hidden;border:.5px solid #e0dfd8">';
-    deps.forEach(function(dep, i){
-      var c = PLPT_ESTEIRA.cores[dep];
+    // ── Barra de pipeline (departamentos) ──────────────────
+    var pipeline = '<div style="display:flex;margin-bottom:1rem;border-radius:10px;overflow:hidden;border:.5px solid #e0dfd8">';
+    DEPS.forEach(function(dep,i){
+      var dc = PLPT_ESTEIRA.cores[dep];
+      var isDone = DEPS.indexOf(dep) < depIdxAtual;
       var isCurr = dep === depAtual;
-      var isDone = deps.indexOf(dep) < depIdxAtual;
       var isSel  = dep === _depSel;
-      pipeline += '<div id="plpt-dep-'+i+'" onclick="plptDepClick('+i+')" style="flex:1;padding:8px 4px;text-align:center;cursor:pointer;'
-        +'background:'+(isDone?'#f0fce8':isCurr?c.bg:'#fafaf8')+';'
-        +'border-right:'+(i<deps.length-1?'.5px solid #e0dfd8':'none')+';'
-        +'border-bottom:3px solid '+(isSel?c.brd:'transparent')+';'
-        +'transition:all .15s">'
-        +'<div style="font-size:10px;font-weight:'+(isSel?'700':'500')+';color:'+(isSel?c.cor:isDone?'#3B6D11':'#888')+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
-        +(isDone?'✓ ':'')+dep+'</div>'
-        +'</div>';
+      pipeline += '<div onclick="plptDepClick('+i+')" style="flex:1;padding:7px 4px;text-align:center;cursor:pointer;transition:all .15s;'
+        +'background:'+(isDone?'#E8F8E0':isCurr?dc.bg:'#fafaf8')+';'
+        +'border-right:'+(i<DEPS.length-1?'.5px solid #e0dfd8':'none')+';'
+        +'border-bottom:3px solid '+(isSel?dc.brd:'transparent')+';">'
+        +'<div style="font-size:9px;font-weight:'+(isSel?700:500)+';color:'+(isSel?dc.cor:isDone?'#3B6D11':'#aaa');
+      pipeline += ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px">'
+        +(isDone?'✓ ':isCurr?'● ':'')+dep+'</div></div>';
     });
     pipeline += '</div>';
 
-    // ── Status do departamento selecionado ────────────────────
-    var dep = _depSel;
-    var c   = PLPT_ESTEIRA.cores[dep];
-    var sts = PLPT_ESTEIRA.status[dep];
-    var statusHtml = '<div style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto;margin-bottom:1rem">';
-    sts.forEach(function(s){
-      var isSt = s === _stSel;
-      var isAtual = s === p.status;
-      statusHtml += '<button id="plpt-st-'+s.replace(/\s/g,'_')+'" onclick="plptStClick(\''+s.replace(/'/g,"\\'")+'\')" '
-        +'style="padding:9px 14px;border-radius:8px;text-align:left;cursor:pointer;font-size:12px;font-weight:'+(isSt?'700':'400')+';'
-        +'background:'+(isSt?c.bg:'#fafaf8')+';color:'+(isSt?c.cor:'#444')+';'
-        +'border:'+(isSt?'2px solid '+c.brd:isAtual?'1.5px dashed '+c.brd:'.5px solid #e0dfd8')+';">'
-        +s+(isAtual?' <span style="font-size:10px;color:#888">(atual)</span>':'')
-        +(isSt?' <span style="float:right">✓</span>':'')
-        +'</button>';
-    });
-    statusHtml += '</div>';
+    // ── Barra de progresso ──────────────────────────────────
+    var progBar = '<div style="margin-bottom:.85rem">'
+      +'<div style="display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:3px">'
+      +'<span>Progresso da esteira</span><span>'+pctProgresso+'%</span></div>'
+      +'<div style="background:#f0efe8;border-radius:20px;height:6px;overflow:hidden">'
+      +'<div style="background:'+depCurC.cor+';width:'+pctProgresso+'%;height:100%;border-radius:20px;transition:width .4s"></div>'
+      +'</div></div>';
 
-    // ── Indicador de status atual ─────────────────────────────
-    var depCurC = PLPT_ESTEIRA.cores[depAtual];
-    var indicador = '<div style="font-size:11px;color:#888;margin-bottom:.75rem;display:flex;align-items:center;gap:8px">'
-      +'<span>Status atual:</span>'
-      +'<span style="background:'+depCurC.bg+';color:'+depCurC.cor+';border-radius:6px;padding:2px 10px;font-weight:600;font-size:11px">'+p.status+'</span>'
-      +'<span style="color:#ccc">→</span>'
-      +'<span id="plpt-st-novo-label" style="background:'+c.bg+';color:'+c.cor+';border-radius:6px;padding:2px 10px;font-weight:600;font-size:11px">'
-      +(_stSel===p.status?'<span style="color:#aaa">Selecione um novo</span>':_stSel)+'</span>'
+    // ── Status atual → novo ────────────────────────────────
+    var selC = PLPT_ESTEIRA.cores[plptGetDep(_stSel)]||c;
+    var indicador = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:.75rem;flex-wrap:wrap">'
+      +'<span style="font-size:11px;color:#888">Atual:</span>'
+      +'<span style="background:'+depCurC.bg+';color:'+depCurC.cor+';border-radius:5px;padding:2px 9px;font-size:11px;font-weight:600">'+p.status+'</span>'
+      +(_stSel!==p.status
+        ?'<span style="color:#ccc;font-size:14px">→</span>'
+         +'<span style="background:'+selC.bg+';color:'+selC.cor+';border-radius:5px;padding:2px 9px;font-size:11px;font-weight:600">'+_stSel+'</span>'
+        :'<span style="font-size:11px;color:#aaa;font-style:italic">selecione um novo status abaixo</span>')
       +'</div>';
 
-    return '<div class="modal-bg"><div class="modal" style="max-width:520px;width:100%">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.75rem">'
-      +'<div style="flex:1">'
-      +'<h3 style="margin:0;font-size:15px">⚡ Esteira Produtiva</h3>'
-      +'<div style="font-size:11px;color:#888;margin-top:2px">'+escHtml(p.nome)+'</div>'
+    // ── Lista de status do dep selecionado ────────────────
+    var lista = '<div style="display:flex;flex-direction:column;gap:4px;max-height:240px;overflow-y:auto;margin-bottom:.85rem">';
+    sts.forEach(function(s){
+      var isSt = s===_stSel; var isAt = s===p.status;
+      lista += '<button onclick="plptStClick(\''+s.replace(/'/g,"\\'")+'\')" '
+        +'style="padding:8px 12px;border-radius:8px;text-align:left;cursor:pointer;font-size:12px;width:100%;'
+        +'background:'+(isSt?c.bg:'#fff')+';color:'+(isSt?c.cor:'#444')+';'
+        +'border:'+(isSt?'2px solid '+c.brd:isAt?'1.5px dashed '+c.brd:'.5px solid #eee')+';">'
+        +s+(isAt?' <span style="font-size:10px;color:#aaa">(atual)</span>':'')
+        +(isSt?'<span style="float:right">✓</span>':'')+'</button>';
+    });
+    lista += '</div>';
+
+    return '<div class="modal-bg"><div class="modal" style="max-width:500px;width:100%">'
+      +'<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:.85rem">'
+      +'<div style="flex:1"><h3 style="margin:0;font-size:15px">⚡ Esteira Produtiva</h3>'
+      +'<div style="font-size:11px;color:#888;margin-top:2px">'+escHtml(p.nome)+'</div></div>'
+      +'<button class="btn" onclick="closeModal()" style="padding:3px 9px">✕</button>'
       +'</div>'
-      +'<button class="btn" onclick="closeModal()" style="padding:4px 10px">✕</button>'
-      +'</div>'
-      + pipeline
-      + indicador
-      + statusHtml
-      +'<div class="fg" style="margin-bottom:1rem">'
-      +'<label style="font-size:11px">Observação</label>'
+      + pipeline + progBar + indicador + lista
+      +'<div class="fg" style="margin-bottom:.85rem">'
+      +'<label style="font-size:11px">Observação (opcional)</label>'
       +'<input id="plpt-st-obs" class="inp" style="width:100%" placeholder="Motivo da mudança..."/>'
       +'</div>'
       +'<div style="display:flex;gap:8px">'
       +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-      +'<button class="btn btn-pri" id="plpt-st-confirmar" onclick="plptConfirmarStatus(\''+projetoId+'\')" style="flex:2" '
-      +(_stSel===p.status?'disabled style="flex:2;opacity:.5"':'')+'>✓ Confirmar mudança</button>'
-      +'</div>'
-      +'</div></div>';
+      +'<button class="btn btn-pri" id="plpt-st-conf" onclick="plptConfirmarStatus(\''+projetoId+'\')" '
+      +(_stSel===p.status?'disabled style="flex:2;opacity:.5"':'style="flex:2"')
+      +'>✓ Confirmar mudança</button>'
+      +'</div></div></div>';
   }
 
   setModal(buildHtml());
 
-  // Expor funções no window para os onclick inline
   window.plptDepClick = function(i){
     _depSel = PLPT_ESTEIRA.deps[i];
-    // Não alterar _stSel — mantém o selecionado
     setModal(buildHtml());
   };
   window.plptStClick = function(s){
-    _stSel = s;
-    _depSel = plptGetDep(s); // sincronizar aba com o status clicado
+    _stSel  = s;
+    _depSel = plptGetDep(s);
     setModal(buildHtml());
   };
   window.plptConfirmarStatus = function(pid){
-    if(_stSel === p.status){ closeModal(); return; }
-    var obs = (document.getElementById('plpt-st-obs')||{}).value||'';
-    var stAnterior = p.status;
-    p.status = _stSel;
+    if(_stSel===p.status){ closeModal(); return; }
+    var obs=(document.getElementById('plpt-st-obs')||{}).value||'';
+    var stAnterior=p.status;
+    p.status=_stSel;
     if(!DEMO){
-      sbUpdate('sot_projetos',{status:_stSel, atualizado_em:new Date().toISOString()},'id=eq.'+pid);
-      sbInsert('sot_projetos_historico',{
-        projeto_id:pid, status_anterior:stAnterior, status_novo:_stSel,
-        obs:obs, usuario:usuarioLogado?usuarioLogado.nome:''
-      });
+      sbUpdate('sot_projetos',{status:_stSel,atualizado_em:new Date().toISOString()},'id=eq.'+pid);
+      sbInsert('sot_projetos_historico',{projeto_id:pid,status_anterior:stAnterior,status_novo:_stSel,obs:obs,usuario:usuarioLogado?usuarioLogado.nome:''});
     }
     closeModal();
-    sotRenderMetricas();
-    sotRenderProjetos();
-    if(typeof projProgInit==='function') projProgInit();
-    if(_sotProjetoAtual===pid) sotAbrirProjeto(pid);
-    progShowToast('Status atualizado: '+_stSel);
+    if(typeof sotRenderMetricas==='function') sotRenderMetricas();
+    if(typeof sotRenderProjetos==='function') sotRenderProjetos();
+    if(typeof renderProjetosPorContrato==='function'){
+      var tabAtivaEl=document.querySelector('.co-tab-btn.ativo,[data-tab].ativo');
+      if(tabAtivaEl) renderProjetosPorContrato(tabAtivaEl.getAttribute('data-tab')||'', p.contrato_id);
+    }
+    if(typeof _sotProjetoAtual!=='undefined'&&_sotProjetoAtual===pid) sotAbrirProjeto(pid);
+    progShowToast('✅ Status: '+_stSel);
   };
 }
 
@@ -15799,7 +15827,7 @@ function sotRenderDetalhe(p, docs){
     +'<span style="color:#aaa;font-size:12px">/</span>'
     +'<span style="font-size:13px;font-weight:500">'+p.nome+'</span>'
     +'<span style="background:'+sc.bg+';color:'+sc.cor+';border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;margin-left:auto">'+p.status+'</span>'
-    +'<button class="btn btn-sm" onclick="sotAlterarStatus(\''+p.id+'\')" style="color:'+sc.cor+';border-color:'+sc.cor+'">↑ Status</button>'
+    +'<button class="btn btn-sm" onclick="sotAlterarStatus(\''+p.id+'\')" style="color:'+sc.cor+';border-color:'+sc.cor+'">'+(isContratoPLPT(p.contrato_id)?'⚡ Esteira':'↑ Status')+'</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirEditarProjeto(\''+p.id+'\')" style="color:#185FA5;border-color:#185FA5">✎ Editar</button>'
     +'</div>'
 
@@ -17267,8 +17295,8 @@ function sotSalvarProjeto(id){
 function sotAlterarStatus(projetoId){
   var p=sot_projetos.find(function(x){return x.id===projetoId;});
   if(!p)return;
-  // Se projeto PLPT (status na esteira produtiva), usar modal dedicado
-  if(PLPT_STATUS_ALL[p.status] || (typeof _plptProgCid!=='undefined' && p.contrato_id===_plptProgCid)){
+  // Se projeto PLPT (status na esteira produtiva OU contrato PLPT), usar modal dedicado
+  if(PLPT_STATUS_ALL[p.status] || isContratoPLPT(p.contrato_id)){
     plptAlterarStatusEsteira(projetoId);
     return;
   }
@@ -18889,7 +18917,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.2.6',
+  numero: '5.2.8',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -20422,15 +20450,22 @@ function progDrop(event, toEqId, toPos){
 function progValidarComposicao(colabId, toEqId, data){
   var comp = composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   var idsAtuais = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
-  // Não contar o próprio colaborador se já está na equipe
   var idsNovos = idsAtuais.filter(function(id){return id!==colabId;}).concat([colabId]);
   var membros = idsNovos.map(function(id){return colaboradores.find(function(c){return c.id===id;});}).filter(Boolean);
   var erros = [];
   if(membros.length>=3){
-    var nFolg = membros.filter(function(c){return (_progStatus[c.id]||'disponivel')==='folga';}).length;
-    if(nFolg>=2) erros.push('⚠ Equipe com '+membros.length+' pessoas não pode ter '+nFolg+' folguistas.');
-    var nDAD = membros.filter(function(c){return c.cnh_categoria&&['D','AD','E'].indexOf(c.cnh_categoria.toUpperCase())>=0;}).length;
-    if(nDAD>=2) erros.push('⚠ Equipe com '+membros.length+' pessoas não pode ter '+nDAD+' motoristas categoria D/AD.');
+    // Regra 2: equipe de 3 nao pode ter nenhum folguista
+    var corDiaV = (_calDados&&_calDados[data])||CAL_CORES_2026[data]||'';
+    var nFolg = membros.filter(function(c){
+      var st=_progStatus[c.id]||'disponivel';
+      return st==='folga'||(corDiaV&&c.cor_escala&&c.cor_escala===corDiaV&&st==='disponivel');
+    }).length;
+    if(nFolg>=1) erros.push('Nao e permitido montar uma equipe de 3 pessoas com folguistas. Ajuste a escala antes de continuar.');
+    // Regra 3: maximo 1 categoria D/AD em equipe de 3
+    var nDAD = membros.filter(function(c){
+      return c.cnh_categoria&&['D','AD','E'].indexOf((c.cnh_categoria||'').toUpperCase())>=0;
+    }).length;
+    if(nDAD>=2) erros.push('Nao e permitido montar uma equipe de 3 pessoas com 2 colaboradores das categorias D ou AD. Distribua os D e AD para montar mais equipes.');
   }
   return erros;
 }
@@ -20438,40 +20473,54 @@ function progValidarComposicao(colabId, toEqId, data){
 function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
   var data=progGetData();
   var col=colaboradores.find(function(c){return c.id===colabId;});
-  var stColab=_progStatus[colabId]||'disponivel';
 
-  // Validação de composição
+  // Regras 2 e 3: bloquear antes de tudo
   var errosComp=progValidarComposicao(colabId,toEqId,data);
   if(errosComp.length){
-    progShowToast(errosComp.join(' '));
+    var msgHtml=errosComp.map(function(e){
+      return '<div style="padding:8px 12px;background:#FDECEA;border-radius:8px;font-size:13px;color:#C00000;margin-bottom:6px">'+escHtml(e)+'</div>';
+    }).join('');
+    setModal('<div class="modal-bg"><div class="modal" style="max-width:360px">'
+      +'<h3 style="color:#C00000;margin-bottom:.75rem">🚫 Composição inválida</h3>'
+      +msgHtml
+      +'<div style="margin-top:1rem;text-align:right">'
+      +'<button class="btn btn-pri" onclick="closeModal()" style="background:#C00000;border-color:#C00000">Entendido</button>'
+      +'</div></div></div>');
     return;
   }
 
-  // Aviso de folguista
-  if(stColab==='folga'){
-    var eqDest=equipes_disp.find(function(e){return e.id===toEqId;});
+  // Regra 1: folguista exige justificativa
+  var corDiaF = (_calDados&&_calDados[data])||CAL_CORES_2026[data]||'';
+  var stColab=_progStatus[colabId]||'disponivel';
+  var isFolg = stColab==='folga'||(corDiaF&&col&&col.cor_escala&&col.cor_escala===corDiaF&&stColab==='disponivel');
+
+  if(isFolg){
     var _pendingDrop={colabId:colabId,fromEqId:fromEqId,toEqId:toEqId,toPos:toPos,duplicar:duplicar};
-    var html='<div class="modal-bg"><div class="modal" style="max-width:360px">'
-      +'<h3 style="color:#854F0B">🏖 Colaborador de Folga</h3>'
-      +'<div style="font-size:13px;color:#555;margin-bottom:.75rem">'
-      +'<b>'+escHtml(col?col.nome:'')+'</b> está de <b>folga</b> hoje.<br>'
-      +'Ao escalá-lo, ele será contabilizado como <b>Hora Extra</b>.'
+    var dataBR=(data||'').split('-').reverse().join('/');
+    setModal('<div class="modal-bg"><div class="modal" style="max-width:360px">'
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:.75rem">'
+      +'<div style="background:#FEF3E2;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0">🏖</div>'
+      +'<div><div style="font-size:14px;font-weight:600;color:#854F0B">Colaborador de Folga</div>'
+      +'<div style="font-size:12px;color:#888">'+escHtml(col?col.nome:'')+'  ·  '+dataBR+'</div></div>'
       +'</div>'
-      +'<div class="fg" style="margin-bottom:1rem">'
-      +'<label style="font-size:11px">Justificativa obrigatória</label>'
-      +'<textarea id="prog-folg-just" style="width:100%;height:64px;font-size:12px;padding:6px 8px;border:.5px solid #e0dfd8;border-radius:6px;resize:vertical" placeholder="Motivo da escalação do folguista..."></textarea>'
+      +'<div style="font-size:13px;color:#555;background:#FEF3E2;border-radius:8px;padding:10px 12px;margin-bottom:.85rem">'
+      +'Atenção: este colaborador é folguista. Informe a justificativa para escalá-lo neste dia.'
+      +'</div>'
+      +'<div class="fg" style="margin-bottom:.85rem">'
+      +'<label style="font-size:11px;font-weight:500">Justificativa <span style="color:#C00000">*</span></label>'
+      +'<textarea id="prog-folg-just" style="width:100%;height:72px;font-size:12px;padding:7px 10px;border:.5px solid #e0dfd8;border-radius:7px;resize:vertical" placeholder="Informe o motivo da escalação..."></textarea>'
+      +'<div id="prog-folg-err" style="font-size:11px;color:#C00000;min-height:14px;margin-top:2px"></div>'
       +'</div>'
       +'<div style="display:flex;gap:8px">'
       +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
       +'<button class="btn btn-pri" id="prog-folg-conf" style="flex:2;background:#854F0B;border-color:#854F0B">Confirmar escalação</button>'
-      +'</div></div></div>';
-    setModal(html);
+      +'</div></div></div>');
     setTimeout(function(){
       var btn=document.getElementById('prog-folg-conf');
       if(btn)btn.onclick=function(){
         var just=(document.getElementById('prog-folg-just')||{}).value||'';
-        if(!just.trim()){ progShowToast('⚠ Informe a justificativa para escalar o folguista.'); return; }
-        // Salvar justificativa
+        var errEl=document.getElementById('prog-folg-err');
+        if(!just.trim()){if(errEl)errEl.textContent='A justificativa é obrigatória.';return;}
         if(!_progStatusInfo[colabId])_progStatusInfo[colabId]={};
         _progStatusInfo[colabId].just_folga=just;
         closeModal();
