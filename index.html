@@ -20176,7 +20176,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.7.9',
+  numero: '5.8.0',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -22826,7 +22826,35 @@ function renderTMADashboard(){
   var dataIni = _tmaDataIni || hoje;
   var dataFim = _tmaDataFim || hoje;
   if(dataIni > dataFim){ var tmp=dataIni; dataIni=dataFim; dataFim=tmp; }
-  var data = dataIni; // compatibilidade com referências internas
+  var data = dataIni;
+
+  var el = document.getElementById('tma-dash-inner');
+  if(!el) return;
+
+  // ── Buscar status do banco para período não-hoje ─────────────
+  // (localStorage só tem dados se o usuário abriu a programação naquele dia)
+  if(!DEMO && !(dataIni===hoje && dataFim===hoje) && !renderTMADashboard._statusCarregado){
+    renderTMADashboard._statusCarregado = dataIni+'|'+dataFim;
+    el.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando status do período...</div>';
+    sbFetch('prog_status_diario',{
+      filters:['data=gte.'+dataIni,'data=lte.'+dataFim],
+      order:'data', limit:2000
+    }).then(function(rows){
+      renderTMADashboard._statusDB = rows || [];
+      renderTMADashboard();
+    }).catch(function(){
+      renderTMADashboard._statusDB = [];
+      renderTMADashboard();
+    });
+    return;
+  }
+  // Se voltou para hoje, limpar cache
+  if(dataIni===hoje && dataFim===hoje){
+    renderTMADashboard._statusCarregado = null;
+    renderTMADashboard._statusDB = null;
+  }
+
+  var statusDB = renderTMADashboard._statusDB || [];
 
   // ── Equipes ────────────────────────────────────
   var eqsFil = equipes_disp.filter(function(e){ return e.status==='Ativo'; });
@@ -22858,56 +22886,77 @@ function renderTMADashboard(){
   sessDia.forEach(function(s){
     var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;});
     if(!eq) return;
-    var tipo = (tipos_equipe.find(function(t){return t.id===eq.tipo_id;})||{}).nome || eq.tipo || 'Outros';
+    var tipo = (tipos_equipe.find(function(t){return t.id===eq.tipo_id;})||{}).nome || eq.tipo || 'Sem tipo';
     logadas[tipo] = (logadas[tipo]||0) + 1;
   });
-  var totalLogadas = sessDia.length;
+  var totalLogadas = Object.keys(logadas).reduce(function(s,k){return s+logadas[k];},0);
 
-  // ── 2. Faltas no período ─────────────────────────
-  // Agregar status de TODOS os dias do período via localStorage
-  var statusPeriodo = {}; // {colabId: {falta:N, folga:N, ferias:N, afastado:N, ...}}
-  var diasPeriodo = [];
-  var dCur = new Date(dataIni+'T12:00:00');
-  var dFim2 = new Date(dataFim+'T12:00:00');
-  while(dCur <= dFim2){
-    var ds = dCur.getFullYear()+'-'+String(dCur.getMonth()+1).padStart(2,'0')+'-'+String(dCur.getDate()).padStart(2,'0');
-    diasPeriodo.push(ds);
-    try{
-      var saved = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
-      var stMap = saved.status || {};
-      Object.keys(stMap).forEach(function(id){
-        if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
-        var st = stMap[id];
-        if(st==='falta')      statusPeriodo[id].falta++;
-        else if(st==='folga') statusPeriodo[id].folga++;
-        else if(st==='ferias') statusPeriodo[id].ferias++;
-        else if(st==='afastado') statusPeriodo[id].afastado++;
-        else if(st!=='disponivel') statusPeriodo[id].outros++;
-      });
-    }catch(e){}
-    dCur.setDate(dCur.getDate()+1);
+  // ── 2. Faltas/Status no período ─────────────────────────
+  var statusPeriodo = {}; // {colabId: {falta:N, folga:N, ferias:N, afastado:N, outros:N}}
+
+  // Prioridade: banco (statusDB) > localStorage
+  if(statusDB.length){
+    statusDB.forEach(function(r){
+      var id = r.colaborador_id; if(!id) return;
+      if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
+      var st = r.status||'disponivel';
+      if(st==='falta')         statusPeriodo[id].falta++;
+      else if(st==='folga')    statusPeriodo[id].folga++;
+      else if(st==='ferias')   statusPeriodo[id].ferias++;
+      else if(st==='afastado') statusPeriodo[id].afastado++;
+      else if(st!=='disponivel') statusPeriodo[id].outros++;
+    });
+  } else {
+    // Fallback: localStorage
+    var dCur = new Date(dataIni+'T12:00:00'), dFim2 = new Date(dataFim+'T12:00:00');
+    while(dCur <= dFim2){
+      var ds = dCur.getFullYear()+'-'+String(dCur.getMonth()+1).padStart(2,'0')+'-'+String(dCur.getDate()).padStart(2,'0');
+      try{
+        var sv = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
+        var stMap = sv.status || sv;
+        if(typeof stMap === 'object'){
+          Object.keys(stMap).forEach(function(id){
+            if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
+            var st = stMap[id];
+            if(st==='falta')         statusPeriodo[id].falta++;
+            else if(st==='folga')    statusPeriodo[id].folga++;
+            else if(st==='ferias')   statusPeriodo[id].ferias++;
+            else if(st==='afastado') statusPeriodo[id].afastado++;
+            else if(st!=='disponivel') statusPeriodo[id].outros++;
+          });
+        }
+      }catch(e){}
+      dCur.setDate(dCur.getDate()+1);
+    }
   }
 
-  var nFaltas = 0;
-  var colabsComFalta = [];
+  var nFaltas = 0, colabsComFalta = [];
   Object.keys(statusPeriodo).forEach(function(id){
     var n = statusPeriodo[id].falta;
-    if(n > 0){
-      nFaltas += n;
-      var col = colaboradores.find(function(x){return x.id===id;});
-      if(col) colabsComFalta.push({nome:col.nome, faltas:n});
-    }
+    if(n>0){ nFaltas+=n; var col=colaboradores.find(function(x){return x.id===id;}); if(col) colabsComFalta.push({nome:col.nome,faltas:n}); }
   });
   colabsComFalta.sort(function(a,b){return b.faltas-a.faltas;});
 
   // ── 3. Folguistas trabalhando ─────────────────────
+  // Usar status específico do dia analisado (não _progStatus que é do dia atual)
+  var statusDoData = {};
+  if(statusDB.length){
+    statusDB.filter(function(r){return (r.data||'').split('T')[0]===data;}).forEach(function(r){
+      if(r.colaborador_id) statusDoData[r.colaborador_id]=r.status;
+    });
+  } else {
+    try{
+      var sv2=JSON.parse(localStorage.getItem('prog_status_'+data)||'{}');
+      statusDoData=(sv2.status||sv2)||{};
+    }catch(e){}
+  }
+
   var calDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
   var nFolguistas = 0;
   compDia.forEach(function(comp){
     getColabIds(comp).forEach(function(id){
-      var col = colaboradores.find(function(c){return c.id===id;});
-      if(!col) return;
-      var st = _progStatus[id]||'disponivel';
+      var col = colaboradores.find(function(c){return c.id===id;}); if(!col) return;
+      var st = statusDoData[id]||'disponivel';
       var folgaManual = st==='folga';
       var folgaCal    = calDia && col.cor_escala && col.cor_escala===calDia && st==='disponivel';
       if(folgaManual || folgaCal) nFolguistas++;
@@ -22949,18 +22998,17 @@ function renderTMADashboard(){
   var escaladosSet = {};
   compDia.forEach(function(c){ getColabIds(c).forEach(function(id){ escaladosSet[id]=true; }); });
   statusCount.escalado = Object.keys(escaladosSet).length;
-  // Afastados e Férias: contar colaboradores únicos que tiveram esses status no período
   var afastadosSet={}, feriasSet={};
   Object.keys(statusPeriodo).forEach(function(id){
     var sp=statusPeriodo[id];
     if(sp.afastado>0) afastadosSet[id]=true;
     if(sp.ferias>0)   feriasSet[id]=true;
-    if(sp.outros>0)   statusCount.outros+=sp.outros;
+    if(sp.outros>0)   statusCount.outros++;
   });
   statusCount.afastado = Object.keys(afastadosSet).length;
   statusCount.ferias   = Object.keys(feriasSet).length;
 
-  // ── 11. Colaboradores com mais faltas (já calculado acima) ───
+  // ── 11. Top faltas (já calculado) ───
   var topFaltas = colabsComFalta.slice(0,10);
 
   // ── 12/13. Equipes por tempo logado ───────────────
