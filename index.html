@@ -20180,7 +20180,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.7.2',
+  numero: '5.7.4',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -32642,8 +32642,12 @@ function frtInit(subpage){
     else if(subpage==='frotas-pneus')   pneusInit();
     else if(subpage==='frotas-portaria'){
       portCarregarConfigs();
-      frtPortariaRender();
-      setTimeout(function(){ portRenderSeletorAtiva(); var saved=localStorage.getItem('port_ativa_id'); if(saved) portDefinirAtiva(saved); },100);
+      setTimeout(function(){
+        portRenderSeletorAtiva();
+        var saved=localStorage.getItem('port_ativa_id');
+        if(saved) portDefinirAtiva(saved);
+        portMostrarAba('equipes'); // abre na aba Equipes do Dia e popula os selects
+      },150);
     }
     else if(subpage==='frotas-programacao') frtProgRender();
     else if(subpage==='frotas-manutencoes') frtManutRender();
@@ -33050,35 +33054,46 @@ function portRenderEquipesDia(){
   var wrap = document.getElementById('port-eq-lista'); if(!wrap) return;
   var hoje   = dataHojeLocal();
   var data   = (document.getElementById('port-eq-data')||{}).value||hoje;
-  var turno  = (document.getElementById('port-eq-turno')||{}).value||'';
   var cid    = (document.getElementById('port-eq-contrato')||{}).value||'';
   var filId  = (document.getElementById('port-eq-filial')||{}).value||'';
 
-  // Popular select de contratos
-  var selCont = document.getElementById('port-eq-contrato');
-  if(selCont && selCont.options.length<=1){
-    contratos.forEach(function(c){
-      var o=document.createElement('option'); o.value=c.id; o.textContent=c.nome;
-      selCont.appendChild(o);
-    });
-  }
-  // Popular select de filiais
-  var selFil = document.getElementById('port-eq-filial');
-  if(selFil && selFil.options.length<=1 && filiais.length){
-    filiais.forEach(function(f){
-      var o=document.createElement('option'); o.value=f.id; o.textContent=(f.codigo?f.codigo+' — ':'')+f.nome;
-      selFil.appendChild(o);
-    });
-  }
-  // Filial ativa da portaria
-  if(!filId && _portAtiva && _portAtiva.filial_id){
-    filId=_portAtiva.filial_id;
-    if(selFil) selFil.value=filId;
-  }
-
   // Inicializar data
   var selData=document.getElementById('port-eq-data');
-  if(selData&&!selData.value) selData.value=hoje;
+  if(selData && !selData.value) selData.value = hoje;
+
+  // Se filiais ainda não carregaram, buscar e re-renderizar
+  if(!filiais.length && !DEMO){
+    wrap.innerHTML='<div style="padding:1.5rem;text-align:center;color:#aaa;font-size:12px">⏳ Carregando filiais...</div>';
+    sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){
+      if(rows && rows.length) filiais=rows;
+      portRenderEquipesDia();
+    }).catch(function(){ portRenderEquipesDia(); });
+    return;
+  }
+
+  // Popular select de contratos usando _contratosVisiveis() que é sempre confiável
+  var selCont = document.getElementById('port-eq-contrato');
+  if(selCont){
+    var listaContratos = typeof _contratosVisiveis==='function' ? _contratosVisiveis() : contratos;
+    selCont.innerHTML='<option value="">Todos os contratos</option>'
+      + listaContratos.map(function(c){
+          return '<option value="'+c.id+'"'+(cid===c.id?' selected':'')+'>'+escHtml(c.nome||c.codigo||'')+'</option>';
+        }).join('');
+  }
+
+  // Popular select de filiais
+  var selFil = document.getElementById('port-eq-filial');
+  if(selFil){
+    selFil.innerHTML='<option value="">Todas as filiais</option>'
+      + filiais.map(function(f){
+          return '<option value="'+f.id+'"'+(filId===f.id?' selected':'')+'>'+escHtml((f.codigo?f.codigo+' — ':'')+f.nome)+'</option>';
+        }).join('');
+    // Auto-selecionar filial da portaria ativa se nenhuma foi escolhida
+    if(!filId && _portAtiva && _portAtiva.filial_id){
+      filId = _portAtiva.filial_id;
+      selFil.value = filId;
+    }
+  }
 
   // Equipes do dia
   var comps=composicao_dia.filter(function(c){return (c.data||'').split('T')[0]===data;});
@@ -33593,6 +33608,14 @@ function portRenderConfig(){
 }
 
 function portNovaConfig(id){
+  // Garantir que filiais estão carregadas antes de abrir o modal
+  if(!filiais.length && !DEMO){
+    sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){
+      if(rows && rows.length) filiais=rows;
+      portNovaConfig(id);
+    }).catch(function(){ portNovaConfig(id); });
+    return;
+  }
   var p=id?portaria_configs.find(function(x){return x.id===id;})||{}:{};
   var isNew=!id;
   var filOpts=filiais.map(function(f){
