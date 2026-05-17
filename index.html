@@ -616,7 +616,6 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
       <button class="sb-mod-btn" id="mn-dashboard"       onclick="showMain('dashboard')"       >📊 Dashboard</button>
       <button class="sb-mod-btn" id="mn-contratos"       onclick="showMain('contratos')"       >📁 Contratos</button>
       <button class="sb-mod-btn" id="mn-operacional"     onclick="showMain('operacional')"     >🏗 Operacional</button>
-      <button class="sb-mod-btn" id="mn-campo"           onclick="showMain('campo')"           >📍 Em Campo</button>
       <button class="sb-mod-btn" id="mn-movimentacao"    onclick="showMain('movimentacao')"    >💰 Financeiro</button>
       <button class="sb-mod-btn" id="mn-almoxarifado"    onclick="showMain('almoxarifado')"    >🏭 Almoxarifado</button>
       <button class="sb-mod-btn" id="mn-frotas"          onclick="showMain('frotas')"          >🚗 Frotas</button>
@@ -1719,7 +1718,26 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
 </div>
 
 <!-- PROGRAMACAO-EQUIPES -->
-<div id="pg-tma" class="hidden">
+<div id="pg-campo-equipes" class="hidden">
+  <div class="card">
+    <div class="ch" style="flex-wrap:wrap;gap:8px">
+      <span class="ct">📍 Equipes em Campo</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select class="inp" id="ceq-fil-cont" style="width:200px" onchange="renderCampoEquipes()">
+          <option value="">Todos os contratos</option>
+        </select>
+        <select class="inp" id="ceq-fil-equipe" style="width:180px" onchange="renderCampoEquipes()">
+          <option value="">Todas as equipes</option>
+        </select>
+        <button class="btn" onclick="renderCampoEquipes()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>
+      </div>
+    </div>
+    <div id="ceq-resumo" style="display:flex;gap:8px;flex-wrap:wrap;padding:.5rem 0;border-bottom:.5px solid #f0efe8;margin-bottom:.75rem"></div>
+    <div id="ceq-lista"></div>
+  </div>
+</div>
+
+
   <!-- Tab Bar TMA -->
   <div style="display:flex;gap:0;border-bottom:1.5px solid #e0dfd8;margin-bottom:1rem">
     <button id="tma-tab-dashboard"    onclick="showTMA('dashboard')"    style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18">📊 Dashboard TMA</button>
@@ -20162,7 +20180,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.6.5',
+  numero: '5.6.6',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -23075,6 +23093,133 @@ function renderTMADashboard(){
 
 function tmaDashSetData(val){ _progData=val; renderTMADashboard(); }
 function tmaDashSetCont(val){ _progContrato=val; renderTMADashboard(); }
+
+// ══════════════════════════════════════════════════════════
+// EQUIPES EM CAMPO — visão geral de todos os contratos
+// ══════════════════════════════════════════════════════════
+function renderCampoEquipes(){
+  var pg = document.getElementById('pg-campo-equipes');
+  if(!pg){ return; }
+  pg.classList.remove('hidden');
+
+  var hoje    = dataHojeLocal();
+  var cidFil  = (document.getElementById('ceq-fil-cont')||{}).value||'';
+  var eqFil   = (document.getElementById('ceq-fil-equipe')||{}).value||'';
+
+  // Popular selects
+  var selCont = document.getElementById('ceq-fil-cont');
+  if(selCont && selCont.options.length<=1){
+    contratos.sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');}).forEach(function(c){
+      var o=document.createElement('option'); o.value=c.id; o.textContent=c.codigo||c.nome;
+      selCont.appendChild(o);
+    });
+  }
+
+  // Sessões abertas hoje (login sem logout = em campo)
+  var sessHoje = sessoes_disp.filter(function(s){
+    return (s.data||'').split('T')[0]===hoje && s.login_ts;
+  });
+
+  // Enriquecer com dados da equipe e contrato
+  var emCampo = sessHoje.map(function(s){
+    var eq  = equipes_disp.find(function(e){return e.id===s.equipe_id;})||{};
+    var cont= contratos.find(function(c){return c.id===eq.contrato_id;})||{};
+    var comp= composicao_dia.find(function(c){
+      return c.equipe_id===s.equipe_id && (c.data||'').split('T')[0]===hoje;
+    });
+    var colabIds = comp ? parseColabIds(comp.colaborador_ids) : [];
+    var colabs = colabIds.map(function(id){
+      return colaboradores.find(function(c){return c.id===id;})||null;
+    }).filter(Boolean);
+    var minutos = s.minutos_faturados||0;
+    if(!minutos && s.login_ts){
+      minutos = Math.round((new Date()-new Date(s.login_ts))/60000);
+    }
+    var logOut = !!s.logout_ts;
+    return {sess:s, eq:eq, cont:cont, colabs:colabs, minutos:minutos, logOut:logOut};
+  }).filter(function(x){ return x.eq && x.eq.id; });
+
+  // Aplicar filtros
+  var filtradas = emCampo.filter(function(x){
+    if(cidFil && x.cont.id!==cidFil) return false;
+    if(eqFil  && x.eq.id!==eqFil)   return false;
+    return true;
+  });
+
+  // Popular select de equipes (baseado no filtro de contrato)
+  var selEq = document.getElementById('ceq-fil-equipe');
+  if(selEq){
+    var eqsDisp = emCampo.filter(function(x){return !cidFil||x.cont.id===cidFil;}).map(function(x){return x.eq;});
+    var eqAtual = selEq.value;
+    selEq.innerHTML='<option value="">Todas as equipes</option>';
+    eqsDisp.forEach(function(e){
+      var o=document.createElement('option'); o.value=e.id; o.textContent=e.codigo||e.nome||e.id;
+      if(e.id===eqAtual) o.selected=true;
+      selEq.appendChild(o);
+    });
+  }
+
+  // Resumo
+  var resumo = document.getElementById('ceq-resumo');
+  if(resumo){
+    var nCont = new Set(filtradas.map(function(x){return x.cont.id;})).size;
+    var nColabs = filtradas.reduce(function(s,x){return s+x.colabs.length;},0);
+    var nLogOut = filtradas.filter(function(x){return x.logOut;}).length;
+    function chip(icon,label,val,cor,bg){
+      return '<div style="background:'+(bg||'#f5f5f3')+';border-radius:8px;padding:5px 12px;display:flex;align-items:center;gap:6px">'
+        +'<span style="font-size:16px">'+icon+'</span>'
+        +'<div><div style="font-size:16px;font-weight:700;color:'+(cor||'#555')+'">'+val+'</div>'
+        +'<div style="font-size:10px;color:#888">'+label+'</div></div></div>';
+    }
+    resumo.innerHTML=chip('🚌','Equipes em campo',filtradas.length,'#185FA5','#E6F1FB')
+      +chip('🏢','Contratos',nCont,'#533AB7','#F0EEFF')
+      +chip('👷','Colaboradores',nColabs,'#3B6D11','#EAF3DE')
+      +chip('✅','Retornaram',nLogOut,'#555','#f5f5f3')
+      +chip('🔴','Ainda em campo',filtradas.length-nLogOut,'#A32D2D','#FCEBEB');
+  }
+
+  // Lista
+  var lista = document.getElementById('ceq-lista');
+  if(!lista) return;
+  if(!filtradas.length){
+    lista.innerHTML='<div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">Nenhuma equipe em campo'+(cidFil?' para este contrato':'')+(hoje?' em '+fmtD(hoje):'')+'.</div>';
+    return;
+  }
+
+  function fmtMin(m){ return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'m'; }
+
+  lista.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:#1a1a18">'
+    +'<th style="color:#fff;text-align:left;padding:8px 12px">Equipe</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Contrato</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Login</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Tempo</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Status</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:left">Colaboradores</th>'
+    +'</tr></thead><tbody>'
+    +filtradas.map(function(x,i){
+      var bg = i%2===0?'#fff':'#fafaf8';
+      var loginHr = x.sess.login_ts ? new Date(x.sess.login_ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
+      var status  = x.logOut
+        ? '<span style="background:#EAF3DE;color:#3B6D11;border-radius:12px;padding:2px 8px;font-size:10px;font-weight:600">✅ Retornou</span>'
+        : '<span style="background:#FCEBEB;color:#A32D2D;border-radius:12px;padding:2px 8px;font-size:10px;font-weight:600">🔴 Em campo</span>';
+      var colabsHtml = x.colabs.map(function(c){
+        var cnh = c.cnh_categoria && c.cnh_categoria!=='Não'
+          ? '<span style="background:#185FA5;color:#fff;border-radius:3px;padding:0 3px;font-size:8px;font-weight:700">'+c.cnh_categoria+'</span> ' : '';
+        return '<span style="background:#f5f5f3;border-radius:4px;padding:1px 5px;margin:1px;display:inline-block;font-size:10px">'+cnh+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>';
+      }).join('');
+      return '<tr style="background:'+bg+';border-bottom:.5px solid #f0efe8" '
+        +'onmouseenter="this.style.background=\'#F0F4FF\'" onmouseleave="this.style.background=\''+bg+'\'">'
+        +'<td style="padding:8px 12px;font-weight:700;font-size:12px;border-left:3px solid '+(x.logOut?'#3B6D11':'#A32D2D')+'">'+escHtml(x.eq.codigo||x.eq.nome||'—')+'</td>'
+        +'<td style="text-align:center;padding:8px;font-size:11px;color:#555">'+escHtml(x.cont.codigo||'—')+'</td>'
+        +'<td style="text-align:center;padding:8px;font-size:11px">'+loginHr+'</td>'
+        +'<td style="text-align:center;padding:8px;font-weight:600;color:#185FA5">'+fmtMin(x.minutos)+'</td>'
+        +'<td style="text-align:center;padding:8px">'+status+'</td>'
+        +'<td style="padding:8px;max-width:300px">'+colabsHtml+'</td>'
+        +'</tr>';
+    }).join('')
+    +'</tbody></table>';
+}
 
 function renderProgEquipes(){
   var lista = document.getElementById('prog-equipes-lista'); if(!lista) return;
@@ -28460,7 +28605,7 @@ var ALL_PAGES = ['dashboard','contratos-lista','adiantamentos',
   'operacional-prod','metas','verbas',
   'lancamentos','aprovacao',
   'obras-projetos','obras-sap','obras-execucao','obras-movSAP',
-  'relatorios','cadastros','campo','diario','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
+  'relatorios','cadastros','campo','diario','tma','campo-equipes','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
   'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','obras-requisicao','obras-medicao','plr','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
@@ -28471,12 +28616,15 @@ var SIDEBAR_GROUPS = {
   dashboard:    [{label:'Visão Geral', items:[{id:'dashboard', icon:'📊', label:'Dashboard'}]}],
   contratos:    [{label:'Contratos',   items:[{id:'contratos-lista', icon:'📁', label:'Contratos'}]}],
   operacional: [
+    {label:'TMA', items:[
+      {id:'tma',                    icon:'🚌', label:'TMA'},
+    ]},
     {label:'Programação', items:[
       {id:'operacional-prod',       icon:'📊', label:'Produção / COD X'},
-      {id:'programacao-equipes',    icon:'👥', label:'Programação de Equipes'},
       {id:'programacao-projetos',   icon:'🗂', label:'Programação de Projetos'},
     ]},
     {label:'Em Campo', items:[
+      {id:'campo-equipes',          icon:'📍', label:'Equipes em Campo'},
       {id:'campo-apr',              icon:'⚠️', label:'APR'},
       {id:'campo-turno',            icon:'🔑', label:'Abertura de Turno'},
       {id:'campo-checklist',        icon:'✅', label:'Checklists'},
@@ -28575,7 +28723,7 @@ var SIDEBAR_GROUPS = {
 
 // ── Sidebar dois níveis ───────────────────────────────────────
 var MODULOS_NOMES = {
-  dashboard:'Dashboard', contratos:'Contratos', operacional:'Operacional',
+  dashboard:'Menu', contratos:'Contratos', operacional:'Operacional',
   movimentacao:'Financeiro', campo:'Em Campo',
   relatorios:'Relatórios', cadastros:'Cadastros', plr:'PLR', frotas:'Frotas',
   sesmt:'SESMT', almoxarifado:'Almoxarifado'
@@ -28730,7 +28878,7 @@ function showPage(pageId){
   // (sub-páginas de campo são filhas de pg-campo — escondem junto com o pai)
   ['dashboard','contratos','adiantamentos','operacional','produtividade',
    'verbas','lancamentos','aprovacao','obras','relatorios','cadastros',
-   'campo','diario','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
+   'campo','diario','tma','campo-equipes','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
    'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
    'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
    'obras-projetos','obras-sap','obras-execucao','obras-movSAP','obras-requisicao',
@@ -28840,6 +28988,7 @@ function showPage(pageId){
     });
   }
   else if(pageId==='tma'){ showTMA(); }
+  else if(pageId==='campo-equipes'){ _precisaModulo('diario',function(){ renderCampoEquipes(); }); }
   else if(pageId==='programacao-equipes'){_precisaModulo('diario',function(){ _mostrarProgEquipes(); });}
   else if(pageId&&pageId.indexOf('frotas-')===0){frtInit(pageId);}
   else if(pageId==='campo'){_precisaModulo('obras',function(){renderCampo();});}
