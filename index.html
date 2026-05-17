@@ -1718,9 +1718,6 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
       <span class="ct">📅 Programação de Equipes</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <input type="date" class="inp" id="prog-av-data" style="width:145px" onchange="progRenderQuadro()"/>
-        <select class="inp" id="prog-av-cont" style="width:200px" onchange="progAtualizarPillsTipo();progRenderQuadro()">
-          <option value="">Todos contratos</option>
-        </select>
         <button class="btn btn-pri" onclick="progAutoEscalarTodas()">⚡ Auto-escalar todas</button>
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11">💾 Salvar tudo</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B" title="Verificar colaboradores sem equipe nem status">⚠ Sem escala</button>
@@ -19994,7 +19991,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.5.5',
+  numero: '5.5.7',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -20364,39 +20361,12 @@ function progInit(){
     }
   }
 
-  var selCont = document.getElementById('prog-av-cont');
-  if(selCont){
-    // Somente contratos com modalidade Disponibilidade
-    var contsDisp = _contratosVisiveis().filter(function(c){
-      return (c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
-    });
-    selCont.innerHTML = '<option value="">Todos</option>'
-      + contsDisp.map(function(c){
-          return '<option value="'+c.id+'">'+c.codigo+' — '+c.nome+'</option>';
-        }).join('');
-    // Se só 1 contrato, auto-selecionar e esconder o select
-    if(contsDisp.length===1){
-      selCont.value = contsDisp[0].id;
-      selCont.style.display = 'none';
-      var lbl = document.getElementById('prog-cont-label');
-      if(!lbl){
-        var sp=document.createElement('span');
-        sp.id='prog-cont-label';
-        sp.style.cssText='font-size:13px;font-weight:600;padding:4px 10px;background:#EBF4FD;color:#185FA5;border-radius:6px';
-        sp.textContent=contsDisp[0].codigo+' — '+contsDisp[0].nome;
-        selCont.parentNode.insertBefore(sp,selCont.nextSibling);
-      }
-    } else {
-      selCont.style.display='';
-    }
-  }
-
   var selData = document.getElementById('prog-av-data');
   if(selData) selData.value = _progData;
   progCarregarStatus(_progData);
   progAtualizarPillsTipo();
 
-  // Garantir colaboradores carregados para o contrato selecionado
+  // Garantir colaboradores carregados para contratos de disponibilidade
   if(!DEMO){
     var cids = _contratosVisiveis().filter(function(c){
       return (c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
@@ -20426,7 +20396,8 @@ function progGetData(){
   return (document.getElementById('prog-av-data')||{}).value || _progData;
 }
 function progGetCont(){
-  return (document.getElementById('prog-av-cont')||{}).value || '';
+  // Contrato não filtrado na programação TMA — retorna vazio
+  return '';
 }
 function progGetTipo(){
   return _progTipoFiltro;
@@ -22584,7 +22555,9 @@ function calSalvar(){
 // ══════════════════════════════════════════════════
 // MÓDULO TMA — Dashboard + Programação de Equipes
 // ══════════════════════════════════════════════════
-var _tmaAba = 'dashboard'; // 'dashboard' | 'programacao'
+var _tmaAba     = 'dashboard'; // 'dashboard' | 'programacao'
+var _tmaDataIni = null;        // data início do período
+var _tmaDataFim = null;        // data fim do período
 
 function showTMA(aba){
   _tmaAba = aba || _tmaAba || 'dashboard';
@@ -22619,19 +22592,14 @@ function showTMA(aba){
 }
 
 function renderTMADashboard(){
-  var data  = _progData || dataHojeLocal();
-  var cid   = _progContrato || '';
-  var hoje  = dataHojeLocal();
+  var hoje    = dataHojeLocal();
+  var dataIni = _tmaDataIni || hoje;
+  var dataFim = _tmaDataFim || hoje;
+  if(dataIni > dataFim){ var tmp=dataIni; dataIni=dataFim; dataFim=tmp; }
+  var data = dataIni; // compatibilidade com referências internas
 
-  // ── Equipes do dia ────────────────────────────────
-  var eqsFil = equipes_disp.filter(function(e){
-    return e.status==='Ativo' && (!cid || e.contrato_id===cid);
-  });
-
-  // Composições do dia
-  var compDia = composicao_dia.filter(function(c){
-    return (c.data||'').split('T')[0]===data;
-  });
+  // ── Equipes ────────────────────────────────────
+  var eqsFil = equipes_disp.filter(function(e){ return e.status==='Ativo'; });
 
   function getColabIds(comp){
     var raw=comp.colaborador_ids;
@@ -22639,15 +22607,21 @@ function renderTMADashboard(){
     try{ return JSON.parse(raw||'[]').filter(Boolean); }catch(e){ return []; }
   }
 
-  // Sessões do dia
-  var sessDia = sessoes_disp.filter(function(s){
-    return (s.data||'').split('T')[0]===data && s.login_ts;
+  // Composições no período
+  var compDia = composicao_dia.filter(function(c){
+    var d=(c.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim;
   });
 
-  // Ordens do dia
-  var ordsDia = ordens_db.filter(function(o){
-    return (o.data||'').split('T')[0]===data && o.status!=='cancelada';
+  // Sessões no período
+  var sessDia = sessoes_disp.filter(function(s){
+    var d=(s.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&s.login_ts;
   });
+
+  // Ordens no período
+  var ordsDia = ordens_db.filter(function(o){
+    var d=(o.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&o.status!=='cancelada';
+  });
+
 
   // ── 1. Equipes logadas por tipo ───────────────────
   var logadas = {}; // {tipo: count}
@@ -22659,16 +22633,42 @@ function renderTMADashboard(){
   });
   var totalLogadas = sessDia.length;
 
-  // ── 2. Faltas ─────────────────────────────────────
+  // ── 2. Faltas no período ─────────────────────────
+  // Agregar status de TODOS os dias do período via localStorage
+  var statusPeriodo = {}; // {colabId: {falta:N, folga:N, ferias:N, afastado:N, ...}}
+  var diasPeriodo = [];
+  var dCur = new Date(dataIni+'T12:00:00');
+  var dFim2 = new Date(dataFim+'T12:00:00');
+  while(dCur <= dFim2){
+    var ds = dCur.getFullYear()+'-'+String(dCur.getMonth()+1).padStart(2,'0')+'-'+String(dCur.getDate()).padStart(2,'0');
+    diasPeriodo.push(ds);
+    try{
+      var saved = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
+      var stMap = saved.status || {};
+      Object.keys(stMap).forEach(function(id){
+        if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
+        var st = stMap[id];
+        if(st==='falta')      statusPeriodo[id].falta++;
+        else if(st==='folga') statusPeriodo[id].folga++;
+        else if(st==='ferias') statusPeriodo[id].ferias++;
+        else if(st==='afastado') statusPeriodo[id].afastado++;
+        else if(st!=='disponivel') statusPeriodo[id].outros++;
+      });
+    }catch(e){}
+    dCur.setDate(dCur.getDate()+1);
+  }
+
   var nFaltas = 0;
   var colabsComFalta = [];
-  Object.keys(_progStatus).forEach(function(id){
-    if(_progStatus[id]==='falta'){
-      nFaltas++;
-      var c = colaboradores.find(function(x){return x.id===id;});
-      if(c) colabsComFalta.push(c);
+  Object.keys(statusPeriodo).forEach(function(id){
+    var n = statusPeriodo[id].falta;
+    if(n > 0){
+      nFaltas += n;
+      var col = colaboradores.find(function(x){return x.id===id;});
+      if(col) colabsComFalta.push({nome:col.nome, faltas:n});
     }
   });
+  colabsComFalta.sort(function(a,b){return b.faltas-a.faltas;});
 
   // ── 3. Folguistas trabalhando ─────────────────────
   var calDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
@@ -22692,55 +22692,46 @@ function renderTMADashboard(){
     if(ativos.length===3) nEq3++;
   });
 
-  // ── 5. Equipes com mais de 1 D/AD ────────────────
+  // ── 5. Equipes com mais de 1 motorista D/AD/E na mesma equipe ────
   var nEqDAD = 0;
+  // Agrupa por equipe do dia
+  var porEquipe = {};
   compDia.forEach(function(comp){
-    var ids = getColabIds(comp);
-    var dCount = ids.filter(function(id){
+    var eid = comp.equipe_id;
+    if(!porEquipe[eid]) porEquipe[eid] = [];
+    getColabIds(comp).forEach(function(id){
+      if(porEquipe[eid].indexOf(id)<0) porEquipe[eid].push(id);
+    });
+  });
+  Object.keys(porEquipe).forEach(function(eid){
+    var dCount = porEquipe[eid].filter(function(id){
       var col = colaboradores.find(function(c){return c.id===id;});
       if(!col) return false;
-      var carta = (col.carta||col.tipo_habilitacao||'').toUpperCase();
-      return carta==='D'||carta==='AD'||carta==='C';
+      // Categorias que exigem habilitação profissional pesada
+      var cat = (col.cnh_categoria||col.carta||'').toUpperCase();
+      return cat==='D'||cat==='AD'||cat==='AE'||cat==='E';
     }).length;
     if(dCount > 1) nEqDAD++;
   });
 
-  // ── 6. Status de colaboradores ────────────────────
-  var statusCount = {escalado:0, afastado:0, ferias:0, outros:{}};
+  // ── 6. Status de colaboradores no período ─────────
+  var statusCount = {escalado:0, afastado:0, ferias:0, outros:0};
   var escaladosSet = {};
-  compDia.forEach(function(c){
-    getColabIds(c).forEach(function(id){ escaladosSet[id]=true; });
-  });
+  compDia.forEach(function(c){ getColabIds(c).forEach(function(id){ escaladosSet[id]=true; }); });
   statusCount.escalado = Object.keys(escaladosSet).length;
-
-  Object.keys(_progStatus).forEach(function(id){
-    var st = _progStatus[id];
-    if(st==='afastado')  statusCount.afastado++;
-    else if(st==='ferias') statusCount.ferias++;
-    else if(st!=='disponivel'&&st!=='folga'){
-      statusCount.outros[st] = (statusCount.outros[st]||0)+1;
-    }
+  // Afastados e Férias: contar colaboradores únicos que tiveram esses status no período
+  var afastadosSet={}, feriasSet={};
+  Object.keys(statusPeriodo).forEach(function(id){
+    var sp=statusPeriodo[id];
+    if(sp.afastado>0) afastadosSet[id]=true;
+    if(sp.ferias>0)   feriasSet[id]=true;
+    if(sp.outros>0)   statusCount.outros+=sp.outros;
   });
+  statusCount.afastado = Object.keys(afastadosSet).length;
+  statusCount.ferias   = Object.keys(feriasSet).length;
 
-  // ── 11. Colaboradores com mais faltas ─────────────
-  var faltasPorColab = {};
-  // Agregar faltas de múltiplos dias via localStorage
-  for(var i=0;i<30;i++){
-    var d2 = new Date(); d2.setDate(d2.getDate()-i);
-    var ds = d2.getFullYear()+'-'+String(d2.getMonth()+1).padStart(2,'0')+'-'+String(d2.getDate()).padStart(2,'0');
-    try{
-      var saved = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
-      if(saved.status){
-        Object.keys(saved.status).forEach(function(id){
-          if(saved.status[id]==='falta') faltasPorColab[id]=(faltasPorColab[id]||0)+1;
-        });
-      }
-    }catch(e){}
-  }
-  var topFaltas = Object.keys(faltasPorColab).map(function(id){
-    var col=colaboradores.find(function(c){return c.id===id;})||{nome:'?'};
-    return {nome:col.nome, faltas:faltasPorColab[id]};
-  }).sort(function(a,b){return b.faltas-a.faltas;}).slice(0,10);
+  // ── 11. Colaboradores com mais faltas (já calculado acima) ───
+  var topFaltas = colabsComFalta.slice(0,10);
 
   // ── 12/13. Equipes por tempo logado ───────────────
   var tempoEqs = sessDia.map(function(s){
@@ -22785,14 +22776,17 @@ function renderTMADashboard(){
   var el = document.getElementById('tma-dash-inner');
   if(!el) return;
 
-  // Filtros do dashboard
+  var dataIni = _tmaDataIni || data;
+  var dataFim = _tmaDataFim || data;
+
+  // Filtros do dashboard — intervalo de datas, sem filtro de contrato
   var filtroHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">'
-    +'<label style="font-size:11px;font-weight:500">Data:</label>'
-    +'<input type="date" class="inp" id="tma-dash-data" value="'+data+'" style="width:145px" onchange="tmaDashSetData(this.value)"/>'
-    +(contratos.length?'<select class="inp" id="tma-dash-cont" style="width:200px" onchange="tmaDashSetCont(this.value)">'
-      +'<option value="">Todos os contratos</option>'
-      +contratos.map(function(c){return '<option value="'+c.id+'"'+(cid===c.id?' selected':'')+'>'+escHtml(c.codigo||c.nome)+'</option>';}).join('')
-      +'</select>':'')
+    +'<label style="font-size:11px;font-weight:600;color:#555">Período:</label>'
+    +'<div style="display:flex;align-items:center;gap:6px">'
+    +'<input type="date" class="inp" id="tma-dash-ini" value="'+dataIni+'" style="width:145px" onchange="_tmaDataIni=this.value;renderTMADashboard()"/>'
+    +'<span style="font-size:12px;color:#888">até</span>'
+    +'<input type="date" class="inp" id="tma-dash-fim" value="'+dataFim+'" style="width:145px" onchange="_tmaDataFim=this.value;renderTMADashboard()"/>'
+    +'</div>'
     +'<button class="btn" onclick="renderTMADashboard()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>'
     +'</div>';
 
@@ -22828,15 +22822,13 @@ function renderTMADashboard(){
       {icon:'✅',label:'Escalados',val:statusCount.escalado,cor:'#3B6D11',bg:'#EAF3DE'},
       {icon:'🛌',label:'Afastados', val:statusCount.afastado,cor:'#555',bg:'#f5f5f3'},
       {icon:'🌴',label:'Férias',    val:statusCount.ferias, cor:'#185FA5',bg:'#E6F1FB'},
-      {icon:'⚠',label:'Outros',    val:Object.values(statusCount.outros).reduce(function(s,v){return s+v;},0),cor:'#854F0B',bg:'#FEF3E2'},
+      {icon:'⚠',label:'Outros',    val:statusCount.outros||0, cor:'#854F0B',bg:'#FEF3E2'},
     ].map(function(x){
       return '<div style="background:'+x.bg+';border-radius:8px;padding:8px 12px;text-align:center">'
         +'<div style="font-size:20px;font-weight:700;color:'+x.cor+'">'+x.val+'</div>'
         +'<div style="font-size:11px;color:#555">'+x.icon+' '+x.label+'</div></div>';
     }).join('')
-    +'</div>'
-    +(outrosLabel!=='—'?'<div style="font-size:11px;color:#888;padding:.5rem .75rem;border-top:.5px solid #f0efe8">Outros: '+outrosLabel+'</div>':'')
-    +'</div>';
+    +'</div></div>';
 
   // Rankings
   var colabFaltasHtml = tabelaRanking(
