@@ -1686,6 +1686,24 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
 </div>
 
 <!-- PROGRAMACAO-EQUIPES -->
+<div id="pg-tma" class="hidden">
+  <!-- Tab Bar TMA -->
+  <div style="display:flex;gap:0;border-bottom:1.5px solid #e0dfd8;margin-bottom:1rem">
+    <button id="tma-tab-dashboard"    onclick="showTMA('dashboard')"    style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18">📊 Dashboard TMA</button>
+    <button id="tma-tab-programacao"  onclick="showTMA('programacao')"  style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">📅 Programação de Equipes</button>
+  </div>
+
+  <!-- Painel Dashboard -->
+  <div id="tma-painel-dashboard">
+    <div id="tma-dash-inner"></div>
+  </div>
+
+  <!-- Painel Programação (reutiliza o conteúdo existente) -->
+  <div id="tma-painel-programacao" class="hidden">
+    <div id="tma-prog-container"></div>
+  </div>
+</div>
+
 <div id="pg-programacao-equipes" class="hidden">
 
   <!-- Tab Bar -->
@@ -19976,7 +19994,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.5.4',
+  numero: '5.5.5',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -22562,6 +22580,320 @@ function calSalvar(){
   p.then(function(){ progShowToast('✅ Calendário 2026 salvo — '+registros.length+' dias.'); })
    .catch(function(e){ progShowToast('⚠ Erro ao salvar: '+e.message); });
 }
+
+// ══════════════════════════════════════════════════
+// MÓDULO TMA — Dashboard + Programação de Equipes
+// ══════════════════════════════════════════════════
+var _tmaAba = 'dashboard'; // 'dashboard' | 'programacao'
+
+function showTMA(aba){
+  _tmaAba = aba || _tmaAba || 'dashboard';
+  var pg = document.getElementById('pg-tma');
+  if(!pg) return;
+  pg.classList.remove('hidden');
+  // Atualizar tabs
+  ['dashboard','programacao'].forEach(function(a){
+    var btn = document.getElementById('tma-tab-'+a);
+    if(btn){
+      btn.style.borderBottomColor = a===_tmaAba ? '#1a1a18' : 'transparent';
+      btn.style.color             = a===_tmaAba ? '#1a1a18' : '#888';
+    }
+    var pn = document.getElementById('tma-painel-'+a);
+    if(pn) pn.classList[a===_tmaAba?'remove':'add']('hidden');
+  });
+  if(_tmaAba==='dashboard'){
+    renderTMADashboard();
+  }
+  if(_tmaAba==='programacao'){
+    // Mostrar pg-programacao-equipes dentro do painel TMA
+    var container = document.getElementById('tma-painel-programacao');
+    var pgProg    = document.getElementById('pg-programacao-equipes');
+    if(container && pgProg){
+      // Mover pg-programacao-equipes para dentro do painel (sem clonar)
+      pgProg.classList.remove('hidden');
+      pgProg.style.display='block';
+      container.appendChild(pgProg);
+    }
+    renderProgEquipes();
+  }
+}
+
+function renderTMADashboard(){
+  var data  = _progData || dataHojeLocal();
+  var cid   = _progContrato || '';
+  var hoje  = dataHojeLocal();
+
+  // ── Equipes do dia ────────────────────────────────
+  var eqsFil = equipes_disp.filter(function(e){
+    return e.status==='Ativo' && (!cid || e.contrato_id===cid);
+  });
+
+  // Composições do dia
+  var compDia = composicao_dia.filter(function(c){
+    return (c.data||'').split('T')[0]===data;
+  });
+
+  function getColabIds(comp){
+    var raw=comp.colaborador_ids;
+    if(Array.isArray(raw)) return raw.filter(Boolean);
+    try{ return JSON.parse(raw||'[]').filter(Boolean); }catch(e){ return []; }
+  }
+
+  // Sessões do dia
+  var sessDia = sessoes_disp.filter(function(s){
+    return (s.data||'').split('T')[0]===data && s.login_ts;
+  });
+
+  // Ordens do dia
+  var ordsDia = ordens_db.filter(function(o){
+    return (o.data||'').split('T')[0]===data && o.status!=='cancelada';
+  });
+
+  // ── 1. Equipes logadas por tipo ───────────────────
+  var logadas = {}; // {tipo: count}
+  sessDia.forEach(function(s){
+    var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;});
+    if(!eq) return;
+    var tipo = (tipos_equipe.find(function(t){return t.id===eq.tipo_id;})||{}).nome || eq.tipo || 'Outros';
+    logadas[tipo] = (logadas[tipo]||0) + 1;
+  });
+  var totalLogadas = sessDia.length;
+
+  // ── 2. Faltas ─────────────────────────────────────
+  var nFaltas = 0;
+  var colabsComFalta = [];
+  Object.keys(_progStatus).forEach(function(id){
+    if(_progStatus[id]==='falta'){
+      nFaltas++;
+      var c = colaboradores.find(function(x){return x.id===id;});
+      if(c) colabsComFalta.push(c);
+    }
+  });
+
+  // ── 3. Folguistas trabalhando ─────────────────────
+  var calDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  var nFolguistas = 0;
+  compDia.forEach(function(comp){
+    getColabIds(comp).forEach(function(id){
+      var col = colaboradores.find(function(c){return c.id===id;});
+      if(!col) return;
+      var st = _progStatus[id]||'disponivel';
+      var folgaManual = st==='folga';
+      var folgaCal    = calDia && col.cor_escala && col.cor_escala===calDia && st==='disponivel';
+      if(folgaManual || folgaCal) nFolguistas++;
+    });
+  });
+
+  // ── 4. Equipes com 3 colaboradores ───────────────
+  var nEq3 = 0;
+  compDia.forEach(function(comp){
+    var ids = getColabIds(comp);
+    var ativos = ids.filter(function(id){ return (_progStatus[id]||'disponivel')==='disponivel'; });
+    if(ativos.length===3) nEq3++;
+  });
+
+  // ── 5. Equipes com mais de 1 D/AD ────────────────
+  var nEqDAD = 0;
+  compDia.forEach(function(comp){
+    var ids = getColabIds(comp);
+    var dCount = ids.filter(function(id){
+      var col = colaboradores.find(function(c){return c.id===id;});
+      if(!col) return false;
+      var carta = (col.carta||col.tipo_habilitacao||'').toUpperCase();
+      return carta==='D'||carta==='AD'||carta==='C';
+    }).length;
+    if(dCount > 1) nEqDAD++;
+  });
+
+  // ── 6. Status de colaboradores ────────────────────
+  var statusCount = {escalado:0, afastado:0, ferias:0, outros:{}};
+  var escaladosSet = {};
+  compDia.forEach(function(c){
+    getColabIds(c).forEach(function(id){ escaladosSet[id]=true; });
+  });
+  statusCount.escalado = Object.keys(escaladosSet).length;
+
+  Object.keys(_progStatus).forEach(function(id){
+    var st = _progStatus[id];
+    if(st==='afastado')  statusCount.afastado++;
+    else if(st==='ferias') statusCount.ferias++;
+    else if(st!=='disponivel'&&st!=='folga'){
+      statusCount.outros[st] = (statusCount.outros[st]||0)+1;
+    }
+  });
+
+  // ── 11. Colaboradores com mais faltas ─────────────
+  var faltasPorColab = {};
+  // Agregar faltas de múltiplos dias via localStorage
+  for(var i=0;i<30;i++){
+    var d2 = new Date(); d2.setDate(d2.getDate()-i);
+    var ds = d2.getFullYear()+'-'+String(d2.getMonth()+1).padStart(2,'0')+'-'+String(d2.getDate()).padStart(2,'0');
+    try{
+      var saved = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
+      if(saved.status){
+        Object.keys(saved.status).forEach(function(id){
+          if(saved.status[id]==='falta') faltasPorColab[id]=(faltasPorColab[id]||0)+1;
+        });
+      }
+    }catch(e){}
+  }
+  var topFaltas = Object.keys(faltasPorColab).map(function(id){
+    var col=colaboradores.find(function(c){return c.id===id;})||{nome:'?'};
+    return {nome:col.nome, faltas:faltasPorColab[id]};
+  }).sort(function(a,b){return b.faltas-a.faltas;}).slice(0,10);
+
+  // ── 12/13. Equipes por tempo logado ───────────────
+  var tempoEqs = sessDia.map(function(s){
+    var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;})||{codigo:'?'};
+    var min = s.minutos_faturados || 0;
+    if(!min && s.login_ts && s.logout_ts){
+      min = Math.round((new Date(s.logout_ts)-new Date(s.login_ts))/60000);
+    } else if(!min && s.login_ts){
+      min = Math.round((new Date()-new Date(s.login_ts))/60000);
+    }
+    return {eq:eq.codigo||eq.nome||'?', min:min, logada:!s.logout_ts};
+  }).sort(function(a,b){return b.min-a.min;});
+
+  // ── 14/15. Equipes por OS atendidas ──────────────
+  var osEqs = {};
+  ordsDia.forEach(function(o){
+    osEqs[o.equipe_id] = (osEqs[o.equipe_id]||0)+1;
+  });
+  var topOS = Object.keys(osEqs).map(function(eid){
+    var eq=equipes_disp.find(function(e){return e.id===eid;})||{codigo:'?'};
+    return {eq:eq.codigo||eq.nome||'?', os:osEqs[eid]};
+  }).sort(function(a,b){return b.os-a.os;});
+
+  // ═════════ RENDERIZAR ═════════════════════════════
+  function card(icon,label,val,cor,sub){
+    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.85rem;display:flex;flex-direction:column;gap:3px">'
+      +'<div style="font-size:18px">'+icon+'</div>'
+      +'<div style="font-size:11px;color:#888">'+label+'</div>'
+      +'<div style="font-size:22px;font-weight:700;color:'+(cor||'#1a1a18')+'">'+val+'</div>'
+      +(sub?'<div style="font-size:10px;color:#aaa">'+sub+'</div>':'')
+      +'</div>';
+  }
+
+  function tabelaRanking(titulo,linhas,cols){
+    return '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">'+titulo+'</span></div>'
+      +'<table class="tbl" style="font-size:12px"><thead><tr>'
+      +cols.map(function(c){return '<th>'+c+'</th>';}).join('')
+      +'</tr></thead><tbody>'
+      +linhas+'</tbody></table></div>';
+  }
+
+  var el = document.getElementById('tma-dash-inner');
+  if(!el) return;
+
+  // Filtros do dashboard
+  var filtroHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">'
+    +'<label style="font-size:11px;font-weight:500">Data:</label>'
+    +'<input type="date" class="inp" id="tma-dash-data" value="'+data+'" style="width:145px" onchange="tmaDashSetData(this.value)"/>'
+    +(contratos.length?'<select class="inp" id="tma-dash-cont" style="width:200px" onchange="tmaDashSetCont(this.value)">'
+      +'<option value="">Todos os contratos</option>'
+      +contratos.map(function(c){return '<option value="'+c.id+'"'+(cid===c.id?' selected':'')+'>'+escHtml(c.codigo||c.nome)+'</option>';}).join('')
+      +'</select>':'')
+    +'<button class="btn" onclick="renderTMADashboard()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>'
+    +'</div>';
+
+  // Cards gerais
+  var cardsHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1rem">'
+    +card('🚌','Equipes logadas hoje',totalLogadas,'#185FA5','de '+eqsFil.length+' ativas')
+    +card('❌','Faltas',nFaltas,nFaltas>0?'#A32D2D':'#3B6D11','colaboradores')
+    +card('🔄','Folguistas trabalhando',nFolguistas,nFolguistas>0?'#854F0B':'#3B6D11','hora extra')
+    +card('👥','Equipes com 3 colabs',nEq3,'#533AB7','no dia')
+    +card('🚗','Equipes com 2+ D/AD',nEqDAD,nEqDAD>0?'#854F0B':'#3B6D11','atenção')
+    +'</div>';
+
+  // Equipes logadas por tipo
+  var tiposHtml = Object.keys(logadas).length
+    ? '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">🚌 Equipes logadas por tipo</span></div>'
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:.5rem">'
+      +Object.keys(logadas).map(function(t){
+        return '<div style="background:#E6F1FB;border-radius:8px;padding:8px 12px;text-align:center">'
+          +'<div style="font-size:18px;font-weight:700;color:#185FA5">'+logadas[t]+'</div>'
+          +'<div style="font-size:11px;color:#555">'+escHtml(t)+'</div></div>';
+      }).join('')
+      +'</div></div>'
+    : '<div class="card" style="margin-bottom:.75rem;padding:1rem;text-align:center;color:#aaa;font-size:12px">Nenhuma equipe logada em '+fmtD(data)+'</div>';
+
+  // Status TMA
+  var outrosLabel = Object.keys(statusCount.outros).map(function(k){
+    return (PROG_STATUS[k]||{label:k}).label+': '+statusCount.outros[k];
+  }).join(' · ')||'—';
+
+  var statusHtml = '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">👷 Status dos Colaboradores</span></div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;padding:.5rem">'
+    +[
+      {icon:'✅',label:'Escalados',val:statusCount.escalado,cor:'#3B6D11',bg:'#EAF3DE'},
+      {icon:'🛌',label:'Afastados', val:statusCount.afastado,cor:'#555',bg:'#f5f5f3'},
+      {icon:'🌴',label:'Férias',    val:statusCount.ferias, cor:'#185FA5',bg:'#E6F1FB'},
+      {icon:'⚠',label:'Outros',    val:Object.values(statusCount.outros).reduce(function(s,v){return s+v;},0),cor:'#854F0B',bg:'#FEF3E2'},
+    ].map(function(x){
+      return '<div style="background:'+x.bg+';border-radius:8px;padding:8px 12px;text-align:center">'
+        +'<div style="font-size:20px;font-weight:700;color:'+x.cor+'">'+x.val+'</div>'
+        +'<div style="font-size:11px;color:#555">'+x.icon+' '+x.label+'</div></div>';
+    }).join('')
+    +'</div>'
+    +(outrosLabel!=='—'?'<div style="font-size:11px;color:#888;padding:.5rem .75rem;border-top:.5px solid #f0efe8">Outros: '+outrosLabel+'</div>':'')
+    +'</div>';
+
+  // Rankings
+  var colabFaltasHtml = tabelaRanking(
+    '🚨 Colaboradores com mais faltas (30 dias)',
+    topFaltas.length
+      ? topFaltas.map(function(x,i){
+          return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
+            +'<td style="font-weight:500">'+escHtml(x.nome)+'</td>'
+            +'<td style="text-align:center;font-weight:700;color:#A32D2D">'+x.faltas+'</td></tr>';
+        }).join('')
+      : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhuma falta registrada nos últimos 30 dias</td></tr>',
+    ['#','Colaborador','Faltas']
+  );
+
+  var tempo5top = tempoEqs.slice(0,5);
+  var tempo5bot = tempoEqs.slice().reverse().slice(0,5);
+  function fmtMin(min){ return Math.floor(min/60)+'h'+String(min%60).padStart(2,'0')+'m'; }
+
+  var linhasTempo = function(arr){
+    return arr.length
+      ? arr.map(function(x,i){
+          return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
+            +'<td style="font-family:monospace;font-weight:600">'+escHtml(x.eq)+'</td>'
+            +'<td style="text-align:center;font-weight:700;color:#185FA5">'+fmtMin(x.min)+'</td>'
+            +(x.logada?'<td><span style="font-size:10px;color:#3B6D11">🟢 Em campo</span></td>':'<td></td>')
+            +'</tr>';
+        }).join('')
+      : '<tr><td colspan="4" style="color:#aaa;text-align:center;padding:1rem">Nenhuma sessão registrada</td></tr>';
+  };
+
+  var linhasOS = function(arr){
+    return arr.length
+      ? arr.map(function(x,i){
+          return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
+            +'<td style="font-family:monospace;font-weight:600">'+escHtml(x.eq)+'</td>'
+            +'<td style="text-align:center;font-weight:700;color:#533AB7">'+x.os+'</td></tr>';
+        }).join('')
+      : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhuma OS registrada</td></tr>';
+  };
+
+  var topOS10  = topOS.slice(0,10);
+  var botOS10  = topOS.slice().reverse().slice(0,10);
+
+  el.innerHTML = filtroHtml + cardsHtml + tiposHtml + statusHtml
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">'
+    +tabelaRanking('⏱ Top 5 — Maior tempo logado', linhasTempo(tempo5top), ['#','Equipe','Tempo',''])
+    +tabelaRanking('⏱ Bottom 5 — Menor tempo logado',linhasTempo(tempo5bot),['#','Equipe','Tempo',''])
+    +'</div>'
+    +colabFaltasHtml
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">'
+    +tabelaRanking('📋 Top 10 — Mais OS atendidas',    linhasOS(topOS10),  ['#','Equipe','OS'])
+    +tabelaRanking('📋 Bottom 10 — Menos OS atendidas', linhasOS(botOS10), ['#','Equipe','OS'])
+    +'</div>';
+}
+
+function tmaDashSetData(val){ _progData=val; renderTMADashboard(); }
+function tmaDashSetCont(val){ _progContrato=val; renderTMADashboard(); }
 
 function renderProgEquipes(){
   var cid=(document.getElementById('fil-prog-cont')||{}).value||'';
@@ -27832,7 +28164,7 @@ var MAIN_CONFIG = {
   ]},
   operacional: {label:'Operacional', subs:[
     {id:'operacional-prod',       label:'📊 Produção Diária / COD X'},
-    {id:'programacao-equipes',    label:'👥 Programação de Equipes'},
+    {id:'tma',                    label:'🚌 TMA'},
     {id:'programacao-projetos',   label:'🗂 Programação de Projetos'},
     {id:'obras-projetos',         label:'📋 Projetos de Obras'},
     {id:'obras-execucao',         label:'🔨 Execução de Obras'},
@@ -27909,7 +28241,7 @@ var ALL_PAGES = ['dashboard','contratos-lista','adiantamentos',
   'operacional-prod','metas','verbas',
   'lancamentos','aprovacao',
   'obras-projetos','obras-sap','obras-execucao','obras-movSAP',
-  'relatorios','cadastros','campo','diario','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
+  'relatorios','cadastros','campo','diario','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
   'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','obras-requisicao','obras-medicao','plr','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
@@ -28179,7 +28511,7 @@ function showPage(pageId){
   // (sub-páginas de campo são filhas de pg-campo — escondem junto com o pai)
   ['dashboard','contratos','adiantamentos','operacional','produtividade',
    'verbas','lancamentos','aprovacao','obras','relatorios','cadastros',
-   'campo','diario','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
+   'campo','diario','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
    'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
    'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
    'obras-projetos','obras-sap','obras-execucao','obras-movSAP','obras-requisicao',
@@ -28288,7 +28620,8 @@ function showPage(pageId){
       renderSesmtAptidao();
     });
   }
-  else if(pageId==='plr'){plrInit();}
+  else if(pageId==='tma'){ showTMA(); }
+  else if(pageId==='programacao-equipes'){ showTMA('programacao'); }
   else if(pageId&&pageId.indexOf('frotas-')===0){frtInit(pageId);}
   else if(pageId==='campo'){_precisaModulo('obras',function(){renderCampo();});}
   else if(pageId==='obras-projetos'){_precisaModulo('obras',function(){popularFiltrosObras();projMostrarTab('tma');});}
