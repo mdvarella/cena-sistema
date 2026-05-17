@@ -7428,7 +7428,9 @@ function cadNovoCurso(id){
       var selCli=document.getElementById('cc-cli');
       var contr_ids=selContr?Array.from(selContr.selectedOptions||[]).map(function(o){return o.value;}).filter(Boolean):[];
       var cli_ids=selCli?Array.from(selCli.selectedOptions||[]).map(function(o){return o.value;}).filter(Boolean):[];
-      var dados={
+      var cli_ids=selCli?Array.from(selCli.selectedOptions||[]).map(function(o){return o.value;}).filter(Boolean):[];
+      // Dados para o banco (sem campos uuid[] que causam erro no REST anon)
+      var dadosDB={
         nome:nome, sigla:(document.getElementById('cc-sigla')||{}).value||'',
         categoria:categ, finalidade:(document.getElementById('cc-fin')||{}).value||'',
         carga_horaria:parseFloat((document.getElementById('cc-ch')||{}).value)||8,
@@ -7438,11 +7440,9 @@ function cadNovoCurso(id){
         dias_tolerancia:parseInt((document.getElementById('cc-tol-dias')||{}).value)||0,
         modalidade:(document.getElementById('cc-mod')||{}).value||'Presencial',
         norma_relacionada:(document.getElementById('cc-norma')||{}).value||'',
-        prerequisito_id:(document.getElementById('cc-pre')||{}).value||null,
         criticidade:(document.getElementById('cc-crit')||{}).value||'Média',
         status:(document.getElementById('cc-status')||{}).value||'Ativo',
         observacoes:(document.getElementById('cc-obs')||{}).value||'',
-        contratos_ids:contr_ids, clientes_ids:cli_ids,
         obrigatorio:!!(document.getElementById('cc-obrig')||{}).checked,
         validade_controlada:!!(document.getElementById('cc-valctrl')||{}).checked,
         necessita_reciclagem:!!(document.getElementById('cc-recicl')||{}).checked,
@@ -7453,18 +7453,29 @@ function cadNovoCurso(id){
         bloqueia_mobilizacao:!!(document.getElementById('cc-bmob')||{}).checked,
         updated_at:new Date().toISOString()
       };
+      // Dados locais (inclui arrays para uso em memória)
+      var dadosLocal=Object.assign({},dadosDB,{contratos_ids:contr_ids,clientes_ids:cli_ids});
       if(isNew){
-        dados.id=Date.now().toString();
-        dados.created_at=dados.updated_at;
-        _cad_cursos.push(dados);
-        if(!DEMO)sbInsert('sesmt_cursos',_semId(dados));
+        var idLocal='loc'+Date.now();
+        dadosLocal.id=idLocal;
+        dadosDB.created_at=dadosLocal.created_at=dadosDB.updated_at;
+        _cad_cursos.push(dadosLocal);
+        if(!DEMO){
+          sbInsert('sesmt_cursos',dadosDB).then(function(res){
+            // Substituir id local pelo UUID real do banco
+            if(res&&res[0]&&res[0].id){
+              var idx2=_cad_cursos.findIndex(function(x){return x.id===idLocal;});
+              if(idx2>=0)_cad_cursos[idx2].id=res[0].id;
+            }
+          });
+        }
       } else {
         var idx=_cad_cursos.findIndex(function(x){return x.id===id;});
-        if(idx>=0)_cad_cursos[idx]=Object.assign({},c,dados);
-        if(!DEMO)sbUpdate('sesmt_cursos',dados,'id=eq.'+id);
+        if(idx>=0)_cad_cursos[idx]=Object.assign({},c,dadosLocal);
+        if(!DEMO)sbUpdate('sesmt_cursos',dadosDB,'id=eq.'+id);
       }
       closeModal(); cadRenderCursos();
-      progShowToast('✅ Curso '+(isNew?'criado':'atualizado')+': '+dados.nome);
+      progShowToast('✅ Curso '+(isNew?'criado':'atualizado')+': '+dadosDB.nome);
     };
   },50);
 }
@@ -17591,10 +17602,17 @@ function wlHandleFiles(files){
     // Outros formatos: base64
     var reader = new FileReader();
     reader.onload = function(ev){
-      _wlArquivos.push({nome:f.name,tipo:f.type||'application/octet-stream',tamanho:f.size,base64:ev.target.result.split(',')[1],dataUrl:ev.target.result});
+      // Detectar tipo por MIME ou extensão (fallback para quando browser não detecta)
+      var tipoFinal = f.type;
+      if(!tipoFinal || tipoFinal === 'application/octet-stream'){
+        var ext = (f.name||'').split('.').pop().toLowerCase();
+        var mimeMap = {jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',gif:'image/gif',webp:'image/webp',bmp:'image/bmp',tif:'image/tiff',tiff:'image/tiff',pdf:'application/pdf'};
+        tipoFinal = mimeMap[ext] || 'application/octet-stream';
+      }
+      _wlArquivos.push({nome:f.name, tipo:tipoFinal, tamanho:f.size, base64:ev.target.result.split(',')[1], dataUrl:ev.target.result});
       wlRenderFilesList();
       var btn=document.getElementById('wl-btn-analisar');
-      if(btn)btn.style.display='';
+      if(btn) btn.style.display='';
     };
     reader.readAsDataURL(f);
   });
@@ -17652,13 +17670,23 @@ function wlAnalisarIA(){
   // Adicionar cada arquivo como bloco de imagem, documento ou texto DXF
   var promises = [];
   _wlArquivos.forEach(function(a){
-    if(a.tipo === 'dxf'){
+    var nomeL = (a.nome||'').toLowerCase();
+    var isImage = a.tipo.includes('image') || nomeL.match(/\.(jpe?g|jpg|png|gif|webp|bmp|tif?f)$/);
+    var isPDF   = a.tipo.includes('pdf')   || nomeL.match(/\.pdf$/);
+
+    if(a.tipo === 'dxf' || nomeL.match(/\.dxf$/)){
       // DXF: incluir como texto estruturado
       dxfTexto += a.dxfPreview + '\n';
-    } else if(a.tipo.includes('image')){
-      contentBlocks.push({type:'image',source:{type:'base64',media_type:a.tipo,data:a.base64}});
-    } else if(a.tipo.includes('pdf') || a.nome.match(/\.pdf$/i)){
-      contentBlocks.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:a.base64}});
+    } else if(isImage && a.base64){
+      // Garantir media_type correto
+      var mime = a.tipo.includes('image') ? a.tipo
+        : nomeL.match(/\.png$/) ? 'image/png'
+        : nomeL.match(/\.gif$/) ? 'image/gif'
+        : nomeL.match(/\.webp$/) ? 'image/webp'
+        : 'image/jpeg';
+      contentBlocks.push({type:'image', source:{type:'base64', media_type:mime, data:a.base64}});
+    } else if(isPDF && a.base64){
+      contentBlocks.push({type:'document', source:{type:'base64', media_type:'application/pdf', data:a.base64}});
     }
   });
 
@@ -19908,7 +19936,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.4.2',
+  numero: '5.4.4',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
