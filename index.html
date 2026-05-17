@@ -19991,7 +19991,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.6.2',
+  numero: '5.6.3',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -29532,7 +29532,182 @@ var _pp = {
 function progProjGetData(){ return (document.getElementById('pp-data')||{}).value || _pp.data; }
 function progProjGetCid(){  return (document.getElementById('pp-cont')||{}).value || ''; }
 
+// ── Dashboard Programação de Projetos ────────────────────────
+var _ppAba = 'programacao';
+
+function ppSetAba(aba){
+  _ppAba = aba;
+  ['dashboard','programacao'].forEach(function(a){
+    var btn = document.getElementById('pp-tab-'+a);
+    var pnl = document.getElementById('pp-painel-'+a);
+    if(btn){
+      btn.style.borderBottomColor = a===aba ? '#1a1a18' : 'transparent';
+      btn.style.color             = a===aba ? '#1a1a18' : '#888';
+    }
+    if(pnl) pnl.classList[a===aba ? 'remove' : 'add']('hidden');
+  });
+  if(aba==='dashboard') ppRenderDashboard();
+}
+
+function ppRenderDashboard(){
+  var el = document.getElementById('pp-dash-inner'); if(!el) return;
+  var hoje    = dataHojeLocal();
+  var dataIni = (document.getElementById('pp-dash-ini')||{}).value || hoje;
+  var dataFim = (document.getElementById('pp-dash-fim')||{}).value || hoje;
+  if(dataIni > dataFim){ var t=dataIni; dataIni=dataFim; dataFim=t; }
+
+  // Contratos de Projetos (excluir Disponibilidade/TMA)
+  var contsProj = contratos.filter(function(c){
+    return !(c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
+  }).sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');});
+
+  // Status no período — ler localStorage para cada dia
+  var statusPor = {}; // {cid: {colabId: {falta:N,folga:N,ferias:N,escalado:N,outros:N,disponivel:N}}}
+  var d = new Date(dataIni+'T12:00:00'), dF = new Date(dataFim+'T12:00:00');
+  while(d <= dF){
+    var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    try{
+      var sv = JSON.parse(localStorage.getItem('pp_status_'+ds)||'{}');
+      Object.keys(sv).forEach(function(id){
+        var col = colaboradores.find(function(c){return c.id===id;}); if(!col) return;
+        var cid = col.contrato_id||'sem_cont';
+        if(!statusPor[cid]) statusPor[cid]={};
+        if(!statusPor[cid][id]) statusPor[cid][id]={falta:0,folga:0,ferias:0,escalado:0,outros:0,disponivel:0};
+        var st = sv[id];
+        if(st==='falta')         statusPor[cid][id].falta++;
+        else if(st==='folga')    statusPor[cid][id].folga++;
+        else if(st==='ferias')   statusPor[cid][id].ferias++;
+        else if(st==='disponivel') statusPor[cid][id].disponivel++;
+        else                     statusPor[cid][id].outros++;
+      });
+    }catch(e){}
+    d.setDate(d.getDate()+1);
+  }
+
+  // Composições no período
+  var compsPeríodo = composicao_dia.filter(function(c){
+    var dd=(c.data||'').split('T')[0]; return dd>=dataIni&&dd<=dataFim;
+  });
+
+  // Sessões no campo no período
+  var sessPer = sessoes_disp.filter(function(s){
+    var dd=(s.data||'').split('T')[0]; return dd>=dataIni&&dd<=dataFim&&s.login_ts;
+  });
+
+  // ── Montar linha por contrato ──
+  var filtroHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">'
+    +'<label style="font-size:11px;font-weight:600;color:#555">Período:</label>'
+    +'<input type="date" class="inp" id="pp-dash-ini" value="'+dataIni+'" style="width:145px" onchange="ppRenderDashboard()"/>'
+    +'<span style="font-size:12px;color:#888">até</span>'
+    +'<input type="date" class="inp" id="pp-dash-fim" value="'+dataFim+'" style="width:145px" onchange="ppRenderDashboard()"/>'
+    +'<button class="btn" onclick="ppRenderDashboard()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>'
+    +'</div>';
+
+  if(!contsProj.length){
+    el.innerHTML = filtroHtml+'<div style="padding:2rem;text-align:center;color:#aaa">Nenhum contrato de projetos encontrado.</div>';
+    return;
+  }
+
+  var rows = contsProj.map(function(cont){
+    var cid = cont.id;
+
+    // Equipes deste contrato
+    var eqs = equipes.filter(function(e){return e.contrato_id===cid&&e.status!=='Inativo';});
+    var qtdEquipes = eqs.length;
+
+    // Equipes programadas (com composição no período)
+    var eqsComComp = new Set(compsPeríodo.filter(function(c){
+      var eq = equipes.find(function(e){return e.id===c.equipe_id;});
+      return eq && eq.contrato_id===cid;
+    }).map(function(c){return c.equipe_id;}));
+    var qtdProgramadas = eqsComComp.size;
+
+    // Colaboradores do contrato
+    var colabs = colaboradores.filter(function(c){return c.contrato_id===cid&&c.ativo!==false;});
+    var qtdColabs = colabs.length;
+
+    // Status agregados do período (via localStorage)
+    var stCont = statusPor[cid]||{};
+    var totFalta=0, totFolga=0, totFerias=0, totEscalado=0, totOutros=0;
+    Object.keys(stCont).forEach(function(id){
+      var s=stCont[id];
+      totFalta    += s.falta;
+      totFolga    += s.folga;
+      totFerias   += s.ferias;
+      totEscalado += s.disponivel; // disponível = escalado (no quadro está alocado)
+      totOutros   += s.outros;
+    });
+    // Escalados = colaboradores com composição no período
+    var escaladosSet = new Set();
+    compsPeríodo.forEach(function(comp){
+      var eq = equipes.find(function(e){return e.id===comp.equipe_id;});
+      if(!eq||eq.contrato_id!==cid) return;
+      var ids = parseColabIds(comp.colaborador_ids);
+      ids.forEach(function(id){escaladosSet.add(id);});
+    });
+    var qtdEscalado = escaladosSet.size;
+
+    // Em campo = sessões ativas do período para equipes deste contrato
+    var qtdCampo = sessPer.filter(function(s){
+      var eq = equipes.find(function(e){return e.id===s.equipe_id;});
+      return eq && eq.contrato_id===cid;
+    }).length;
+
+    return {
+      nome: escHtml(cont.codigo||cont.nome||'—'),
+      qtdEquipes, qtdProgramadas, qtdColabs,
+      totFalta, totFolga, totFerias, qtdEscalado, totOutros, qtdCampo
+    };
+  });
+
+  var tabelaHtml = '<div style="overflow-x:auto"><table class="tbl" style="font-size:12px;min-width:800px">'
+    +'<thead><tr style="background:#1a1a18">'
+    +'<th style="color:#fff;text-align:left;padding:8px 10px">Contrato</th>'
+    +'<th style="color:#fff;text-align:center">Equipes</th>'
+    +'<th style="color:#fff;text-align:center">Programadas</th>'
+    +'<th style="color:#fff;text-align:center">Colaboradores</th>'
+    +'<th style="color:#A32D2D;background:#2a0808;text-align:center">Faltas</th>'
+    +'<th style="color:#fff;text-align:center">Folgas</th>'
+    +'<th style="color:#3B6D11;background:#0a1a08;text-align:center">Escalados</th>'
+    +'<th style="color:#185FA5;background:#081528;text-align:center">Férias</th>'
+    +'<th style="color:#854F0B;background:#1a100a;text-align:center">Outros</th>'
+    +'<th style="color:#533AB7;background:#100a2a;text-align:center">Em Campo</th>'
+    +'</tr></thead><tbody>'
+    +rows.map(function(r, i){
+      var bg = i%2===0 ? '#fff' : '#f9f9f7';
+      var pct = r.qtdEquipes ? Math.round(r.qtdProgramadas/r.qtdEquipes*100) : 0;
+      var corPct = pct>=80?'#3B6D11':pct>=50?'#854F0B':'#A32D2D';
+      return '<tr style="background:'+bg+'">'
+        +'<td style="padding:8px 10px;font-weight:700">'+r.nome+'</td>'
+        +'<td style="text-align:center">'+r.qtdEquipes+'</td>'
+        +'<td style="text-align:center">'
+          +'<span style="font-weight:700;color:'+corPct+'">'+r.qtdProgramadas+'</span>'
+          +' <span style="font-size:10px;color:#aaa">('+pct+'%)</span>'
+        +'</td>'
+        +'<td style="text-align:center">'+r.qtdColabs+'</td>'
+        +'<td style="text-align:center;font-weight:'+(r.totFalta>0?700:400)+';color:'+(r.totFalta>0?'#A32D2D':'#aaa')+'">'+r.totFalta+'</td>'
+        +'<td style="text-align:center;color:#555">'+r.totFolga+'</td>'
+        +'<td style="text-align:center;font-weight:700;color:#3B6D11">'+r.qtdEscalado+'</td>'
+        +'<td style="text-align:center;color:#185FA5">'+r.totFerias+'</td>'
+        +'<td style="text-align:center;color:#854F0B">'+r.totOutros+'</td>'
+        +'<td style="text-align:center;font-weight:700;color:#533AB7">'+r.qtdCampo+'</td>'
+        +'</tr>';
+    }).join('')
+    // Totais
+    +'<tr style="background:#f0efe8;font-weight:700;border-top:1.5px solid #e0dfd8">'
+    +'<td style="padding:8px 10px">TOTAL</td>'
+    +['qtdEquipes','qtdProgramadas','qtdColabs','totFalta','totFolga','qtdEscalado','totFerias','totOutros','qtdCampo'].map(function(k){
+      var total = rows.reduce(function(s,r){return s+(r[k]||0);},0);
+      return '<td style="text-align:center">'+total+'</td>';
+    }).join('')
+    +'</tr>'
+    +'</tbody></table></div>';
+
+  el.innerHTML = filtroHtml + tabelaHtml;
+}
+
 function progProjInit(){
+  ppSetAba(_ppAba || 'programacao');
   _pp.data = dataHojeLocal();
   var selData = document.getElementById('pp-data');
   if(selData) selData.value = _pp.data;
@@ -41765,6 +41940,19 @@ return [a,b,c,d].map(function(n){return ('00000000'+(n<0?n+4294967296:n).toStrin
 <!-- ══ PROGRAMAÇÃO EQUIPES PLPT ══════════════════════════════ -->
 <div id="pg-programacao-projetos" class="hidden">
 
+  <!-- Tab bar -->
+  <div style="display:flex;gap:0;border-bottom:1.5px solid #e0dfd8;margin-bottom:1rem">
+    <button id="pp-tab-dashboard"    onclick="ppSetAba('dashboard')"   style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">📊 Dashboard</button>
+    <button id="pp-tab-programacao"  onclick="ppSetAba('programacao')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18">📅 Programação</button>
+  </div>
+
+  <!-- Painel Dashboard -->
+  <div id="pp-painel-dashboard" class="hidden">
+    <div id="pp-dash-inner"></div>
+  </div>
+
+  <!-- Painel Programação -->
+  <div id="pp-painel-programacao">
   <!-- Filtros -->
   <div class="card" style="margin-bottom:1rem">
     <div class="ch" style="flex-wrap:wrap;gap:8px">
@@ -41808,7 +41996,8 @@ return [a,b,c,d].map(function(n){return ('00000000'+(n<0?n+4294967296:n).toStrin
     <div style="padding:3rem;text-align:center;color:#aaa">Selecione um contrato e uma data para ver o quadro.</div>
   </div>
 
-</div>
+  </div><!-- /pp-painel-programacao -->
+</div><!-- /pg-programacao-projetos -->
 
 <div id="pg-plpt-programacao" class="hidden">
   <div class="card" style="margin-bottom:1rem">
