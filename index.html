@@ -19965,7 +19965,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.5.0',
+  numero: '5.5.1',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -37759,12 +37759,15 @@ function renderSesmtDashboard(){
   var colsSemASO = cols.filter(function(c){return !asos.some(function(t){var v=t.val||t.validade;return t.funcionario_id===c.id&&v&&v>=hoje;});});
 
   // ── Docs colaboradores ───────────────────────────────────
-  var docsObrig = DOCS_OBRIGATORIOS.filter(function(d){return d.obrigatorio;});
-  var totalDocsPend = 0;
-  cols.forEach(function(c){
-    var st = docPct(c.id);
-    if(st.pct<100) totalDocsPend++;
-  });
+  // Só contar colaboradores cujos docs já foram carregados do banco
+  var colsComDocs = cols.filter(function(c){ return !!_colabDocs[c.id]; });
+  var docsCarregados = colsComDocs.length > 0;
+  var totalDocsPend = colsComDocs.filter(function(c){
+    var st = docPct(c.id); return st.pct < 100;
+  }).length;
+  var totalDocsOk = colsComDocs.filter(function(c){
+    var st = docPct(c.id); return st.pct === 100;
+  }).length;
 
   // ── EPIs ─────────────────────────────────────────────────
   var episFil = epis.filter(function(e){
@@ -37800,9 +37803,10 @@ function renderSesmtDashboard(){
     {n:'Treinamento',v: pctTrein},
     {n:'EPI',        v: nCols>0?Math.round((nCols-colsSemEPI.length)/nCols*100):0},
     {n:'ASO',        v: nCols>0?Math.round((nCols-colsSemASO.length)/nCols*100):0},
-    {n:'Documentação',v: nCols>0?Math.round((nCols-totalDocsPend)/nCols*100):0},
+    {n:'Documentação',v: colsComDocs.length>0 ? Math.round(totalDocsOk/colsComDocs.length*100) : null},
   ];
-  var scoreGeral = Math.round(scoreItems.reduce(function(s,x){return s+x.v;},0)/scoreItems.length);
+  var scoreValidos = scoreItems.filter(function(x){return x.v!==null;});
+  var scoreGeral = scoreValidos.length ? Math.round(scoreValidos.reduce(function(s,x){return s+x.v;},0)/scoreValidos.length) : 0;
   var corScore = scoreGeral>=90?'#3B6D11':scoreGeral>=70?'#854F0B':'#A32D2D';
   var bgScore  = scoreGeral>=90?'#EAF3DE':scoreGeral>=70?'#FEF3E2':'#FCEBEB';
 
@@ -37841,13 +37845,15 @@ function renderSesmtDashboard(){
     +'</div>'
     +'<div style="flex:1;display:flex;gap:6px;flex-wrap:wrap">'
     +scoreItems.map(function(x){
-      var c=x.v>=90?'#3B6D11':x.v>=70?'#854F0B':'#A32D2D';
+      var vDisplay = x.v===null ? null : x.v;
+      var c=vDisplay===null?'#aaa':vDisplay>=90?'#3B6D11':vDisplay>=70?'#854F0B':'#A32D2D';
       return '<div style="background:#fff;border-radius:8px;padding:6px 10px;min-width:90px;text-align:center">'
-        +'<div style="font-size:16px;font-weight:700;color:'+c+'">'+x.v+'%</div>'
+        +'<div style="font-size:16px;font-weight:700;color:'+c+'">'+(vDisplay===null?'N/A':vDisplay+'%')+'</div>'
         +'<div style="font-size:10px;color:#888">'+x.n+'</div>'
-        +'<div style="background:#f0efe8;border-radius:10px;height:4px;overflow:hidden;margin-top:4px">'
-        +'<div style="background:'+c+';width:'+x.v+'%;height:100%;border-radius:10px"></div>'
-        +'</div></div>';
+        +(vDisplay!==null?'<div style="background:#f0efe8;border-radius:10px;height:4px;overflow:hidden;margin-top:4px">'
+          +'<div style="background:'+c+';width:'+vDisplay+'%;height:100%;border-radius:10px"></div>'
+          +'</div>':'<div style="font-size:9px;color:#aaa;margin-top:2px">sem dados</div>')
+        +'</div>';
     }).join('')
     +'</div></div></div>';
 
@@ -37896,8 +37902,12 @@ function renderSesmtDashboard(){
     +linhaMetr('ASO vencido',asosVenc.length,asos.length,'#A32D2D')
     +linhaMetr('ASO vencendo (30d)',asosAv30.length,asos.length,'#854F0B')
     +linhaMetr('Sem ASO válido',colsSemASO.length,nCols,'#A32D2D')
-    +linhaMetr('Docs incompletos',totalDocsPend,nCols,'#854F0B')
-    +linhaMetr('Colaboradores 100% docs',nCols-totalDocsPend,nCols,'#3B6D11');
+    +(docsCarregados
+      ? linhaMetr('Docs incompletos',totalDocsPend,colsComDocs.length,'#854F0B')
+        +linhaMetr('Docs 100% entregues',totalDocsOk,colsComDocs.length,'#3B6D11')
+        +(colsComDocs.length<nCols?'<div style="font-size:10px;color:#aaa;padding-top:4px">* '+colsComDocs.length+' de '+nCols+' colaboradores com docs verificados</div>':'')
+      : '<div style="font-size:11px;color:#aaa;padding-top:4px">Documentação: abra um colaborador em Evolução para carregar os dados.</div>'
+    );
 
   // ── EPI ──────────────────────────────────────────────────
   var epiEl=document.getElementById('sdb-epi');
@@ -37919,14 +37929,14 @@ function renderSesmtDashboard(){
     +linhaMetr('Multas pendentes',multasPend.length,0,'#854F0B');
 
   // ── Segurança ─────────────────────────────────────────────
-  var aprFil=(aprs||[]).filter(function(a){return !cid||a.contrato_id===cid;});
-  var aprAb=aprFil.filter(function(a){return a.status==='Em andamento'||a.status==='Aberta';}).length;
+  var aprFil=(aprs_registradas||[]).filter(function(a){return !cid||a.contrato_id===cid;});
+  var aprAb=aprFil.filter(function(a){return a.status==='Em andamento'||a.status==='Aberta'||a.resultado==='NOK';}).length;
   var segEl=document.getElementById('sdb-seg');
-  if(segEl) segEl.innerHTML='<div style="color:#aaa;font-size:12px;text-align:center;padding:.5rem">'
-    +(aprFil.length
-      ? linhaMetr('APRs abertas',aprAb,aprFil.length,'#185FA5')+linhaMetr('APRs no período',aprFil.length,0,'#555')
-      : 'Nenhuma APR registrada no período.')
-    +'</div>';
+  if(segEl) segEl.innerHTML= aprFil.length
+    ? linhaMetr('APRs abertas/NOK',aprAb,aprFil.length,'#185FA5')
+      +linhaMetr('APRs no período',aprFil.length,0,'#555')
+      +linhaMetr('APRs com resultado OK',aprFil.filter(function(a){return a.resultado==='OK';}).length,aprFil.length,'#3B6D11')
+    : '<div style="color:#aaa;font-size:12px;text-align:center;padding:.5rem">Nenhuma APR carregada.<br><small>Acesse Em Campo → APR para carregar os dados.</small></div>';
 
   // ── Ocorrências ───────────────────────────────────────────
   var ocorrEl=document.getElementById('sdb-ocorr');
