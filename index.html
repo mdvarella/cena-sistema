@@ -3493,7 +3493,6 @@ async function sbFetchPaged(table, opts){
 }
 
 async function sbFetchAll(table,opts){
-  // Busca todos os registros paginando de 1000 em 1000
   opts=opts||{};
   if(DEMO)return [];
   var select=opts.select||'*';
@@ -3502,22 +3501,35 @@ async function sbFetchAll(table,opts){
   var pageSize=1000;
   var allRows=[];
   var offset=0;
-  while(true){
-    var url=SB.url+'/rest/v1/'+table+'?select='+select;
+  var maxPages=20; // segurança: máximo 20.000 rows
+  while(maxPages-->0){
+    var url=SB.url+'/rest/v1/'+table+'?select='+encodeURIComponent(select);
     filters.forEach(function(f){url+='&'+f;});
-    url+='&order='+order;
-    url+='&limit='+pageSize+'&offset='+offset;
-    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+    url+='&order='+order+'&limit='+pageSize+'&offset='+offset;
+    var h={
+      'apikey':SB.key,
+      'Authorization':'Bearer '+(_sbAuthToken||SB.key),
+      'Content-Type':'application/json',
+      'Accept':'application/json',
+      'Prefer':'count=none'
+    };
     try{
       var r=await fetch(url,{headers:h});
-      if(!r.ok)break;
+      if(!r.ok){
+        console.warn('[sbFetchAll] HTTP',r.status,'tabela:',table);
+        break;
+      }
       var t=await r.text();
-      var rows=t?JSON.parse(t):[];
-      if(!rows.length)break;
+      if(!t||t==='null'){break;}
+      var rows=JSON.parse(t);
+      if(!Array.isArray(rows)||!rows.length)break;
       allRows=allRows.concat(rows);
       if(rows.length<pageSize)break;
       offset+=pageSize;
-    }catch(e){break;}
+    }catch(e){
+      console.error('[sbFetchAll] erro:',e,'tabela:',table);
+      break;
+    }
   }
   return allRows;
 }
@@ -20176,7 +20188,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.8.1',
+  numero: '5.8.2',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -21243,7 +21255,6 @@ function progBuscarParaSlot(eqId, pos){
           || equipes.find(function(e){return e.id===eqId;})
           || {codigo:eqId};
   var slotLabel = pos===0?'Titular 1':pos===1?'Titular 2':'Folguista';
-  var STATUS_BLOQ = ['ferias','afastado','treinamento','falta','integracao','patio','verificar'];
 
   // Colaboradores já escalados hoje
   var jaEscalado = {};
@@ -21253,14 +21264,41 @@ function progBuscarParaSlot(eqId, pos){
     ids.forEach(function(id){if(id)jaEscalado[id]=true;});
   });
 
-  // Colaboradores disponíveis
+  var STATUS_BLOQ = ['ferias','afastado','treinamento','falta','integracao','patio','verificar','fraude'];
+
+  // Verificar status efetivo do colaborador (inclui persistentes carregados)
+  function stEfetivo(c){
+    var st = _progStatus[c.id] || 'disponivel';
+    if(st !== 'disponivel') return st;
+    // Verificar persistente: afastado/férias com data de retorno futura
+    var info = _progStatusInfo && _progStatusInfo[c.id];
+    if(info && info.retorno && info.retorno >= data){
+      // Colaborador está afastado/férias — verificar se foi salvo persistente
+      var persistKey = 'prog_persistente_'+c.id;
+      try{
+        var p = JSON.parse(localStorage.getItem(persistKey)||'null');
+        if(p && p.status && STATUS_BLOQ.indexOf(p.status)>=0 && p.retorno >= data) return p.status;
+      }catch(e){}
+    }
+    return st;
+  }
+
+  // Colaboradores disponíveis — bloqueados ficam completamente fora da lista
   var disponiveis = colaboradores.filter(function(c){
     if(c.ativo===false||c.dispensado)return false;
     if(cid&&c.contrato_id!==cid)return false;
     if((c.vinculo||'campo')!=='campo')return false;
-    if(STATUS_BLOQ.indexOf(_progStatus[c.id]||'disponivel')>=0)return false;
+    var st = stEfetivo(c);
+    if(STATUS_BLOQ.indexOf(st)>=0) return false; // bloqueados = invisíveis
     return true;
   });
+
+  var nBloqueados = colaboradores.filter(function(c){
+    if(c.ativo===false||c.dispensado)return false;
+    if(cid&&c.contrato_id!==cid)return false;
+    if((c.vinculo||'campo')!=='campo')return false;
+    return STATUS_BLOQ.indexOf(stEfetivo(c))>=0;
+  }).length;
 
   // Data do calendário para detectar folga por cor
   var calDiaModal = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
@@ -21333,6 +21371,10 @@ function progBuscarParaSlot(eqId, pos){
     +'<h3 style="margin:0">'+eq.codigo+' — '+slotLabel+'</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:18px;cursor:pointer;color:#888">✕</button>'
     +'</div>'
+    +(nBloqueados>0
+      ? '<div style="font-size:10px;color:#854F0B;background:#FEF3E2;border-radius:6px;padding:4px 8px;margin-bottom:6px">🔒 '+nBloqueados+' colaborador'+(nBloqueados>1?'es':'')
+        +' ocult'+(nBloqueados>1?'os':'o')+' (férias/afastado/treinamento/falta). Mude o status antes de escalar.</div>'
+      : '')
     +'<input type="text" id="busca-col-input" class="inp" placeholder="Buscar por nome ou RE..." '
     +'style="width:100%" autocomplete="off"/>'
     +'</div>'
@@ -27661,18 +27703,50 @@ function openAdicionarItemUPS(medId){
 async function abrirRelatorioMedicao(medId){
   var m=medicoes.find(function(x){return x.id===medId;});if(!m)return;
   var cont=contratos.find(function(c){return c.id===m.contrato_id;});
-  var eqs=equipes_disp.filter(function(e){return e.contrato_id===m.contrato_id&&e.status==='Ativo';});
 
-  // Buscar todas as sessões do período
+  // Incluir TODAS as equipes do contrato (ativas e inativas — podem ter existido no período)
+  var eqs=equipes_disp.filter(function(e){return e.contrato_id===m.contrato_id;});
+
+  // Buscar sessões do período com fallback robusto
   var sessoes=[];
   if(!DEMO){
     try{
+      // Tentativa 1: sbFetchAll paginado
       sessoes=await sbFetchAll('sessoes_disponibilidade',{
         filters:['data=gte.'+m.data_ini,'data=lte.'+m.data_fim],
         order:'data'
       });
-    }catch(e){}
+    }catch(e){ sessoes=[]; }
+
+    // Fallback: sbFetch simples se retornou vazio
+    if(!sessoes||!sessoes.length){
+      try{
+        var r=await sbFetch('sessoes_disponibilidade',{
+          filters:['data=gte.'+m.data_ini,'data=lte.'+m.data_fim],
+          order:'data', limit:2000
+        });
+        if(r&&r.length) sessoes=r;
+      }catch(e){}
+    }
+
+    // Fallback final: usar sessões em memória no período
+    if(!sessoes||!sessoes.length){
+      sessoes=sessoes_disp.filter(function(s){
+        var d=(s.data||'').split('T')[0];
+        return d>=m.data_ini && d<=m.data_fim;
+      });
+      if(sessoes.length)
+        console.log('[Relatório] usando sessões em memória:', sessoes.length);
+      else
+        console.warn('[Relatório] ATENÇÃO: Nenhuma sessão encontrada para o período', m.data_ini, m.data_fim);
+    }
+  } else {
+    sessoes=sessoes_disp.filter(function(s){
+      var d=(s.data||'').split('T')[0];
+      return d>=m.data_ini && d<=m.data_fim;
+    });
   }
+
 
   // Montar opções de filtro
   var tiposDisponiveis=[...new Set(eqs.map(function(e){
