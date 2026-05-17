@@ -7522,8 +7522,13 @@ function cadNovaNorma(id){
       var nome=(document.getElementById('cn-nome')||{}).value||'';
       if(!cod||!nome){progShowToast('⚠ Informe código e nome.');return;}
       var dados={codigo:cod,nome:nome,orgao:(document.getElementById('cn-org')||{}).value||'MTE',descricao:(document.getElementById('cn-desc')||{}).value||'',ativa:true};
-      if(isNew){dados.id=Date.now().toString();_cad_normas.push(dados);if(!DEMO)sbInsert('sesmt_normas',dados);}
-      else{var idx=_cad_normas.findIndex(function(x){return x.id===id;});if(idx>=0)_cad_normas[idx]=Object.assign({},n,dados);if(!DEMO)sbUpdate('sesmt_normas',dados,'id=eq.'+id);}
+      if(isNew){
+        var idLocal='loc'+Date.now(); dados.id=idLocal; _cad_normas.push(dados);
+        if(!DEMO)sbInsert('sesmt_normas',_semId(dados)).then(function(res){
+          if(res&&res[0]&&res[0].id){var ix=_cad_normas.findIndex(function(x){return x.id===idLocal;});if(ix>=0)_cad_normas[ix].id=res[0].id;}
+        });
+      }
+      else{var idx=_cad_normas.findIndex(function(x){return x.id===id;});if(idx>=0)_cad_normas[idx]=Object.assign({},n,dados);if(!DEMO)sbUpdate('sesmt_normas',_semId(dados),'id=eq.'+id);}
       closeModal();cadRenderNormas();progShowToast('✅ Norma salva.');
     };
   },50);
@@ -19936,7 +19941,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.4.4',
+  numero: '5.4.7',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -36966,6 +36971,47 @@ function sug_verFoto(id, idx){
 // ── MÓDULO MOBILIZAÇÃO / EVOLUÇÃO / APTIDÃO ─────────────────────────────────
 // Controla a esteira de contratação → aptidão ao trabalho
 
+// ── Documentos obrigatórios ──────────────────────────────────────────────────
+var DOCS_OBRIGATORIOS = [
+  {id:'rg',           label:'RG / Identidade',            icone:'🪪', obrigatorio:true},
+  {id:'cpf',          label:'CPF',                        icone:'📄', obrigatorio:true},
+  {id:'ctps',         label:'CTPS (Carteira de Trabalho)',icone:'📔', obrigatorio:true},
+  {id:'pis',          label:'PIS / NIT / PASEP',          icone:'🔢', obrigatorio:true},
+  {id:'comprov_res',  label:'Comprovante de Residência',  icone:'🏠', obrigatorio:true},
+  {id:'foto',         label:'Foto 3x4',                   icone:'📷', obrigatorio:true},
+  {id:'cert_nasc',    label:'Certidão de Nasc./Casamento',icone:'📜', obrigatorio:false},
+  {id:'titulo_el',    label:'Título de Eleitor',          icone:'🗳️', obrigatorio:false},
+  {id:'reservista',   label:'Cert. Reservista (masc.)',   icone:'🪖', obrigatorio:false},
+  {id:'escolaridade', label:'Diploma / Escolaridade',     icone:'🎓', obrigatorio:false},
+  {id:'cnh',          label:'CNH (se motorista)',         icone:'🚗', obrigatorio:false},
+  {id:'conta_banco',  label:'Dados bancários',            icone:'🏦', obrigatorio:true},
+  {id:'atestado_ant', label:'Atestado de antecedentes',   icone:'⚖️', obrigatorio:false},
+  {id:'exame_adm',    label:'Exame admissional (ASO)',    icone:'🩺', obrigatorio:true},
+  {id:'contrato_assin',label:'Contrato assinado',         icone:'✍️', obrigatorio:true},
+];
+
+// Cache local de docs entregues: {colab_id: {doc_id: {data, obs, entregue}}}
+var _colabDocs = {};
+
+function docCarregarColab(colabId, callback){
+  if(_colabDocs[colabId]){ if(callback)callback(); return; }
+  _colabDocs[colabId] = {};
+  if(DEMO){ if(callback)callback(); return; }
+  sbFetch('sesmt_documentos_colab',{filters:['colaborador_id=eq.'+colabId]}).then(function(rows){
+    (rows||[]).forEach(function(r){
+      _colabDocs[colabId][r.doc_id] = {entregue:r.entregue, data:r.data_entrega, obs:r.observacao, id:r.id};
+    });
+    if(callback)callback();
+  }).catch(function(){ if(callback)callback(); });
+}
+
+function docPct(colabId){
+  var docs = _colabDocs[colabId]||{};
+  var obrig = DOCS_OBRIGATORIOS.filter(function(d){return d.obrigatorio;});
+  var entregues = obrig.filter(function(d){return docs[d.id]&&docs[d.id].entregue;}).length;
+  return {total:obrig.length, entregues:entregues, pct:obrig.length?Math.round(entregues/obrig.length*100):0};
+}
+
 // Etapas obrigatórias para aptidão (configurável por contrato/cargo)
 var MOB_ETAPAS = [
   {id:'docs',        label:'Documentação',      icon:'📄', desc:'RG, CPF, CTPS, comprovante de residência'},
@@ -36996,9 +37042,10 @@ function calcularAptidao(colab){
   var etapas = {};
   var pendencias = [];
 
-  // 1. Documentação — assumir ok se tem RE e admissão
-  etapas.docs = !!(colab.re && colab.admissao);
-  if(!etapas.docs) pendencias.push('Documentação');
+  // 1. Documentação — verificar checklist real de entrega
+  var docsStatus = docPct(colab.id);
+  etapas.docs = docsStatus.pct === 100;
+  if(!etapas.docs) pendencias.push('Documentação incompleta ('+docsStatus.entregues+'/'+docsStatus.total+')');
 
   // 2. ASO — verificar em tabela treinamentos (tipo ASO) ou futura tabela asos
   var aso = treinamentos.filter(function(t){
@@ -37085,58 +37132,285 @@ function renderEvolucao(){
     var cont = contratos.find(function(x){ return x.id===c.contrato_id; });
     var meusTrein = treinamentos.filter(function(t){ return t.funcionario_id===c.id; });
     var meusEpis  = epis.filter(function(e){ return e.responsavel_id===c.id; });
-    var nrs = (MOB_NRS_CARGO[c.cargo] || MOB_NRS_CARGO['_default']);
+    var nrs  = (MOB_NRS_CARGO[c.cargo] || MOB_NRS_CARGO['_default']);
     var hoje = dataHoje();
+    var em30 = _diasAdiante(30);
+
+    // ASO mais recente
+    var asos = meusTrein.filter(function(t){
+      var nr=(t.nr||'').toUpperCase(); var tt=(t.titulo||'').toUpperCase();
+      return nr==='ASO'||tt.includes('ASO')||tt.includes('ADMISSIONAL')||tt.includes('PERI\u00d3DICO')||tt.includes('PERIODICO');
+    }).sort(function(a,b){return (b.val||b.validade||'')>(a.val||a.validade||'')?1:-1;});
+    var aso = asos[0];
+    var asoVal = aso ? (aso.val||aso.validade||'') : '';
+    var asoSt  = !aso?'sem_aso':asoVal<hoje?'vencido':asoVal<=em30?'proximo':'valido';
+    var ASO_COR = {
+      sem_aso:{bg:'#FCEBEB',cor:'#A32D2D',icone:'🚫',label:'ASO ausente'},
+      vencido: {bg:'#FCEBEB',cor:'#A32D2D',icone:'🔴',label:'ASO vencido'},
+      proximo: {bg:'#FEF3E2',cor:'#854F0B',icone:'🟡',label:'Vence em breve'},
+      valido:  {bg:'#EAF3DE',cor:'#3B6D11',icone:'🟢',label:'ASO v\u00e1lido'},
+    };
+    var asoC = ASO_COR[asoSt];
+    var diasAso = asoVal ? Math.floor((new Date(asoVal)-new Date(hoje))/86400000) : null;
+
+    var treinVencendo = meusTrein.filter(function(t){var v=t.val||t.validade;return v&&v>=hoje&&v<=em30;});
+    var treinVencidos = meusTrein.filter(function(t){var v=t.val||t.validade;return !v||v<hoje;});
+    // Pré-carregar docs do colaborador (async)
+    if(!_colabDocs[c.id]){
+      docCarregarColab(c.id, function(){ clearTimeout(window._docRenderTimer2); window._docRenderTimer2=setTimeout(renderEvolucao,400); });
+    }
+    var corStatus = {'Apto':'#3B6D11','Bloqueado':'#A32D2D','Pendente':'#854F0B','Em mobiliza\u00e7\u00e3o':'#185FA5'}[apt.status]||'#888';
 
     return '<div class="card" style="margin-bottom:.75rem">'
+      // Header
       +'<div style="display:flex;align-items:center;gap:10px;padding:.75rem 1rem;border-bottom:.5px solid #f5f5f3">'
       +'<div style="width:38px;height:38px;border-radius:50%;background:#1a1a18;color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700">'+c.nome.charAt(0)+'</div>'
       +'<div style="flex:1">'
       +'<div style="font-weight:700;font-size:14px">'+c.nome+'</div>'
-      +'<div style="font-size:11px;color:#888">'+c.cargo+(cont?' · '+cont.codigo:'')+(c.re?' · RE '+c.re:'')+(c.admissao?' · Desde '+fmtD(c.admissao):'')+'</div>'
+      +'<div style="font-size:11px;color:#888">'+c.cargo+(cont?' \u00b7 '+cont.codigo:'')+(c.re?' \u00b7 RE '+c.re:'')+(c.admissao?' \u00b7 Desde '+fmtD(c.admissao):'')+'</div>'
       +'</div>'
       +'<div style="text-align:right">'
-      +'<div style="font-size:18px;font-weight:700;color:'+({'Apto':'#3B6D11','Bloqueado':'#A32D2D','Pendente':'#854F0B','Em mobilização':'#185FA5'}[apt.status]||'#888')+'">'+apt.pct+'%</div>'
-      +'<div style="font-size:10px;color:#888">aptidão</div>'
-      +'</div>'
-      +'</div>'
-      // Linha do tempo de treinamentos
+      +'<div style="font-size:18px;font-weight:700;color:'+corStatus+'">'+apt.pct+'%</div>'
+      +'<div style="font-size:10px;color:#888">aptid\u00e3o</div>'
+      +'</div></div>'
       +'<div style="padding:.75rem 1rem">'
-      +'<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:.5rem">🎓 Treinamentos ('+meusTrein.length+')</div>'
+      // ASO
+      +'<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;background:'+asoC.bg+';margin-bottom:.75rem">'
+      +'<span style="font-size:16px">'+asoC.icone+'</span>'
+      +'<div style="flex:1">'
+      +'<div style="font-size:11px;font-weight:600;color:'+asoC.cor+'">🩺 ASO / Exame Ocupacional \u2014 '+asoC.label+'</div>'
+      +(aso
+        ? '<div style="font-size:11px;color:#555;margin-top:1px">'+escHtml(aso.titulo||'ASO')
+          +(asoVal?' \u00b7 V\u00e1lido at\u00e9: <b>'+fmtD(asoVal)+'</b>':'')
+          +(diasAso!==null?' \u00b7 <b style="color:'+asoC.cor+'">'+(diasAso<0?Math.abs(diasAso)+'d vencido':diasAso===0?'Vence HOJE':diasAso+'d restantes')+'</b>':'')
+          +'</div>'
+        : '<div style="font-size:11px;color:#A32D2D;margin-top:1px">Nenhum ASO registrado. Necess\u00e1rio para aptid\u00e3o.</div>'
+      )
+      +'</div>'
+      +'<button class="btn btn-sm" onclick="evolRegistrarASO(\''+c.id+'\')" style="font-size:10px;white-space:nowrap;background:'+asoC.cor+';color:#fff;border-color:'+asoC.cor+'">+ ASO</button>'
+      +'</div>'
+      // Documentação
+      + evolDocBloco(c)
+      // Treinamentos
+      +'<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:.5rem">🎓 Treinamentos ('+meusTrein.length+')'
+      +(treinVencendo.length?'<span style="margin-left:6px;background:#FEF3E2;color:#854F0B;border-radius:10px;padding:0 6px;font-size:10px">\u26a0 '+treinVencendo.length+' vencendo</span>':'')
+      +(treinVencidos.length?'<span style="margin-left:4px;background:#FCEBEB;color:#A32D2D;border-radius:10px;padding:0 6px;font-size:10px">🔴 '+treinVencidos.length+' vencidos</span>':'')
+      +'</div>'
       +(meusTrein.length
         ? '<div style="display:flex;flex-wrap:wrap;gap:5px">'
           +meusTrein.map(function(t){
-            var v = t.val||t.validade;
-            var ok = v && v>=hoje;
-            return '<span style="font-size:11px;padding:2px 7px;border-radius:99px;background:'+(ok?'#EAF3DE':'#FEE8E8')+';color:'+(ok?'#3B6D11':'#A32D2D')+';border:.5px solid '+(ok?'#3B6D11':'#A32D2D')+'">'
-              +t.nr+' '+t.titulo.substring(0,20)+(ok?'':' ⚠')+'</span>';
+            var v=t.val||t.validade;
+            var dias=v?Math.floor((new Date(v)-new Date(hoje))/86400000):null;
+            var ok=v&&v>=hoje; var prox=v&&v<=em30&&v>=hoje;
+            var bg=prox?'#FEF3E2':ok?'#EAF3DE':'#FCEBEB';
+            var cor=prox?'#854F0B':ok?'#3B6D11':'#A32D2D';
+            return '<span title="Validade: '+(v?fmtD(v):'sem validade')+'" style="font-size:11px;padding:2px 7px;border-radius:99px;background:'+bg+';color:'+cor+';border:.5px solid '+cor+'">'
+              +escHtml(t.nr||t.titulo.substring(0,15))
+              +(dias!==null?(dias<0?' \u26a0':dias<=30?' '+dias+'d':''):'')
+              +'</span>';
           }).join('')+'</div>'
         : '<div style="font-size:11px;color:#aaa">Nenhum treinamento registrado</div>'
       )
-      // NRs faltantes
       +(function(){
-        var faltam = nrs.filter(function(nr){ return !meusTrein.some(function(t){ return t.nr===nr && (t.val||t.validade)>=hoje; }); });
-        return faltam.length ? '<div style="margin-top:.5rem;font-size:11px;color:#A32D2D">⚠ NRs pendentes: '+faltam.join(', ')+'</div>' : '';
+        var faltam=nrs.filter(function(nr){return !meusTrein.some(function(t){return t.nr===nr&&(t.val||t.validade)>=hoje;});});
+        return faltam.length?'<div style="margin-top:.5rem;font-size:11px;color:#A32D2D">\u26a0 NRs pendentes: '+faltam.join(', ')+'</div>':'';
       })()
       // EPIs
       +'<div style="font-size:11px;font-weight:600;color:#555;margin:.75rem 0 .5rem">🦺 EPIs ('+meusEpis.length+')</div>'
       +(meusEpis.length
         ? '<div style="display:flex;flex-wrap:wrap;gap:5px">'
           +meusEpis.map(function(e){
-            var ok = e.status==='Ativo' && (!e.validade || e.validade>=hoje);
-            return '<span style="font-size:11px;padding:2px 7px;border-radius:99px;background:'+(ok?'#EAF3DE':'#FEE8E8')+';color:'+(ok?'#3B6D11':'#A32D2D')+';border:.5px solid '+(ok?'#3B6D11':'#A32D2D')+'">'
-              +e.nome+(ok?'':' ⚠')+'</span>';
+            var ok=e.status==='Ativo'&&(!e.validade||e.validade>=hoje);
+            var prox=e.validade&&e.validade<=em30&&e.validade>=hoje;
+            var bg=prox?'#FEF3E2':ok?'#EAF3DE':'#FCEBEB';
+            var cor=prox?'#854F0B':ok?'#3B6D11':'#A32D2D';
+            return '<span style="font-size:11px;padding:2px 7px;border-radius:99px;background:'+bg+';color:'+cor+';border:.5px solid '+cor+'">'+escHtml(e.nome)+(ok?'':' \u26a0')+'</span>';
           }).join('')+'</div>'
         : '<div style="font-size:11px;color:#aaa">Nenhum EPI registrado</div>'
       )
       +'</div>'
-      +'<div style="padding:.4rem 1rem .6rem;display:flex;gap:6px;border-top:.5px solid #f5f5f3">'
+      // Ações
+      +'<div style="padding:.4rem 1rem .6rem;display:flex;gap:6px;border-top:.5px solid #f5f5f3;flex-wrap:wrap">'
       +'<button class="btn btn-sm" onclick="openMobilizacaoDetalhe(\''+c.id+'\')">📋 Detalhes</button>'
+      +'<button class="btn btn-sm" onclick="evolAbrirDocs(\''+c.id+'\')" style="color:#185FA5;border-color:#185FA5">📄 Documentos</button>'
+      +'<button class="btn btn-sm" onclick="evolRegistrarASO(\''+c.id+'\')">🩺 + ASO</button>'
       +'<button class="btn btn-sm" onclick="openLancarTreinamento(\''+c.id+'\')">🎓 + Treinamento</button>'
       +'<button class="btn btn-sm" onclick="sesmtSetAba(\'nr6\')">📋 Ficha NR-6</button>'
       +'</div>'
       +'</div>';
   }).join('');
+}
+
+function evolAbrirDocs(colabId){
+  var c = colaboradores.find(function(x){return x.id===colabId;})||{};
+  docCarregarColab(colabId, function(){
+    var docs = _colabDocs[colabId]||{};
+    var stat = docPct(colabId);
+    var corPct = stat.pct===100?'#3B6D11':stat.pct>=60?'#185FA5':stat.pct>0?'#854F0B':'#A32D2D';
+
+    var itens = DOCS_OBRIGATORIOS.map(function(d, i){
+      var entry = docs[d.id]||{};
+      var checked = !!entry.entregue;
+      return '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:.5px solid #f5f5f3">'
+        +'<label style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1">'
+        +'<input type="checkbox" id="doc-ck-'+d.id+'" '+(checked?'checked':'')+' onchange="evolToggleDoc(\''+colabId+'\',\''+d.id+'\')" style="width:16px;height:16px;cursor:pointer">'
+        +'<span style="font-size:14px">'+d.icone+'</span>'
+        +'<div style="flex:1">'
+        +'<div style="font-size:12px;font-weight:'+(d.obrigatorio?'600':'400')+'">'
+          +d.label+(d.obrigatorio?'<span style="color:#A32D2D;margin-left:4px">*</span>':'')
+        +'</div>'
+        +(entry.data?'<div style="font-size:10px;color:#3B6D11">Entregue em '+fmtD(entry.data)+'</div>':'')
+        +'</div>'
+        +'</label>'
+        +'<span style="font-size:11px;font-weight:600;color:'+(checked?'#3B6D11':'#ccc')+'">'+(checked?'✓':'—')+'</span>'
+        +'</div>';
+    }).join('');
+
+    setModal('<div class="modal-bg"><div class="modal" style="max-width:480px;max-height:90vh;overflow-y:auto">'
+      // Header
+      +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;position:sticky;top:0;background:#fff;padding-bottom:.5rem;border-bottom:.5px solid #e0dfd8">'
+      +'<div><div style="font-size:15px;font-weight:700">📄 Documentos — '+escHtml(c.nome||'')+'</div>'
+      +'<div style="font-size:11px;color:#888">'+escHtml(c.cargo||'')+(c.re?' · RE '+c.re:'')+'</div></div>'
+      +'<button class="btn" onclick="closeModal()" style="margin-left:auto;padding:3px 9px">✕</button>'
+      +'</div>'
+      // Barra de progresso
+      +'<div style="background:#f9f9f7;border-radius:10px;padding:12px 14px;margin-bottom:1rem">'
+      +'<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px">'
+      +'<span style="font-weight:600">Documentação obrigatória</span>'
+      +'<span style="font-weight:700;color:'+corPct+'">'+stat.pct+'% ('+stat.entregues+'/'+stat.total+')</span>'
+      +'</div>'
+      +'<div style="background:#e0dfd8;border-radius:20px;height:8px;overflow:hidden">'
+      +'<div id="doc-prog-bar" style="background:'+corPct+';width:'+stat.pct+'%;height:100%;border-radius:20px;transition:width .4s"></div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:#aaa;margin-top:4px">* Itens obrigatórios</div>'
+      +'</div>'
+      // Lista de documentos
+      +'<div id="doc-lista-inner">'+itens+'</div>'
+      // Botão fechar
+      +'<div style="margin-top:1rem;position:sticky;bottom:0;background:#fff;padding-top:.5rem;border-top:.5px solid #e0dfd8">'
+      +'<button class="btn btn-pri" onclick="closeModal()" style="width:100%">Fechar</button>'
+      +'</div>'
+      +'</div></div>');
+  });
+}
+
+function evolToggleDoc(colabId, docId){
+  if(!_colabDocs[colabId]) _colabDocs[colabId]={};
+  var ck = document.getElementById('doc-ck-'+docId);
+  var entregue = ck ? ck.checked : false;
+  var hoje = dataHojeLocal();
+
+  if(entregue){
+    _colabDocs[colabId][docId] = {entregue:true, data:hoje, obs:''};
+    if(!DEMO){
+      sbInsert('sesmt_documentos_colab',{
+        colaborador_id:colabId, doc_id:docId,
+        entregue:true, data_entrega:hoje,
+        criado_em:new Date().toISOString()
+      }).then(function(res){
+        if(res&&res[0]&&res[0].id) _colabDocs[colabId][docId].id=res[0].id;
+      });
+    }
+  } else {
+    var idExistente = (_colabDocs[colabId][docId]||{}).id;
+    _colabDocs[colabId][docId] = {entregue:false};
+    if(!DEMO&&idExistente) sbUpdate('sesmt_documentos_colab',{entregue:false},'id=eq.'+idExistente);
+  }
+
+  // Atualizar barra de progresso no modal sem fechar
+  var stat = docPct(colabId);
+  var corPct = stat.pct===100?'#3B6D11':stat.pct>=60?'#185FA5':stat.pct>0?'#854F0B':'#A32D2D';
+  var bar = document.getElementById('doc-prog-bar');
+  if(bar){ bar.style.width=stat.pct+'%'; bar.style.background=corPct; }
+  var label = bar&&bar.parentElement&&bar.parentElement.previousElementSibling;
+
+  // Atualizar o ✓ ao lado do item
+  var span = ck&&ck.closest('div.flex, div[style]');
+  // Atualizar label de %
+  var pctEl = document.querySelector('[id^="doc-pct-"]');
+
+  // Re-renderizar só o card fora do modal (debounced)
+  clearTimeout(window._docRenderTimer);
+  window._docRenderTimer = setTimeout(function(){ renderEvolucao(); },300);
+}
+
+function evolDocBloco(c){
+  var docs = _colabDocs[c.id]||{};
+  var stat = docPct(c.id);
+  var corPct = stat.pct===100?'#3B6D11':stat.pct>=60?'#185FA5':stat.pct>0?'#854F0B':'#A32D2D';
+  var faltam = DOCS_OBRIGATORIOS.filter(function(d){return d.obrigatorio&&!(docs[d.id]&&docs[d.id].entregue);});
+  return '<div style="background:#f9f9f7;border-radius:8px;padding:8px 10px;margin-bottom:.75rem">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+    +'<span style="font-size:12px;font-weight:600;color:#555">📄 Documentação</span>'
+    +'<span style="font-size:11px;font-weight:700;color:'+corPct+';margin-left:auto">'+stat.pct+'%</span>'
+    +'<span style="font-size:10px;color:#888">('+stat.entregues+'/'+stat.total+' obrigatórios)</span>'
+    +'</div>'
+    +'<div style="background:#e0dfd8;border-radius:20px;height:5px;overflow:hidden;margin-bottom:6px">'
+    +'<div style="background:'+corPct+';width:'+stat.pct+'%;height:100%;border-radius:20px;transition:width .4s"></div>'
+    +'</div>'
+    +(faltam.length&&stat.pct<100
+      ?'<div style="font-size:10px;color:#854F0B">Pendentes: '+faltam.map(function(d){return d.label;}).slice(0,3).join(', ')+(faltam.length>3?' +mais '+(faltam.length-3):'')+'</div>'
+      :'<div style="font-size:10px;color:#3B6D11">✓ Todos os documentos obrigatórios entregues</div>'
+    )
+    +'</div>';
+}
+
+function evolRegistrarASO(colabId){
+  var c=colaboradores.find(function(x){return x.id===colabId;})||{};
+  var hoje=dataHojeLocal();
+  var d1=new Date(); d1.setFullYear(d1.getFullYear()+1);
+  var prox=d1.getFullYear()+'-'+String(d1.getMonth()+1).padStart(2,'0')+'-'+String(d1.getDate()).padStart(2,'0');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:1rem">🩺 Registrar ASO / Exame Ocupacional</h3>'
+    +'<div style="font-size:12px;font-weight:500;color:#185FA5;background:#E6F1FB;border-radius:7px;padding:7px 12px;margin-bottom:.85rem">'
+    +escHtml(c.nome||'')+(c.cargo?' \u00b7 '+escHtml(c.cargo):'')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Tipo do exame</label>'
+    +'<select class="inp" id="aso-tipo" style="width:100%">'
+    +'<option>Peri\u00f3dico</option><option>Admissional</option><option>Demissional</option>'
+    +'<option>Retorno ao trabalho</option><option>Mudan\u00e7a de fun\u00e7\u00e3o</option><option>Monitora\u00e7\u00e3o pontual</option>'
+    +'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Data do exame *</label>'
+    +'<input class="inp" type="date" id="aso-data" value="'+hoje+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Pr\u00f3ximo exame (validade)</label>'
+    +'<input class="inp" type="date" id="aso-val" value="'+prox+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Resultado</label>'
+    +'<select class="inp" id="aso-resultado" style="width:100%">'
+    +'<option>Apto</option><option>Apto com restri\u00e7\u00e3o</option><option>Inapto tempor\u00e1rio</option><option>Inapto definitivo</option>'
+    +'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">M\u00e9dico</label>'
+    +'<input class="inp" id="aso-medico" style="width:100%" placeholder="Nome do m\u00e9dico"/></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Cl\u00ednica / Hospital</label>'
+    +'<input class="inp" id="aso-clinica" style="width:100%" placeholder="Nome da cl\u00ednica"/></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Observa\u00e7\u00f5es</label>'
+    +'<textarea class="inp" id="aso-obs" style="width:100%;height:50px;resize:vertical" placeholder="Restri\u00e7\u00f5es, encaminhamentos..."></textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="aso-salvar" style="flex:2">Registrar ASO</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn=document.getElementById('aso-salvar');
+    if(!btn)return;
+    btn.onclick=function(){
+      var tipo=(document.getElementById('aso-tipo')||{}).value||'Peri\u00f3dico';
+      var data=(document.getElementById('aso-data')||{}).value||hoje;
+      var val =(document.getElementById('aso-val')||{}).value||prox;
+      var res =(document.getElementById('aso-resultado')||{}).value||'Apto';
+      var med =(document.getElementById('aso-medico')||{}).value||'';
+      var cli =(document.getElementById('aso-clinica')||{}).value||'';
+      var obs =(document.getElementById('aso-obs')||{}).value||'';
+      if(!data){progShowToast('\u26a0 Informe a data do exame.');return;}
+      var novo={id:'aso'+Date.now(),funcionario_id:colabId,
+        nr:'ASO',titulo:'ASO '+tipo,val:val,validade:val,
+        data_emissao:data,resultado:res,medico:med,clinica:cli,
+        observacoes:obs,tipo_aso:tipo,criado_em:new Date().toISOString()};
+      treinamentos.push(novo);
+      if(!DEMO)sbInsert('treinamentos',Object.assign({},novo,{id:undefined}));
+      closeModal(); renderEvolucao();
+      progShowToast('\u2705 ASO registrado \u2014 '+escHtml(c.nome||'')+' \u00b7 '+tipo+' \u00b7 '+res);
+    };
+  },50);
 }
 
 // ── APTIDÃO AO TRABALHO ──────────────────────────────────────────────
