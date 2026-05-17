@@ -20180,7 +20180,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.6.9',
+  numero: '5.7.1',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -32640,7 +32640,11 @@ function frtInit(subpage){
     if(subpage==='frotas-dashboard')    frtDashRender();
     else if(subpage==='frotas-veiculos') frtVeiculosRender();
     else if(subpage==='frotas-pneus')   pneusInit();
-    else if(subpage==='frotas-portaria') frtPortariaRender();
+    else if(subpage==='frotas-portaria'){
+      portCarregarConfigs();
+      frtPortariaRender();
+      setTimeout(function(){ portRenderSeletorAtiva(); var saved=localStorage.getItem('port_ativa_id'); if(saved) portDefinirAtiva(saved); },100);
+    }
     else if(subpage==='frotas-programacao') frtProgRender();
     else if(subpage==='frotas-manutencoes') frtManutRender();
     else if(subpage==='frotas-combustivel') frtCombRender();
@@ -33028,7 +33032,7 @@ var frt_reservas = []; // reservas de veículos compartilhados
 var PORT_PERFIS_FLEX = ['Supervisor','Coordenador','Gerente','Diretor','supervisor','coordenador','gerente','diretor'];
 
 function portMostrarAba(aba){
-  ['equipes','saida','registros','reservas'].forEach(function(a){
+  ['equipes','saida','registros','reservas','config'].forEach(function(a){
     var el=document.getElementById('port-aba-'+a);
     var btn=document.getElementById('port-tab-'+a);
     if(el) el.style.display = a===aba?'':'none';
@@ -33038,6 +33042,7 @@ function portMostrarAba(aba){
   if(aba==='saida')     portRenderAguardando();
   if(aba==='registros') frtPortariaRender();
   if(aba==='reservas')  portRenderReservas();
+  if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
 }
 
 // ── Aba: Equipes do Dia ──────────────────────────────────
@@ -33416,17 +33421,251 @@ function portRenderReservas(){
   }).join('');
 }
 
+var portaria_configs = []; // [{id, filial_id, nome, responsavel, tipo, status, obs}]
+var _portAtiva = null;    // config da portaria em operação
+
+function portCarregarConfigs(){
+  try{ var s=localStorage.getItem('portaria_configs'); if(s) portaria_configs=JSON.parse(s); }catch(e){}
+  if(!portaria_configs.length&&!DEMO){
+    sbFetch('portaria_configs',{filters:['status=eq.Ativo'],order:'nome'})
+      .then(function(rows){ if(rows&&rows.length){ portaria_configs=rows; portRenderSeletorAtiva(); }})
+      .catch(function(){});
+  }
+}
+
+function portSalvarConfigs(){
+  try{ localStorage.setItem('portaria_configs',JSON.stringify(portaria_configs)); }catch(e){}
+}
+
+function portRenderSeletorAtiva(){
+  var el=document.getElementById('port-seletor-ativa'); if(!el) return;
+  if(!portaria_configs.length){
+    el.innerHTML='<div style="font-size:11px;color:#aaa">Nenhuma portaria configurada. Configure na aba ⚙</div>';
+    return;
+  }
+  var opts=portaria_configs.map(function(p){
+    var fil=filiais.find(function(f){return f.id===p.filial_id;})||{};
+    return '<option value="'+p.id+'"'+((_portAtiva&&_portAtiva.id===p.id)?' selected':'')+'>'+escHtml(fil.codigo?fil.codigo+' — ':'')+''+escHtml(p.nome)+'</option>';
+  }).join('');
+  el.innerHTML='<select class="inp" id="port-sel-ativa" style="width:260px;font-weight:600" onchange="portDefinirAtiva(this.value)">'
+    +'<option value="">Selecione a portaria...</option>'+opts+'</select>';
+  // Restaurar seleção salva
+  var saved=localStorage.getItem('port_ativa_id');
+  if(saved){var sel=document.getElementById('port-sel-ativa');if(sel)sel.value=saved;}
+}
+
+function portDefinirAtiva(id){
+  _portAtiva=portaria_configs.find(function(p){return p.id===id;})||null;
+  localStorage.setItem('port_ativa_id',id||'');
+  var el=document.getElementById('port-ativa-label');
+  if(el){
+    if(_portAtiva){
+      var fil=filiais.find(function(f){return f.id===_portAtiva.filial_id;})||{};
+      el.textContent='📍 '+(_portAtiva.nome||'')+(fil.nome?' — '+fil.nome:'');
+      el.style.display='';
+    } else {
+      el.style.display='none';
+    }
+  }
+}
+
+function portRenderConfig(){
+  var el=document.getElementById('port-aba-config'); if(!el) return;
+  var html='<div class="card">'
+    +'<div class="ch"><span class="ct">⚙ Configurações de Portaria</span>'
+    +'<button class="btn btn-pri" onclick="portNovaConfig()">+ Nova Portaria</button>'
+    +'</div>'
+    +'<div style="font-size:12px;color:#185FA5;background:#E6F1FB;border-radius:8px;padding:8px 12px;margin-bottom:.75rem">'
+    +'📌 As portarias são vinculadas ao cadastro de Filiais (Almoxarifado → Filiais). '
+    +'Não é necessário recadastrar endereços ou responsáveis — eles são herdados da filial.'
+    +'</div>';
+
+  if(!portaria_configs.length){
+    html+='<div style="text-align:center;padding:2rem;color:#aaa">Nenhuma portaria configurada.<br>'
+      +'<button class="btn btn-pri" onclick="portNovaConfig()" style="margin-top:.5rem">Configurar primeira portaria</button>'
+      +'</div>';
+  } else {
+    html+='<div style="overflow-x:auto"><table class="tbl"><thead><tr>'
+      +'<th>Filial</th><th>Nome da Portaria</th><th>Responsável</th><th>Tipo</th><th>Status</th><th>Obs.</th><th></th>'
+      +'</tr></thead><tbody>'
+      +portaria_configs.map(function(p){
+        var fil=filiais.find(function(f){return f.id===p.filial_id;})||{};
+        var isAtiva=_portAtiva&&_portAtiva.id===p.id;
+        return '<tr style="background:'+(isAtiva?'#E6F1FB':'')+';">'
+          +'<td><div style="font-weight:600">'+escHtml(fil.codigo||'—')+'</div><div style="font-size:11px;color:#888">'+escHtml(fil.nome||'')+'</div></td>'
+          +'<td style="font-weight:500">'+escHtml(p.nome||'—')+'</td>'
+          +'<td style="font-size:12px">'+escHtml(p.responsavel||fil.responsavel||'—')+'</td>'
+          +'<td><span class="bdg">'+escHtml(p.tipo||'Principal')+'</span></td>'
+          +'<td><span class="bdg '+(p.status==='Ativo'?'ok':'gray')+'">'+escHtml(p.status||'Ativo')+'</span></td>'
+          +'<td style="font-size:11px;color:#888;max-width:150px">'+escHtml((p.obs||'').substring(0,60))+'</td>'
+          +'<td style="white-space:nowrap">'
+          +(isAtiva?'<span style="font-size:10px;color:#185FA5;font-weight:600">✓ Ativa</span> ':'' )
+          +'<button class="btn btn-sm" onclick="portEditarConfig(\''+p.id+'\')">✎</button> '
+          +'<button class="btn btn-sm" onclick="portExcluirConfig(\''+p.id+'\')">✕</button>'
+          +'</td></tr>';
+      }).join('')
+      +'</tbody></table></div>';
+  }
+  html+='</div>'
+    +'<div class="card" style="margin-top:.75rem">'
+    +'<div class="ch"><span class="ct">🏢 Filiais cadastradas</span>'
+    +'<button class="btn btn-sm" onclick="showPage(\'sesmt-filiais\')" style="font-size:11px">Gerenciar filiais →</button>'
+    +'</div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
+    +'<th>Código</th><th>Nome</th><th>Cidade/UF</th><th>Responsável</th><th>Endereço</th><th>Portarias</th>'
+    +'</tr></thead><tbody>'
+    +filiais.map(function(f){
+      var nPort=portaria_configs.filter(function(p){return p.filial_id===f.id;}).length;
+      return '<tr>'
+        +'<td style="font-weight:700;font-family:monospace">'+escHtml(f.codigo||'—')+'</td>'
+        +'<td style="font-weight:500">'+escHtml(f.nome||'—')+'</td>'
+        +'<td style="font-size:11px;color:#888">'+escHtml((f.cidade||'—')+'/'+(f.estado||''))+'</td>'
+        +'<td style="font-size:12px">'+escHtml(f.responsavel||'—')+'</td>'
+        +'<td style="font-size:11px;color:#888">'+escHtml(f.endereco||'—')+'</td>'
+        +'<td style="text-align:center">'
+          +'<span style="background:'+(nPort?'#E6F1FB':'#f5f5f3')+';color:'+(nPort?'#185FA5':'#aaa')+';border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">'+nPort+' portaria'+(nPort!==1?'s':'')+'</span>'
+        +'</td></tr>';
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:#aaa;padding:1.5rem">Nenhuma filial cadastrada. <a href="#" onclick="showPage(\'sesmt-filiais\')">Cadastrar agora →</a></td></tr>'
+    +'</tbody></table></div></div>';
+
+  el.innerHTML=html;
+}
+
+function portNovaConfig(id){
+  var p=id?portaria_configs.find(function(x){return x.id===id;})||{}:{};
+  var isNew=!id;
+  var filOpts=filiais.map(function(f){
+    return '<option value="'+f.id+'"'+(p.filial_id===f.id?' selected':'')+'>'+escHtml(f.codigo?f.codigo+' — ':'')+escHtml(f.nome)+'</option>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:1rem">'+(isNew?'+ Nova Portaria':'✎ Editar Portaria')+'</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Filial <span style="color:#A32D2D">*</span></label>'
+    +'<select class="inp" id="pc-filial" style="width:100%"><option value="">Selecione a filial...</option>'+filOpts+'</select>'
+    +'<div style="font-size:10px;color:#185FA5;margin-top:2px">Endereço e responsável são herdados da filial.</div></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Nome da Portaria <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="pc-nome" style="width:100%" value="'+escHtml(p.nome||'')+'" placeholder="Ex: Portaria Principal, Portaria de Fundos"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Responsável</label>'
+    +'<input class="inp" id="pc-resp" style="width:100%" value="'+escHtml(p.responsavel||'')+'" placeholder="Nome do responsável"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Tipo</label>'
+    +'<select class="inp" id="pc-tipo" style="width:100%">'
+    +['Principal','Secundária','Fundos','Administrativa','Mercadoria','Veículos'].map(function(t){
+      return '<option value="'+t+'"'+(p.tipo===t?' selected':'')+'>'+t+'</option>';
+    }).join('')+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Status</label>'
+    +'<select class="inp" id="pc-status" style="width:100%">'
+    +'<option value="Ativo"'+(p.status==='Ativo'||!p.status?' selected':'')+'>Ativo</option>'
+    +'<option value="Inativo"'+(p.status==='Inativo'?' selected':'')+'>Inativo</option>'
+    +'</select></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Observações</label>'
+    +'<textarea class="inp" id="pc-obs" style="width:100%;height:50px;resize:vertical">'+escHtml(p.obs||'')+'</textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="pc-salvar" style="flex:2">Salvar</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn=document.getElementById('pc-salvar'); if(!btn)return;
+    btn.onclick=function(){
+      var filId=(document.getElementById('pc-filial')||{}).value||'';
+      var nome =(document.getElementById('pc-nome')||{}).value||'';
+      if(!filId){progShowToast('⚠ Selecione a filial.');return;}
+      if(!nome) {progShowToast('⚠ Informe o nome da portaria.');return;}
+      var dados={
+        filial_id:filId,nome:nome.trim(),
+        responsavel:(document.getElementById('pc-resp')||{}).value||'',
+        tipo:(document.getElementById('pc-tipo')||{}).value||'Principal',
+        status:(document.getElementById('pc-status')||{}).value||'Ativo',
+        obs:(document.getElementById('pc-obs')||{}).value||''
+      };
+      if(isNew){
+        dados.id='pc'+Date.now();
+        portaria_configs.push(dados);
+        if(!DEMO) sbInsert('portaria_configs',_semId(dados));
+      } else {
+        var idx=portaria_configs.findIndex(function(x){return x.id===id;});
+        if(idx>=0) portaria_configs[idx]=Object.assign({},p,dados);
+        if(!DEMO) sbUpdate('portaria_configs',dados,'id=eq.'+id);
+        if(_portAtiva&&_portAtiva.id===id) _portAtiva=portaria_configs[idx];
+      }
+      portSalvarConfigs();
+      closeModal();
+      portRenderConfig();
+      portRenderSeletorAtiva();
+      progShowToast('✅ Portaria '+(isNew?'criada':'atualizada')+': '+dados.nome);
+    };
+  },50);
+}
+function portEditarConfig(id){portNovaConfig(id);}
+function portExcluirConfig(id){
+  if(!confirm('Excluir esta configuração de portaria?')) return;
+  portaria_configs=portaria_configs.filter(function(p){return p.id!==id;});
+  if(_portAtiva&&_portAtiva.id===id){_portAtiva=null;localStorage.removeItem('port_ativa_id');}
+  portSalvarConfigs();
+  if(!DEMO) sbUpdate('portaria_configs',{status:'Inativo'},'id=eq.'+id);
+  portRenderConfig();
+  portRenderSeletorAtiva();
+}
+
+function frtPortariaRenderLimpar(){
+  var hoje = dataHojeLocal();
+  var el;
+  el=document.getElementById('frt-port-data-ini'); if(el) el.value=hoje;
+  el=document.getElementById('frt-port-data-fim'); if(el) el.value=hoje;
+  el=document.getElementById('frt-port-placa');    if(el) el.value='';
+  el=document.getElementById('frt-port-status');   if(el) el.value='';
+  el=document.getElementById('frt-port-base');     if(el) el.value='';
+  frtPortariaRender();
+}
+
 function frtPortariaRender(){
   var tb = document.getElementById('frt-port-tbody'); if(!tb) return;
-  var data   = (document.getElementById('frt-port-data')||{}).value||dataHojeLocal();
+  var hoje   = dataHojeLocal();
+  var dataIni= (document.getElementById('frt-port-data-ini')||{}).value||hoje;
+  var dataFim= (document.getElementById('frt-port-data-fim')||{}).value||hoje;
+  var placa  = ((document.getElementById('frt-port-placa')||{}).value||'').trim().toUpperCase();
   var status = (document.getElementById('frt-port-status')||{}).value||'';
   var base   = (document.getElementById('frt-port-base')||{}).value||'';
 
+  // Inicializar datas se vazias
+  if(!dataIni){ var el=document.getElementById('frt-port-data-ini'); if(el){el.value=hoje;dataIni=hoje;} }
+  if(!dataFim){ var el2=document.getElementById('frt-port-data-fim'); if(el2){el2.value=hoje;dataFim=hoje;} }
+  if(dataIni>dataFim){ var t=dataIni; dataIni=dataFim; dataFim=t; }
+
+  // Buscar do banco se intervalo > 1 dia e dados podem estar incompletos
+  var _portariaKey = dataIni+'|'+dataFim;
+  if(!DEMO && _portariaKey !== frtPortariaRender._lastKey){
+    frtPortariaRender._lastKey = _portariaKey;
+    if(dataIni !== dataFim || dataIni !== hoje){
+      tb.innerHTML='<tr><td colspan="12" style="padding:1.5rem;text-align:center;color:#aaa">⏳ Buscando registros...</td></tr>';
+      sbFetch('frotas_portaria_saidas',{
+        filters:['data_saida=gte.'+dataIni+'T00:00:00','data_saida=lte.'+dataFim+'T23:59:59'],
+        order:'data_saida.desc', limit:500
+      }).then(function(rows){
+        if(rows&&rows.length){
+          // Mesclar com frt_portaria sem duplicar
+          rows.forEach(function(r){
+            if(!frt_portaria.find(function(p){return p.id===r.id;}))
+              frt_portaria.push(r);
+          });
+        }
+        frtPortariaRender._lastKey = null; // permitir re-busca se filtros mudarem
+        frtPortariaRender();
+      }).catch(function(){ frtPortariaRender._lastKey=null; frtPortariaRender(); });
+      return;
+    }
+  }
+
   var rows = frt_portaria.filter(function(p){
-    if(status&&p.status!==status)return false;
-    if(base&&p.base_saida!==base)return false;
+    var ds = (p.data_saida||'').split('T')[0];
+    if(ds < dataIni || ds > dataFim) return false;
+    if(placa && !(p.placa||'').toUpperCase().includes(placa)) return false;
+    if(status && p.status!==status) return false;
+    if(base   && p.base_saida!==base) return false;
     return true;
-  });
+  }).sort(function(a,b){ return (b.data_saida||'') > (a.data_saida||'') ? 1 : -1; });
 
   var m = document.getElementById('frt-port-metricas');
   if(m){
@@ -35702,12 +35941,20 @@ window.addEventListener('load',async function(){
 <!-- PORTARIA -->
 <div id="pg-frotas-portaria" class="hidden">
 
+  <!-- Seletor de Portaria Ativa -->
+  <div style="display:flex;align-items:center;gap:10px;background:#1a1a18;border-radius:10px;padding:10px 16px;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:12px;font-weight:600;color:#aaa;white-space:nowrap">🏠 Operando em:</span>
+    <div id="port-seletor-ativa" style="flex:1;min-width:200px"></div>
+    <span id="port-ativa-label" style="font-size:11px;color:#3B6D11;background:#EAF3DE;border-radius:6px;padding:3px 10px;display:none"></span>
+  </div>
+
   <!-- Abas da Portaria -->
   <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
-    <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">📋 Equipes do Dia</button>
-    <button class="port-tab-btn" id="port-tab-saida"     onclick="portMostrarAba('saida')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🚦 Controle de Saída</button>
+    <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">📋 Equipes do Dia</button>
+    <button class="port-tab-btn" id="port-tab-saida"     onclick="portMostrarAba('saida')"     style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🚦 Controle de Saída</button>
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📝 Registros</button>
-    <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
+    <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
+    <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
 
   <!-- ABA: EQUIPES DO DIA -->
@@ -35790,15 +36037,20 @@ window.addEventListener('load',async function(){
     <div class="card" style="margin-bottom:1rem">
       <div class="ch" style="flex-wrap:wrap;gap:8px">
         <span class="ct">📝 Registros de Saída/Retorno</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <input type="date" class="inp" id="frt-port-data" style="width:145px" onchange="frtPortariaRender()"/>
-          <select class="inp" id="frt-port-base" style="width:160px" onchange="frtPortariaRender()">
-            <option value="">Todas as bases</option>
-          </select>
-          <select class="inp" id="frt-port-status" style="width:160px" onchange="frtPortariaRender()">
-            <option value="">Todos</option>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:11px;color:#888;white-space:nowrap">De:</label>
+          <input type="date" class="inp" id="frt-port-data-ini" style="width:140px" onchange="frtPortariaRender()"/>
+          <label style="font-size:11px;color:#888;white-space:nowrap">Até:</label>
+          <input type="date" class="inp" id="frt-port-data-fim" style="width:140px" onchange="frtPortariaRender()"/>
+          <input type="text" class="inp" id="frt-port-placa" placeholder="🔍 Placa..." style="width:110px;text-transform:uppercase" oninput="frtPortariaRender()"/>
+          <select class="inp" id="frt-port-status" style="width:140px" onchange="frtPortariaRender()">
+            <option value="">Todos status</option>
             <option>Aguardando saída</option><option>Em campo</option><option>Retornado</option><option>Atrasado</option>
           </select>
+          <select class="inp" id="frt-port-base" style="width:150px" onchange="frtPortariaRender()">
+            <option value="">Todas as bases</option>
+          </select>
+          <button class="btn" onclick="frtPortariaRenderLimpar()" style="font-size:11px;color:#888">✕ Limpar</button>
           <button class="btn" onclick="frtPortariaAbrirRetorno()" style="color:#3B6D11;border-color:#3B6D11">↩ Registrar retorno</button>
         </div>
       </div>
@@ -35837,6 +36089,9 @@ window.addEventListener('load',async function(){
       <tbody id="rsv-tbody"></tbody>
     </table></div>
   </div>
+
+  <!-- ABA: CONFIGURAÇÃO -->
+  <div id="port-aba-config" style="display:none"></div>
 
 </div>
 
