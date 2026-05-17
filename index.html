@@ -19991,7 +19991,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.5.7',
+  numero: '5.5.8',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -20237,66 +20237,64 @@ function progSalvarStatus(){
   }
 }
 
+var _progStatusDateCache = null; // data da última carga do banco
+
 function progCarregarStatus(data){
   // RESET completo — cada dia começa limpo
   _progStatus = {}; _progStatusInfo = {};
 
-  // 1. localStorage primeiro (instantâneo)
+  // 1. localStorage primeiro (instantâneo — renderiza imediato)
   var saved = _progLS.carregarStatus(data);
   if(saved){
     if(saved.status) _progStatus    = Object.assign({}, saved.status);
     if(saved.info)   _progStatusInfo = Object.assign({}, saved.info);
   }
-  // Normalizar chave legada 'faltou' → 'falta' (PROG_STATUS usa 'falta')
   Object.keys(_progStatus).forEach(function(id){ if(_progStatus[id]==='faltou') _progStatus[id]='falta'; });
-  // Aplicar status persistentes (afastado/férias/treinamento com data retorno)
   progAplicarPersistentes(data);
+  progRenderQuadro(); // render imediato com localStorage
 
-  // 2. Banco (autoritativo) — sobrescreve localStorage só se retornar dados válidos
+  // 2. Banco: SE já carregado para esse dia, não buscar de novo
+  if(_progStatusDateCache === data) return;
+
   if(!DEMO){
-    sbFetch('prog_status_diario',{filters:['data=eq.'+data]})
-      .then(function(rows){
-        // rows===null significa erro de API — preservar localStorage, não resetar
-        if(rows === null){ progRenderQuadro(); return null; }
-        // Só reseta se banco respondeu (array vazio = dia sem registros, também válido)
-        _progStatus = {}; _progStatusInfo = {};
-        if(rows&&rows.length){
-          rows.forEach(function(r){
-            _progStatus[r.colaborador_id] = r.status==='faltou'?'falta':r.status;
-            if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
-            if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
-          });
+    // Uma única chamada paralela: status do dia + persistentes ativos
+    Promise.all([
+      sbFetch('prog_status_diario', {filters:['data=eq.'+data]}),
+      sbFetch('prog_status_diario', {
+        filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lt.'+data],
+        order:'data.desc', limit:500
+      })
+    ]).then(function(res){
+      var rowsDia      = res[0];
+      var persistRows  = res[1] || [];
+
+      if(rowsDia === null){ return; } // erro de API — manter localStorage
+
+      // Aplicar status do dia
+      _progStatus = {}; _progStatusInfo = {};
+      (rowsDia||[]).forEach(function(r){
+        _progStatus[r.colaborador_id] = r.status==='faltou'?'falta':r.status;
+        if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+        if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+      });
+      progAplicarPersistentes(data);
+
+      // Aplicar persistentes (afastado/férias) de dias anteriores ainda ativos
+      var jaVisto={};
+      persistRows.forEach(function(r){
+        if(!jaVisto[r.colaborador_id] &&
+           (!_progStatus[r.colaborador_id]||_progStatus[r.colaborador_id]==='disponivel')){
+          jaVisto[r.colaborador_id]=true;
+          _progStatus[r.colaborador_id]=r.status==='faltou'?'falta':r.status;
+          if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+          if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno=r.data_retorno;
+          progSalvarPersistente(r.colaborador_id,r.status,r.data,r.data_retorno,r.obs||'');
         }
-        progAplicarPersistentes(data);
-        // Buscar status persistentes de dias ANTERIORES que ainda estão ativos hoje
-        // (afastado/férias/treinamento com data_retorno > data atual)
-        return sbFetch('prog_status_diario',{
-          filters:[
-            'status=in.(ferias,afastado,treinamento)',
-            'data_retorno=gt.'+data,
-            'data=lt.'+data
-          ],
-          order:'data.desc'
-        });
-      })
-      .then(function(persistRows){
-        if(!persistRows) return;
-        var jaVisto = {};
-        persistRows.forEach(function(r){
-          // Aplicar só se ainda não tem status explícito para hoje
-          if(!jaVisto[r.colaborador_id] &&
-             (!_progStatus[r.colaborador_id] || _progStatus[r.colaborador_id]==='disponivel')){
-            jaVisto[r.colaborador_id] = true;
-            _progStatus[r.colaborador_id] = r.status==='faltou'?'falta':r.status;
-            if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
-            if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
-            // Atualizar localStorage persistente para futuras visitas
-            progSalvarPersistente(r.colaborador_id, r.status, r.data, r.data_retorno, r.obs||'');
-          }
-        });
-        progRenderQuadro();
-      })
-      .catch(function(){ progRenderQuadro(); });
+      });
+
+      _progStatusDateCache = data; // marcar como carregado
+      progRenderQuadro();
+    }).catch(function(){ progRenderQuadro(); });
   }
 }
 
@@ -20411,6 +20409,8 @@ function progRenderQuadro(){
   var tipo = progGetTipo();
   if(data !== _progData){
     _progData = data;
+    _progStatusDateCache  = null; // invalidar cache ao mudar data
+    _progVeiculosDateCache = null;
     progCarregarStatus(data);
     progCarregarVeiculos(data);
   }
@@ -30922,16 +30922,23 @@ function progSetVeiculo(eqId, data, veiculoObj){
   }
 }
 
+var _progVeiculosDateCache = null;
+
 function progCarregarVeiculos(data){
   // Carregar do localStorage
   try{
     var saved = localStorage.getItem('prog_veic_'+data);
     if(saved) _progVeiculos = JSON.parse(saved);
   }catch(e){}
+
+  // Se já carregou para este dia do banco, não buscar de novo
+  if(_progVeiculosDateCache === data) return;
+
   // Carregar do banco
   if(!DEMO){
     sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data]})
       .then(function(rows){
+        _progVeiculosDateCache = data;
         if(!rows||!rows.length) return;
         rows.forEach(function(r){
           _progVeiculos[progVeiculoKey(r.equipe_id, r.data)] = {
