@@ -27707,38 +27707,63 @@ async function abrirRelatorioMedicao(medId){
   // Incluir TODAS as equipes do contrato (ativas e inativas — podem ter existido no período)
   var eqs=equipes_disp.filter(function(e){return e.contrato_id===m.contrato_id;});
 
-  // Buscar sessões do período com fallback robusto
+  // Buscar sessões do período com diagnóstico detalhado
   var sessoes=[];
   if(!DEMO){
+    // Diagnóstico: testar acesso à tabela primeiro
+    var url0=SB.url+'/rest/v1/sessoes_disponibilidade?select=id,data,equipe_id&limit=1';
+    var h0={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
     try{
-      // Tentativa 1: sbFetchAll paginado
+      var r0=await fetch(url0,{headers:h0});
+      console.log('[Rel diagnóstico] Acesso tabela HTTP:',r0.status);
+      var t0=await r0.text();
+      console.log('[Rel diagnóstico] Amostra:', t0.substring(0,200));
+    }catch(e){ console.error('[Rel diagnóstico] Erro acesso tabela:',e); }
+
+    // Busca com os filtros de data
+    var url1=SB.url+'/rest/v1/sessoes_disponibilidade?select=id,data,equipe_id'
+      +'&data=gte.'+m.data_ini+'&data=lte.'+m.data_fim
+      +'&order=data&limit=10';
+    try{
+      var r1=await fetch(url1,{headers:h0});
+      console.log('[Rel diagnóstico] Filtro período HTTP:',r1.status);
+      var t1=await r1.text();
+      console.log('[Rel diagnóstico] Resultado filtro:', t1.substring(0,300));
+      var amostra=t1?JSON.parse(t1):[];
+      console.log('[Rel diagnóstico] Registros no período (amostra 10):',amostra.length);
+    }catch(e){ console.error('[Rel diagnóstico] Erro filtro:',e); }
+
+    try{
       sessoes=await sbFetchAll('sessoes_disponibilidade',{
         filters:['data=gte.'+m.data_ini,'data=lte.'+m.data_fim],
         order:'data'
       });
-    }catch(e){ sessoes=[]; }
+      console.log('[Relatório] sessões via sbFetchAll:',sessoes.length);
+    }catch(e){ console.error('[Relatório] sbFetchAll erro:',e); sessoes=[]; }
 
-    // Fallback: sbFetch simples se retornou vazio
     if(!sessoes||!sessoes.length){
       try{
         var r=await sbFetch('sessoes_disponibilidade',{
           filters:['data=gte.'+m.data_ini,'data=lte.'+m.data_fim],
           order:'data', limit:2000
         });
+        console.log('[Relatório] sessões via sbFetch:',r&&r.length);
         if(r&&r.length) sessoes=r;
-      }catch(e){}
+      }catch(e){ console.error('[Relatório] sbFetch erro:',e); }
     }
 
-    // Fallback final: usar sessões em memória no período
     if(!sessoes||!sessoes.length){
       sessoes=sessoes_disp.filter(function(s){
         var d=(s.data||'').split('T')[0];
         return d>=m.data_ini && d<=m.data_fim;
       });
-      if(sessoes.length)
-        console.log('[Relatório] usando sessões em memória:', sessoes.length);
-      else
-        console.warn('[Relatório] ATENÇÃO: Nenhuma sessão encontrada para o período', m.data_ini, m.data_fim);
+      console.log('[Relatório] sessões em memória (sessoes_disp):',sessoes.length,
+        '| sessoes_disp total:',sessoes_disp.length,
+        '| range disp:', sessoes_disp.length?sessoes_disp[sessoes_disp.length-1].data+'→'+sessoes_disp[0].data:'vazio');
+    }
+
+    if(!sessoes||!sessoes.length){
+      console.warn('[Relatório] ATENÇÃO: Nenhuma sessão encontrada para o período',m.data_ini,m.data_fim);
     }
   } else {
     sessoes=sessoes_disp.filter(function(s){
