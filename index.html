@@ -20776,7 +20776,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.0.0',
+  numero: '6.0.1',
   data:   '17/05/2026',
   build:  '20260517-584',
   log: [
@@ -29368,6 +29368,7 @@ var MAIN_CONFIG = {
     {id:'sesmt-nr6',          label:'📋 Ficha NR-6'},
     {id:'sesmt-ocorrencias',  label:'⚠️ Ocorrências / Incidentes'},
     {id:'sesmt-aprovacoes',   label:'✅ Aprovações'},
+    {id:'sesmt-inspecoes',    label:'🔍 Inspeções ENEL'},
   ]},
   almoxarifado: {label:'🏭 Almoxarifado', subs:[
     {id:'sesmt-alm',          label:'📦 Almoxarifado'},
@@ -29516,6 +29517,9 @@ var SIDEBAR_GROUPS = {
       {id:'sesmt-ocorrencias',  icon:'⚠️', label:'Ocorrências / Incidentes'},
       {id:'sesmt-aprovacoes',   icon:'✅', label:'Aprovações'},
     ]},
+    {label:'Inspeções ENEL', items:[
+      {id:'sesmt-inspecoes',    icon:'🔍', label:'Inspeções em Campo', badge:'badge-desvios-criticos'},
+    ]},
   ],
 };
 
@@ -29566,9 +29570,13 @@ function sidebarMostrarItens(main, subAtivo){
     html += '<div class="sb-section">'+g.label+'</div>';
     (g.items||[]).forEach(function(item){
       var ativo = item.id === subAtivo ? ' on' : '';
+      var badgeHtml = item.badge
+        ? '<span id="'+item.badge+'" style="background:#A32D2D;color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;font-weight:700;margin-left:auto;display:none">0</span>'
+        : '';
       html += '<button class="sb-item'+ativo+'" onclick="showSub(\''+item.id+'\')" id="sn-'+item.id+'">'
         +'<span class="sb-icon">'+item.icon+'</span>'
         +'<span class="sb-label">'+item.label+'</span>'
+        +badgeHtml
         +'</button>';
     });
   });
@@ -29666,7 +29674,7 @@ function ocultarPaginasSESMTAlmoxarifado(){
     'pg-sesmt-dashboard','pg-sesmt-alm','pg-sesmt-itens','pg-sesmt-epis',
     'pg-sesmt-uniformes','pg-sesmt-lavagem','pg-sesmt-ferramentas',
     'pg-sesmt-locacoes','pg-sesmt-estoque','pg-sesmt-treinamentos',
-    'pg-sesmt-nr6','pg-sesmt-ocorrencias','pg-sesmt-aprovacoes',
+    'pg-sesmt-nr6','pg-sesmt-ocorrencias','pg-sesmt-aprovacoes','pg-sesmt-inspecoes',
     'pg-sesmt-vales','pg-sesmt-filiais','pg-sesmt-ficha-epi','pg-alm-dashboard'
   ].forEach(function(id){
     var el = document.getElementById(id);
@@ -29770,6 +29778,14 @@ function showPage(pageId){
   else if(pageId==='sesmt-ocorrencias'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('ocorrencias'); }); }
   else if(pageId==='sesmt-aprovacoes') { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); sesmtInit(); sesmtSetAba('aprovacoes'); }); }
   else if(pageId==='sesmt-dashboard')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); document.getElementById('pg-sesmt-dashboard').classList.remove('hidden'); renderSesmtDashboard(); }); }
+  else if(pageId==='sesmt-inspecoes'){
+    _precisaModulo('sesmt',function(){
+      ocultarPaginasSESMTAlmoxarifado();
+      var pg=document.getElementById('pg-sesmt-inspecoes');
+      if(pg) pg.classList.remove('hidden');
+      renderInspecoesEnel();
+    });
+  }
   else if(pageId==='sesmt-mobilizacao'){
     _precisaModulo('sesmt',function(){
       ocultarPaginasSESMTAlmoxarifado();
@@ -40276,6 +40292,473 @@ var funcs = [];
 // DASHBOARD GERENCIAL SESMT — CENTRAL DE GOVERNANÇA
 // ══════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+// INSPEÇÕES ENEL — Módulo completo
+// ══════════════════════════════════════════════════════════════
+
+var inspecoes_enel = []; // [{id,equipe_id,contrato_id,data,tst_nome,status,respostas[],obs}]
+var _inspecoesCarregadas = false;
+
+// ── Checklist padrão ENEL ────────────────────────────────────
+var ITENS_INSPECAO_ENEL = [
+  // Categoria: EPI
+  {id:'epi_01', categoria:'EPI', descricao:'Capacete de segurança (CA válido)',           e_impeditivo:true},
+  {id:'epi_02', categoria:'EPI', descricao:'Cinturão de segurança tipo paraquedista',      e_impeditivo:true},
+  {id:'epi_03', categoria:'EPI', descricao:'Luvas isolantes (tensão adequada)',            e_impeditivo:true},
+  {id:'epi_04', categoria:'EPI', descricao:'Óculos de proteção / protetor facial',         e_impeditivo:true},
+  {id:'epi_05', categoria:'EPI', descricao:'Calçado de segurança dielétrico',              e_impeditivo:true},
+  {id:'epi_06', categoria:'EPI', descricao:'Vestimenta antichama (FR)',                    e_impeditivo:true},
+  {id:'epi_07', categoria:'EPI', descricao:'Ficha de EPI assinada e atualizada',           e_impeditivo:false},
+  // Categoria: Documentação
+  {id:'doc_01', categoria:'Documentação', descricao:'APR preenchida e assinada',           e_impeditivo:true},
+  {id:'doc_02', categoria:'Documentação', descricao:'PT (Permissão de Trabalho) vigente',  e_impeditivo:true},
+  {id:'doc_03', categoria:'Documentação', descricao:'Habilitação condutores atualizada',   e_impeditivo:false},
+  {id:'doc_04', categoria:'Documentação', descricao:'CNH categoria adequada (D/E)',         e_impeditivo:false},
+  // Categoria: Veículo
+  {id:'vei_01', categoria:'Veículo', descricao:'Sinalização (cones, cavaletes, fitas)',    e_impeditivo:true},
+  {id:'vei_02', categoria:'Veículo', descricao:'Extintor de incêndio (prazo vigente)',     e_impeditivo:true},
+  {id:'vei_03', categoria:'Veículo', descricao:'Kit de primeiros socorros',                e_impeditivo:false},
+  {id:'vei_04', categoria:'Veículo', descricao:'Documentação do veículo (CRLV)',           e_impeditivo:false},
+  {id:'vei_05', categoria:'Veículo', descricao:'Veículo em boas condições mecânicas',      e_impeditivo:true},
+  // Categoria: Ferramental
+  {id:'fer_01', categoria:'Ferramental', descricao:'Ferramentas isoladas (tensão adequada)',e_impeditivo:true},
+  {id:'fer_02', categoria:'Ferramental', descricao:'Equipamentos de medição calibrados',   e_impeditivo:true},
+  {id:'fer_03', categoria:'Ferramental', descricao:'Escadas em bom estado de conservação', e_impeditivo:false},
+  // Categoria: Trabalho em Altura
+  {id:'alt_01', categoria:'Trabalho em Altura', descricao:'Trava-quedas / talabarte duplo',e_impeditivo:true},
+  {id:'alt_02', categoria:'Trabalho em Altura', descricao:'Ponto de ancoragem adequado',   e_impeditivo:true},
+  {id:'alt_03', categoria:'Trabalho em Altura', descricao:'Delimitação de área de risco',  e_impeditivo:true},
+];
+
+// ── Carregar inspeções do banco ──────────────────────────────
+async function carregarInspecoesEnel(force){
+  if(_inspecoesCarregadas && !force) return;
+  if(DEMO){ _inspecoesCarregadas=true; return; }
+  try{
+    var rows = await sbFetch('inspecoes_enel',{order:'data.desc',limit:200});
+    if(rows && rows.length) inspecoes_enel = rows;
+    _inspecoesCarregadas = true;
+    _atualizarBadgeDesvios();
+  }catch(e){ console.warn('[Inspeções] Erro ao carregar:', e); }
+}
+
+// ── Badge de paralisações ────────────────────────────────────
+function _atualizarBadgeDesvios(){
+  var nParal = inspecoes_enel.filter(function(i){ return i.status==='Paralisado'; }).length;
+  ['badge-desvios-criticos','badge-desvios-criticos-top'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(!el) return;
+    if(nParal > 0){
+      el.textContent = nParal;
+      el.style.display = 'inline';
+    } else {
+      el.style.display = 'none';
+    }
+  });
+}
+
+// ── Render principal ─────────────────────────────────────────
+async function renderInspecoesEnel(){
+  var el = document.getElementById('insp-lista');
+  if(!el) return;
+
+  await carregarInspecoesEnel();
+
+  // Popular select contratos
+  var selCont = document.getElementById('insp-fil-contrato');
+  if(selCont && selCont.options.length <= 1){
+    contratos.forEach(function(c){
+      var o = document.createElement('option');
+      o.value = c.id; o.textContent = c.nome;
+      selCont.appendChild(o);
+    });
+  }
+
+  var filCont  = (document.getElementById('insp-fil-contrato')||{}).value||'';
+  var filSt    = (document.getElementById('insp-fil-status')||{}).value||'';
+  var filData  = (document.getElementById('insp-fil-data')||{}).value||'';
+
+  var lista = inspecoes_enel.filter(function(i){
+    if(filCont && i.contrato_id!==filCont) return false;
+    if(filSt   && i.status!==filSt)        return false;
+    if(filData && (i.data||'').split('T')[0]!==filData) return false;
+    return true;
+  });
+
+  // Métricas
+  var tot   = lista.length;
+  var nPar  = lista.filter(function(i){return i.status==='Paralisado';}).length;
+  var nConf = lista.filter(function(i){return i.status==='Conforme';}).length;
+  var nAnd  = lista.filter(function(i){return i.status==='Em andamento';}).length;
+  var nPend = lista.filter(function(i){return i.status==='Pendente';}).length;
+
+  var metrics = document.getElementById('insp-metrics');
+  if(metrics){
+    metrics.innerHTML =
+      '<div class="met"><div class="met-l">Total</div><div class="met-v">'+tot+'</div></div>'
+      +'<div class="met"><div class="met-l" style="color:#A32D2D">🛑 Paralisados</div><div class="met-v mv-r">'+nPar+'</div></div>'
+      +'<div class="met"><div class="met-l" style="color:#3B6D11">✅ Conformes</div><div class="met-v mv-g">'+nConf+'</div></div>'
+      +'<div class="met"><div class="met-l" style="color:#185FA5">🔄 Em andamento</div><div class="met-v" style="color:#185FA5">'+nAnd+'</div></div>'
+      +'<div class="met"><div class="met-l" style="color:#854F0B">⏳ Pendentes</div><div class="met-v" style="color:#854F0B">'+nPend+'</div></div>';
+  }
+
+  if(!lista.length){
+    el.innerHTML='<div class="card" style="text-align:center;padding:2rem;color:#aaa">Nenhuma inspeção encontrada. Clique em "+ Nova Inspeção" ou importe um JSON do TST.</div>';
+    return;
+  }
+
+  el.innerHTML = lista.map(function(insp){
+    var eq = equipes_disp.find(function(e){return e.id===insp.equipe_id;})
+           || equipes.find(function(e){return e.id===insp.equipe_id;})
+           || {codigo:insp.equipe_codigo||'—'};
+    var cont = contratos.find(function(c){return c.id===insp.contrato_id;})||{nome:'—'};
+    var res = Array.isArray(insp.respostas) ? insp.respostas : [];
+    var nImped = res.filter(function(r){
+      var item = ITENS_INSPECAO_ENEL.find(function(x){return x.id===r.item_id;});
+      return item && item.e_impeditivo && r.resultado==='reprovado';
+    }).length;
+    var nReprov = res.filter(function(r){return r.resultado==='reprovado';}).length;
+    var nTotal  = res.length;
+
+    var corStatus = insp.status==='Paralisado'?'#A32D2D':insp.status==='Conforme'?'#3B6D11':insp.status==='Em andamento'?'#185FA5':'#854F0B';
+    var bgStatus  = insp.status==='Paralisado'?'#FCE8E8':insp.status==='Conforme'?'#EAF3DE':insp.status==='Em andamento'?'#E6F1FB':'#FEF3E2';
+    var iconStatus= insp.status==='Paralisado'?'🛑':insp.status==='Conforme'?'✅':insp.status==='Em andamento'?'🔄':'⏳';
+
+    return '<div class="card" style="margin-bottom:.5rem;border-left:3px solid '+corStatus+'">'
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:0">'
+      +'<div style="font-weight:700;font-size:13px">'+escHtml(eq.codigo||eq.nome||'—')+' <span style="font-size:11px;color:#888;font-weight:400">'+escHtml(cont.nome)+'</span></div>'
+      +'<div style="font-size:11px;color:#888;margin-top:2px">'
+      +'<span>📅 '+fmtD((insp.data||'').split('T')[0])+'</span>'
+      +(insp.tst_nome?'<span style="margin-left:10px">👷 TST: '+escHtml(insp.tst_nome)+'</span>':'')
+      +'</div>'
+      +'</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">'
+      +(nImped>0?'<span style="background:#FCE8E8;color:#A32D2D;border-radius:8px;padding:2px 8px;font-size:10px;font-weight:700">'+nImped+' impeditivo'+(nImped>1?'s':'')+'</span>':'')
+      +(nReprov>0&&nImped===0?'<span style="background:#FEF3E2;color:#854F0B;border-radius:8px;padding:2px 8px;font-size:10px;font-weight:600">'+nReprov+' desvio'+(nReprov>1?'s':'')+'</span>':'')
+      +'<span style="background:'+bgStatus+';color:'+corStatus+';border-radius:8px;padding:3px 10px;font-size:11px;font-weight:700">'+iconStatus+' '+escHtml(insp.status)+'</span>'
+      +'<button class="btn btn-sm" onclick="verInspecao(\''+insp.id+'\')">Ver</button>'
+      +(insp.status!=='Conforme'?'<button class="btn btn-sm" style="color:#3B6D11;border-color:#3B6D11" onclick="resolverInspecao(\''+insp.id+'\')">Resolver</button>':'')
+      +'</div>'
+      +'</div>'
+      +(nTotal?'<div style="margin-top:6px;background:#f5f5f3;border-radius:6px;height:6px;overflow:hidden">'
+        +'<div style="height:100%;background:'+(nImped>0?'#A32D2D':nReprov>0?'#E8A000':'#3B6D11')+';width:'+Math.round((nTotal-nReprov)/nTotal*100)+'%;transition:width .3s"></div>'
+        +'</div>'
+        +'<div style="font-size:10px;color:#aaa;margin-top:3px">'+( nTotal-nReprov)+'/'+nTotal+' itens OK</div>':'')
+      +'</div>';
+  }).join('');
+}
+
+// ── Nova Inspeção (modal) ────────────────────────────────────
+function abrirNovaInspecao(inspecaoId){
+  var isNew = !inspecaoId;
+  var insp  = inspecaoId ? inspecoes_enel.find(function(x){return x.id===inspecaoId;}) : null;
+  insp = insp || {equipe_id:'',contrato_id:'',data:dataHojeLocal(),tst_nome:'',status:'Em andamento',respostas:[],obs:''};
+
+  var eqOpts = '<option value="">Selecione a equipe...</option>'
+    + equipes_disp.concat(equipes.filter(function(e){return !equipes_disp.find(function(d){return d.id===e.id;}); }))
+      .map(function(e){return '<option value="'+e.id+'"'+(insp.equipe_id===e.id?' selected':'')+'>'+escHtml(e.codigo||e.nome)+'</option>';}).join('');
+
+  var contOpts = '<option value="">Selecione o contrato...</option>'
+    + contratos.map(function(c){return '<option value="'+c.id+'"'+(insp.contrato_id===c.id?' selected':'')+'>'+escHtml(c.nome)+'</option>';}).join('');
+
+  // Agrupar itens por categoria
+  var categorias = {};
+  ITENS_INSPECAO_ENEL.forEach(function(item){
+    if(!categorias[item.categoria]) categorias[item.categoria]=[];
+    categorias[item.categoria].push(item);
+  });
+
+  var checklistHtml = Object.keys(categorias).map(function(cat){
+    var itens = categorias[cat];
+    return '<div style="margin-bottom:.75rem">'
+      +'<div style="font-size:11px;font-weight:700;color:#185FA5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:.35rem;border-bottom:1px solid #e0dfd8;padding-bottom:3px">'+cat+'</div>'
+      +itens.map(function(item){
+        var resp = (insp.respostas||[]).find(function(r){return r.item_id===item.id;})||{resultado:'na'};
+        return '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid #f0efe8">'
+          +(item.e_impeditivo?'<span title="Impeditivo" style="color:#A32D2D;font-size:12px">🚫</span>':'<span style="color:#aaa;font-size:12px">○</span>')
+          +'<span style="flex:1;font-size:12px">'+escHtml(item.descricao)+'</span>'
+          +'<div style="display:flex;gap:4px">'
+          +'<label style="cursor:pointer;font-size:11px;display:flex;align-items:center;gap:3px">'
+          +'<input type="radio" name="item_'+item.id+'" value="aprovado"'+(resp.resultado==='aprovado'?' checked':'')+'> <span style="color:#3B6D11;font-weight:600">OK</span></label>'
+          +'<label style="cursor:pointer;font-size:11px;display:flex;align-items:center;gap:3px;margin-left:6px">'
+          +'<input type="radio" name="item_'+item.id+'" value="reprovado"'+(resp.resultado==='reprovado'?' checked':'')+'> <span style="color:#A32D2D;font-weight:600">NOK</span></label>'
+          +'<label style="cursor:pointer;font-size:11px;display:flex;align-items:center;gap:3px;margin-left:6px">'
+          +'<input type="radio" name="item_'+item.id+'" value="na"'+(resp.resultado==='na'?' checked':'')+'> <span style="color:#aaa">N/A</span></label>'
+          +'</div>'
+          +'</div>';
+      }).join('')
+      +'</div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:620px;max-height:92vh;overflow-y:auto">'
+    +'<h3 style="margin-bottom:1rem">'+(isNew?'🔍 Nova Inspeção ENEL':'✎ Editar Inspeção')+'</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg"><label style="font-size:11px">Equipe <span style="color:#A32D2D">*</span></label>'
+    +'<select class="inp" id="insp-eq" style="width:100%">'+eqOpts+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Contrato <span style="color:#A32D2D">*</span></label>'
+    +'<select class="inp" id="insp-cont" style="width:100%">'+contOpts+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Data</label>'
+    +'<input class="inp" type="date" id="insp-data" style="width:100%" value="'+(insp.data||dataHojeLocal())+'"/></div>'
+    +'<div class="fg"><label style="font-size:11px">TST responsável</label>'
+    +'<input class="inp" id="insp-tst" style="width:100%" value="'+escHtml(insp.tst_nome||'')+'" placeholder="Nome do TST"/></div>'
+    +'</div>'
+    +'<div style="font-size:11px;font-weight:700;color:#1a1a18;margin-bottom:.5rem">Checklist — 🚫 = Item Impeditivo</div>'
+    +checklistHtml
+    +'<div class="fg" style="margin-top:.75rem"><label style="font-size:11px">Observações gerais</label>'
+    +'<textarea class="inp" id="insp-obs" style="width:100%;height:60px">'+escHtml(insp.obs||'')+'</textarea></div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="insp-salvar" style="flex:2">Salvar inspeção</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('insp-salvar'); if(!btn) return;
+    btn.onclick = function(){
+      var eqId   = (document.getElementById('insp-eq')||{}).value||'';
+      var contId = (document.getElementById('insp-cont')||{}).value||'';
+      var data   = (document.getElementById('insp-data')||{}).value||dataHojeLocal();
+      var tst    = (document.getElementById('insp-tst')||{}).value||'';
+      var obs    = (document.getElementById('insp-obs')||{}).value||'';
+      if(!eqId){  progShowToast('⚠ Selecione a equipe.'); return; }
+      if(!contId){ progShowToast('⚠ Selecione o contrato.'); return; }
+
+      // Coletar respostas do checklist
+      var respostas = ITENS_INSPECAO_ENEL.map(function(item){
+        var radios = document.querySelectorAll('input[name="item_'+item.id+'"]');
+        var resultado = 'na';
+        radios.forEach(function(r){ if(r.checked) resultado = r.value; });
+        return {item_id:item.id, resultado:resultado};
+      });
+
+      // Verificar impeditivos reprovados → PARALISADO
+      var temImpeditivo = respostas.some(function(r){
+        var item = ITENS_INSPECAO_ENEL.find(function(x){return x.id===r.item_id;});
+        return item && item.e_impeditivo && r.resultado==='reprovado';
+      });
+
+      var todoAprovado = respostas.every(function(r){ return r.resultado==='aprovado'||r.resultado==='na'; });
+      var status = temImpeditivo ? 'Paralisado' : todoAprovado ? 'Conforme' : 'Em andamento';
+
+      var eq = equipes_disp.find(function(e){return e.id===eqId;}) || equipes.find(function(e){return e.id===eqId;}) || {};
+
+      var novaInsp = {
+        id: inspecaoId || ('insp_'+Date.now()),
+        equipe_id: eqId, equipe_codigo: eq.codigo||'',
+        contrato_id: contId, data: data, tst_nome: tst,
+        status: status, respostas: respostas, obs: obs,
+        criado_em: new Date().toISOString()
+      };
+
+      if(isNew){
+        inspecoes_enel.unshift(novaInsp);
+        if(!DEMO) sbInsert('inspecoes_enel', _semId(novaInsp));
+      } else {
+        var idx = inspecoes_enel.findIndex(function(x){return x.id===inspecaoId;});
+        if(idx>=0) inspecoes_enel[idx] = novaInsp;
+        if(!DEMO) sbUpdate('inspecoes_enel', novaInsp, 'id=eq.'+inspecaoId);
+      }
+
+      if(temImpeditivo) _dispararAlertaParalisacao(novaInsp, eq);
+
+      _atualizarBadgeDesvios();
+      closeModal();
+      renderInspecoesEnel();
+      progShowToast(temImpeditivo ? '🛑 Inspeção salva — equipe PARALISADA por item impeditivo!' : '✅ Inspeção salva: '+status);
+    };
+  }, 50);
+}
+
+// ── Visualizar inspeção ──────────────────────────────────────
+function verInspecao(id){
+  var insp = inspecoes_enel.find(function(x){return x.id===id;}); if(!insp) return;
+  var eq = equipes_disp.find(function(e){return e.id===insp.equipe_id;}) || equipes.find(function(e){return e.id===insp.equipe_id;}) || {codigo:insp.equipe_codigo||'—'};
+  var res = Array.isArray(insp.respostas) ? insp.respostas : [];
+  var corStatus = insp.status==='Paralisado'?'#A32D2D':insp.status==='Conforme'?'#3B6D11':'#185FA5';
+  var bgStatus  = insp.status==='Paralisado'?'#FCE8E8':insp.status==='Conforme'?'#EAF3DE':'#E6F1FB';
+
+  // Agrupar itens por categoria
+  var categorias = {};
+  ITENS_INSPECAO_ENEL.forEach(function(item){
+    if(!categorias[item.categoria]) categorias[item.categoria]=[];
+    categorias[item.categoria].push(item);
+  });
+
+  var checkHtml = Object.keys(categorias).map(function(cat){
+    return '<div style="margin-bottom:.5rem">'
+      +'<div style="font-size:10px;font-weight:700;color:#185FA5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">'+cat+'</div>'
+      +categorias[cat].map(function(item){
+        var r = res.find(function(x){return x.item_id===item.id;})||{resultado:'na'};
+        var icone = r.resultado==='aprovado'?'<span style="color:#3B6D11;font-weight:700">✅</span>'
+                  : r.resultado==='reprovado'?(item.e_impeditivo?'<span style="color:#A32D2D;font-weight:700">🚫</span>':'<span style="color:#E8A000;font-weight:700">⚠️</span>')
+                  : '<span style="color:#aaa">—</span>';
+        return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:.5px solid #f5f5f3">'
+          +icone+'<span style="font-size:11px;flex:1">'+escHtml(item.descricao)+'</span>'
+          +(item.e_impeditivo&&r.resultado==='reprovado'?'<span style="font-size:9px;background:#FCE8E8;color:#A32D2D;border-radius:4px;padding:1px 5px;font-weight:700">IMPEDITIVO</span>':'')
+          +'</div>';
+      }).join('')
+      +'</div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:.75rem">'
+    +'<div style="flex:1"><div style="font-weight:700;font-size:15px">'+escHtml(eq.codigo||eq.nome||'—')+'</div>'
+    +'<div style="font-size:11px;color:#888">'+fmtD((insp.data||'').split('T')[0])+(insp.tst_nome?' · TST: '+escHtml(insp.tst_nome):'')+'</div></div>'
+    +'<span style="background:'+bgStatus+';color:'+corStatus+';border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700">'
+    +(insp.status==='Paralisado'?'🛑':insp.status==='Conforme'?'✅':'🔄')+' '+escHtml(insp.status)+'</span>'
+    +'</div>'
+    +checkHtml
+    +(insp.obs?'<div style="margin-top:.5rem;background:#f5f5f3;border-radius:8px;padding:8px 12px;font-size:12px"><b>Observações:</b> '+escHtml(insp.obs)+'</div>':'')
+    +'<div style="display:flex;gap:8px;margin-top:1rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +(insp.status!=='Conforme'?'<button class="btn btn-pri" onclick="closeModal();abrirNovaInspecao(\''+id+'\')" style="flex:1">✎ Editar</button>':'')
+    +(insp.status==='Paralisado'?'<button class="btn" style="flex:1;background:#3B6D11;color:#fff;border-color:#3B6D11" onclick="closeModal();resolverInspecao(\''+id+'\')">✅ Resolver</button>':'')
+    +'</div></div></div>');
+}
+
+// ── Resolver paralisação ─────────────────────────────────────
+function resolverInspecao(id){
+  var insp = inspecoes_enel.find(function(x){return x.id===id;}); if(!insp) return;
+  insp.status = 'Conforme';
+  insp.resolvido_em = new Date().toISOString();
+  insp.resolvido_por = usuarioLogado ? usuarioLogado.nome : '';
+  if(!DEMO) sbUpdate('inspecoes_enel',{status:'Conforme',resolvido_em:insp.resolvido_em,resolvido_por:insp.resolvido_por},'id=eq.'+id);
+  _atualizarBadgeDesvios();
+  renderInspecoesEnel();
+  progShowToast('✅ Paralisação resolvida.');
+}
+
+// ── Importar JSON do TST ─────────────────────────────────────
+function importarJsonTST(){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:500px">'
+    +'<h3 style="margin-bottom:.75rem">📥 Importar JSON do TST</h3>'
+    +'<div style="font-size:12px;color:#888;margin-bottom:.75rem">'
+    +'Cole abaixo o JSON recebido do TST (sistema ENEL). O sistema vai processar as respostas e identificar itens impeditivos automaticamente.</div>'
+    +'<textarea class="inp" id="json-tst-input" style="width:100%;height:180px;font-family:monospace;font-size:11px" placeholder=\'{"equipe_codigo":"EBN740","data":"2026-05-18","tst":"João Silva","respostas":[{"item_id":"epi_01","resultado":"aprovado"},...]}\''+'></textarea>'
+    +'<div id="json-tst-erro" style="color:#A32D2D;font-size:12px;margin-top:.35rem;display:none"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="json-tst-ok" style="flex:2">Processar e importar</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('json-tst-ok'); if(!btn) return;
+    btn.onclick = function(){
+      var txt = (document.getElementById('json-tst-input')||{}).value||'';
+      var erroEl = document.getElementById('json-tst-erro');
+      try{
+        var json = JSON.parse(txt);
+        // Aceita array de inspeções ou objeto único
+        var lista = Array.isArray(json) ? json : [json];
+        var importados = 0, paralisados = 0;
+        lista.forEach(function(item){
+          _processarJsonInspecao(item);
+          importados++;
+          if(_checarImpeditivos(item.respostas||[])) paralisados++;
+        });
+        _atualizarBadgeDesvios();
+        closeModal();
+        renderInspecoesEnel();
+        var msg = '✅ '+importados+' inspeção(ões) importada(s)';
+        if(paralisados) msg += ' — 🛑 '+paralisados+' com IMPEDITIVO!';
+        progShowToast(msg);
+      }catch(e){
+        if(erroEl){ erroEl.textContent='JSON inválido: '+e.message; erroEl.style.display='block'; }
+      }
+    };
+  }, 50);
+}
+
+// Processar um objeto JSON de inspeção recebido do TST
+function _processarJsonInspecao(json){
+  // Mapear equipe pelo código
+  var eq = equipes_disp.find(function(e){return e.codigo===(json.equipe_codigo||json.equipe);})
+         || equipes.find(function(e){return e.codigo===(json.equipe_codigo||json.equipe);});
+  var cont = eq ? contratos.find(function(c){return c.id===eq.contrato_id;}) : null;
+
+  var respostas = (json.respostas||json.answers||[]).map(function(r){
+    return {
+      item_id:   r.item_id   || r.id       || '',
+      resultado: r.resultado || r.resultado || (r.e_impeditivo===true?'reprovado':(r.aprovado===true?'aprovado':'na')),
+      obs:       r.obs       || r.observacao || ''
+    };
+  });
+
+  var temImpeditivo = _checarImpeditivos(respostas);
+  var todoOk = respostas.every(function(r){return r.resultado==='aprovado'||r.resultado==='na';});
+  var status = temImpeditivo ? 'Paralisado' : todoOk ? 'Conforme' : 'Em andamento';
+
+  var novaInsp = {
+    id: 'insp_tst_'+Date.now()+'_'+Math.random().toString(36).substr(2,5),
+    equipe_id:    eq ? eq.id : '',
+    equipe_codigo: json.equipe_codigo || json.equipe || '',
+    contrato_id:  cont ? cont.id : '',
+    data:         json.data || dataHojeLocal(),
+    tst_nome:     json.tst  || json.tst_nome || '',
+    status:       status,
+    respostas:    respostas,
+    obs:          json.obs  || json.observacao || '',
+    origem:       'json_tst',
+    criado_em:    new Date().toISOString()
+  };
+
+  inspecoes_enel.unshift(novaInsp);
+  if(!DEMO) sbInsert('inspecoes_enel', _semId(novaInsp));
+  if(temImpeditivo) _dispararAlertaParalisacao(novaInsp, eq||{codigo:json.equipe_codigo||'?'});
+}
+
+function _checarImpeditivos(respostas){
+  return respostas.some(function(r){
+    var item = ITENS_INSPECAO_ENEL.find(function(x){return x.id===r.item_id;});
+    return item && item.e_impeditivo && r.resultado==='reprovado';
+  });
+}
+
+// ── Gatilho de bloqueio e alerta ─────────────────────────────
+function _dispararAlertaParalisacao(insp, eq){
+  // 1. Log interno
+  console.warn('[INSPEÇÃO] 🛑 PARALISAÇÃO:', eq.codigo||insp.equipe_codigo, '| Data:', insp.data, '| TST:', insp.tst_nome);
+
+  // 2. Toast visual urgente
+  setTimeout(function(){
+    var banner = document.createElement('div');
+    banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:#A32D2D;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600';
+    banner.innerHTML='<span style="font-size:20px">🛑</span>'
+      +'<span style="flex:1">PARALISAÇÃO — Equipe <b>'+(eq.codigo||insp.equipe_codigo||'?')+'</b> por item impeditivo de segurança</span>'
+      +'<button onclick="this.parentNode.remove()" style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:5px 10px;cursor:pointer">✕</button>';
+    document.body.appendChild(banner);
+    setTimeout(function(){ if(banner.parentNode) banner.remove(); }, 15000);
+  }, 100);
+
+  // 3. Atualizar status da equipe em composicao_dia (marca como paralisado)
+  if(eq.id){
+    var hoje = dataHojeLocal();
+    var comp = composicao_dia.find(function(c){
+      return c.equipe_id===eq.id && (c.data||'').split('T')[0]===hoje;
+    });
+    if(comp){
+      comp._paralisado_inspecao = true;
+      comp._paralisado_motivo = 'Inspeção ENEL — item impeditivo';
+      if(!DEMO) sbUpdate('composicao_dia',{_paralisado:true,paralisado_motivo:'Inspeção ENEL'},'id=eq.'+(comp.id||''));
+    }
+  }
+
+  // 4. Registrar em log de alertas (se a tabela existir)
+  if(!DEMO){
+    sbInsert('alertas_sistema',{
+      tipo:'paralisacao_inspecao',
+      equipe_id: eq.id||null,
+      equipe_codigo: eq.codigo||insp.equipe_codigo||'',
+      contrato_id: insp.contrato_id||null,
+      data: insp.data,
+      descricao: '🛑 Paralisação por inspeção ENEL — item impeditivo reprovado',
+      tst: insp.tst_nome||'',
+      criado_em: new Date().toISOString(),
+      criado_por: usuarioLogado ? usuarioLogado.nome : ''
+    }).catch(function(){/* tabela pode não existir ainda */});
+  }
+}
+
 function renderSesmtDashboard(){
   var hoje = dataHojeLocal();
   var em7  = _diasAdiante(7);
@@ -44448,6 +44931,7 @@ return [a,b,c,d].map(function(n){return ('00000000'+(n<0?n+4294967296:n).toStrin
     <button onclick="showSub('sesmt-nr6')"          class="btn btn-sm" style="font-size:11px">📋 Ficha NR-6</button>
     <button onclick="showSub('sesmt-ocorrencias')"  class="btn btn-sm" style="font-size:11px">⚠️ Ocorrências</button>
     <button onclick="showSub('sesmt-aprovacoes')"   class="btn btn-sm" style="font-size:11px">✅ Aprovações</button>
+    <button onclick="showSub('sesmt-inspecoes')"    class="btn btn-sm" style="font-size:11px;position:relative">🔍 Inspeções ENEL <span id="badge-desvios-criticos-top" style="display:none;background:#A32D2D;color:#fff;border-radius:10px;padding:0 5px;font-size:9px;font-weight:700;margin-left:3px">0</span></button>
   </div>
   <!-- Filtros -->
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">
@@ -44534,6 +45018,41 @@ return [a,b,c,d].map(function(n){return ('00000000'+(n<0?n+4294967296:n).toStrin
   </div>
 </div>
 <div id="pg-sesmt-aprovacoes" class="hidden"><div id="aprovacoes-list"></div></div>
+
+<!-- ══════════════════════════════════════════════════════
+     INSPEÇÕES ENEL — Padrão CENA/ENEL
+     ══════════════════════════════════════════════════════ -->
+<div id="pg-sesmt-inspecoes" class="hidden">
+
+  <!-- Métricas topo -->
+  <div class="metrics" id="insp-metrics" style="margin-bottom:1rem"></div>
+
+  <!-- Barra de ações -->
+  <div class="card" style="margin-bottom:.75rem">
+    <div class="ch" style="flex-wrap:wrap;gap:8px">
+      <span class="ct">🔍 Inspeções em Campo — Padrão ENEL</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <select class="inp" id="insp-fil-contrato" style="width:200px" onchange="renderInspecoesEnel()">
+          <option value="">Todos os contratos</option>
+        </select>
+        <select class="inp" id="insp-fil-status" style="width:150px" onchange="renderInspecoesEnel()">
+          <option value="">Todos os status</option>
+          <option value="Conforme">✅ Conforme</option>
+          <option value="Paralisado">🛑 Paralisado</option>
+          <option value="Em andamento">🔄 Em andamento</option>
+          <option value="Pendente">⏳ Pendente</option>
+        </select>
+        <input type="date" class="inp" id="insp-fil-data" style="width:145px" onchange="renderInspecoesEnel()"/>
+        <button class="btn btn-pri" onclick="abrirNovaInspecao()">+ Nova Inspeção</button>
+        <button class="btn" onclick="importarJsonTST()" title="Importar JSON do TST" style="font-size:12px">📥 Importar JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lista de inspeções -->
+  <div id="insp-lista"></div>
+
+</div>
 <!-- pg-sesmt-vales movido para pg-alm-dashboard -->
 <div id="pg-sesmt-funcionarios" class="hidden">
   <div class="card" style="margin-bottom:1rem">
