@@ -20188,7 +20188,7 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '5.8.2',
+  numero: '5.8.3',
   data:   '08/05/2026',
   build:  '20260508-375',
   log: [
@@ -33219,7 +33219,7 @@ var frt_reservas = []; // reservas de veículos compartilhados
 var PORT_PERFIS_FLEX = ['Supervisor','Coordenador','Gerente','Diretor','supervisor','coordenador','gerente','diretor'];
 
 function portMostrarAba(aba){
-  ['equipes','saida','registros','reservas','config'].forEach(function(a){
+  ['equipes','saida','liberacao','registros','reservas','config'].forEach(function(a){
     var el=document.getElementById('port-aba-'+a);
     var btn=document.getElementById('port-tab-'+a);
     if(el) el.style.display = a===aba?'':'none';
@@ -33227,6 +33227,7 @@ function portMostrarAba(aba){
   });
   if(aba==='equipes')   portRenderEquipesDia();
   if(aba==='saida')     portRenderAguardando();
+  if(aba==='liberacao') portRenderLiberacao();
   if(aba==='registros') frtPortariaRender();
   if(aba==='reservas')  portRenderReservas();
   if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
@@ -33665,6 +33666,305 @@ function portRenderReservas(){
 
 var portaria_configs = []; // [{id, filial_id, nome, responsavel, tipo, status, obs}]
 var _portAtiva = null;    // config da portaria em operação
+
+// ══════════════════════════════════════════════════════════════════
+// PORTARIA — MÓDULO DE LIBERAÇÃO / CONTROLE DE ACESSO
+// ══════════════════════════════════════════════════════════════════
+var portaria_visitas = []; // [{id, data, hora_entrada, hora_saida, nome, doc_tipo, doc_num,
+                           //   foto_visitante, foto_documento, destino, cargo_destino,
+                           //   motivo, cracha, portaria_id, status, obs}]
+
+function portCarregarVisitas(data){
+  if(DEMO) return;
+  sbFetch('portaria_visitas',{
+    filters:['data=eq.'+data],
+    order:'hora_entrada.desc'
+  }).then(function(rows){
+    if(rows && rows.length){
+      rows.forEach(function(r){
+        if(!portaria_visitas.find(function(v){return v.id===r.id;}))
+          portaria_visitas.push(r);
+      });
+    }
+    portRenderLiberacao();
+  }).catch(function(){});
+}
+
+function portRenderLiberacao(){
+  var hoje  = dataHojeLocal();
+  var data  = (document.getElementById('lib-data')||{}).value || hoje;
+  var busca = ((document.getElementById('lib-busca')||{}).value||'').toLowerCase();
+  var stFil = (document.getElementById('lib-status-fil')||{}).value||'';
+
+  var selData = document.getElementById('lib-data');
+  if(selData && !selData.value) selData.value = hoje;
+
+  // Carregar do banco se necessário
+  if(!portaria_visitas.some(function(v){return v.data===data;})){
+    portCarregarVisitas(data);
+  }
+
+  var visitas = portaria_visitas.filter(function(v){
+    if(v.data !== data) return false;
+    if(busca && !(v.nome||'').toLowerCase().includes(busca) && !(v.doc_num||'').includes(busca)) return false;
+    if(stFil && v.status !== stFil) return false;
+    return true;
+  }).sort(function(a,b){ return (b.hora_entrada||'') > (a.hora_entrada||'') ? 1 : -1; });
+
+  // Resumo
+  var resumo = document.getElementById('lib-resumo');
+  if(resumo){
+    var nTotal  = visitas.length;
+    var nVisita = visitas.filter(function(v){return v.status==='Em visita';}).length;
+    var nAguard = visitas.filter(function(v){return v.status==='Aguardando';}).length;
+    var nSaiu   = visitas.filter(function(v){return v.status==='Saiu';}).length;
+    function chip(icon,label,val,cor,bg){
+      return '<div style="background:'+(bg||'#f5f5f3')+';border-radius:8px;padding:5px 12px;display:flex;align-items:center;gap:6px">'
+        +'<span style="font-size:16px">'+icon+'</span>'
+        +'<div><div style="font-size:16px;font-weight:700;color:'+(cor||'#555')+'">'+val+'</div>'
+        +'<div style="font-size:10px;color:#888">'+label+'</div></div></div>';
+    }
+    resumo.innerHTML = chip('🆔','Total do dia',nTotal,'#555','#f5f5f3')
+      +chip('⏳','Aguardando',nAguard,'#854F0B','#FEF3E2')
+      +chip('🟢','Em visita',nVisita,'#3B6D11','#EAF3DE')
+      +chip('✅','Saíram',nSaiu,'#185FA5','#E6F1FB');
+  }
+
+  // Tabela
+  var tbody = document.getElementById('lib-tbody');
+  if(!tbody) return;
+
+  if(!visitas.length){
+    tbody.innerHTML='<tr><td colspan="9" style="padding:2rem;text-align:center;color:#aaa">Nenhum visitante registrado'+( data===hoje?' hoje':' em '+fmtD(data))+'.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = visitas.map(function(v){
+    var corStatus = v.status==='Em visita'?'#3B6D11':v.status==='Aguardando'?'#854F0B':'#185FA5';
+    var bgStatus  = v.status==='Em visita'?'#EAF3DE':v.status==='Aguardando'?'#FEF3E2':'#E6F1FB';
+    var fotoHtml  = v.foto_visitante
+      ? '<img src="'+v.foto_visitante+'" style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:1.5px solid #e0dfd8">'
+      : '<div style="width:38px;height:38px;border-radius:50%;background:#f0efe8;display:flex;align-items:center;justify-content:center;font-size:18px">👤</div>';
+    return '<tr style="border-bottom:.5px solid #f0efe8" onmouseenter="this.style.background=\'#F0F4FF\'" onmouseleave="this.style.background=\'\'">'
+      +'<td style="padding:6px 8px">'+fotoHtml+'</td>'
+      +'<td style="padding:6px 8px;font-weight:600">'+escHtml(v.nome||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+escHtml(v.doc_tipo||'')+'</div><div style="color:#888">'+escHtml(v.doc_num||'—')+'</div></td>'
+      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+escHtml(v.destino||'—')+'</div><div style="color:#888;font-size:10px">'+escHtml(v.cargo_destino||'')+'</div></td>'
+      +'<td style="padding:6px 8px;font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(v.motivo||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+escHtml(v.hora_entrada||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+escHtml(v.hora_saida||'—')+'</td>'
+      +'<td style="padding:6px 8px"><span style="background:'+bgStatus+';color:'+corStatus+';border-radius:12px;padding:2px 9px;font-size:10px;font-weight:600">'+escHtml(v.status||'Aguardando')+'</span></td>'
+      +'<td style="padding:6px 8px;white-space:nowrap">'
+        +(v.status!=='Saiu'?'<button class="btn btn-sm" onclick="portRegistrarSaida(\''+v.id+'\')" style="color:#3B6D11;border-color:#3B6D11;font-size:10px">↩ Saída</button> ':'')
+        +'<button class="btn btn-sm" onclick="portVerVisita(\''+v.id+'\')" style="font-size:10px">👁</button> '
+        +'<button class="btn btn-sm" onclick="portEditarVisita(\''+v.id+'\')" style="font-size:10px">✎</button>'
+      +'</td></tr>';
+  }).join('');
+}
+
+function portNovaVisita(id){
+  var v = id ? portaria_visitas.find(function(x){return x.id===id;}) : null;
+  var isNew = !v; v = v||{};
+  var hoje = dataHojeLocal();
+  var horaAtual = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+
+  // Colaboradores para o select "destino"
+  var colabOpts = colaboradores.filter(function(c){return c.ativo!==false;}).map(function(c){
+    return '<option value="'+escHtml(c.nome)+'">'+escHtml(c.nome)+(c.cargo?' — '+c.cargo:'')+'</option>';
+  }).join('');
+
+  var docTipos = ['RG','CPF','CNH','Passaporte','Carteira de Trabalho','Crachá Empresa','Outro'];
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">'
+    +'<h3 style="margin-bottom:1rem">'+(isNew?'🆔 Registrar Visitante':'✏ Editar Visita')+'</h3>'
+
+    // Dados pessoais
+    +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Dados do Visitante</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Nome completo <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="lib-nome" style="width:100%" value="'+escHtml(v.nome||'')+'" placeholder="Nome do visitante"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Tipo de documento</label>'
+    +'<select class="inp" id="lib-doc-tipo" style="width:100%">'
+    +docTipos.map(function(t){return '<option'+(v.doc_tipo===t?' selected':'')+'>'+t+'</option>';}).join('')
+    +'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Número do documento</label>'
+    +'<input class="inp" id="lib-doc-num" style="width:100%" value="'+escHtml(v.doc_num||'')+'" placeholder="Número"/></div>'
+    +'</div>'
+
+    // Foto do visitante
+    +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Fotos</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div>'
+      +'<label style="font-size:11px;display:block;margin-bottom:4px">📷 Foto do visitante</label>'
+      +'<div id="lib-foto-vis-preview" style="width:100%;height:120px;background:#f5f5f3;border-radius:8px;border:1.5px dashed #e0dfd8;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden" onclick="document.getElementById(\'lib-foto-vis-inp\').click()">'
+        +(v.foto_visitante?'<img src="'+v.foto_visitante+'" style="width:100%;height:100%;object-fit:cover">':'<span style="color:#aaa;font-size:12px;text-align:center">Clique para capturar<br>ou enviar foto</span>')
+      +'</div>'
+      +'<input type="file" id="lib-foto-vis-inp" accept="image/*" capture="user" style="display:none" onchange="portFotoPreview(this,\'lib-foto-vis-preview\',\'lib-foto-vis-data\')">'
+      +'<input type="hidden" id="lib-foto-vis-data" value="'+escHtml(v.foto_visitante||'')+'">'
+    +'</div>'
+    +'<div>'
+      +'<label style="font-size:11px;display:block;margin-bottom:4px">📄 Foto do documento</label>'
+      +'<div id="lib-foto-doc-preview" style="width:100%;height:120px;background:#f5f5f3;border-radius:8px;border:1.5px dashed #e0dfd8;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden" onclick="document.getElementById(\'lib-foto-doc-inp\').click()">'
+        +(v.foto_documento?'<img src="'+v.foto_documento+'" style="width:100%;height:100%;object-fit:cover">':'<span style="color:#aaa;font-size:12px;text-align:center">Foto do RG/CNH<br>ou outro documento</span>')
+      +'</div>'
+      +'<input type="file" id="lib-foto-doc-inp" accept="image/*" capture="environment" style="display:none" onchange="portFotoPreview(this,\'lib-foto-doc-preview\',\'lib-foto-doc-data\')">'
+      +'<input type="hidden" id="lib-foto-doc-data" value="'+escHtml(v.foto_documento||'')+'">'
+    +'</div>'
+    +'</div>'
+
+    // Destino e motivo
+    +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Visita</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
+    +'<div class="fg"><label style="font-size:11px">Com quem vai falar <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="lib-destino" list="lib-destino-list" style="width:100%" value="'+escHtml(v.destino||'')+'" placeholder="Nome da pessoa"/>'
+    +'<datalist id="lib-destino-list">'+colabOpts+'</datalist></div>'
+    +'<div class="fg"><label style="font-size:11px">Cargo / Setor do destino</label>'
+    +'<input class="inp" id="lib-cargo-dest" style="width:100%" value="'+escHtml(v.cargo_destino||'')+'" placeholder="Ex: Engenharia, RH..."/></div>'
+    +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Motivo da visita <span style="color:#A32D2D">*</span></label>'
+    +'<textarea class="inp" id="lib-motivo" style="width:100%;height:60px;resize:vertical" placeholder="Descreva o motivo da visita...">'+escHtml(v.motivo||'')+'</textarea></div>'
+    +'</div>'
+
+    // Horário e crachá
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:1.25rem">'
+    +'<div class="fg"><label style="font-size:11px">Hora de entrada</label>'
+    +'<input class="inp" type="time" id="lib-hora-ent" style="width:100%" value="'+(v.hora_entrada||horaAtual)+'"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Hora de saída</label>'
+    +'<input class="inp" type="time" id="lib-hora-sai" style="width:100%" value="'+(v.hora_saida||'')+'"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Crachá / Catraca</label>'
+    +'<input class="inp" id="lib-cracha" style="width:100%" value="'+escHtml(v.cracha||'')+'" placeholder="Nº do crachá"/></div>'
+    +'</div>'
+
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="lib-salvar-btn" style="flex:2">'+(isNew?'✅ Registrar entrada':'Salvar alterações')+'</button>'
+    +'</div></div></div>');
+
+  // Setar doc_tipo após render
+  setTimeout(function(){
+    var selDoc = document.getElementById('lib-doc-tipo');
+    if(selDoc && v.doc_tipo) selDoc.value = v.doc_tipo;
+
+    var btn = document.getElementById('lib-salvar-btn'); if(!btn)return;
+    btn.onclick = function(){
+      var g = function(i){return (document.getElementById(i)||{}).value||'';};
+      var nome   = g('lib-nome').trim();
+      var destino= g('lib-destino').trim();
+      var motivo = g('lib-motivo').trim();
+      if(!nome)   { progShowToast('⚠ Informe o nome do visitante.'); return; }
+      if(!destino){ progShowToast('⚠ Informe com quem o visitante vai falar.'); return; }
+      if(!motivo) { progShowToast('⚠ Informe o motivo da visita.'); return; }
+
+      var hoje2 = dataHojeLocal();
+      var dados = {
+        data:         hoje2,
+        hora_entrada: g('lib-hora-ent'),
+        hora_saida:   g('lib-hora-sai')||null,
+        nome:         nome,
+        doc_tipo:     g('lib-doc-tipo'),
+        doc_num:      g('lib-doc-num'),
+        foto_visitante: g('lib-foto-vis-data')||null,
+        foto_documento: g('lib-foto-doc-data')||null,
+        destino:       destino,
+        cargo_destino: g('lib-cargo-dest'),
+        motivo:        motivo,
+        cracha:        g('lib-cracha'),
+        portaria_id:   _portAtiva ? _portAtiva.id : null,
+        status:        g('lib-hora-sai') ? 'Saiu' : 'Em visita',
+        obs:           ''
+      };
+
+      if(isNew){
+        dados.id = 'vis'+Date.now();
+        portaria_visitas.unshift(dados);
+        if(!DEMO) sbInsert('portaria_visitas', _semId(dados));
+        progShowToast('✅ Visitante registrado: '+nome);
+      } else {
+        var idx = portaria_visitas.findIndex(function(x){return x.id===id;});
+        if(idx>=0) portaria_visitas[idx] = Object.assign({}, portaria_visitas[idx], dados);
+        if(!DEMO) sbUpdate('portaria_visitas', dados, 'id=eq.'+id);
+        progShowToast('✅ Visita atualizada.');
+      }
+      closeModal();
+      portRenderLiberacao();
+    };
+  },50);
+}
+
+function portEditarVisita(id){ portNovaVisita(id); }
+
+function portVerVisita(id){
+  var v = portaria_visitas.find(function(x){return x.id===id;}); if(!v) return;
+  var corStatus = v.status==='Em visita'?'#3B6D11':v.status==='Aguardando'?'#854F0B':'#185FA5';
+  var bgStatus  = v.status==='Em visita'?'#EAF3DE':v.status==='Aguardando'?'#FEF3E2':'#E6F1FB';
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1rem">'
+    +(v.foto_visitante
+      ?'<img src="'+v.foto_visitante+'" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #185FA5;flex-shrink:0">'
+      :'<div style="width:72px;height:72px;border-radius:50%;background:#f0efe8;display:flex;align-items:center;justify-content:center;font-size:36px;flex-shrink:0">👤</div>')
+    +'<div>'
+    +'<div style="font-size:18px;font-weight:700">'+escHtml(v.nome||'—')+'</div>'
+    +'<div style="font-size:12px;color:#888">'+escHtml(v.doc_tipo||'')+' '+escHtml(v.doc_num||'')+'</div>'
+    +'<span style="background:'+bgStatus+';color:'+corStatus+';border-radius:12px;padding:2px 10px;font-size:11px;font-weight:600">'+escHtml(v.status||'')+'</span>'
+    +'</div></div>'
+    +'<table style="width:100%;font-size:12px;border-collapse:collapse">'
+    +[
+      ['🎯 Destino',    v.destino],
+      ['🏢 Cargo/Setor', v.cargo_destino],
+      ['📋 Motivo',     v.motivo],
+      ['⏰ Entrada',    v.hora_entrada],
+      ['🚪 Saída',      v.hora_saida||'—'],
+      ['🏷 Crachá',     v.cracha||'—'],
+    ].map(function(row){
+      return '<tr style="border-bottom:.5px solid #f5f5f3">'
+        +'<td style="padding:6px 8px;color:#888;white-space:nowrap;width:120px">'+row[0]+'</td>'
+        +'<td style="padding:6px 8px;font-weight:500">'+escHtml(row[1]||'—')+'</td></tr>';
+    }).join('')
+    +'</table>'
+    +(v.foto_documento?'<div style="margin-top:.75rem"><label style="font-size:11px;color:#888;display:block;margin-bottom:4px">Documento</label><img src="'+v.foto_documento+'" style="width:100%;border-radius:8px;max-height:200px;object-fit:contain;background:#f5f5f3"></div>':'')
+    +'<div style="margin-top:1rem;display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +(v.status!=='Saiu'?'<button class="btn btn-pri" onclick="portRegistrarSaida(\''+id+'\');closeModal()" style="flex:1;background:#3B6D11;border-color:#3B6D11">↩ Registrar saída</button>':'')
+    +'</div></div></div>');
+}
+
+function portRegistrarSaida(id){
+  var v = portaria_visitas.find(function(x){return x.id===id;}); if(!v) return;
+  var agora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  v.hora_saida = agora;
+  v.status     = 'Saiu';
+  if(!DEMO) sbUpdate('portaria_visitas',{hora_saida:agora,status:'Saiu'},'id=eq.'+id);
+  portRenderLiberacao();
+  progShowToast('✅ Saída de '+escHtml(v.nome)+' registrada às '+agora+'.');
+}
+
+function portFotoPreview(input, previewId, hiddenId){
+  var file = input.files && input.files[0]; if(!file) return;
+  // Limitar tamanho: redimensionar se necessário
+  var reader = new FileReader();
+  reader.onload = function(e){
+    var img = new Image();
+    img.onload = function(){
+      var canvas = document.createElement('canvas');
+      var MAX = 600;
+      var w = img.width, h = img.height;
+      if(w > MAX || h > MAX){
+        if(w > h){ h = Math.round(h*MAX/w); w = MAX; }
+        else      { w = Math.round(w*MAX/h); h = MAX; }
+      }
+      canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      var b64 = canvas.toDataURL('image/jpeg',0.75);
+      var prev = document.getElementById(previewId);
+      if(prev) prev.innerHTML = '<img src="'+b64+'" style="width:100%;height:100%;object-fit:cover">';
+      var hid = document.getElementById(hiddenId);
+      if(hid) hid.value = b64;
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
 
 function portCarregarConfigs(){
   try{ var s=localStorage.getItem('portaria_configs'); if(s) portaria_configs=JSON.parse(s); }catch(e){}
@@ -36219,9 +36519,49 @@ window.addEventListener('load',async function(){
   <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
     <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">📋 Equipes do Dia</button>
     <button class="port-tab-btn" id="port-tab-saida"     onclick="portMostrarAba('saida')"     style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🚦 Controle de Saída</button>
+    <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Liberação</button>
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📝 Registros</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
+  </div>
+
+  <!-- ABA: LIBERAÇÃO -->
+  <div id="port-aba-liberacao" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">🆔 Controle de Acesso — Visitantes</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input type="date" class="inp" id="lib-data" style="width:145px" onchange="portRenderLiberacao()"/>
+          <input type="text" class="inp" id="lib-busca" placeholder="🔍 Nome ou documento..." style="width:180px" oninput="portRenderLiberacao()"/>
+          <select class="inp" id="lib-status-fil" style="width:140px" onchange="portRenderLiberacao()">
+            <option value="">Todos</option>
+            <option value="Aguardando">Aguardando</option>
+            <option value="Em visita">Em visita</option>
+            <option value="Saiu">Saiu</option>
+          </select>
+          <button class="btn btn-pri" onclick="portNovaVisita()">+ Registrar Visitante</button>
+        </div>
+      </div>
+      <!-- Resumo do dia -->
+      <div id="lib-resumo" style="display:flex;gap:8px;flex-wrap:wrap;padding:.5rem 0;border-bottom:.5px solid #f0efe8;margin-bottom:.75rem"></div>
+    </div>
+    <!-- Tabela de visitantes -->
+    <div style="overflow-x:auto">
+      <table class="tbl" style="font-size:12px">
+        <thead><tr>
+          <th style="width:50px">Foto</th>
+          <th>Visitante</th>
+          <th>Documento</th>
+          <th>Destino</th>
+          <th>Motivo</th>
+          <th>Entrada</th>
+          <th>Saída</th>
+          <th>Status</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="lib-tbody"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- ABA: EQUIPES DO DIA -->
