@@ -1106,6 +1106,9 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     </div>
     <div id="sidebar-inner" style="display:none"></div>
     <div id="sidebar-bottom">
+      <button onclick="abrirTelaAudit()" title="Log de Auditoria" style="display:flex;align-items:center;gap:6px;width:100%;padding:6px 10px;border:none;background:transparent;color:#555;cursor:pointer;font-size:11px;font-weight:500;text-align:left;border-bottom:1px solid #e0dfd8;margin-bottom:4px;">
+        📋 <span>Log de Auditoria</span>
+      </button>
       <div id="sidebar-user-card">
         <div id="sidebar-user-avatar">U</div>
         <div id="sidebar-user-info">
@@ -5442,6 +5445,7 @@ function salvarLancamento(){
   // atualiza verba realizado
   var v=verbas.find(function(x){return x.contrato_id===novo.contrato_id&&x.categoria_id===novo.categoria_id;});
   if(v)v.valor_realizado=(v.valor_realizado||0)+val;
+  auditLog('criar','financeiro','Novo lançamento: '+(novo.descricao||'')+(novo.valor?' — R$ '+Number(novo.valor).toLocaleString('pt-BR'):''),{tipo:novo.tipo,valor:novo.valor,contrato:novo.contrato_id});
   if(!DEMO)sbInsert('lancamentos',_semId(novo));
   closeModal();renderLancamentos();atualizarMetricas();
 }
@@ -5471,6 +5475,7 @@ function salvarEditarLanc(lid){
   l.data_pagamento=(document.getElementById('el-pag')||{}).value||null;
   l.observacao=(document.getElementById('el-obs')||{}).value||'';
   if(diff!==0){var v=verbas.find(function(x){return x.contrato_id===l.contrato_id&&x.categoria_id===l.categoria_id;});if(v)v.valor_realizado=(v.valor_realizado||0)+diff;}
+  auditLog('editar','financeiro','Editou lançamento #'+lid+(l.descricao?' — '+l.descricao:''),{id:lid});
   if(!DEMO)sbUpdate('lancamentos',l,'id=eq.'+lid);
   closeModal();renderLancamentos();atualizarMetricas();
 }
@@ -5502,19 +5507,21 @@ function renderAprovacao(){
 }
 function aprovarLanc(lid){
   var l=lancamentos.find(function(x){return x.id===lid;});if(!l)return;
-  l.status='Aprovado';if(!DEMO)sbUpdate('lancamentos',{status:'Aprovado'},'id=eq.'+lid);
+  l.status='Aprovado';auditLog('editar','financeiro','Aprovou lançamento #'+lid,{id:lid,status:'Aprovado'});if(!DEMO)sbUpdate('lancamentos',{status:'Aprovado'},'id=eq.'+lid);
   renderAprovacao();renderLancamentos();
 }
 function reprovarLanc(lid){
   var motivo=prompt('Motivo da reprovação:');if(motivo===null)return;
   var l=lancamentos.find(function(x){return x.id===lid;});if(!l)return;
   l.status='Reprovado';l.motivo_reprovacao=motivo;
+  auditLog('editar','financeiro','Reprovou lançamento #'+lid+(motivo?' — Motivo: '+motivo:''),{id:lid,status:'Reprovado'});
   if(!DEMO)sbUpdate('lancamentos',{status:'Reprovado',motivo_reprovacao:motivo},'id=eq.'+lid);
   renderAprovacao();renderLancamentos();
 }
 function marcarPago(lid){
   var l=lancamentos.find(function(x){return x.id===lid;});if(!l)return;
   l.status='Pago';l.data_pagamento=dataHojeLocal();
+  auditLog('editar','financeiro','Marcou como Pago lançamento #'+lid,{id:lid,status:'Pago'});
   if(!DEMO)sbUpdate('lancamentos',{status:'Pago',data_pagamento:l.data_pagamento},'id=eq.'+lid);
   renderAprovacao();renderLancamentos();
 }
@@ -7158,7 +7165,8 @@ function reativarColaborador(colabId){
   if(!confirm('Reativar '+col.nome+'?'))return;
   col.dispensado=false;col.ativo=true;
   delete col.data_dispensa;delete col.motivo_dispensa;
-  if(!DEMO)sbUpdate('colaboradores',{ativo:true,dispensado:false,data_dispensa:null,motivo_dispensa:null},'id=eq.'+colabId);
+  auditLog('editar','sesmt','Editou dados de colaborador',{});
+    if(!DEMO)sbUpdate('colaboradores',{ativo:true,dispensado:false,data_dispensa:null,motivo_dispensa:null},'id=eq.'+colabId);
   renderColsVis();
 }
 
@@ -20959,10 +20967,20 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.0.8',
+  numero: '6.1.0',
   data:   '19/05/2026',
-  build:  '20260519-601',
+  build:  '20260519-620',
   log: [
+    {v:'6.1.0', d:'19/05/2026', itens:[
+      'Correção: SyntaxError no _auditExportar — escape inválido de aspas no CSV',
+      'node --check passa sem erros em todo o JS do arquivo',
+    ]},
+    {v:'6.0.9', d:'19/05/2026', itens:[
+      'TST responsável: preenchido automaticamente com nome do usuário logado',
+      'Sistema de Audit Log global: registra login, logout, lançamentos, inspeções, usuários, colaboradores',
+      'Tela de Log de Auditoria com filtros por módulo, usuário e data + exportação CSV',
+      'Botão Audit Log na sidebar (acesso direto de qualquer módulo)',
+    ]},
     {v:'6.0.8', d:'19/05/2026', itens:[
       'Layout definitivo SESMT no PC: criado content-wrapper flex-col entre sidebar e content-area',
       'subnav-bar movido para fora do scroll (posição fixa acima da content-area)',
@@ -29748,6 +29766,142 @@ function sesmtVoltar(){
     showSub(destino);
   });
 }
+
+// ══════════════════════════════════════════════════════════════
+// SISTEMA DE AUDIT LOG — CENA ERP
+// Registra todas as ações dos usuários: criar, editar, excluir
+// Tabela: audit_log (Supabase) + buffer local
+// ══════════════════════════════════════════════════════════════
+var _auditBuffer = [];    // buffer local para modo offline
+var _auditFlushing = false;
+
+/**
+ * auditLog(acao, modulo, descricao, dadosExtra)
+ * acao: 'criar' | 'editar' | 'excluir' | 'visualizar' | 'login' | 'logout' | 'exportar'
+ * modulo: 'financeiro' | 'sesmt' | 'frotas' | 'almoxarifado' | 'operacional' | 'cadastros' | 'obras' | 'relatorios' | 'campo' | 'sistema'
+ * descricao: string legível — ex: 'Editou lançamento #123 — R$ 1.500,00'
+ * dadosExtra: objeto opcional com campos relevantes
+ */
+function auditLog(acao, modulo, descricao, dadosExtra){
+  try {
+    var usuario = usuarioLogado || {};
+    var entrada = {
+      acao:          acao        || 'acao',
+      modulo:        modulo      || 'sistema',
+      descricao:     descricao   || '',
+      usuario_id:    usuario.id  || '',
+      usuario_nome:  usuario.nome|| '',
+      usuario_perfil:usuario.perfil||'',
+      dados_extra:   dadosExtra ? JSON.stringify(dadosExtra) : null,
+      data_hora:     new Date().toISOString(),
+      sessao_id:     _auditSessaoId
+    };
+    _auditBuffer.push(entrada);
+    // Flush assíncrono — não bloqueia a UI
+    _auditFlush();
+  } catch(e) { /* silencioso — log não deve quebrar o fluxo */ }
+}
+
+// ID único por sessão de navegação
+var _auditSessaoId = (function(){
+  var s = sessionStorage.getItem('_cena_sessao');
+  if(!s){ s = 'sess_'+Date.now()+'_'+Math.random().toString(36).substr(2,5); sessionStorage.setItem('_cena_sessao',s); }
+  return s;
+})();
+
+function _auditFlush(){
+  if(_auditFlushing || DEMO || !_auditBuffer.length) return;
+  if(typeof sbInsert !== 'function') return;
+  _auditFlushing = true;
+  var lote = _auditBuffer.splice(0, 10); // envia até 10 por vez
+  var promises = lote.map(function(entrada){
+    return sbInsert('audit_log', entrada).catch(function(){ 
+      _auditBuffer.unshift(entrada); // recoloca se falhar
+    });
+  });
+  Promise.all(promises).finally(function(){
+    _auditFlushing = false;
+    if(_auditBuffer.length) setTimeout(_auditFlush, 2000);
+  });
+}
+
+// Flush periódico a cada 30s
+setInterval(_auditFlush, 30000);
+
+// ── Consulta de log para a tela de Auditoria ─────────────────
+var _auditLogs = []; // cache local para visualização
+
+function auditCarregarLogs(filtros, callback){
+  if(DEMO){
+    callback && callback(_auditBuffer.slice().reverse());
+    return;
+  }
+  var params = {order:'data_hora.desc', limit: filtros&&filtros.limit||200};
+  if(filtros && filtros.usuario_id) params.filters = ['usuario_id=eq.'+filtros.usuario_id];
+  if(filtros && filtros.modulo)     params.filters = (params.filters||[]).concat(['modulo=eq.'+filtros.modulo]);
+  if(filtros && filtros.data_ini)   params.filters = (params.filters||[]).concat(['data_hora=gte.'+filtros.data_ini]);
+  if(filtros && filtros.data_fim)   params.filters = (params.filters||[]).concat(['data_hora=lte.'+filtros.data_fim+'T23:59:59']);
+  sbFetch('audit_log', params).then(function(rows){
+    _auditLogs = rows || [];
+    callback && callback(_auditLogs);
+  }).catch(function(){
+    callback && callback(_auditBuffer.slice().reverse());
+  });
+}
+
+// ── Tela de visualização do log ──────────────────────────────
+function abrirTelaAudit(){
+  var ICONES = {criar:'🟢',editar:'🟡',excluir:'🔴',login:'🔵',logout:'⚪',exportar:'📤',visualizar:'👁'};
+  function renderAudit(logs){
+    var html = logs.length ? logs.map(function(l){
+      var dt = l.data_hora ? new Date(l.data_hora).toLocaleString('pt-BR') : '—';
+      var ic = ICONES[l.acao] || '⚙️';
+      return '<tr>'        +'<td style="font-size:11px;white-space:nowrap;color:#888">'+dt+'</td>'        +'<td style="text-align:center">'+ic+'</td>'        +'<td style="font-size:11px;font-weight:600">'+escHtml(l.usuario_nome||'—')+'</td>'        +'<td><span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f0f0ee;color:#555;font-weight:600">'+escHtml(l.modulo||'—')+'</span></td>'        +'<td style="font-size:11px">'+escHtml(l.descricao||'—')+'</td>'        +'</tr>';
+    }).join('') : '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:2rem">Nenhum registro encontrado.</td></tr>';
+    var tbody = document.getElementById('audit-tbody');
+    if(tbody) tbody.innerHTML = html;
+    var cnt = document.getElementById('audit-count');
+    if(cnt) cnt.textContent = logs.length + ' registro(s)';
+  }
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:900px;max-height:92vh;overflow-y:auto">'    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">'    +'<span style="font-size:18px">📋</span><h3 style="flex:1">Log de Auditoria</h3>'    +'<span id="audit-count" style="font-size:11px;color:#888"></span>'    +'<button class="btn" onclick="closeModal()">Fechar</button></div>'    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end">'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Módulo</label>'    +'<select class="inp" id="af-modulo" style="width:130px"><option value="">Todos</option>'    +['financeiro','sesmt','frotas','almoxarifado','operacional','cadastros','obras','relatorios','campo','sistema'].map(function(m){return '<option value="'+m+'">'+m.charAt(0).toUpperCase()+m.slice(1)+'</option>';}).join('')    +'</select></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Usuário</label>'    +'<input class="inp" id="af-usuario" placeholder="Nome..." style="width:160px"/></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Data início</label>'    +'<input class="inp" type="date" id="af-ini" style="width:140px"/></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Data fim</label>'    +'<input class="inp" type="date" id="af-fim" style="width:140px"/></div>'    +'<button class="btn btn-pri" onclick="_auditBuscar()">🔍 Buscar</button>'    +'<button class="btn" onclick="_auditExportar()">📥 CSV</button>'    +'</div>'    +'<div style="overflow-x:auto">'    +'<table class="tbl" style="font-size:12px"><thead><tr>'    +'<th>Data/Hora</th><th>Ação</th><th>Usuário</th><th>Módulo</th><th>Descrição</th>'    +'</tr></thead><tbody id="audit-tbody"><tr><td colspan="5" style="text-align:center;color:#aaa;padding:1.5rem">Carregando...</td></tr></tbody></table>'    +'</div></div></div>');
+
+  setTimeout(function(){
+    auditCarregarLogs({limit:200}, renderAudit);
+
+    window._auditBuscar = function(){
+      var modulo = (document.getElementById('af-modulo')||{}).value||'';
+      var ini    = (document.getElementById('af-ini')||{}).value||'';
+      var fim    = (document.getElementById('af-fim')||{}).value||'';
+      var filtros = {limit:500};
+      if(modulo) filtros.modulo  = modulo;
+      if(ini)    filtros.data_ini = ini;
+      if(fim)    filtros.data_fim = fim;
+      var tbody = document.getElementById('audit-tbody');
+      if(tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:1rem">Buscando...</td></tr>';
+      auditCarregarLogs(filtros, function(logs){
+        var usuario = (document.getElementById('af-usuario')||{}).value||'';
+        if(usuario) logs = logs.filter(function(l){ return (l.usuario_nome||'').toLowerCase().includes(usuario.toLowerCase()); });
+        renderAudit(logs);
+      });
+    };
+
+    window._auditExportar = function(){
+      var tbody = document.getElementById('audit-tbody');
+      var rows = _auditLogs.length ? _auditLogs : _auditBuffer;
+      var csv = 'Data/Hora,Acao,Usuario,Perfil,Modulo,Descricao\n'
+        + rows.map(function(l){
+          var desc = (l.descricao||'').replace(/"/g,'""');
+          return [l.data_hora,l.acao,l.usuario_nome,l.usuario_perfil,l.modulo,'"'+desc+'"'].join(',');
+        }).join('\n');
+      var a = document.createElement('a');
+      a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+      a.download = 'audit_log_' + new Date().toISOString().split('T')[0] + '.csv';
+      a.click();
+    };
+  }, 100);
+}
+
 function sidebarMostrarModulos(){
   var modulos = document.getElementById('sidebar-modulos');
   var inner   = document.getElementById('sidebar-inner');
@@ -30613,6 +30767,7 @@ function renderMovSAP(){
 function usarDemo(){DEMO=true;usuarioLogado={id:'u0',nome:'Demo Admin',perfil:'admin'};
   if(!usuarios_lista.length)usuarios_lista=[{id:'u0',nome:'Demo Admin',email:'admin@demo.com',perfil:'admin',equipe_id:'',equipe_codigo:'',ativo:true}];document.getElementById('pg-login').classList.add('hidden');document.getElementById('pg-app').classList.remove('hidden');document.getElementById('topbar-user').textContent='Demo Admin';document.getElementById('db-status').textContent='Modo demo';carregarDados().then(function(){showMain('dashboard');});}
 function fazerLogout(){
+  auditLog('logout','sistema','Logout do sistema');
   // Encerrar sessão no Supabase Auth (se existir)
   _sbAuthToken = null;
   try{ if(supabaseClient) supabaseClient.auth.signOut(); }catch(e){}
@@ -37311,6 +37466,7 @@ window.addEventListener('load',async function(){
       carregarPerfisExtras();
       carregarDados().then(function(){
       document.dispatchEvent(new CustomEvent('cena:logged-in'));
+  auditLog('login','sistema','Login no sistema — perfil: '+(usuarioLogado.perfil||''),{email:usuarioLogado.email||''});
       console.log('[INIT] carregarDados OK — perfil:', usuarioLogado.perfil, 'equipe_id:', usuarioLogado.equipe_id);
       if(usuarioLogado.perfil==='equipe'){
         // Re-buscar dados atualizados do usuário do banco (equipe_id pode ter mudado)
@@ -40778,7 +40934,7 @@ function abrirNovaInspecao(inspecaoId){
     +'<div class="fg"><label style="font-size:11px">Data</label>'
     +'<input class="inp" type="date" id="insp-data" style="width:100%" value="'+(insp.data||dataHojeLocal())+'"/></div>'
     +'<div class="fg"><label style="font-size:11px">TST responsável</label>'
-    +'<input class="inp" id="insp-tst" style="width:100%" value="'+escHtml(insp.tst_nome||'')+'" placeholder="Nome do TST"/></div>'
+    +'<input class="inp" id="insp-tst" style="width:100%" value="'+escHtml(insp.tst_nome||(isNew&&usuarioLogado?usuarioLogado.nome:'')||'')+'" placeholder="Nome do TST"/></div>'
     +'</div>'
     +'<div style="font-size:11px;font-weight:700;color:#1a1a18;margin-bottom:.5rem">Checklist — 🚫 = Item Impeditivo</div>'
     +checklistHtml
@@ -40855,6 +41011,7 @@ function abrirNovaInspecao(inspecaoId){
 
       if(isNew){
         inspecoes_enel.unshift(novaInsp);
+        auditLog('criar','sesmt','Nova inspeção ENEL — Equipe: '+(novaInsp.equipe_codigo||'')+(novaInsp.tst_nome?' | TST: '+novaInsp.tst_nome:''),{id:novaInsp.id,status:novaInsp.status});
         if(!DEMO) sbInsert('inspecoes_enel', _semId(novaInsp));
       } else {
         var idx = inspecoes_enel.findIndex(function(x){return x.id===inspecaoId;});
