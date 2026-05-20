@@ -20800,9 +20800,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.3.8',
+  numero: '6.3.9',
   data:   '19/05/2026',
-  build:  '20260519-1210',
+  build:  '20260519-1240',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -23589,8 +23589,9 @@ function renderTMADashboard(){
 
   // ── Buscar status do banco para período não-hoje ─────────────
   // (localStorage só tem dados se o usuário abriu a programação naquele dia)
-  if(!DEMO && !(dataIni===hoje && dataFim===hoje) && !renderTMADashboard._statusCarregado){
-    renderTMADashboard._statusCarregado = dataIni+'|'+dataFim;
+  var _cacheKey = dataIni+'|'+dataFim;
+  if(!DEMO && !(dataIni===hoje && dataFim===hoje) && renderTMADashboard._statusCarregado !== _cacheKey){
+    renderTMADashboard._statusCarregado = _cacheKey;
     el.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando status do período...</div>';
     sbFetch('prog_status_diario',{
       filters:['data=gte.'+dataIni,'data=lte.'+dataFim],
@@ -23720,16 +23721,18 @@ function renderTMADashboard(){
   }
 
   var calDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  // Folguistas = colaboradores SALVOS nas programações do dia com status folga
+  // (folga manual salva no banco, ou folga por calendário de escala)
   var nFolguistas = 0;
-  var _folguistasSet = {}; // deduplicar: mesmo colab pode aparecer em mais de uma comp
+  var _folguistasSet = {};
   compDia.forEach(function(comp){
     getColabIds(comp).forEach(function(id){
-      if(_folguistasSet[id]) return; // já contado
+      if(_folguistasSet[id]) return; // deduplicar — mesmo colab em 2 equipes conta 1x
       var col = colaboradores.find(function(c){return c.id===id;}); if(!col) return;
-      var st = statusDoData[id]||'disponivel';
-      var folgaManual = st==='folga';
-      var folgaCal    = calDia && col.cor_escala && col.cor_escala===calDia && st==='disponivel';
-      if(folgaManual || folgaCal){ nFolguistas++; _folguistasSet[id]=true; }
+      var st = statusDoData[id] || 'disponivel';
+      var folgaManual = (st === 'folga');
+      var folgaCal    = calDia && col.cor_escala && (col.cor_escala === calDia) && (st === 'disponivel');
+      if(folgaManual || folgaCal){ nFolguistas++; _folguistasSet[id] = true; }
     });
   });
 
@@ -23745,39 +23748,41 @@ function renderTMADashboard(){
     if(ativos.length===3) nEq3++;
   });
 
-  // ── 5. Equipes com mais de 1 motorista D/AD/E na mesma equipe ────
+  // ── 5. Equipes com 2+ colaboradores com CNH D ou AD ────────────
+  // Conta: equipes programadas no dia que têm 2 ou mais colabs com CNH D ou AD
+  // compDia já está deduplicated por (equipe_id, data) — cada equipe aparece 1x por dia
   var nEqDAD = 0;
-  // Agrupa por equipe do dia
-  var porEquipe = {};
   compDia.forEach(function(comp){
-    var eid = comp.equipe_id;
-    if(!porEquipe[eid]) porEquipe[eid] = [];
-    getColabIds(comp).forEach(function(id){
-      if(porEquipe[eid].indexOf(id)<0) porEquipe[eid].push(id);
-    });
-  });
-  Object.keys(porEquipe).forEach(function(eid){
-    var dCount = porEquipe[eid].filter(function(id){
+    var ids = getColabIds(comp);
+    var dCount = ids.filter(function(id){
       var col = colaboradores.find(function(c){return c.id===id;});
       if(!col) return false;
-      // Categorias que exigem habilitação profissional pesada
-      var cat = (col.cnh_categoria||col.carta||'').toUpperCase();
-      return cat==='D'||cat==='AD'||cat==='AE'||cat==='E';
+      var cat = (col.cnh_categoria||col.carta||'').toUpperCase().trim();
+      return cat==='D' || cat==='AD';
     }).length;
-    if(dCount > 1) nEqDAD++;
+    if(dCount >= 2) nEqDAD++;
   });
 
-  // ── 6. Status de colaboradores no período ─────────
+  // ── 6. Status de colaboradores no DIA filtrado ───────────────
+  // Afastados e Férias = contagem de colaboradores indisponíveis com esse status
+  // Fonte: statusDoData (status do dia = dataIni, já carregado do banco ou _progStatus)
   var statusCount = {escalado:0, afastado:0, ferias:0, outros:0};
+
+  // Escalados = colabs únicos nas programações do dia
   var escaladosSet = {};
   compDia.forEach(function(c){ getColabIds(c).forEach(function(id){ escaladosSet[id]=true; }); });
   statusCount.escalado = Object.keys(escaladosSet).length;
-  var afastadosSet={}, feriasSet={};
-  Object.keys(statusPeriodo).forEach(function(id){
-    var sp=statusPeriodo[id];
-    if(sp.afastado>0) afastadosSet[id]=true;
-    if(sp.ferias>0)   feriasSet[id]=true;
-    if(sp.outros>0)   statusCount.outros++;
+
+  // Afastados/Férias = colaboradores com esse status no dia filtrado
+  // Usa statusDoData (status real do dia dataIni, vindo do banco ou _progStatus)
+  var afastadosSet = {}, feriasSet = {};
+  // Para hoje: usar _progStatus; para outros dias: usar statusDoData (do banco)
+  var fonteStatus = (dataIni === hoje) ? _progStatus : statusDoData;
+  colaboradores.forEach(function(col){
+    var st = fonteStatus[col.id];
+    if(!st) return;
+    if(st === 'afastado') afastadosSet[col.id] = true;
+    else if(st === 'ferias') feriasSet[col.id] = true;
   });
   statusCount.afastado = Object.keys(afastadosSet).length;
   statusCount.ferias   = Object.keys(feriasSet).length;
