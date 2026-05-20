@@ -18445,6 +18445,14 @@ function sotIniciarAnaliseWL(projetoId){
     // Painel de recomendação IA
     +'<div id="wl-recomendacao" style="display:none;background:#EAF3DE;border-radius:10px;padding:12px 16px;margin-bottom:1rem;border:.5px solid #92D050"></div>'
     +'<div id="wl-lista-wrap" style="margin-bottom:1rem"></div>'
+    +'<div id="wl-croqui-panel" style="display:none;margin-bottom:1rem">'
+    +'<div style="font-size:12px;font-weight:600;color:#555;margin-bottom:6px">🗺️ Mapa do Croqui — clique nas bolinhas para reposicionar</div>'
+    +'<div id="wl-croqui-container" style="position:relative;display:inline-block;max-width:100%;border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden;background:#f8f8f8">'
+    +'<img id="wl-croqui-img" style="display:block;max-width:100%;max-height:400px;width:100%;object-fit:contain;cursor:crosshair" onclick="wlClickCroqui(event,this)" title="Clique para posicionar WL"/>'
+    +'<div id="wl-markers-layer" style="position:absolute;inset:0;pointer-events:none"></div>'
+    +'</div>'
+    +'<div style="font-size:10px;color:#aaa;margin-top:4px">💡 Clique na imagem para posicionar a WL selecionada. As bolas coloridas representam as equipes.</div>'
+    +'</div>'
     +'<div id="wl-teams-wrap" style="display:none;margin-bottom:1rem"></div>'
     +'<div style="display:flex;gap:8px;justify-content:flex-end">'
     +'<button class="btn" onclick="closeModal()">Fechar</button>'
@@ -18791,6 +18799,8 @@ function wlAnalisarIA(){
     wlSetStatus(_wlDados.length+' WLs analisadas · Recomendação: '+nEq+' equipes · '+parsed.dias_estimados+' dias');
     wlRenderLista();
     wlDistribuir();
+    // Mostrar croqui se houver imagem carregada
+    wlMostrarCroqui();
     if(btn){btn.textContent='✓ Analisado';btn.disabled=false;}
   }).catch(function(e){
     wlSetStatus('⚠ Erro na análise: '+e.message+'. Use o modo manual.');
@@ -18798,22 +18808,75 @@ function wlAnalisarIA(){
   });
 }
 
-function wlRenderMarcadores(){
-  var layer=document.getElementById('wl-markers-layer');
-  var img=document.getElementById('wl-croqui-img');
-  if(!layer||!img) return;
-  layer.innerHTML='';
-  layer.style.pointerEvents='auto';
-  _wlDados.forEach(function(w){
-    var cor=WL_CORES[w.equipe%WL_CORES.length];
-    var div=document.createElement('div');
-    div.style.cssText='position:absolute;left:'+(w.x*100)+'%;top:'+(w.y*100)+'%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:'+cor+';border:2px solid #fff;display:flex;align-items:center;justify-content:center;color:#fff;font-size:9px;font-weight:700;cursor:pointer;z-index:2;box-shadow:0 1px 3px rgba(0,0,0,.3)';
-    div.title='WL '+w.numero+' · '+w.complexidade+(w.regiao?' · '+w.regiao:'');
-    div.textContent=w.numero;
-    div.onclick=function(){wlEditarWL(w.id);};
-    layer.appendChild(div);
+function wlMostrarCroqui(){
+  var panel = document.getElementById('wl-croqui-panel');
+  var img   = document.getElementById('wl-croqui-img');
+  if (!panel || !img) return;
+
+  // Pegar imagem do primeiro arquivo de imagem carregado
+  var imgArq = _wlArquivos.find(function(a){
+    return a.tipo && (a.tipo.includes('image') || a.nome.match(/\.(jpe?g|png|gif|webp|bmp)$/i));
   });
+
+  if (imgArq && imgArq.dataUrl) {
+    img.src = imgArq.dataUrl;
+    img.onload = function() {
+      panel.style.display = '';
+      // Distribuir WLs na imagem em grid caso não tenham posição definida
+      _wlDados.forEach(function(w, i) {
+        if (w.x === 0.5 && w.y === 0.5 && _wlDados.length > 1) {
+          // Posicionar em grade para visualização inicial
+          var cols = Math.ceil(Math.sqrt(_wlDados.length));
+          var row  = Math.floor(i / cols);
+          var col  = i % cols;
+          w.x = (col + 0.5) / cols;
+          w.y = (row + 0.5) / Math.ceil(_wlDados.length / cols);
+        }
+      });
+      wlRenderMarcadores();
+    };
+  } else if (_wlArquivos.length && _wlArquivos[0].tipo && _wlArquivos[0].tipo.includes('pdf')) {
+    // PDF — mostrar aviso mas manter painel para reposicionamento manual
+    panel.style.display = '';
+    img.style.display = 'none';
+    var container = document.getElementById('wl-croqui-container');
+    if (container) {
+      container.innerHTML = '<div style="padding:2rem;text-align:center;color:#888;font-size:12px">'
+        +'📄 PDF carregado. O posicionamento visual requer uma imagem (JPEG/PNG) do croqui.<br>'
+        +'<small>As WLs são distribuídas na tabela abaixo.</small></div>';
+    }
+  } else {
+    panel.style.display = 'none';
+  }
 }
+
+var _wlWLSelecionada = null;
+
+function wlClickCroqui(e, imgEl) {
+  // Recalcula posição relativa à imagem
+  var rect = imgEl.getBoundingClientRect();
+  var x = (e.clientX - rect.left) / rect.width;
+  var y = (e.clientY - rect.top)  / rect.height;
+  // Se há WL selecionada na lista, reposiciona ela; senão seleciona a próxima sem posição
+  var target = null;
+  if (_wlWLSelecionada) {
+    target = _wlDados.find(function(w){ return w.id === _wlWLSelecionada; });
+  }
+  if (!target) {
+    // Selecionar a WL mais próxima do clique
+    var minDist = Infinity;
+    _wlDados.forEach(function(w) {
+      var d = Math.sqrt(Math.pow(w.x - x, 2) + Math.pow(w.y - y, 2));
+      if (d < minDist) { minDist = d; target = w; }
+    });
+  }
+  if (target) {
+    target.x = Math.round(x * 1000) / 1000;
+    target.y = Math.round(y * 1000) / 1000;
+    wlRenderMarcadores();
+  }
+}
+
 
 function wlRenderLista(){
   var wrap=document.getElementById('wl-lista-wrap');
@@ -18821,7 +18884,7 @@ function wlRenderLista(){
   if(!_wlDados.length){wrap.innerHTML='';return;}
   wrap.innerHTML='<div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr style="border-bottom:.5px solid #e0dfd8"><th style="text-align:left;padding:5px 8px">WL</th><th style="padding:5px 8px">Tipo/Serviço</th><th style="padding:5px 8px">Região</th><th style="padding:5px 8px">Complexidade</th><th style="padding:5px 8px">Equipe</th><th style="padding:5px 8px"></th></tr></thead><tbody>'
     +_wlDados.map(function(w){
-      return '<tr style="border-bottom:.5px solid #f5f5f3">'
+      return '<tr style="border-bottom:.5px solid #f5f5f3;cursor:pointer" onclick="_wlWLSelecionada='+w.id+';wlRenderMarcadores()" title="Clique para selecionar e reposicionar no croqui">'
         +'<td style="padding:5px 8px;font-weight:600"><span style="background:'+WL_CORES[w.equipe%WL_CORES.length]+';color:#fff;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:10px">'+w.numero+'</span></td>'
         +'<td style="padding:5px 8px;color:#666;font-size:11px">'+escHtml(w.tipo||'—')+'</td>'
         +'<td style="padding:5px 8px;color:#666">'+escHtml(w.regiao||'—')+'</td>'
@@ -18845,6 +18908,7 @@ function wlDistribuir(){
   var bsalvar=document.getElementById('wl-btn-salvar');
   if(bsalvar)bsalvar.style.display='';
   wlSetStatus('Distribuídas '+_wlDados.length+' WLs em '+_wlNumEquipes+' equipes');
+  wlRenderMarcadores();
 }
 
 function wlRenderEquipes(){
@@ -18979,7 +19043,8 @@ function wlRenderMarcadores(){
   _wlDados.forEach(function(w){
     var cor=WL_CORES[w.equipe%WL_CORES.length];
     var div=document.createElement('div');
-    div.style.cssText='position:absolute;left:'+(w.x*100)+'%;top:'+(w.y*100)+'%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:'+cor+';border:2px solid #fff;display:flex;align-items:center;justify-content:center;color:#fff;font-size:9px;font-weight:700;cursor:pointer;z-index:2;box-shadow:0 1px 3px rgba(0,0,0,.3)';
+    var isSelected = w.id === _wlWLSelecionada;
+    div.style.cssText='position:absolute;left:'+(w.x*100)+'%;top:'+(w.y*100)+'%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:'+cor+';border:'+(isSelected?'3px solid #FFD700':'2px solid #fff')+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:9px;font-weight:700;cursor:pointer;z-index:2;box-shadow:0 1px 3px rgba(0,0,0,.3)';
     div.title='WL '+w.numero+' · '+w.complexidade+(w.regiao?' · '+w.regiao:'');
     div.textContent=w.numero;
     div.onclick=function(){wlEditarWL(w.id);};
