@@ -57,7 +57,17 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
 #sidebar-user-info .su-perfil{font-size:10px;color:#888}
 
 /* CONTEÚDO — scroll aqui */
-#content-wrapper{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0;}#app-content-area{flex:1;overflow-y:auto;overflow-x:hidden;background:#f5f5f3;display:block;min-width:0;height:0;}
+#content-wrapper{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0;}
+#app-content-area{flex:1;overflow-y:auto;overflow-x:hidden;background:#f5f5f3;display:block;min-width:0;height:0;}
+
+/* Ociosidade: página ocupa 100% da altura e gerencia seu próprio scroll interno */
+#app-content-area:has(#pg-frotas-ociosidade:not(.hidden)){overflow:hidden;}
+#pg-frotas-ociosidade:not(.hidden){
+  display:flex!important;flex-direction:column;height:100%;padding:0;overflow:hidden;
+}
+#pg-frotas-ociosidade .ocio-topo{flex-shrink:0;padding:1rem 1rem 0;}
+#pg-frotas-ociosidade .ocio-tabs-bar{flex-shrink:0;padding:0 1rem;background:#f5f5f3;}
+#pg-frotas-ociosidade .ocio-conteudo{flex:1;overflow-y:auto;overflow-x:hidden;padding:0 1rem 2rem;}
 #app-content-area::-webkit-scrollbar{width:7px}
 #app-content-area::-webkit-scrollbar-track{background:#e8e8e6}
 #app-content-area::-webkit-scrollbar-thumb{background:#aaa;border-radius:4px}
@@ -18379,7 +18389,17 @@ function sotAbrirNovoProjeto(){
 function sotAbrirEditarProjeto(id){
   _sotProjetoAtual=id;
   var p=sot_projetos.find(function(x){return x.id===id;});
-  sotModalProjeto(p);
+  if(!p) return;
+  // Garantir que contratos e tipos estão carregados antes de abrir o modal
+  var loadContratos = (!contratos.length && !DEMO)
+    ? sbFetch('contratos',{filters:['status=eq.Ativo'],order:'codigo'}).then(function(r){ if(r&&r.length) contratos=r; }).catch(function(){})
+    : Promise.resolve();
+  var loadTipos = (!tipos_servico_cad.length && !DEMO)
+    ? sbFetch('tipos_servico_cad',{order:'nome'}).then(function(r){ if(r&&r.length) tipos_servico_cad=r; }).catch(function(){})
+    : Promise.resolve();
+  Promise.all([loadContratos, loadTipos]).then(function(){
+    sotModalProjeto(p);
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -19006,24 +19026,37 @@ function sotModalProjeto(p){
   function inicializarModalSOT(){
     var selCont = document.getElementById('sot-p-cont');
     var selTipo = document.getElementById('sot-p-tipo-id');
-    // Rebuildar tipos pelo contrato selecionado
-    if(selCont && selCont.value) sotFiltrarTiposServico();
-    // Restaurar tipo de serviço salvo (pode ter sido resetado pelo filtro)
+    var selCli  = document.getElementById('sot-p-cliente-id');
+
+    // 1. Forçar contrato salvo no DOM (não confiar só no atributo HTML 'selected')
+    if(p && p.contrato_id && selCont){
+      selCont.value = p.contrato_id;
+    }
+
+    // 2. Forçar cliente salvo
+    if(p && p.cliente_id && selCli){
+      selCli.value = p.cliente_id;
+    }
+
+    // 3. Rebuildar tipos filtrados pelo contrato correto
+    sotFiltrarTiposServico();
+
+    // 4. Forçar tipo de serviço salvo
     if(p && p.tipo_servico_id && selTipo){
       selTipo.value = p.tipo_servico_id;
-      // Se não encontrou (opção não existe ainda), forçar add
-      if(!selTipo.value || selTipo.value !== p.tipo_servico_id){
+      if(selTipo.value !== p.tipo_servico_id){
+        // Tipo não está na lista filtrada — adicionar manualmente
         var tipoSalvo = tipos_servico_cad.find(function(t){ return t.id === p.tipo_servico_id; });
         if(tipoSalvo){
           var opt = document.createElement('option');
           opt.value = tipoSalvo.id;
-          opt.textContent = tipoSalvo.nome + (tipoSalvo.codigo?' ('+tipoSalvo.codigo+')':'');
-          opt.selected = true;
+          opt.textContent = tipoSalvo.nome+(tipoSalvo.codigo?' ('+tipoSalvo.codigo+')':'');
           selTipo.insertBefore(opt, selTipo.options[1]||null);
           selTipo.value = tipoSalvo.id;
         }
       }
     }
+
     var btn=document.getElementById('sot-salvar-proj');
     if(btn)btn.onclick=function(){sotSalvarProjeto(p?p.id:null);};
   }
@@ -20767,9 +20800,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.3.5',
+  numero: '6.3.7',
   data:   '19/05/2026',
-  build:  '20260519-1120',
+  build:  '20260519-1180',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -35970,9 +36003,9 @@ function frtAbrirNovoDoc(){ fdocNovoDoc(); }
 // ── OCIOSIDADE ────────────────────────────────────────────────
 // ── Helpers de ociosidade ────────────────────────────────
 function ocioMostrarAba(aba){
-  // Reset scroll da content-area ao trocar de aba interna
-  var aca=document.getElementById('app-content-area');
-  if(aca) aca.scrollTop=0;
+  // Reset scroll do conteúdo interno ao trocar de aba
+  var inner=document.querySelector('#pg-frotas-ociosidade .ocio-conteudo');
+  if(inner) inner.scrollTop=0;
   ['ociosos','ranking','frequencia'].forEach(function(a){
     var el=document.getElementById('ocio-aba-'+a);
     var btn=document.getElementById('ocio-tab-'+a);
@@ -37995,73 +38028,93 @@ window.addEventListener('load',async function(){
 <!-- OCIOSIDADE -->
 <div id="pg-frotas-ociosidade" class="hidden">
 
-  <!-- Filtros globais -->
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">💤 Ociosidade &amp; Frequência de Uso</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="ocio-fil-periodo" style="width:145px" onchange="frtOcioRender()">
-          <option value="30">Últimos 30 dias</option>
-          <option value="60">Últimos 60 dias</option>
-          <option value="90" selected>Últimos 90 dias</option>
-          <option value="180">Últimos 180 dias</option>
-          <option value="365">Último ano</option>
-        </select>
-        <select class="inp" id="ocio-fil-cont" style="width:185px" onchange="frtOcioRender()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <select class="inp" id="ocio-fil-tipo" style="width:145px" onchange="frtOcioRender()">
-          <option value="">Todos os tipos</option>
-          <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
-          <option>Motocicleta</option><option>Van</option>
-        </select>
-        <button class="btn" onclick="frtOcioExportar()">⬇ Exportar relatório</button>
-        <button class="btn" onclick="ocioAbrirModalReset(null)" style="color:#185FA5;border-color:#185FA5">🔄 Resetar todos</button>
-        <button class="btn btn-pri" onclick="frtAbrirQuarentena()">+ Quarentena</button>
+  <!-- TOPO: filtros + métricas (fixos, não rolam) -->
+  <div class="ocio-topo">
+    <div class="card" style="margin-bottom:.75rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">💤 Ociosidade &amp; Frequência de Uso</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select class="inp" id="ocio-fil-periodo" style="width:145px" onchange="frtOcioRender()">
+            <option value="30">Últimos 30 dias</option>
+            <option value="60">Últimos 60 dias</option>
+            <option value="90" selected>Últimos 90 dias</option>
+            <option value="180">Últimos 180 dias</option>
+            <option value="365">Último ano</option>
+          </select>
+          <select class="inp" id="ocio-fil-cont" style="width:185px" onchange="frtOcioRender()">
+            <option value="">Todos os contratos</option>
+          </select>
+          <select class="inp" id="ocio-fil-tipo" style="width:145px" onchange="frtOcioRender()">
+            <option value="">Todos os tipos</option>
+            <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
+            <option>Motocicleta</option><option>Van</option>
+          </select>
+          <button class="btn" onclick="frtOcioExportar()">⬇ Exportar relatório</button>
+          <button class="btn" onclick="ocioAbrirModalReset(null)" style="color:#185FA5;border-color:#185FA5">🔄 Resetar todos</button>
+          <button class="btn btn-pri" onclick="frtAbrirQuarentena()">+ Quarentena</button>
+        </div>
       </div>
+    </div>
+    <!-- Indicadores -->
+    <div id="frt-ocio-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:.75rem"></div>
+  </div>
+
+  <!-- TABS BAR: fixa, não rola -->
+  <div class="ocio-tabs-bar">
+    <div style="display:flex;border-bottom:.5px solid #e0dfd8;margin-bottom:0;">
+      <button class="ocio-tab" id="ocio-tab-ociosos"    onclick="ocioMostrarAba('ociosos')"   style="padding:.45rem .8rem;border:none;border-bottom:2px solid #854F0B;color:#854F0B;font-weight:600;background:none;cursor:pointer;font-size:12px">💤 Ociosos</button>
+      <button class="ocio-tab" id="ocio-tab-ranking"    onclick="ocioMostrarAba('ranking')"   style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🏆 Ranking de uso</button>
+      <button class="ocio-tab" id="ocio-tab-frequencia" onclick="ocioMostrarAba('frequencia')" style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📊 Frequência</button>
     </div>
   </div>
 
-  <!-- Indicadores -->
-  <div id="frt-ocio-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:1rem"></div>
+  <!-- CONTEÚDO DAS ABAS: esta área rola -->
+  <div class="ocio-conteudo">
 
-  <!-- Abas internas -->
-  <div style="display:flex;border-bottom:.5px solid #e0dfd8;margin-bottom:1rem;position:sticky;top:0;z-index:10;background:#f5f5f3;">
-    <button class="ocio-tab" id="ocio-tab-ociosos"   onclick="ocioMostrarAba('ociosos')"  style="padding:.45rem .8rem;border:none;border-bottom:2px solid #854F0B;color:#854F0B;font-weight:600;background:none;cursor:pointer;font-size:12px">💤 Ociosos</button>
-    <button class="ocio-tab" id="ocio-tab-ranking"   onclick="ocioMostrarAba('ranking')"  style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🏆 Ranking de uso</button>
-    <button class="ocio-tab" id="ocio-tab-frequencia" onclick="ocioMostrarAba('frequencia')" style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📊 Frequência</button>
-  </div>
+    <!-- ABA: OCIOSOS -->
+    <div id="ocio-aba-ociosos">
+      <div style="overflow-x:auto"><table class="tbl tbl-responsive">
+        <thead><tr>
+          <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Contrato</th><th>Último uso</th>
+          <th>Dias sem uso</th><th>Usos no período</th><th>Situação</th><th>Motivo</th><th></th>
+        </tr></thead>
+        <tbody id="ocio-ociosos-tbody"></tbody>
+      </table></div>
+    </div>
 
-  <!-- ABA: OCIOSOS -->
-  <div id="ocio-aba-ociosos">
-    <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-      <thead><tr>
-        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Contrato</th><th>Último uso</th>
-        <th>Dias sem uso</th><th>Usos no período</th><th>Situação</th><th>Motivo</th><th></th>
-      </tr></thead>
-      <tbody id="frt-ocio-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ABA: RANKING DE USO -->
-  <div id="ocio-aba-ranking" style="display:none">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-      <!-- Mais usados -->
-      <div class="card">
-        <div class="ch"><span class="ct" style="color:#3B6D11">🏆 Mais utilizados</span><span id="ocio-rank-n-mais" style="font-size:11px;color:#888"></span></div>
-        <div id="ocio-rank-mais" style="padding:.5rem"></div>
-      </div>
-      <!-- Menos usados (ociosos) -->
-      <div class="card">
-        <div class="ch"><span class="ct" style="color:#A32D2D">💤 Menos utilizados</span><span id="ocio-rank-n-menos" style="font-size:11px;color:#888"></span></div>
-        <div id="ocio-rank-menos" style="padding:.5rem"></div>
+    <!-- ABA: RANKING DE USO -->
+    <div id="ocio-aba-ranking" style="display:none">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <!-- Mais usados -->
+        <div class="card">
+          <div class="ch"><span class="ct" style="color:#3B6D11">🏆 Mais utilizados</span><span id="ocio-rank-n-mais" style="font-size:11px;color:#aaa"></span></div>
+          <div id="ocio-rank-mais" style="padding:.5rem"></div>
+        </div>
+        <!-- Menos usados (ociosos) -->
+        <div class="card">
+          <div class="ch"><span class="ct" style="color:#A32D2D">💤 Menos utilizados</span><span id="ocio-rank-n-menos" style="font-size:11px;color:#aaa"></span></div>
+          <div id="ocio-rank-menos" style="padding:.5rem"></div>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- ABA: FREQUÊNCIA -->
-  <div id="ocio-aba-frequencia" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
+    <!-- ABA: FREQUÊNCIA -->
+    <div id="ocio-aba-frequencia" style="display:none">
+      <div class="card" style="margin-bottom:1rem">
+        <div class="ch"><span class="ct">📊 Frequência de uso — todos os veículos</span></div>
+        <div style="overflow-x:auto"><table class="tbl">
+          <thead><tr>
+            <th>Placa</th><th>Modelo</th><th>Contrato</th>
+            <th>Total saídas</th><th>Dias com uso</th><th>Taxa uso</th><th>Média km/saída</th>
+          </tr></thead>
+          <tbody id="ocio-freq-tbody"></tbody>
+        </table></div>
+      </div>
+    </div>
+
+  </div><!-- .ocio-conteudo -->
+
+</div>="margin-bottom:1rem">
       <div class="ch"><span class="ct">📊 Frequência de uso — todos os veículos</span></div>
       <div style="overflow-x:auto"><table class="tbl">
         <thead><tr>
