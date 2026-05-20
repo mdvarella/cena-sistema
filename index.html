@@ -20841,9 +20841,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.5.1',
+  numero: '6.5.2',
   data:   '20/05/2026',
-  build:  '20260520-1730',
+  build:  '20260520-1800',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -24101,6 +24101,45 @@ function renderCampoEquipes(){
   var cidFil  = (document.getElementById('ceq-fil-cont')||{}).value||'';
   var eqFil   = (document.getElementById('ceq-fil-equipe')||{}).value||'';
 
+  // Buscar sessões frescas do banco antes de renderizar
+  if(!DEMO){
+    var lista = document.getElementById('ceq-lista');
+    if(lista && !lista._carregando){
+      lista._carregando = true;
+      if(!lista.innerHTML) lista.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Carregando...</div>';
+      Promise.all([
+        sbFetch('sessoes_disponibilidade',{filters:['data=eq.'+hoje],order:'login_ts.desc',limit:200}),
+        sbFetch('ordens_diario',{filters:['data=eq.'+hoje],order:'criado_em.desc',limit:500})
+      ]).then(function(res){
+        lista._carregando = false;
+        if(res[0]&&res[0].length){
+          res[0].forEach(function(s){
+            s.eventos=parseJsonField(s.eventos,[]);
+            var i=sessoes_disp.findIndex(function(x){return x.id===s.id;});
+            if(i>=0) sessoes_disp[i]=s; else sessoes_disp.push(s);
+          });
+        }
+        if(res[1]&&res[1].length){
+          res[1].forEach(function(o){
+            o.eventos=parseJsonField(o.eventos,[]);
+            var i=ordens_db.findIndex(function(x){return x.id===o.id;});
+            if(i>=0) ordens_db[i]=o; else ordens_db.push(o);
+          });
+        }
+        _renderCampoEquipesLista(hoje, cidFil, eqFil);
+      }).catch(function(){
+        lista._carregando = false;
+        _renderCampoEquipesLista(hoje, cidFil, eqFil);
+      });
+      return; // aguarda fetch
+    }
+    lista._carregando = false;
+  }
+  _renderCampoEquipesLista(hoje, cidFil, eqFil);
+}
+
+function _renderCampoEquipesLista(hoje, cidFil, eqFil){
+
   // Popular selects
   var selCont = document.getElementById('ceq-fil-cont');
   if(selCont && selCont.options.length<=1){
@@ -24117,7 +24156,10 @@ function renderCampoEquipes(){
 
   // Enriquecer com dados da equipe e contrato
   var emCampo = sessHoje.map(function(s){
-    var eq  = equipes_disp.find(function(e){return e.id===s.equipe_id;})||{};
+    // Buscar em equipes_disp (TMA) E equipes (PLPT)
+    var eq  = equipes_disp.find(function(e){return e.id===s.equipe_id;})
+           || equipes.find(function(e){return e.id===s.equipe_id;})
+           || {};
     var cont= contratos.find(function(c){return c.id===eq.contrato_id;})||{};
     var comp= composicao_dia.find(function(c){
       return c.equipe_id===s.equipe_id && (c.data||'').split('T')[0]===hoje;
@@ -24131,7 +24173,31 @@ function renderCampoEquipes(){
       minutos = Math.round((new Date()-new Date(s.login_ts))/60000);
     }
     var logOut = !!s.logout_ts;
-    return {sess:s, eq:eq, cont:cont, colabs:colabs, minutos:minutos, logOut:logOut};
+
+    // Última OS da equipe hoje
+    var ordensEq = ordens_db.filter(function(o){
+      return o.equipe_id===s.equipe_id && (o.data||'').split('T')[0]===hoje;
+    }).sort(function(a,b){
+      return (b.criado_em||b.id||'').localeCompare(a.criado_em||a.id||'');
+    });
+    var ultimaOS = ordensEq[0] || null;
+
+    // Status de campo da equipe (baseado na última OS)
+    var statusCampo = null;
+    if(ultimaOS){
+      var STATUS_LABELS = {
+        'a_caminho':   {l:'🚗 A caminho',    c:'#185FA5', bg:'#E6F1FB'},
+        'no_local':    {l:'📍 No local',      c:'#854F0B', bg:'#FEF3E2'},
+        'em_andamento':{l:'⚙ Em execução',   c:'#3B6D11', bg:'#EAF3DE'},
+        'encerrando':  {l:'🔄 Encerrando',   c:'#533AB7', bg:'#F0EEFF'},
+        'executada':   {l:'✅ Executada',     c:'#3B6D11', bg:'#EAF3DE'},
+        'pendente':    {l:'⏳ Pendente',      c:'#888',    bg:'#f5f5f3'},
+      };
+      statusCampo = STATUS_LABELS[ultimaOS.status] || {l: ultimaOS.status||'—', c:'#888', bg:'#f5f5f3'};
+    }
+
+    return {sess:s, eq:eq, cont:cont, colabs:colabs, minutos:minutos, logOut:logOut,
+            ultimaOS:ultimaOS, statusCampo:statusCampo};
   }).filter(function(x){ return x.eq && x.eq.id; });
 
   // Aplicar filtros
@@ -24190,6 +24256,8 @@ function renderCampoEquipes(){
     +'<th style="color:#ccc;padding:8px 8px;text-align:center">Login</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:center">Tempo</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:center">Status</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Última OS</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Status campo</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:left">Colaboradores</th>'
     +'</tr></thead><tbody>'
     +filtradas.map(function(x,i){
@@ -24210,7 +24278,7 @@ function renderCampoEquipes(){
         +'<td style="text-align:center;padding:8px;font-size:11px">'+loginHr+'</td>'
         +'<td style="text-align:center;padding:8px;font-weight:600;color:#185FA5">'+fmtMin(x.minutos)+'</td>'
         +'<td style="text-align:center;padding:8px">'+status+'</td>'
-        +'<td style="padding:8px;max-width:300px">'+colabsHtml+'</td>'
+        +'<td style="text-align:center;padding:8px;font-family:monospace;font-size:11px;font-weight:700">'+(x.ultimaOS?escHtml(x.ultimaOS.numero_ordem||'—'):'<span style=\'color:#aaa\'>—</span>')+'</td>'        +'<td style="text-align:center;padding:8px">'+(x.statusCampo?'<span style="background:'+x.statusCampo.bg+';color:'+x.statusCampo.c+';border-radius:10px;padding:2px 8px;font-size:10px;font-weight:600">'+x.statusCampo.l+'</span>':'<span style="color:#aaa;font-size:11px">—</span>')+'</td>'        +'<td style="padding:8px;max-width:280px">'+colabsHtml+'</td>'
         +'</tr>';
     }).join('')
     +'</tbody></table>';
