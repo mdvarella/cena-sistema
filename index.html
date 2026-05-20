@@ -18652,6 +18652,8 @@ function wlHandleFiles(files){
       wlRenderFilesList();
       var btn=document.getElementById('wl-btn-analisar');
       if(btn) btn.style.display='';
+      // Mostrar preview da imagem imediatamente no painel do croqui
+      if(tipoFinal.includes('image')) { setTimeout(wlMostrarCroquiPreview, 50); }
     };
     reader.readAsDataURL(f);
   });
@@ -18681,6 +18683,9 @@ function wlRemoverArquivo(idx){
   _wlArquivos.splice(idx,1);
   wlRenderFilesList();
   if(!_wlArquivos.length){var btn=document.getElementById('wl-btn-analisar');if(btn)btn.style.display='none';}
+  // Se removeu a imagem, esconder painel do croqui
+  var panel=document.getElementById('wl-croqui-panel');
+  if(panel&&!_wlArquivos.find(function(a){return a.tipo&&a.tipo.includes('image');})) panel.style.display='none';
 }
 
 function wlAbrirDXF(){
@@ -18808,6 +18813,24 @@ function wlAnalisarIA(){
   });
 }
 
+function wlMostrarCroquiPreview(){
+  // Mostra a imagem no painel sem marcadores (antes da análise IA)
+  var panel = document.getElementById('wl-croqui-panel');
+  var img   = document.getElementById('wl-croqui-img');
+  if (!panel || !img) return;
+  var imgArq = _wlArquivos.find(function(a){
+    return a.tipo && (a.tipo.includes('image') || a.nome.match(/\.(jpe?g|png|gif|webp|bmp)$/i));
+  });
+  if (!imgArq || !imgArq.dataUrl) return;
+  function _show() {
+    panel.style.display = '';
+    if (_wlDados.length) wlRenderMarcadores();
+  }
+  img.onload = _show;
+  img.src = imgArq.dataUrl;
+  if (img.complete && img.naturalWidth) _show();
+}
+
 function wlMostrarCroqui(){
   var panel = document.getElementById('wl-croqui-panel');
   var img   = document.getElementById('wl-croqui-img');
@@ -18819,13 +18842,11 @@ function wlMostrarCroqui(){
   });
 
   if (imgArq && imgArq.dataUrl) {
-    img.src = imgArq.dataUrl;
-    img.onload = function() {
+    function _mostrarPainel() {
       panel.style.display = '';
-      // Distribuir WLs na imagem em grid caso não tenham posição definida
+      // Distribuir WLs na imagem em grade inicial se ainda na posição default
       _wlDados.forEach(function(w, i) {
         if (w.x === 0.5 && w.y === 0.5 && _wlDados.length > 1) {
-          // Posicionar em grade para visualização inicial
           var cols = Math.ceil(Math.sqrt(_wlDados.length));
           var row  = Math.floor(i / cols);
           var col  = i % cols;
@@ -18834,7 +18855,11 @@ function wlMostrarCroqui(){
         }
       });
       wlRenderMarcadores();
-    };
+    }
+    img.onload = _mostrarPainel;
+    img.src = imgArq.dataUrl;
+    // Se já carregada (dataUrl em cache), onload pode não disparar
+    if (img.complete && img.naturalWidth) _mostrarPainel();
   } else if (_wlArquivos.length && _wlArquivos[0].tipo && _wlArquivos[0].tipo.includes('pdf')) {
     // PDF — mostrar aviso mas manter painel para reposicionamento manual
     panel.style.display = '';
@@ -19242,7 +19267,7 @@ function sotModalProjeto(p){
     // Tipo de serviço
     +'<div style="grid-column:span 2">'
     +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Tipo de Serviço *</label>'
-    +'<select class="inp" id="sot-p-tipo-id" style="width:100%">'
+    +'<select class="inp" id="sot-p-tipo-id" style="width:100%" data-valor-salvo="'+(p&&p.tipo_servico_id?p.tipo_servico_id:'')+'">'
     +'<option value="">'+(tsvOpts?'Selecione o tipo...':'Selecione o contrato primeiro...')+'</option>'+tsvOpts
     +'</select></div>'
 
@@ -19320,11 +19345,15 @@ function sotCampo(label,id,tipo,val,extra){
 function sotFiltrarTiposServico(){
   var contId=(document.getElementById('sot-p-cont')||{}).value||'';
   var sel=document.getElementById('sot-p-tipo-id');if(!sel)return;
+  // Preserve current selection before rebuilding options
+  var valorAtual = sel.value || sel.getAttribute('data-valor-salvo') || '';
   var tipos=tipos_servico_cad.filter(function(t){return !contId||t.contrato_id===contId;});
-  sel.innerHTML='<option value="">Selecione o tipo de serviço...</option>'
+  sel.innerHTML='<option value="">'+(tipos.length?'Selecione o tipo de serviço...':'Selecione o contrato primeiro...')+'</option>'
     +tipos.map(function(t){
-      return '<option value="'+t.id+'">'+t.nome+(t.codigo?' ('+t.codigo+')':'')+'</option>';
+      return '<option value="'+t.id+'"'+(t.id===valorAtual?' selected':'')+'>'+t.nome+(t.codigo?' ('+t.codigo+')':'')+'</option>';
     }).join('');
+  // Re-apply saved value if not found above
+  if(valorAtual && !sel.value) sel.value = valorAtual;
 }
 
 function sotPreencherCliente(){
@@ -21034,7 +21063,7 @@ function enviarWhatsAppTodos(){
 var APP_VERSAO = {
   numero: '6.3.0',
   data:   '19/05/2026',
-  build:  '20260519-950',
+  build:  '20260519-980',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
