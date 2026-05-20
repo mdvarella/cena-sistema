@@ -20841,9 +20841,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.5.0',
+  numero: '6.5.1',
   data:   '20/05/2026',
-  build:  '20260520-1700',
+  build:  '20260520-1730',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -21893,7 +21893,7 @@ function progSalvarEquipe(eqId){
   }
   // Validar veículo selecionado
   var veicDia = progGetVeiculo(eqId, data);
-  if(!veicDia || !veicDia.veiculo_id){
+  if(!veicDia || !veicDia.id){
     progShowToast('⚠ Selecione um veículo para a equipe antes de salvar a programação.');
     return;
   }
@@ -22781,10 +22781,88 @@ function progSalvarMenuStatus(colabId){
   progRenderQuadro();
 }
 
+
+// ─── COMPATIBILIDADE CNH x VEÍCULO ──────────────────────────────
+// Retorna: 'ok' | 'bloqueado' | 'justificativa'
+function cnhCompatibilidadeVeiculo(cnhCat, tipoVeiculo){
+  if(!tipoVeiculo) return 'ok'; // sem veículo definido, não bloquear
+  var cnh = (cnhCat||'').toUpperCase().trim();
+  var tipo = (tipoVeiculo||'').toLowerCase();
+
+  // Moto: exige A ou AB
+  if(tipo.includes('motocicleta') || tipo.includes('moto')){
+    if(cnh==='A' || cnh.includes('A')) return 'ok';
+    if(!cnh) return 'bloqueado';
+    return 'bloqueado'; // B,C,D,E sem A não podem pilotar moto
+  }
+
+  // Caminhão cesto / Munck: exige D ou E (ou AD, AE)
+  if(tipo.includes('cesto') || tipo.includes('munck')){
+    if(['D','E','AD','AE','DE','ADE'].indexOf(cnh)>=0) return 'ok';
+    if(['C','AC','CD','ACE'].indexOf(cnh)>=0) return 'ok'; // C habilita caminhão
+    if(!cnh) return 'bloqueado';
+    return 'bloqueado'; // A, B não habilitam caminhão pesado
+  }
+
+  // Caminhão comum: exige C ou superior
+  if(tipo.includes('caminhão') || tipo.includes('caminhao')){
+    if(['C','D','E','AC','AD','AE','CD','ACE','ADE'].indexOf(cnh)>=0) return 'ok';
+    if(!cnh) return 'bloqueado';
+    return 'bloqueado'; // A, B não habilitam caminhão
+  }
+
+  // Carro leve, Van, Caminhonete: exige pelo menos B
+  if(tipo.includes('carro') || tipo.includes('van') || tipo.includes('caminhonete') || tipo.includes('leve')){
+    if(!cnh) return 'bloqueado'; // sem CNH
+    if(cnh==='A') return 'bloqueado'; // só A não habilita carro
+    // D ou E dirigindo leve: pedir justificativa (sobre-qualificado, ok mas anotar)
+    if(cnh==='D' || cnh==='E' || cnh==='AD' || cnh==='AE') return 'justificativa';
+    return 'ok'; // B, C, AB, AC, etc.
+  }
+
+  return 'ok'; // tipo desconhecido: não bloquear
+}
+
 function progDefinirMotorista(colabId, eqId, checked){
   var data = progGetData();
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   if(!comp) return;
+
+  if(checked){
+    // Validar compatibilidade CNH x veículo
+    var col    = colaboradores.find(function(c){return c.id===colabId;});
+    var veic   = progGetVeiculo(eqId, data);
+    var cnh    = col ? (col.cnh_categoria||'') : '';
+    var tipo   = veic ? (veic.tipo || (frt_veiculos&&frt_veiculos.find(function(v){return v.id===veic.id;})||{}).tipo||'') : '';
+
+    // Se o veículo está em frt_veiculos, pegar o tipo de lá
+    if(!tipo && veic && veic.id){
+      var fv = (frt_veiculos||[]).find(function(v){return v.id===veic.id;});
+      if(fv) tipo = fv.tipo||'';
+    }
+
+    var compat = cnhCompatibilidadeVeiculo(cnh, tipo);
+
+    if(compat === 'bloqueado'){
+      var cnhLabel = cnh || 'sem CNH';
+      progShowToast('🚫 ' + (col?col.nome:'Colaborador') + ' (CNH ' + cnhLabel + ') não está habilitado para dirigir ' + (tipo||'este veículo') + '. Selecione outro motorista.');
+      // Desmarcar o checkbox
+      var chk = document.querySelector('input[onchange*="progDefinirMotorista"][onchange*="' + colabId + '"]');
+      if(chk) chk.checked = false;
+      return;
+    }
+
+    if(compat === 'justificativa'){
+      var motivo = prompt('⚠ CNH ' + cnh + ' em veículo ' + (tipo||'leve') + '. Isso é permitido mas exige justificativa. Informe o motivo:');
+      if(!motivo){ 
+        var chk2 = document.querySelector('input[onchange*="progDefinirMotorista"][onchange*="' + colabId + '"]');
+        if(chk2) chk2.checked = false;
+        return;
+      }
+      progShowToast('⚠ CNH ' + cnh + ' em ' + (tipo||'veículo leve') + ' registrado. Justificativa: ' + motivo);
+    }
+  }
+
   comp.motorista_id = checked ? colabId : null;
   if(!DEMO&&!comp._local) sbUpdate('composicao_dia',{motorista_id:checked?colabId:null},'id=eq.'+comp.id);
 }
@@ -31779,7 +31857,7 @@ function ppSalvarEquipe(eqId){
   }
   // Validar veículo selecionado
   var veicDiaPP = progGetVeiculo(eqId, data);
-  if(!veicDiaPP || !veicDiaPP.veiculo_id){
+  if(!veicDiaPP || !veicDiaPP.id){
     progShowToast('⚠ Selecione um veículo para a equipe antes de salvar a programação.');
     return;
   }
@@ -32808,10 +32886,36 @@ function progAbrirSelecionarVeiculo(eqId, data){
   var perfil = usuarioLogado ? usuarioLogado.perfil : '';
   var precisaJustif = vAtual && perfil !== 'programador' && perfil !== 'gestor' && perfil !== 'administrador';
 
+  // Determinar tipo de veículo esperado para a equipe
+  var _tipoEq = '';
+  if(eq.tipo_id){
+    var _tipoObj = tipos_equipe.find(function(t){return t.id===eq.tipo_id;});
+    _tipoEq = _tipoObj ? (_tipoObj.nome||'').toLowerCase() : '';
+  } else {
+    _tipoEq = (eq.nome||'').toLowerCase();
+  }
+  // Mapeamento: tipo de equipe → tipos de veículo compatíveis
+  var _veicTiposCompativeis = null; // null = sem filtro (todos)
+  if(_tipoEq.includes('cesto') || _tipoEq.includes('aéreo') || _tipoEq.includes('aereo')){
+    _veicTiposCompativeis = ['Caminhão cesto','Caminhão munck','Caminhão'];
+  } else if(_tipoEq.includes('moto')){
+    _veicTiposCompativeis = ['Motocicleta'];
+  } else if(_tipoEq.includes('van')){
+    _veicTiposCompativeis = ['Van','Carro leve','Caminhonete'];
+  }
+  // Se houver filtro, separar compatíveis de incompatíveis
   // Mostrar todos os veículos — veículos de outro contrato aparecem marcados
   var veicsFrota = frt_veiculos || [];
+  if(_veicTiposCompativeis){
+    // Compatíveis primeiro, depois incompatíveis com badge de aviso
+    var _compat = veicsFrota.filter(function(v){ return _veicTiposCompativeis.indexOf(v.tipo||'') >= 0; });
+    var _incompat = veicsFrota.filter(function(v){ return _veicTiposCompativeis.indexOf(v.tipo||'') < 0; });
+    veicsFrota = _compat.concat(_incompat);
+  }
   var veicsClassif = veicsFrota.map(function(v){
     var classe, cor, bg, icone, titulo;
+    // Incompatível com tipo de equipe?
+    var tipoIncompat = _veicTiposCompativeis && _veicTiposCompativeis.indexOf(v.tipo||'') < 0;
 
     // Já programado para outra equipe no mesmo dia?
     // Verificar sobreposição de turnos — se turnos não se sobrepõem, não bloquear
@@ -32926,7 +33030,7 @@ function progAbrirSelecionarVeiculo(eqId, data){
           +'<span style="font-size:16px">'+item.icone+'</span>'
           +'<div style="flex:1;min-width:0">'
           +'<div style="font-family:monospace;font-weight:700;font-size:13px;color:'+item.cor+'">'+v.placa+posse+'</div>'
-          +'<div style="font-size:11px;color:#888">'+v.modelo+' — '+v.tipo+'</div>'
+          +'<div style="font-size:11px;color:#888">'+v.modelo+' — '+v.tipo+(tipoIncompat?' <span style="background:#FEF3E2;color:#854F0B;border-radius:3px;padding:1px 4px;font-size:9px;font-weight:700">⚠ Tipo diferente</span>':'')+'</div>'
           +'</div>'
           +'<div style="text-align:right">'
           +'<div style="font-size:10px;font-weight:600;color:'+item.cor+'">'+item.titulo+'</div>'
