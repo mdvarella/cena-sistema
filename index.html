@@ -19452,6 +19452,90 @@ async function sotAnalisarCroquiIA(){
   }
 }
 
+
+function _sotMostrarModalTexto(){
+  // Modal para colar conteúdo de Excel/Word
+  var existing = document.getElementById('modal-lista-texto');
+  if(existing){ existing.style.display='flex'; return; }
+  
+  var m = document.createElement('div');
+  m.id = 'modal-lista-texto';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:1rem';
+    m.innerHTML = '<div style="background:#fff;border-radius:14px;padding:1.5rem;max-width:600px;width:100%">'
+    +'<div style="font-weight:700;font-size:15px;margin-bottom:.75rem">📋 Cole o conteúdo da lista</div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:.75rem">Excel e Word não são suportados diretamente. Cole o conteúdo (Ctrl+A → Ctrl+C na planilha) ou converta para PDF.</div>'
+    +'<textarea id="lista-texto-input" style="width:100%;height:220px;font-size:12px;font-family:monospace;border:.5px solid #e0dfd8;border-radius:8px;padding:.5rem;resize:vertical" placeholder="Cole aqui o conteúdo da lista de materiais e serviços..."></textarea>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem;justify-content:flex-end">'
+    +'<button id="btn-lista-cancelar" style="background:#f5f5f3;border:.5px solid #e0dfd8;border-radius:8px;padding:8px 16px;cursor:pointer">Cancelar</button>'
+    +'<button onclick="_sotAnalisarTextoColado()" style="background:#3B6D11;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-weight:600;cursor:pointer">🤖 Analisar</button>'
+    +'</div>'
+    +'</div>';
+  document.body.appendChild(m);
+  var cancelBtn = document.getElementById('btn-lista-cancelar');
+  if(cancelBtn) cancelBtn.onclick = function(){ m.style.display='none'; };
+}
+
+async function _sotAnalisarTextoColado(){
+  var txt = (document.getElementById('lista-texto-input')||{}).value||'';
+  if(!txt.trim()){ alert('Cole o conteúdo antes de analisar.'); return; }
+  
+  var m = document.getElementById('modal-lista-texto');
+  if(m) m.style.display = 'none';
+  
+  var btn  = document.getElementById('sot-lista-ia-btn');
+  var st   = document.getElementById('sot-lista-status');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Analisando...'; }
+  if(st)  st.textContent = 'Analisando texto...';
+
+  var matCat  = typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [];
+  var tsvList = typeof tipos_servico_cad!=='undefined'  ? tipos_servico_cad  : [];
+  var matCodigos = matCat.slice(0,60).map(function(m){ return m.codigo+': '+m.nome; }).join('; ');
+  var srvCodigos = tsvList.slice(0,30).map(function(t){ return t.id.slice(0,8)+': '+t.nome; }).join('; ');
+
+    var prompt = 'Analise esta lista de materiais e serviços de projeto elétrico:\n\n'
+    + txt + '\n\nCatálogo de materiais (código: nome): '+matCodigos+'\nTipos de serviço (id: nome): '+srvCodigos+'\n\nSepare cada item em MATERIAL ou SERVIÇO. Para materiais use o código do catálogo.\nExtraia dados do cabeçalho: cliente, codigo_projeto, nome_projeto.\n\nRetorne SOMENTE JSON válido: {"info":{"cliente":"","codigo_projeto":"","nome_projeto":""},"materiais":[{"codigo":"","nome":"","qtd":0,"unidade":"","obs":""}],"servicos":[{"tipo_id":"","nome":"","qtd":0,"unidade":"","obs":""}]}';
+
+  try{
+    var resp = await fetch('/.netlify/functions/claude-proxy',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2000,
+        messages:[{role:'user',content:prompt}]})
+    });
+    if(!resp.ok) throw new Error('HTTP '+resp.status+': '+(await resp.text()).slice(0,200));
+    var data = await resp.json();
+    var text = (data.content||[]).map(function(c){return c.type==='text'?c.text:'';}).join('').replace(/```json|```/g,'').trim();
+    var parsed = JSON.parse(text);
+    _sotAplicarResultadoLista(parsed, st, btn);
+  } catch(e){
+    if(st) st.textContent = '⚠ Erro: '+e.message;
+    console.error('_sotAnalisarTextoColado erro:',e);
+    if(btn){ btn.disabled=false; btn.textContent='🤖 Analisar e Lançar com IA'; }
+  }
+}
+
+function _sotAplicarResultadoLista(parsed, st, btn){
+  if(parsed.info){
+    var set = function(id,v){ var el=document.getElementById(id); if(el&&v&&!el.value) el.value=v; };
+    set('sot-p-codigo', parsed.info.codigo_projeto);
+    set('sot-p-nome',   parsed.info.nome_projeto);
+    if(parsed.info.cliente){
+      var cliSel = document.getElementById('sot-p-cliente-id');
+      if(cliSel){
+        var cm = clientes.find(function(c){ return (c.razao_social||'').toLowerCase().includes(parsed.info.cliente.toLowerCase()); });
+        if(cm) cliSel.value = cm.id;
+      }
+    }
+  }
+  window._sotPendingMateriais = parsed.materiais || [];
+  window._sotPendingServicos  = parsed.servicos  || [];
+  var nMat = (parsed.materiais||[]).length;
+  var nSrv = (parsed.servicos||[]).length;
+  if(st) st.textContent = '✅ '+nMat+' material(is) e '+nSrv+' serviço(s) prontos para lançar ao salvar';
+  progShowToast('✅ IA identificou '+nMat+' materiais e '+nSrv+' serviços. Salve o projeto para lançar.');
+  if(btn){ btn.disabled=false; btn.textContent='🤖 Analisar e Lançar com IA'; }
+}
+
+
 async function sotAnalisarListaIA(){
   var btn  = document.getElementById('sot-lista-ia-btn');
   var st   = document.getElementById('sot-lista-status');
@@ -19471,14 +19555,23 @@ async function sotAnalisarListaIA(){
   var isPDF = mime==='application/pdf' || mime.includes('pdf');
   var isImg = mime.startsWith('image/');
 
+  // Claude API aceita: PDF (application/pdf) e imagens (image/*)
+  // Excel/Word não são suportados — verificar e orientar o usuário
   var contentBlocks = [];
   if(isPDF){
     contentBlocks.push({type:'document', source:{type:'base64',media_type:'application/pdf',data:b64}});
   } else if(isImg){
-    contentBlocks.push({type:'image', source:{type:'base64',media_type:mime,data:b64}});
+    // Normalizar mime para tipos aceitos
+    var acceptedMime = ['image/jpeg','image/png','image/gif','image/webp'];
+    var imgMime = acceptedMime.indexOf(mime) >= 0 ? mime : 'image/jpeg';
+    contentBlocks.push({type:'image', source:{type:'base64',media_type:imgMime,data:b64}});
   } else {
-    // Excel/Word: tratar como documento genérico
-    contentBlocks.push({type:'document', source:{type:'base64',media_type:'application/pdf',data:b64}});
+    // Excel/Word: não suportados pela API — pedir texto colado
+    if(st) st.textContent = '';
+    if(btn){ btn.disabled=false; btn.textContent='🤖 Analisar e Lançar com IA'; }
+    // Mostrar modal para colar conteúdo
+    _sotMostrarModalTexto();
+    return;
   }
 
   contentBlocks.push({type:'text', text:
@@ -19505,30 +19598,7 @@ async function sotAnalisarListaIA(){
     var text = (data.content||[]).map(function(c){return c.type==='text'?c.text:'';}).join('').replace(/```json|```/g,'').trim();
     var parsed = JSON.parse(text);
 
-    // Preencher dados do projeto se disponíveis
-    if(parsed.info){
-      var set = function(id,v){ var el=document.getElementById(id); if(el&&v&&!el.value) el.value=v; };
-      set('sot-p-codigo', parsed.info.codigo_projeto);
-      set('sot-p-nome',   parsed.info.nome_projeto);
-      if(parsed.info.cliente){
-        var cliSel = document.getElementById('sot-p-cliente-id');
-        if(cliSel){
-          var cliMatch = clientes.find(function(c){
-            return (c.razao_social||'').toLowerCase().includes(parsed.info.cliente.toLowerCase());
-          });
-          if(cliMatch) cliSel.value = cliMatch.id;
-        }
-      }
-    }
-
-    // Guardar para lançar após salvar o projeto
-    window._sotPendingMateriais = parsed.materiais || [];
-    window._sotPendingServicos  = parsed.servicos  || [];
-
-    var nMat = (parsed.materiais||[]).length;
-    var nSrv = (parsed.servicos||[]).length;
-    if(st) st.textContent = '✅ '+nMat+' material(is) e '+nSrv+' serviço(s) prontos para lançar ao salvar o projeto';
-    progShowToast('✅ IA identificou '+nMat+' materiais e '+nSrv+' serviços. Salve o projeto para lançar.');
+    _sotAplicarResultadoLista(parsed, st, btn);
 
   } catch(e){
     if(st) st.textContent = '⚠ Erro: '+e.message;
@@ -21297,9 +21367,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.7.6',
+  numero: '6.7.7',
   data:   '21/05/2026',
-  build:  '20260521-1100',
+  build:  '20260521-1200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
