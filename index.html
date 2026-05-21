@@ -4099,16 +4099,69 @@ async function sbUpsert(table, data, onConflict){
 
 function isUUID(id){return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);}
 
-async function sbDelete(table,filter){
-  if(DEMO)return;
-  // Extrair ID do filtro para verificar se é UUID válido
-  var m=filter.match(/id=eq\.(.+)/);
-  if(m&&!isUUID(m[1])){console.warn('sbDelete ignorado — ID não é UUID:',m[1]);return;}
-  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+// ── SOFT DELETE — nunca apaga dados, apenas marca deleted_at ──────────
+// Tabelas sem coluna deleted_at fazem DELETE real (fallback de segurança)
+var _SOFT_DELETE_TABLES = [
+  'usuarios_sistema','servicos_contrato','tipos_equipe','equipes_disp',
+  'causas_codx','fornecedores','sot_atividades','sot_documentos',
+  'sot_materiais','medicoes_obra','medicoes_obra_itens',
+  'colaboradores','equipes','contratos','composicao_dia',
+  'sessoes_disponibilidade','ordens_diario','turnos_abertos',
+  'lancamentos','adiantamentos','aprovacoes','prod_diaria',
+  'prog_status_diario','prog_veiculos_dia','clientes','servicos',
+  'tipos_servico_cad','tipos_servico_contrato','veiculos','frotas_veiculos',
+  'filiais','depositos','categorias_despesa','subcategorias_despesa',
+  'unidades_medida','itens_catalogo','catalogo_materiais','materiais_sap',
+  'uniformes_catalogo','epis','ferramentas','locacoes',
+  'projetos_obra','execucoes_obra','exec_servicos','sot_projetos',
+  'sot_lancamentos_campo','requisicoes_compra','aditivos_contrato',
+  'verbas_contrato','plpt_sessoes','plpt_sessoes_dia','plpt_prog_dia',
+  'plpt_prog_projetos','plpt_lancamentos','plpt_equipe_membros',
+  'ocorrencias','treinamentos','sesmt_cursos','sesmt_documentos_colab',
+  'sesmt_normas','aprs_registradas','checklists_templates',
+  'frotas_manutencoes','frotas_avarias','frotas_combustivel','frotas_multas',
+  'frotas_documentos','frotas_portaria_saidas','frotas_portaria_bloqueios',
+  'frotas_reservas_veiculos','pneus','pneus_movimentos',
+  'comgas_inspecoes','comgas_ncs','comgas_pa','comgas_cdis','comgas_rems',
+  'enel_inspecoes','enel_ncs','enel_pa','enel_cdis','enel_rems',
+  'vales','sol_composicao','sol_materiais','estoque','movimentacoes_itens',
+  'uniformes_colaborador','uniformes_movimentacoes','alm_movimentos',
+  'plr_avaliacoes','plr_adiantamentos','sugestoes_melhorias',
+  'historico_dispensas','parcelas_adiantamento','calendario_escala',
+  'cod_x_lancamentos','financeiro_faturamentos','portaria_visitas',
+  'funcionarios','produtividade','proj_encarregados','user_permissoes',
+  'perfis_sistema'
+];
+
+async function sbDelete(table, filter){
+  if(DEMO) return;
+  // Validar UUID no filtro id=eq.*
+  var m = filter.match(/id=eq\.(.+)/);
+  if(m && !isUUID(m[1])){ console.warn('sbDelete ignorado — ID não é UUID:', m[1]); return; }
+
+  var h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
+
+  // SOFT DELETE: tabelas com deleted_at → UPDATE em vez de DELETE
+  if(_SOFT_DELETE_TABLES.indexOf(table) >= 0){
+    var now = new Date().toISOString();
+    try{
+      var r = await fetch(SB.url+'/rest/v1/'+table+'?'+filter, {
+        method: 'PATCH',
+        headers: h,
+        body: JSON.stringify({ deleted_at: now })
+      });
+      if(!r.ok){ var err=await r.text(); console.error('sbDelete(soft) erro ['+table+']', r.status, err); }
+      else{ console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now); }
+    }catch(e){ console.error('sbDelete(soft) exception', e); }
+    return;
+  }
+
+  // HARD DELETE: tabelas sem deleted_at (fallback — raramente usado)
+  console.warn('[hard-delete] tabela sem soft-delete:', table);
   try{
-    var r=await fetch(SB.url+'/rest/v1/'+table+'?'+filter,{method:'DELETE',headers:h});
-    if(!r.ok){var err=await r.text();console.error('sbDelete erro ['+table+']',r.status,err);}
-  }catch(e){console.error('sbDelete exception',e);}
+    var r2 = await fetch(SB.url+'/rest/v1/'+table+'?'+filter, {method:'DELETE', headers:h});
+    if(!r2.ok){ var err2=await r2.text(); console.error('sbDelete erro ['+table+']', r2.status, err2); }
+  }catch(e2){ console.error('sbDelete exception', e2); }
 }
 async function sbUpdate(table,data,filter){
   if(DEMO)return;
@@ -20853,9 +20906,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.5.6',
+  numero: '6.5.8',
   data:   '20/05/2026',
-  build:  '20260520-2000',
+  build:  '20260520-2100',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -30209,6 +30262,15 @@ function ocultarPaginasSESMTAlmoxarifado(){
   });
 }
 
+
+// Move uma página para dentro do app-content-area se estiver fora
+function _ensureInACA(pgId){
+  var pg  = document.getElementById(pgId);
+  var aca = document.getElementById('app-content-area');
+  if(pg && aca && pg.parentElement !== aca){
+    aca.appendChild(pg);
+  }
+}
 function showPage(pageId){
   // Reset scroll position on every page change
   var aca=document.getElementById('app-content-area');
@@ -30302,7 +30364,7 @@ function showPage(pageId){
       _almShowAbaInterna(_sesmtAbaAtiva||'alm');
     });
   }
-  else if(pageId==='sesmt-alm')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('alm'); }); }
+  else if(pageId==='sesmt-alm')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-alm'); _almShowAba('alm'); }); }
   else if(pageId==='sesmt-estoque')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('estoque'); }); }
   else if(pageId==='sesmt-epis')       { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('epis'); }); }
   else if(pageId==='sesmt-uniformes')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('uniformes'); }); }
@@ -30311,14 +30373,14 @@ function showPage(pageId){
   else if(pageId==='sesmt-locacoes')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('locacoes'); }); }
   else if(pageId==='sesmt-vales')      { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('vales'); }); }
   else if(pageId==='sesmt-filiais')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('filiais'); }); }
-  else if(pageId==='sesmt-treinamentos'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('treinamentos'); }); }
-  else if(pageId==='sesmt-nr6')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('nr6'); }); }
-  else if(pageId==='sesmt-ocorrencias'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('ocorrencias'); }); }
-  else if(pageId==='sesmt-aprovacoes') { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('aprovacoes'); }); }
-  else if(pageId==='sesmt-dashboard')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); document.getElementById('pg-sesmt-dashboard').classList.remove('hidden'); renderSesmtDashboard(); }); }
+  else if(pageId==='sesmt-treinamentos'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-treinamentos'); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('treinamentos'); }); }
+  else if(pageId==='sesmt-nr6')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-nr6'); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('nr6'); }); }
+  else if(pageId==='sesmt-ocorrencias'){ _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-ocorrencias'); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('ocorrencias'); }); }
+  else if(pageId==='sesmt-aprovacoes') { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-aprovacoes'); var pa=document.getElementById('pg-alm-dashboard'); if(pa) pa.classList.remove('hidden'); sesmtInit(); sesmtSetAba('aprovacoes'); }); }
+  else if(pageId==='sesmt-dashboard')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-sesmt-dashboard'); document.getElementById('pg-sesmt-dashboard').classList.remove('hidden'); renderSesmtDashboard(); }); }
   else if(pageId==='sesmt-inspecoes'){
     _precisaModulo('sesmt',function(){
-      ocultarPaginasSESMTAlmoxarifado();
+      ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-sesmt-inspecoes');
       var pg=document.getElementById('pg-sesmt-inspecoes');
       if(pg) pg.classList.remove('hidden');
       renderInspecoesEnel();
@@ -30326,7 +30388,7 @@ function showPage(pageId){
   }
   else if(pageId==='sesmt-mobilizacao'){
     _precisaModulo('sesmt',function(){
-      ocultarPaginasSESMTAlmoxarifado();
+      ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-sesmt-mobilizacao');
       var pgM = document.getElementById('pg-sesmt-mobilizacao');
       if(pgM) pgM.classList.remove('hidden');
       renderMobilizacao();
@@ -30334,7 +30396,7 @@ function showPage(pageId){
   }
   else if(pageId==='sesmt-evolucao'){
     _precisaModulo('sesmt',function(){
-      ocultarPaginasSESMTAlmoxarifado();
+      ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-sesmt-evolucao');
       var pgE = document.getElementById('pg-sesmt-evolucao');
       if(pgE) pgE.classList.remove('hidden');
       renderSesmtEvolucao();
@@ -30342,24 +30404,24 @@ function showPage(pageId){
   }
   else if(pageId==='sesmt-aptidao'){
     _precisaModulo('sesmt',function(){
-      ocultarPaginasSESMTAlmoxarifado();
+      ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-sesmt-aptidao');
       var pgA = document.getElementById('pg-sesmt-aptidao');
       if(pgA) pgA.classList.remove('hidden');
       renderSesmtAptidao();
     });
   }
-  else if(pageId==='enel-dashboard')  { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('dashboard'); }
-  else if(pageId==='enel-inspecoes')  { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('inspecoes'); }
-  else if(pageId==='enel-nc')         { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('nc'); }
-  else if(pageId==='enel-pa')         { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('pa'); }
-  else if(pageId==='enel-cdi')        { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('cdi'); }
-  else if(pageId==='enel-rem')        { ocultarPaginasSESMTAlmoxarifado(); enelShowTab('rem'); }
-  else if(pageId==='comgas-dashboard'){ ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('dashboard'); }
-  else if(pageId==='comgas-inspecoes'){ ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('inspecoes'); }
-  else if(pageId==='comgas-nc')       { ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('nc'); }
-  else if(pageId==='comgas-pa')       { ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('pa'); }
-  else if(pageId==='comgas-cdi')      { ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('cdi'); }
-  else if(pageId==='comgas-rem')      { ocultarPaginasSESMTAlmoxarifado(); comgasShowTab('rem'); }
+  else if(pageId==='enel-dashboard')  { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-dashboard'); _ensureInACA('pg-enel-dashboard'); enelShowTab('dashboard'); }
+  else if(pageId==='enel-inspecoes')  { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-inspecoes'); _ensureInACA('pg-enel-dashboard'); enelShowTab('inspecoes'); }
+  else if(pageId==='enel-nc')         { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-nc'); _ensureInACA('pg-enel-dashboard'); enelShowTab('nc'); }
+  else if(pageId==='enel-pa')         { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-pa'); _ensureInACA('pg-enel-dashboard'); enelShowTab('pa'); }
+  else if(pageId==='enel-cdi')        { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-cdi'); _ensureInACA('pg-enel-dashboard'); enelShowTab('cdi'); }
+  else if(pageId==='enel-rem')        { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-enel-rem'); _ensureInACA('pg-enel-dashboard'); enelShowTab('rem'); }
+  else if(pageId==='comgas-dashboard'){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-dashboard'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('dashboard'); }
+  else if(pageId==='comgas-inspecoes'){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-inspecoes'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('inspecoes'); }
+  else if(pageId==='comgas-nc')       { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-nc'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('nc'); }
+  else if(pageId==='comgas-pa')       { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-pa'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('pa'); }
+  else if(pageId==='comgas-cdi')      { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-cdi'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('cdi'); }
+  else if(pageId==='comgas-rem')      { ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-comgas-rem'); _ensureInACA('pg-comgas-dashboard'); comgasShowTab('rem'); }
   else if(pageId==='tma'){ showTMA(); }
   else if(pageId==='campo-equipes'){ _precisaModulo('diario',function(){ renderCampoEquipes(); }); }
   else if(pageId==='programacao-equipes'){
@@ -41824,7 +41886,8 @@ function sesmtSetAba(aba){
 // Garante que pg-alm-dashboard fique visível e inicializa o SESMT
 // Chamada externa: garante que pg-alm-dashboard está visível antes de abrir aba
 function _almShowAba(aba){
-  // 1. Garantir que o container principal esteja visível
+  // 1. Garantir que o container principal esteja visível e dentro do ACA
+  _ensureInACA('pg-alm-dashboard');
   var pgAlm = document.getElementById('pg-alm-dashboard');
   if(pgAlm) pgAlm.classList.remove('hidden');
   // 2. Abrir a aba internamente
@@ -45104,6 +45167,7 @@ function gerarRelatorioPeriodo(){
   var w=window.open('','_blank','width=820,height=600');if(w){w.document.write(html);w.document.close();setTimeout(function(){w.print();},400);}
 }
 function sesmtShowTab(name){
+  _ensureInACA('pg-sesmt-'+name);
   var tabs=['alm','uniformes','lavagem','nr6','epis','ferramentas','locacoes','estoque','treinamentos','ocorrencias','aprovacoes','alertas-page','vales','funcionarios','filiais'];
   // Esconder todas — tenta tanto pg-sesmt-* (ERP) quanto pg-* (fallback SESMT standalone)
   tabs.forEach(function(t){
