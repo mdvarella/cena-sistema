@@ -12045,6 +12045,71 @@ function _plptReservaQtd(i, val){
   if(inp && Number(inp.value) > it.qtd_prog) inp.value = it.qtd_prog;
 }
 
+
+function plptEnviarReservaInline(){
+  var mats   = window._plptReservaItensDisp || [];
+  var projId = window._plptReservaProjId;
+  var itensSel = [];
+
+  mats.forEach(function(m, i){
+    var chk = document.getElementById('rsv-chk-'+i);
+    var inp = document.getElementById('rsv-qtd-'+i);
+    if(chk && chk.checked && inp){
+      var qtd = Math.min(parseFloat(inp.value)||0, m.qtd_projetada||0);
+      if(qtd > 0) itensSel.push({
+        mat_id:    m.id,
+        codigo:    m.codigo_sap||'',
+        nome:      m.descricao||'',
+        unidade:   m.unidade||'UN',
+        qtd_prog:  m.qtd_projetada||0,
+        qtd_req:   qtd,
+      });
+    }
+  });
+
+  if(!itensSel.length){
+    var st = document.getElementById('rsv-inline-status');
+    if(st){ st.style.color='#A32D2D'; st.textContent='⚠ Selecione ao menos um material com quantidade.'; }
+    return;
+  }
+
+  var obs = (document.getElementById('rsv-obs-inline')||{}).value||'';
+  var payload = {
+    projeto_id:  projId,
+    equipe_id:   _dbEquipe ? _dbEquipe.id : null,
+    data:        dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10),
+    status:      'Aguardando aprovação',
+    solicitante: usuarioLogado ? usuarioLogado.nome : '',
+    observacoes: obs,
+    itens:       JSON.stringify(itensSel),
+    criado_em:   new Date().toISOString(),
+  };
+
+  var st = document.getElementById('rsv-inline-status');
+
+  if(!DEMO){
+    sbInsert('plpt_requisicoes_materiais', payload)
+      .then(function(){
+        if(st){ st.style.color='#3B6D11'; st.textContent='✅ Requisição enviada! Aguardando aprovação do gerente.'; }
+        // Registrar no histórico do turno
+        if(_dbSessao){
+          _dbSessao.eventos = _dbSessao.eventos||[];
+          _dbSessao.eventos.push({tipo:'REQUISICAO_MAT', ts:Date.now(),
+            obs:'Requisição de '+itensSel.length+' material(is)'});
+        }
+        progShowToast('✅ '+itensSel.length+' material(is) solicitado(s)! Gerente será notificado.');
+      })
+      .catch(function(e){
+        if(st){ st.style.color='#A32D2D'; st.textContent='⚠ Erro ao enviar: '+e.message; }
+        console.error('plptEnviarReservaInline:', e);
+      });
+  } else {
+    if(st){ st.style.color='#3B6D11'; st.textContent='✅ Requisição enviada (demo)!'; }
+    progShowToast('✅ Requisição enviada (modo demo)');
+  }
+}
+
+
 function plptEnviarReserva(){
   var d     = _plptReservaAtual;
   var itensSel = d.itens.filter(function(it){ return it.selecionado && it.qtd_req > 0; });
@@ -12763,6 +12828,69 @@ function _plptRenderProjetoDetalhe(projId){
       +'</div></div></div>';
   }
 
+// ── Aba: Reservar Materiais ─────────────────────────────────────────
+  var reservaHtml = (function(){
+    var mats = (typeof sot_materiais!=='undefined' ? sot_materiais : [])
+      .filter(function(m){ return m.projeto_id===projId; });
+    if(!mats.length){
+      return '<div style="padding:2rem;text-align:center;color:#aaa;background:#f9f9f7;border-radius:10px">'
+        +'<div style="font-size:24px;margin-bottom:.5rem">📦</div>'
+        +'<div>Nenhum material programado para este projeto.</div>'
+        +'<div style="font-size:11px;margin-top:.5rem">Cadastre materiais na aba Materiais do projeto (SOT).</div>'
+        +'</div>';
+    }
+
+    var linhas = mats.map(function(m, i){
+      return '<tr style="border-bottom:.5px solid #f0efe8">'
+        +'<td style="padding:7px 8px">'
+        +'<input type="checkbox" id="rsv-chk-'+i+'" onchange="_plptReservaToggle('+i+')" style="cursor:pointer"/>'
+        +'</td>'
+        +'<td style="padding:7px 8px;font-size:12px">'
+        +(m.codigo_sap?'<span style="font-size:10px;color:#888;display:block">'+m.codigo_sap+'</span>':'')
+        +escHtml(m.descricao||'Material')
+        +'</td>'
+        +'<td style="padding:7px 8px;text-align:center;font-size:12px;color:#185FA5;font-weight:600">'
+        +(m.qtd_projetada||0)+' '+(m.unidade||'UN')
+        +'</td>'
+        +'<td style="padding:7px 8px;text-align:center">'
+        +'<input type="number" id="rsv-qtd-'+i+'" min="0" max="'+(m.qtd_projetada||0)+'" value="0" '
+        +'style="width:65px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
+        +'oninput="_plptReservaQtd('+i+',this.value)" disabled/>'
+        +'</td>'
+        +'</tr>';
+    }).join('');
+
+    // Armazenar itens disponíveis globalmente para o envio
+    window._plptReservaItensDisp = mats;
+    window._plptReservaProjId    = projId;
+
+    return '<div style="padding:.25rem 0">'
+      +'<div style="font-size:12px;color:#555;background:#F0EEFF;border-radius:8px;padding:.6rem .85rem;margin-bottom:.75rem">'
+      +'Selecione os materiais que serão usados hoje e informe a quantidade. '
+      +'Pode ser menor que o programado. A equipe gerente aprovará antes da separação.'
+      +'</div>'
+      +'<div style="max-height:320px;overflow-y:auto;margin-bottom:.75rem">'
+      +'<table style="width:100%;border-collapse:collapse">'
+      +'<thead><tr style="background:#1a1a18;color:#fff;font-size:11px">'
+      +'<th style="padding:7px 8px;width:32px"></th>'
+      +'<th style="padding:7px 8px;text-align:left">Material</th>'
+      +'<th style="padding:7px 8px">Programado</th>'
+      +'<th style="padding:7px 8px">Qtd a usar</th>'
+      +'</tr></thead>'
+      +'<tbody>'+linhas+'</tbody>'
+      +'</table>'
+      +'</div>'
+      +'<div class="fg" style="margin-bottom:.75rem">'
+      +'<label style="font-size:11px;font-weight:600">Observações</label>'
+      +'<input class="inp" id="rsv-obs-inline" placeholder="Urgência, necessidade especial..." style="width:100%"/>'
+      +'</div>'
+      +'<button class="btn btn-pri" onclick="plptEnviarReservaInline()" '
+      +'style="width:100%;background:#533AB7;border-color:#533AB7;padding:.75rem;font-size:13px;font-weight:700">'
+      +'📤 Enviar para Aprovação</button>'
+      +'<div id="rsv-inline-status" style="margin-top:.5rem;font-size:12px;text-align:center;color:#888"></div>'
+      +'</div>';
+  })();
+
   var adicHtml = '<div>'
     // Sub-abas Atividades / Materiais
     +'<div style="display:flex;gap:4px;margin-bottom:.75rem">'
@@ -12792,6 +12920,7 @@ function _plptRenderProjetoDetalhe(projId){
 
   var abaContent = aba==='atividades' ? ativsHtml
     : aba==='materiais'  ? matsHtml
+    : aba==='reserva'    ? reservaHtml
     : aba==='adicional'  ? adicHtml
     : aba==='baixa'      ? baixaHtml
     : aba==='documentos' ? docsHtml
@@ -12815,6 +12944,7 @@ function _plptRenderProjetoDetalhe(projId){
     +btnAba('timeline',  'Status',    '📍')
     +btnAba('atividades','Atividades','⚡')
     +btnAba('materiais', 'Materiais', '📦')
+    +btnAba('reserva',   'Reservar',  '🧰')
     +btnAba('adicional', 'Adicional', '➕')
     +btnAba('baixa',     'Baixa',     '✏️')
     +btnAba('documentos','Docs',      '📄')
@@ -21705,9 +21835,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.8.3',
+  numero: '6.8.4',
   data:   '22/05/2026',
-  build:  '20260522-0300',
+  build:  '20260522-0400',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
