@@ -4350,7 +4350,7 @@ async function carregarModuloObras(){
     sbFetch('medicoes_obra_itens',{}),
     sbFetch('exec_servicos'),
     sbFetch('mov_sap',{order:'data.desc',filters:['data=gte.'+d180]}),
-    sbFetch('sol_materiais',{filters:['status=eq.Pendente']}),
+    sbFetch('sol_materiais',{order:'data.desc'}),
   ]);
   if(res[0]&&res[0].length)projetos=res[0];
   if(res[1]&&res[1].length)proj_encarregados=res[1];
@@ -12358,7 +12358,42 @@ function plptLimparFiltrosReq(){
 }
 
 
-function plptAprovarReq(id){ plptMudarStatusReq(id,'Aprovada','Aprovada'); }
+function plptAprovarReq(id){
+  // Fetch the requisição to get its itens and create sol_materiais entries
+  if(!DEMO){
+    sbFetch('plpt_requisicoes_materiais',{filters:['id=eq.'+id]})
+      .then(function(rows){
+        var r = rows&&rows[0];
+        if(!r) return;
+        var itens = parseJsonField(r.itens,[]);
+        // Create one sol_materiais entry per item
+        itens.forEach(function(it){
+          // Buscar contrato_id via sot_projetos
+          var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[])
+            .find(function(p){return p.id===r.projeto_id;})
+            || projetos.find(function(p){return p.id===r.projeto_id;});
+          var entry = {
+            contrato_id:     proj ? proj.contrato_id : null,
+            projeto_id:      r.projeto_id,
+            encarregado_nome: r.solicitante||'',
+            descricao:       it.nome||it.codigo||'Material',
+            codigo_sap:      it.codigo||null,
+            qtd:             it.qtd_req||0,
+            unidade:         it.unidade||'UN',
+            motivo:          'Requisição aprovada — Req: '+id.slice(0,8),
+            status:          'Separado',
+            data:            r.data||new Date().toISOString().slice(0,10),
+          };
+          sol_materiais.push(Object.assign({id:'sm'+Date.now()+Math.random()}, entry));
+          sbInsert('sol_materiais', entry).catch(function(e){ console.error('sol_materiais insert:',e); });
+        });
+        // Atualizar kanban se visível
+        if(typeof coRenderMateriais==='function') coRenderMateriais();
+      })
+      .catch(function(){});
+  }
+  plptMudarStatusReq(id,'Aprovada','Aprovada');
+}
 function plptReprovarReq(id){ plptMudarStatusReq(id,'Reprovada','Reprovada pelo gerente'); }
 function plptSepararReq(id){ plptMudarStatusReq(id,'Separação','Em separação no almoxarifado'); }
 function plptEnviarCampoReq(id){ plptMudarStatusReq(id,'Em campo','Materiais enviados ao campo'); }
@@ -17783,13 +17818,44 @@ function coRenderMateriais(){
   var kanban = document.getElementById('co-mat-kanban');
   if(!kanban) return;
 
+  // Verificar se há itens para este contrato; se não, buscar do banco
+  var temLocal = sol_materiais.some(function(m){
+    return m.contrato_id===cid
+      || (function(){
+           var p=(typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===m.projeto_id;})
+             ||projetos.find(function(p){return p.id===m.projeto_id;});
+           return p&&p.contrato_id===cid;
+         })();
+  });
+  if(!temLocal && !DEMO){
+    kanban.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
+    sbFetch('sol_materiais',{filters:['contrato_id=eq.'+cid],order:'data.desc'})
+      .then(function(rows){
+        if(rows&&rows.length){
+          rows.forEach(function(r){
+            if(!sol_materiais.find(function(x){return x.id===r.id;}))
+              sol_materiais.push(r);
+          });
+        }
+        coRenderMateriais();
+      }).catch(function(){ coRenderMateriais(); });
+    return;
+  }
+
   var stFil = (document.getElementById('co-mat-status')||{}).value||'';
   var COLUNAS = ['Pendente','Separado','Entregue','Aplicado','Devolvido'];
 
   var rows = sol_materiais.filter(function(m){
-    // Filtrar pelo contrato via projeto
-    var proj = projetos.find(function(p){return p.id===m.projeto_id;});
-    if(!proj || proj.contrato_id !== cid) return false;
+    // Filtrar pelo contrato — checar diretamente ou via projetos/sot_projetos
+    if(m.contrato_id){
+      if(m.contrato_id !== cid) return false;
+    } else {
+      var proj = projetos.find(function(p){return p.id===m.projeto_id;})
+              || (typeof sot_projetos!=='undefined'
+                  ? sot_projetos.find(function(p){return p.id===m.projeto_id;})
+                  : null);
+      if(!proj || proj.contrato_id !== cid) return false;
+    }
     if(stFil && m.status !== stFil) return false;
     return true;
   });
@@ -22221,9 +22287,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.0.1',
+  numero: '7.0.2',
   data:   '22/05/2026',
-  build:  '20260522-2100',
+  build:  '20260522-2200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
