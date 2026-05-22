@@ -17817,6 +17817,137 @@ function coAdicionarServico(){
 }
 
 // ── Materiais ────────────────────────────────────────────────
+
+function _coSalvarStatusMaterial(m, novoStatus, extra){
+  // Atualiza em memória
+  m.status = novoStatus;
+  if(extra) Object.assign(m, extra);
+  if(!DEMO){
+    if(m._from_plpt && m._req_id){
+      var plptStatus = {'Separado':'Separação','Entregue':'Em campo','Devolvido':'Devolvida'}[novoStatus]||novoStatus;
+      sbUpdate('plpt_requisicoes_materiais', Object.assign({status:plptStatus}, extra||{}), 'id=eq.'+m._req_id)
+        .catch(function(e){ console.error('plpt update:',e); });
+    } else {
+      sbUpdate('sol_materiais', Object.assign({status:novoStatus}, extra||{}), 'id=eq.'+m.id)
+        .catch(function(e){ console.error('sol_materiais update:',e); });
+    }
+  }
+  if(window._coMatFetched && _coContratoAtual) delete window._coMatFetched[_coContratoAtual];
+  coRenderMateriais();
+}
+
+// Separar — direto, sem modal
+function coSepararMaterial(id){
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+  _coSalvarStatusMaterial(m, 'Separado', {separado_em: new Date().toISOString()});
+  progShowToast('📦 Material separado!');
+}
+
+// Confirmar Retirada — modal com assinatura da equipe
+function coConfirmarRetirada(id){
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:400px">'
+    +'<h3 style="margin-bottom:.75rem">🤝 Confirmar Retirada</h3>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700">'+escHtml(m.descricao||'')+'</div>'
+    +'<div>Qtd: '+(m.qtd||0)+' '+(m.unidade||'UN')+'</div>'
+    +(m.encarregado_nome?'<div style="color:#888">Solicitante: '+escHtml(m.encarregado_nome)+'</div>':'')
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Nome de quem está retirando *</label>'
+    +'<input class="inp" id="ret-nome" placeholder="Nome completo" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Observação (opcional)</label>'
+    +'<input class="inp" id="ret-obs" placeholder="Equipe, veículo, destino..." style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="ret-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Confirmar Retirada</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('ret-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var nome = ((document.getElementById('ret-nome')||{}).value||'').trim();
+      if(!nome){ progShowToast('⚠ Informe o nome de quem está retirando.','erro'); return; }
+      var obs  = ((document.getElementById('ret-obs')||{}).value||'').trim();
+      closeModal();
+      _coSalvarStatusMaterial(m, 'Entregue', {
+        retirado_por: nome,
+        retirado_obs: obs||null,
+        retirado_em:  new Date().toISOString(),
+      });
+      progShowToast('✅ Retirada confirmada por '+nome);
+    };
+  },50);
+}
+
+// Registrar Devolução — modal com qtd devolvida + confirmação almoxarife
+function coRegistrarDevolucao(id){
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.75rem">🔄 Registrar Devolução</h3>'
+    +'<div style="background:#FEF3E2;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700">'+escHtml(m.descricao||'')+'</div>'
+    +'<div>Qtd enviada ao campo: <strong>'+(m.qtd||0)+' '+(m.unidade||'UN')+'</strong></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Qtd devolvida *</label>'
+    +'<input class="inp" id="dev-qtd" type="number" step="0.01" min="0" max="'+(m.qtd||0)+'" value="'+(m.qtd||0)+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Qtd aplicada em campo</label>'
+    +'<input class="inp" id="dev-aplic" type="number" step="0.01" min="0" value="0" style="width:100%"/></div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Almoxarife que recebeu *</label>'
+    +'<input class="inp" id="dev-alm" placeholder="Nome do almoxarife" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Observações</label>'
+    +'<input class="inp" id="dev-obs" placeholder="Estado dos materiais, divergências..." style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="dev-confirmar" style="flex:2;background:#854F0B;border-color:#854F0B">🔄 Confirmar Devolução</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('dev-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var alm  = ((document.getElementById('dev-alm')||{}).value||'').trim();
+      var qtdD = parseFloat((document.getElementById('dev-qtd')||{}).value||'0')||0;
+      var qtdA = parseFloat((document.getElementById('dev-aplic')||{}).value||'0')||0;
+      var obs  = ((document.getElementById('dev-obs')||{}).value||'').trim();
+      if(!alm){ progShowToast('⚠ Informe o nome do almoxarife.','erro'); return; }
+      closeModal();
+      _coSalvarStatusMaterial(m, 'Devolvido', {
+        qtd_devolvida:  qtdD,
+        qtd_aplicada:   qtdA,
+        devolvido_por:  alm,
+        devolvido_obs:  obs||null,
+        devolvido_em:   new Date().toISOString(),
+      });
+      progShowToast('✅ Devolução confirmada por '+alm+' — '+qtdD+' '+(m.unidade||'UN')+' recebidos');
+    };
+  },50);
+}
+
+// Botão de avanço por status (chamado pelo card)
+function coAvancarMaterial(id, novoStatus){
+  if(novoStatus==='Separado')   return coSepararMaterial(id);
+  if(novoStatus==='Entregue')   return coConfirmarRetirada(id);
+  if(novoStatus==='Devolvido')  return coRegistrarDevolucao(id);
+  // Fallback genérico
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+  _coSalvarStatusMaterial(m, novoStatus, {});
+  progShowToast('✅ Movido para: '+novoStatus);
+}
+
+
 function coRenderMateriais(){
   var cid = _coContratoAtual;
   var kanban = document.getElementById('co-mat-kanban');
@@ -17899,10 +18030,18 @@ function coRenderMateriais(){
         +col+' <span style="opacity:.8;font-size:11px">('+items.length+')</span></div>'
       +'<div style="padding:.5rem;display:flex;flex-direction:column;gap:.5rem;min-height:100px">'
       +items.slice(0,10).map(function(m){
-        return '<div style="background:#fff;border-radius:6px;padding:.5rem .6rem;border:.5px solid #e0dfd8;font-size:11px">'
-          +'<div style="font-weight:500">'+m.descricao+'</div>'
-          +'<div style="color:#888;margin-top:2px">Qtd: '+m.qtd+' '+(m.unidade||'UN')+'</div>'
-          +'</div>';
+        return (function(m){
+          var ns={'Pendente':'Separado','Separado':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
+          var btn=ns?'<button onclick="coAvancarMaterial(\''+m.id+'\',\''+ns+'\')" '
+            +'style="margin-top:5px;width:100%;padding:4px;background:#1a1a18;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">'
+            +'→ '+ns+'</button>':'';
+          return '<div style="background:#fff;border-radius:6px;padding:.5rem .6rem;border:.5px solid #e0dfd8;font-size:11px">'
+            +'<div style="font-weight:600">'+escHtml(m.descricao||'')+'</div>'
+            +(m.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(m.codigo_sap)+'</div>':'')
+            +'<div style="color:#888;margin-top:2px">Qtd: '+(m.qtd||0)+' '+(m.unidade||'UN')+'</div>'
+            +(m.encarregado_nome?'<div style="font-size:10px;color:#aaa">'+escHtml(m.encarregado_nome)+'</div>':'')
+            +btn+'</div>';
+        })(m);
       }).join('')
       +(items.length>10?'<div style="text-align:center;font-size:11px;color:#aaa">+'+( items.length-10)+' mais</div>':'')
       +'</div></div>';
@@ -22317,9 +22456,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.0.4',
+  numero: '7.0.6',
   data:   '22/05/2026',
-  build:  '20260522-2359',
+  build:  '20260522-2359c',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
