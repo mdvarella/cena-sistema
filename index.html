@@ -18624,6 +18624,7 @@ function sotRenderTabMateriais(projetoId){
     return '<div style="padding:2rem;text-align:center;color:#aaa">'
       +'Nenhum material cadastrado.<br><br>'
       +'<button class="btn btn-pri" onclick="sotAbrirNovoMaterial(\''+projetoId+'\')">+ Adicionar material</button>'
+    +'<button class="btn" onclick="sotImportarMateriais(\''+projetoId+'\')" style="color:#185FA5;border-color:#185FA5">📥 Importar (CSV/Excel)</button>'
       +'</div>';
   }
   return '<div style="overflow-x:auto">'
@@ -21332,6 +21333,72 @@ function sotConfirmarImportacao(projetoId){
   sotAtualizarAbaAtual(projetoId);
   progShowToast('✅ '+imp+' importada(s) · '+som+' somada(s)');
 }
+
+function sotImportarMateriais(projetoId){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:560px">'
+    +'<h3 style="margin-bottom:.5rem">📥 Importar Materiais</h3>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:.75rem">'
+    +'Cole ou importe lista. Formato: <code>codigo_sap;descrição;qtd;unidade</code></div>'
+    +'<textarea id="imp-mat-txt" style="width:100%;height:180px;font-size:12px;font-family:monospace;'
+    +'border:.5px solid #e0dfd8;border-radius:8px;padding:.5rem;resize:vertical" '
+    +'placeholder="4500001234;Poste concreto 11m;5;UN\n4500005678;Cabo XLPE 95mm²;200;m"></textarea>'
+    +'<div style="margin:.5rem 0;display:flex;align-items:center;gap:8px">'
+    +'<label style="font-size:12px;color:#555">Importar arquivo:</label>'
+    +'<input type="file" id="imp-mat-file" accept=".txt,.csv,.xlsx,.xls" style="font-size:12px" onchange="_sotCarregarArqMat(this)"/>'
+    +'</div>'
+    +'<div class="ma">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="sotProcessarImportacaoMat(\''+projetoId+'\')">📥 Importar</button>'
+    +'</div></div></div>');
+}
+
+async function _sotCarregarArqMat(input){
+  var file=input.files[0]; if(!file) return;
+  var txt=document.getElementById('imp-mat-txt');
+  if(file.name.match(/\.xlsx?$/i) && typeof XLSX!=='undefined'){
+    var b64=await new Promise(function(res,rej){
+      var r=new FileReader();r.onload=function(e){res(e.target.result.split(',')[1]);};r.onerror=rej;r.readAsDataURL(file);
+    });
+    var wb=XLSX.read(b64,{type:'base64'});
+    var ws=wb.Sheets[wb.SheetNames[0]];
+    var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',blankrows:false}).slice(0,300);
+    if(txt) txt.value=rows.map(function(r){return r.slice(0,5).join(';');}).join('\n');
+  } else {
+    var reader=new FileReader();
+    reader.onload=function(e){if(txt)txt.value=e.target.result;};
+    reader.readAsText(file,'UTF-8');
+  }
+}
+
+function sotProcessarImportacaoMat(projetoId){
+  var raw=(document.getElementById('imp-mat-txt')||{}).value||'';
+  var linhas=raw.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+  if(!linhas.length){progShowToast('⚠ Nenhuma linha.','erro');return;}
+  var n=0;
+  linhas.forEach(function(linha){
+    var sep=linha.indexOf(';')>=0?';':'\t';
+    var cols=linha.split(sep).map(function(x){return x.trim();});
+    var desc=cols[1]||cols[0]||''; if(!desc) return;
+    var m={
+      id:'sm'+Date.now()+n, projeto_id:projetoId,
+      codigo_sap:cols[0]||'', descricao:desc,
+      unidade:cols[3]||'UN', qtd_projetada:parseFloat(cols[2])||1,
+      qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0,
+      qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
+    };
+    sot_materiais_proj.push(m);
+    if(!DEMO){
+      var p=Object.assign({},m); delete p.id;
+      sbInsert('sot_materiais',p).then(function(r){if(r&&r[0])m.id=r[0].id;}).catch(function(){});
+    }
+    n++;
+  });
+  closeModal();
+  sotAtualizarAbaAtual(projetoId);
+  progShowToast('✅ '+n+' material(is) importado(s)');
+}
+
+
 function sotLancarBaixaMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
@@ -21400,115 +21467,57 @@ function sotLancarBaixaMaterial(id){
 function sotEditarMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
-
-  var html = '<div class="modal-bg"><div class="modal" style="max-width:420px">'
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
     +'<h3 style="margin-bottom:.75rem">Editar Material</h3>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Descrição *</label>'
-    +'<input class="inp" id="sot-mat-desc" value="'+(m.descricao||'')+'" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Código SAP</label>'
+    +'<input class="inp" id="sot-mat-cod" value="'+(m.codigo_sap||'')+'" style="width:100%"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Unidade</label>'
     +'<input class="inp" id="sot-mat-un" value="'+(m.unidade||'UN')+'" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd prevista</label>'
-    +'<input class="inp" id="sot-mat-qtd" type="number" value="'+(m.qtd_prevista||0)+'" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Valor unitário (R$)</label>'
-    +'<input class="inp" id="sot-mat-vu" type="number" value="'+(m.valor_unitario||0)+'" step="0.01" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Fornecedor</label>'
-    +'<input class="inp" id="sot-mat-forn" value="'+(m.fornecedor||'')+'" style="width:100%"/></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Descrição *</label>'
+    +'<input class="inp" id="sot-mat-desc" value="'+escHtml(m.descricao||'')+'" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Projetada</label>'
+    +'<input class="inp" id="sot-mat-qtd" type="number" step="0.01" value="'+(m.qtd_projetada||0)+'" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Viabilizada</label>'
+    +'<input class="inp" id="sot-mat-viab" type="number" step="0.01" value="'+(m.qtd_viabilizada||0)+'" style="width:100%"/></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Observação</label>'
+    +'<input class="inp" id="sot-mat-obs" value="'+escHtml(m.observacao||'')+'" style="width:100%"/></div>'
     +'</div>'
-    +'<div style="display:flex;gap:8px">'
-    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn" id="sot-excluir-mat" style="flex:1;color:#A32D2D;border-color:#A32D2D">🗑 Excluir</button>'
+    +'<div style="display:flex;gap:.5rem">'
+    +'<button class="btn" id="sot-excluir-mat" style="color:#A32D2D;border-color:#A32D2D">Excluir</button>'
     +'<button class="btn btn-pri" id="sot-salvar-mat" style="flex:2">Salvar</button>'
-    +'</div></div></div>';
-
-  setModal(html);
+    +'</div></div></div>');
   setTimeout(function(){
     var btnS = document.getElementById('sot-salvar-mat');
     if(btnS) btnS.onclick = function(){
-      var g = function(id){ return (document.getElementById(id)||{}).value||''; };
-      m.descricao      = g('sot-mat-desc').trim();
-      m.unidade        = g('sot-mat-un')||'UN';
-      m.qtd_prevista   = parseFloat(g('sot-mat-qtd'))||0;
-      m.valor_unitario = parseFloat(g('sot-mat-vu'))||0;
-      m.fornecedor     = g('sot-mat-forn');
+      var g=function(id){return(document.getElementById(id)||{}).value||'';};
+      var desc=g('sot-mat-desc').trim();
+      if(!desc){progShowToast('⚠ Informe a descrição.','erro');return;}
+      m.codigo_sap      = g('sot-mat-cod').trim();
+      m.descricao       = desc;
+      m.unidade         = g('sot-mat-un')||'UN';
+      m.qtd_projetada   = parseFloat(g('sot-mat-qtd'))||0;
+      m.qtd_viabilizada = parseFloat(g('sot-mat-viab'))||0;
+      m.observacao      = g('sot-mat-obs');
+      var projId = m.projeto_id;
       if(!DEMO) sbUpdate('sot_materiais',{
-        descricao:m.descricao,unidade:m.unidade,qtd_prevista:m.qtd_prevista,
-        valor_unitario:m.valor_unitario,fornecedor:m.fornecedor
-      },'id=eq.'+id);
+        codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
+        qtd_projetada:m.qtd_projetada,qtd_viabilizada:m.qtd_viabilizada,
+        observacao:m.observacao
+      },'id=eq.'+id).catch(function(e){console.error('Edit mat:',e);});
       closeModal();
-      sotAtualizarAbaAtual(m.projeto_id);
+      sotAtualizarAbaAtual(projId);
     };
     var btnE = document.getElementById('sot-excluir-mat');
     if(btnE) btnE.onclick = function(){
-      if(!confirm('Excluir o material "'+m.descricao+'"?')) return;
-      sot_materiais_proj = sot_materiais_proj.filter(function(x){ return x.id!==id; });
+      if(!confirm('Excluir "'+m.descricao+'"?')) return;
+      var projId=m.projeto_id;
+      sot_materiais_proj=sot_materiais_proj.filter(function(x){return x.id!==id;});
       if(!DEMO) sbDelete('sot_materiais','id=eq.'+id);
-      closeModal();
-      sotAtualizarAbaAtual(m.projeto_id);
+      closeModal(); sotAtualizarAbaAtual(projId);
     };
   },50);
 }
-
-
-
-// ═══════════════════════════════════════════════════════════════
-// ASSISTENTE CENA IA
-// ═══════════════════════════════════════════════════════════════
-
-var _ajudaHistorico = []; // histórico de mensagens da conversa
-var _ajudaAberto = false;
-
-var CENA_SYSTEM_PROMPT = `Você é o assistente do sistema CENA — um sistema de gestão operacional e financeira para contratos de obras e serviços elétricos.
-
-Você conhece profundamente todos os módulos do CENA:
-
-MÓDULOS DO SISTEMA:
-- Dashboard: indicadores consolidados por contrato
-- Contratos: cadastro com código SAP, vigência, valor total. Totalizador no rodapé com soma dos valores.
-- Financeiro: Verbas, Lançamentos, Aprovação, Metas/Realizado, Adiantamentos
-- Operacional: Produção Diária (COD X), Movimentação SAP, Programação de Equipes
-- Obras → Projetos: abas por contrato (TMA, RDSE, RDSC, OUTFIT, BT0, PLPT, Automação, ETD, RDSE Novo, RDSC Novo, SOT Obras, Comgás, CTEEP Roçada). Botão Abrir Painel em cada aba.
-- Obras → Almoxarifado: Estoque atual, Entradas, Saídas, Em campo, Lista de retorno, Reservas/Separação. Controla saldo em tempo real.
-- Obras → Requisições de Materiais: solicitante do cadastro de usuários, contrato → projeto → material em cascata
-- Obras → Medição e Faturamento
-- Em Campo / Diário de Bordo: uso mobile pelo encarregado. Fluxo: confirmar composição → iniciar turno → checklist EPI/veicular → ordens de serviço → ações rápidas (aguardando OS, tipo de serviço, baixa de materiais) → encerrar turno.
-- Cadastros: Usuários, Fornecedores, Categorias, Serviços, Equipes, Colaboradores, Tipos de equipe, Equipamentos disponíveis, Causas COD X, Checklists, Veículos, Clientes, Tipos de Serviço, Unidades de Medida, Catálogo de Materiais
-- Relatórios
-
-PROJETOS SOT OBRAS:
-- Status: Recebido → Em análise → Em viabilidade → Viabilizado apto/não apto → Aguardando cliente/material → Programado → Em execução → Executado → Em medição → Medido → Faturado (ou Cancelado)
-- Abas do projeto: Atividades, Materiais, Documentos
-- Ao verificar saldo SAP: ✅ ok / ⚠ parcial / ❌ sem saldo
-- Ao programar: reserva automática de todos os materiais. Com saldo → Reservado. Sem saldo → Reservado Pendente (requer justificativa)
-
-PAINEL DE CONTRATO:
-- Acessado pelo banner preto nas abas de projetos
-- 6 abas: Projetos, Equipe, Programação, Serviços, Materiais, Indicadores
-- Cada contrato tem dados isolados: colaboradores, projetos, serviços e materiais próprios
-
-ALMOXARIFADO - FLUXO DE MATERIAIS:
-- Entrada: material chega (compra ou do cliente) → saldo aumenta
-- Saída: material vai para campo → status "Em campo"
-- Baixa: informa qtd aplicada + qtd devolvida → devolvido retorna ao saldo
-- Reserva: ao programar projeto → todos os materiais reservados automaticamente
-- Status das reservas: Reservado → Em separação → (saída normal)
-
-PERFIS DE USUÁRIO:
-- Administrador: acesso total
-- Gerente: visão executiva, aprova lançamentos
-- Gestor: gerencia contratos específicos
-- Coordenador: programação de equipes, registra faltas
-- Supervisor: acompanha execução em campo
-- Encarregado: usa o Diário de Bordo mobile
-- Almoxarife: controla estoque, entradas, saídas, reservas
-- Programador: valida materiais e envia projetos para programação
-- Frota: gerencia veículos
-- Financeiro: verbas, lançamentos, medição
-
-BANCO DE DADOS (Supabase):
-- Tabelas principais: contratos, colaboradores, equipes_disp, composicao_dia, servicos_contrato, projetos_obra, sot_projetos, sot_atividades, sot_materiais, alm_movimentos, catalogo_materiais, clientes, tipos_servico_contrato, unidades_medida, sol_materiais, usuarios_sistema
-
-Responda sempre em português brasileiro. Seja direto e objetivo. Para fluxos passo a passo, use numeração. Quando relevante, mencione onde encontrar a funcionalidade no menu. Máximo 3 parágrafos por resposta, a menos que seja um passo a passo.`;
 
 function cenaAjudaAbrir(){
   var panel = document.getElementById('cena-ajuda-panel');
@@ -21696,9 +21705,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.8.0',
+  numero: '6.8.1',
   data:   '21/05/2026',
-  build:  '20260521-1500',
+  build:  '20260522-0100',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
