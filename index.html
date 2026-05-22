@@ -17522,7 +17522,11 @@ function coMostrarTab(tab){
   else if(tab==='equipe')  coRenderEquipe();
   else if(tab==='programacao') coRenderProgramacao();
   else if(tab==='servicos') coRenderServicos();
-  else if(tab==='materiais') coRenderMateriais();
+  else if(tab==='materiais'){
+    // Reset fetch flag so fresh data is loaded each time
+    if(window._coMatFetched) delete window._coMatFetched[_coContratoAtual];
+    coRenderMateriais();
+  }
   else if(tab==='indicadores') coRenderIndicadores();
 }
 
@@ -17823,16 +17827,48 @@ function coRenderMateriais(){
   if(!window._coMatFetched[cid] && !DEMO){
     window._coMatFetched[cid] = true;
     kanban.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
-    sbFetch('sol_materiais',{filters:['contrato_id=eq.'+cid],order:'data.desc'})
-      .then(function(rows){
-        if(rows&&rows.length){
-          rows.forEach(function(r){
-            if(!sol_materiais.find(function(x){return x.id===r.id;}))
-              sol_materiais.push(r);
+    // Buscar sol_materiais E plpt_requisicoes_materiais em paralelo
+    Promise.all([
+      sbFetch('sol_materiais',{filters:['contrato_id=eq.'+cid],order:'data.desc'}),
+      sbFetch('plpt_requisicoes_materiais',{order:'criado_em.desc',limit:200})
+    ]).then(function(res){
+      var solRows  = res[0]||[];
+      var plptRows = res[1]||[];
+      // Adicionar sol_materiais ao array local
+      solRows.forEach(function(r){
+        if(!sol_materiais.find(function(x){return x.id===r.id;}))
+          sol_materiais.push(r);
+      });
+      // Converter plpt_requisicoes aprovadas/separação em itens do kanban
+      plptRows.forEach(function(req){
+        if(!['Aprovada','Separação','Em campo','Devolvida'].includes(req.status)) return;
+        var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[])
+          .find(function(p){return p.id===req.projeto_id;});
+        if(!proj || proj.contrato_id!==cid) return;
+        var itens = parseJsonField(req.itens,[]);
+        itens.forEach(function(it){
+          var fakeId = 'plpt-'+req.id+'-'+it.mat_id;
+          if(sol_materiais.find(function(x){return x.id===fakeId;})) return;
+          var statusMap = {'Aprovada':'Pendente','Separação':'Separado','Em campo':'Entregue','Devolvida':'Devolvido'};
+          sol_materiais.push({
+            id:              fakeId,
+            contrato_id:     cid,
+            projeto_id:      req.projeto_id,
+            encarregado_nome: req.solicitante||'',
+            descricao:       it.nome||it.codigo||'Material',
+            codigo_sap:      it.codigo||null,
+            qtd:             it.qtd_req||0,
+            unidade:         it.unidade||'UN',
+            motivo:          'Req. #'+req.id.slice(0,8),
+            status:          statusMap[req.status]||'Pendente',
+            data:            req.data||req.criado_em||'',
+            _from_plpt:      true,
+            _req_id:         req.id,
           });
-        }
-        coRenderMateriais();
-      }).catch(function(){ coRenderMateriais(); });
+        });
+      });
+      coRenderMateriais();
+    }).catch(function(){ coRenderMateriais(); });
     return;
   }
 
@@ -22281,9 +22317,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.0.3',
+  numero: '7.0.4',
   data:   '22/05/2026',
-  build:  '20260522-2300',
+  build:  '20260522-2359',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
