@@ -12152,23 +12152,64 @@ function plptEnviarReserva(){
 function plptRenderRequisicoes(contratoId){
   var tbl = document.getElementById('plpt-req-tbl');
   if(!tbl) return;
-  tbl.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
 
-  if(DEMO){ tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Sem requisições no modo demo.</div>'; return; }
-
-  // Buscar todas as requisições recentes (sem filtro de deleted_at que pode não existir)
-  var filters = [];
-  // Não filtrar por status — mostrar todas para o gestor ver o histórico completo
-  if(contratoId){
-    // filtrar por contrato se necessário no futuro
+  if(DEMO){
+    tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Sem requisições no modo demo.</div>';
+    return;
   }
 
-  sbFetch('plpt_requisicoes_materiais',{filters:filters, order:'criado_em.desc', limit:100})
+  tbl.innerHTML='<div style="padding:1.5rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
+
+  sbFetch('plpt_requisicoes_materiais',{order:'criado_em.desc', limit:500})
     .then(function(rows){
-      if(!rows||!rows.length){
-        tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma requisição pendente.</div>';
+      if(!rows) rows=[];
+
+      // Popular selects de Contrato e Filial na primeira carga
+      _plptPopularFiltrosReq(rows);
+
+      // Ler filtros
+      var fContrato = (document.getElementById('req-fil-contrato')||{}).value||'';
+      var fFilial   = (document.getElementById('req-fil-filial')||{}).value||'';
+      var fStatus   = (document.getElementById('req-fil-status')||{}).value||'';
+      var fDe       = (document.getElementById('req-fil-de')||{}).value||'';
+      var fAte      = (document.getElementById('req-fil-ate')||{}).value||'';
+
+      // Filtrar client-side
+      var filtered = rows.filter(function(r){
+        // Filtro de Status
+        if(fStatus && r.status !== fStatus) return false;
+
+        // Filtro de Data
+        var rData = (r.data||r.criado_em||'').slice(0,10);
+        if(fDe  && rData < fDe)  return false;
+        if(fAte && rData > fAte) return false;
+
+        // Filtro de Contrato — via projeto
+        if(fContrato){
+          var proj = (typeof sot_projetos!=='undefined' ? sot_projetos : [])
+            .find(function(p){ return p.id===r.projeto_id; });
+          if(!proj || proj.contrato_id !== fContrato) return false;
+        }
+
+        // Filtro de Filial — via equipe
+        if(fFilial){
+          var eq = equipes_disp.find(function(e){ return e.id===r.equipe_id; })
+                || equipes.find(function(e){ return e.id===r.equipe_id; });
+          if(!eq || eq.filial_id !== fFilial) return false;
+        }
+
+        return true;
+      });
+
+      if(!filtered.length){
+        tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">'
+          +'<div style="font-size:22px;margin-bottom:.5rem">📋</div>'
+          +'<div>Nenhuma requisição encontrada com os filtros selecionados.</div>'
+          +'<div style="font-size:11px;margin-top:.4rem;color:#bbb">Se esperava ver registros, verifique se o SQL de RLS foi executado no Supabase.</div>'
+          +'</div>';
         return;
       }
+
       var STATUS_COR = {
         'Aguardando aprovação': {bg:'#FEF3E2',c:'#854F0B'},
         'Aprovada':             {bg:'#EAF3DE',c:'#3B6D11'},
@@ -12177,37 +12218,65 @@ function plptRenderRequisicoes(contratoId){
         'Devolvida':            {bg:'#f5f5f3',c:'#888'},
         'Reprovada':            {bg:'#FFF0F0',c:'#A32D2D'},
       };
-      tbl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+
+      // Métricas rápidas
+      var counts = {};
+      filtered.forEach(function(r){ counts[r.status]=(counts[r.status]||0)+1; });
+      var metBar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem">'
+        + Object.keys(counts).map(function(st){
+            var sc=STATUS_COR[st]||{bg:'#f5f5f3',c:'#555'};
+            return '<span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:3px 10px;font-size:11px;font-weight:600">'
+              +st+': '+counts[st]+'</span>';
+          }).join('')
+        +'</div>';
+
+      var tableHtml = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
         +'<thead><tr style="background:#1a1a18;color:#fff">'
         +'<th style="padding:7px 10px;text-align:left">Data</th>'
-        +'<th style="padding:7px 10px;text-align:left">Equipe</th>'
-        +'<th style="padding:7px 10px;text-align:left">Projeto</th>'
+        +'<th style="padding:7px 10px;text-align:left">Equipe / Filial</th>'
+        +'<th style="padding:7px 10px;text-align:left">Projeto / Contrato</th>'
         +'<th style="padding:7px 10px">Itens</th>'
         +'<th style="padding:7px 10px">Status</th>'
         +'<th style="padding:7px 10px">Ações</th>'
         +'</tr></thead><tbody>'
-        + rows.map(function(r){
+        + filtered.map(function(r){
             var eq   = equipes_disp.find(function(e){return e.id===r.equipe_id;})
                     || equipes.find(function(e){return e.id===r.equipe_id;});
-            var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===r.projeto_id;});
+            var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[])
+                        .find(function(p){return p.id===r.projeto_id;});
+            var cont = proj ? contratos.find(function(ct){return ct.id===proj.contrato_id;}) : null;
+            var fil  = eq && eq.filial_id ? filiais.find(function(f){return f.id===eq.filial_id;}) : null;
             var itens= parseJsonField(r.itens,[]);
             var sc   = STATUS_COR[r.status]||{bg:'#f5f5f3',c:'#555'};
             var btns = '';
             if(r.status==='Aguardando aprovação'){
-              btns='<button class="btn btn-sm" onclick="plptAprovarReq(\''+r.id+'\')" style="background:#3B6D11;color:#fff;font-size:10px">✅ Aprovar</button> '
-                 +'<button class="btn btn-sm" onclick="plptReprovarReq(\''+r.id+'\')" style="background:#A32D2D;color:#fff;font-size:10px">❌ Reprovar</button>';
+              btns='<div style="display:flex;gap:3px;flex-wrap:wrap">'
+                +'<button class="btn btn-sm" onclick="plptAprovarReq(\''+r.id+'\')" style="background:#3B6D11;color:#fff;font-size:10px">✅ Aprovar</button>'
+                +'<button class="btn btn-sm" onclick="plptReprovarReq(\''+r.id+'\')" style="background:#A32D2D;color:#fff;font-size:10px">❌ Reprovar</button>'
+                +'</div>';
             } else if(r.status==='Aprovada'){
               btns='<button class="btn btn-sm" onclick="plptSepararReq(\''+r.id+'\')" style="background:#185FA5;color:#fff;font-size:10px">📦 Separar</button>';
             } else if(r.status==='Separação'){
-              btns='<button class="btn btn-sm" onclick="plptEnviarCampoReq(\''+r.id+'\')" style="background:#533AB7;color:#fff;font-size:10px">🚚 Enviar ao campo</button>';
+              btns='<button class="btn btn-sm" onclick="plptEnviarCampoReq(\''+r.id+'\')" style="background:#533AB7;color:#fff;font-size:10px">🚚 Enviar campo</button>';
             } else if(r.status==='Em campo'){
-              btns='<button class="btn btn-sm" onclick="plptDevolverReq(\''+r.id+'\')" style="font-size:10px">🔄 Registrar devolução</button>';
+              btns='<button class="btn btn-sm" onclick="plptDevolverReq(\''+r.id+'\')" style="font-size:10px">🔄 Devolução</button>';
+            } else {
+              btns='<button class="btn btn-sm" onclick="plptVerItens(\''+r.id+'\')" style="font-size:10px">👁 Ver</button>';
             }
             return '<tr style="border-bottom:.5px solid #f0efe8">'
-              +'<td style="padding:7px 10px">'+fmtD(r.data)+'</td>'
-              +'<td style="padding:7px 10px">'+escHtml(eq?eq.codigo||eq.nome:'—')+'</td>'
-              +'<td style="padding:7px 10px">'+escHtml(proj?proj.nome||proj.codigo:'—')+'</td>'
-              +'<td style="padding:7px 10px;text-align:center">'+itens.length+' item(ns)</td>'
+              +'<td style="padding:7px 10px;white-space:nowrap">'+fmtD(r.data||r.criado_em)+'</td>'
+              +'<td style="padding:7px 10px">'
+              +'<div style="font-weight:500">'+escHtml(eq?eq.codigo||eq.nome:'—')+'</div>'
+              +(fil?'<div style="font-size:10px;color:#888">'+escHtml(fil.codigo||fil.nome)+'</div>':'')
+              +(r.solicitante?'<div style="font-size:10px;color:#aaa">'+escHtml(r.solicitante)+'</div>':'')
+              +'</td>'
+              +'<td style="padding:7px 10px">'
+              +'<div style="font-weight:500">'+escHtml(proj?proj.codigo_cliente||proj.nome||proj.codigo:'—')+'</div>'
+              +(cont?'<div style="font-size:10px;color:#888">'+escHtml(cont.codigo||cont.nome)+'</div>':'')
+              +'</td>'
+              +'<td style="padding:7px 10px;text-align:center">'
+              +'<button class="btn btn-sm" onclick="plptVerItens(\''+r.id+'\')" style="font-size:10px">'+itens.length+' item(ns)</button>'
+              +'</td>'
               +'<td style="padding:7px 10px;text-align:center">'
               +'<span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:2px 8px;font-size:10px;font-weight:600">'+r.status+'</span>'
               +'</td>'
@@ -12215,8 +12284,60 @@ function plptRenderRequisicoes(contratoId){
               +'</tr>';
           }).join('')
         +'</tbody></table>';
-    }).catch(function(e){ tbl.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar: '+(e&&e.message||String(e))+'</div>'; console.error('plptRenderRequisicoes erro:',e); });
+
+      tbl.innerHTML = metBar + tableHtml;
+    })
+    .catch(function(e){
+      tbl.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar: '+(e&&e.message||String(e))+'</div>';
+      console.error('plptRenderRequisicoes erro:',e);
+    });
 }
+
+function _plptPopularFiltrosReq(rows){
+  // Popular select de Contrato
+  var selCont = document.getElementById('req-fil-contrato');
+  if(selCont && selCont.options.length <= 1){
+    var projIds = [...new Set(rows.map(function(r){return r.projeto_id;}).filter(Boolean))];
+    var conts = {};
+    projIds.forEach(function(pid){
+      var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===pid;});
+      if(proj && proj.contrato_id){
+        var cont = contratos.find(function(ct){return ct.id===proj.contrato_id;});
+        if(cont) conts[cont.id] = cont.codigo||cont.nome||cont.id;
+      }
+    });
+    Object.keys(conts).sort().forEach(function(id){
+      var opt=document.createElement('option'); opt.value=id; opt.textContent=conts[id];
+      selCont.appendChild(opt);
+    });
+  }
+
+  // Popular select de Filial
+  var selFil = document.getElementById('req-fil-filial');
+  if(selFil && selFil.options.length <= 1){
+    var eqIds = [...new Set(rows.map(function(r){return r.equipe_id;}).filter(Boolean))];
+    var fils = {};
+    eqIds.forEach(function(eid){
+      var eq = equipes_disp.find(function(e){return e.id===eid;})
+             ||equipes.find(function(e){return e.id===eid;});
+      if(eq && eq.filial_id){
+        var fil = filiais.find(function(f){return f.id===eq.filial_id;});
+        if(fil) fils[fil.id] = fil.codigo||fil.nome||fil.id;
+      }
+    });
+    Object.keys(fils).sort().forEach(function(id){
+      var opt=document.createElement('option'); opt.value=id; opt.textContent=fils[id];
+      selFil.appendChild(opt);
+    });
+  }
+}
+
+function plptLimparFiltrosReq(){
+  ['req-fil-contrato','req-fil-filial','req-fil-status','req-fil-de','req-fil-ate']
+    .forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
+  plptRenderRequisicoes();
+}
+
 
 function plptAprovarReq(id){ plptMudarStatusReq(id,'Aprovada','Aprovada'); }
 function plptReprovarReq(id){ plptMudarStatusReq(id,'Reprovada','Reprovada pelo gerente'); }
@@ -22077,9 +22198,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.8.8',
+  numero: '6.8.9',
   data:   '22/05/2026',
-  build:  '20260522-0800',
+  build:  '20260522-0900',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -47713,7 +47834,7 @@ async function lcAnalisarContrato(){
       <span style="font-size:10px;background:#EEEDFE;color:#534AB7;padding:1px 6px;border-radius:4px">Treinamento</span>
     </div>
   </div>
-<div id="pp-painel-requisicoes" class="hidden" style="padding:1rem"><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
+<div id="pp-painel-requisicoes" class="hidden" style="padding:1rem"><div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;margin-bottom:.75rem"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end"><div class="fg"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="req-fil-contrato" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Filial</label><select class="inp" id="req-fil-filial" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todas</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Status</label><select class="inp" id="req-fil-status" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option><option>Aguardando aprovação</option><option>Aprovada</option><option>Separação</option><option>Em campo</option><option>Devolvida</option><option>Reprovada</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Data início</label><input class="inp" type="date" id="req-fil-de" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg"><label style="font-size:11px;font-weight:600">Data fim</label><input class="inp" type="date" id="req-fil-ate" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg" style="display:flex;align-items:flex-end"><button class="btn" onclick="plptLimparFiltrosReq()" style="width:100%">✕ Limpar</button></div></div></div><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
 
   <!-- Quadro principal -->
   <div id="pp-quadro">
