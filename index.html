@@ -22039,9 +22039,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.8.6',
+  numero: '6.8.7',
   data:   '22/05/2026',
-  build:  '20260522-0600',
+  build:  '20260522-0700',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -36376,20 +36376,224 @@ var frt_reservas = []; // reservas de veículos compartilhados
 // Perfis com flexibilidade de saída rápida
 var PORT_PERFIS_FLEX = ['Supervisor','Coordenador','Gerente','Diretor','supervisor','coordenador','gerente','diretor'];
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// PORTARIA — VISTORIA DE RETORNO
+// ═══════════════════════════════════════════════════════════════════════
+
+
+function portCarregarReqMateriais(){
+  if(DEMO){ window._portReqMateriais=[]; return; }
+  sbFetch('plpt_requisicoes_materiais',{
+    filters:['status=in.(Aprovada,Separação,Em campo)','deleted_at=is.null'],
+    order:'criado_em.desc', limit:200
+  }).then(function(rows){
+    window._portReqMateriais = rows||[];
+    portRenderEquipesDia(); // re-render com badges atualizados
+    if(document.getElementById('port-aba-retorno')&&
+       document.getElementById('port-aba-retorno').style.display!=='none'){
+      portRenderRetorno();
+    }
+  }).catch(function(){ window._portReqMateriais=[]; });
+}
+
+
+function portRenderRetorno(){
+  var el = document.getElementById('port-aba-retorno');
+  if(!el) return;
+
+  // Buscar equipes Em campo (status === 'Em campo')
+  var emCampo = frt_portaria.filter(function(r){
+    return r.status==='Em campo' && r.tipo_liberacao==='equipe';
+  });
+
+  if(!emCampo.length){
+    el.innerHTML = '<div style="padding:3rem;text-align:center;color:#aaa">'
+      +'<div style="font-size:32px;margin-bottom:.5rem">🛬</div>'
+      +'<div style="font-weight:600">Nenhuma equipe aguardando retorno</div>'
+      +'<div style="font-size:12px;margin-top:.4rem">Equipes retornarão aqui quando houver registros de saída.</div>'
+      +'</div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="padding:.5rem">'
+    +'<div style="font-size:13px;font-weight:700;color:#533AB7;margin-bottom:.75rem">🛬 Equipes em Campo — aguardando retorno</div>'
+    + emCampo.map(function(r){
+        var eq = equipes_disp.find(function(e){return e.id===r.equipe;})||equipes.find(function(e){return e.id===r.equipe;})||{};
+        var temMat = r.tem_materiais_saida;
+        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:1rem;margin-bottom:.5rem">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">'
+          +'<div>'
+          +'<div style="font-weight:700;font-size:14px">'+escHtml(eq.codigo||eq.nome||r.equipe||'—')+'</div>'
+          +'<div style="font-size:11px;color:#888">'
+          +(r.placa?'🚗 '+escHtml(r.placa)+' · ':'')
+          +(r.destino?escHtml(r.destino):'')
+          +'</div>'
+          +'</div>'
+          +(temMat
+            ?'<span style="background:#FEF3E2;color:#854F0B;border-radius:8px;padding:3px 10px;font-size:11px;font-weight:700">📦 Com Materiais</span>'
+            :'<span style="background:#EAF3DE;color:#3B6D11;border-radius:8px;padding:3px 10px;font-size:11px">Sem materiais</span>')
+          +'</div>'
+          +(r.foto_carga_saida_b64&&r.foto_carga_saida_b64!=='[foto_registrada]'
+            ?'<div style="margin-bottom:.5rem"><div style="font-size:10px;color:#888;margin-bottom:3px">Foto saída:</div>'
+             +'<img src="'+r.foto_carga_saida_b64+'" style="height:80px;border-radius:6px;object-fit:cover;border:.5px solid #e0dfd8"/></div>'
+            :'')
+          +'<button onclick="portAbrirVistoriaRetorno(\''+r.id+'\')" '
+          +'style="width:100%;padding:.65rem;background:#533AB7;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">'
+          +(temMat?'🛬 Registrar Retorno com Vistoria de Materiais':'🛬 Registrar Retorno')
+          +'</button>'
+          +'</div>';
+      }).join('')
+    +'</div>';
+}
+
+function portAbrirVistoriaRetorno(saidaId){
+  var saida = frt_portaria.find(function(r){return r.id===saidaId;});
+  if(!saida){ progShowToast('⚠ Registro não encontrado.','erro'); return; }
+  var eq = equipes_disp.find(function(e){return e.id===saida.equipe;})||equipes.find(function(e){return e.id===saida.equipe;})||{};
+  var temMat = saida.tem_materiais_saida;
+
+  // Calcular saldo estimado de sobra
+  var sobras = [];
+  if(typeof window._portReqMateriais !== 'undefined' && temMat){
+    var reqs = window._portReqMateriais.filter(function(r){
+      return r.equipe_id===saida.equipe && (r.status==='Em campo'||r.status==='Aprovada'||r.status==='Separação');
+    });
+    reqs.forEach(function(req){
+      var itens = parseJsonField(req.itens,[]);
+      itens.forEach(function(it){
+        sobras.push({
+          nome:    it.nome||'',
+          codigo:  it.codigo||'',
+          unidade: it.unidade||'UN',
+          enviado: it.qtd_req||0,
+          // aplicado seria do diário — por enquanto mostrar enviado
+          sobra_est: it.qtd_req||0, // será refinado quando campo lançar
+        });
+      });
+    });
+  }
+
+  var sobraHtml = (temMat && sobras.length)
+    ? '<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:10px 14px;margin-bottom:.75rem">'
+      +'<div style="font-weight:700;color:#854F0B;font-size:13px;margin-bottom:5px">⚠️ ATENÇÃO: Previsão de devolução de materiais</div>'
+      +'<table style="width:100%;font-size:11px;border-collapse:collapse">'
+      +'<tr style="color:#854F0B;font-weight:600"><td>Material</td><td style="text-align:right">Enviado</td></tr>'
+      + sobras.map(function(s){
+          return '<tr style="border-top:.5px solid #F59E0B22">'
+            +'<td style="padding:2px 0">'+escHtml(s.nome)+'</td>'
+            +'<td style="text-align:right">'+s.enviado+' '+escHtml(s.unidade)+'</td>'
+            +'</tr>';
+        }).join('')
+      +'</table>'
+      +'<div style="font-size:11px;color:#854F0B;margin-top:6px;font-weight:600">Confira fisicamente a carga antes de liberar a entrada.</div>'
+      +'</div>'
+    : '';
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:.75rem">🛬 Vistoria de Retorno</h3>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700">'+escHtml(eq.codigo||eq.nome||'—')+'</div>'
+    +(saida.placa?'<div style="font-family:monospace;color:#555;font-weight:600">'+escHtml(saida.placa)+'</div>':'')
+    +'<div style="color:#888">Saiu às: '+fmtD(saida.data_saida)+'</div>'
+    +'</div>'
+    + sobraHtml
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
+    +'<div class="fg"><label style="font-size:11px">KM retorno</label>'
+    +'<input class="inp" id="ret-km" type="number" style="width:100%" placeholder="0"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Recebido por</label>'
+    +'<input class="inp" id="ret-quem" style="width:100%" placeholder="Nome do porteiro"/></div>'
+    +'</div>'
+    // Foto do retorno — OBRIGATÓRIA se tem materiais
+    +'<div style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">'
+    +(temMat?'📷 Foto da carga retornada <span style="color:#A32D2D">*</span>':'📷 Foto do veículo retornado (opcional)')
+    +'</label>'
+    +'<div style="display:flex;gap:8px;align-items:flex-start">'
+    +'<label style="cursor:pointer;background:#533AB7;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap">'
+    +'📸 Tirar Foto'
+    +'<input type="file" accept="image/*" capture="environment" style="display:none" '
+    +'onchange="portFotoPreview(this,\'ret-foto-prev\',\'ret-foto-b64\')">'
+    +'</label>'
+    +'<div id="ret-foto-prev" style="width:80px;height:60px;background:#f0f0f0;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8;flex-shrink:0">'
+    +'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:10px;text-align:center">Sem foto</div>'
+    +'</div>'
+    +'<input type="hidden" id="ret-foto-b64" value=""/>'
+    +'</div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem"><label style="font-size:11px">Observações</label>'
+    +'<input class="inp" id="ret-obs" style="width:100%" placeholder="Ocorrências, divergências..."/></div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="ret-confirmar" '
+    +'style="flex:2;background:#533AB7;border-color:#533AB7">✅ Confirmar Entrada</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('ret-confirmar'); if(!btn) return;
+    btn.onclick = function(){
+      var km    = parseInt((document.getElementById('ret-km')||{}).value||'0')||0;
+      var quem  = ((document.getElementById('ret-quem')||{}).value||'').trim();
+      var obs   = ((document.getElementById('ret-obs')||{}).value||'').trim();
+      var fotoB64 = ((document.getElementById('ret-foto-b64')||{}).value||'');
+
+      if(temMat && !fotoB64){
+        progShowToast('⚠ Obrigatório: tire a foto da carga antes de confirmar o retorno.','erro');
+        return;
+      }
+
+      // Atualizar registro na memória
+      saida.status               = 'Retornado';
+      saida.km_retorno           = km;
+      saida.foto_carga_retorno_b64 = fotoB64||null;
+      saida.foto_carga_retorno_ts  = fotoB64?new Date().toISOString():null;
+      saida.retorno_registrado_por = quem;
+      saida.data_retorno           = new Date().toISOString();
+      saida.status_devolucao       = temMat ? 'Pendente' : null;
+      saida.obs_retorno            = obs||null;
+
+      if(!DEMO){
+        sbUpdate('frotas_portaria_saidas',{
+          status:                 'Retornado',
+          km_retorno:             km,
+          foto_carga_retorno_b64: fotoB64 ? '[foto_retorno_registrada]' : null,
+          foto_carga_retorno_ts:  saida.foto_carga_retorno_ts,
+          retorno_registrado_por: quem,
+          data_retorno:           saida.data_retorno,
+          status_devolucao:       saida.status_devolucao,
+        },'id=eq.'+saidaId).catch(function(e){ console.error('retorno:',e); });
+      }
+
+      closeModal();
+      portRenderEquipesDia();
+      portRenderRetorno();
+
+      // Notificar almoxarife se tem materiais
+      if(temMat){
+        progShowToast('✅ Retorno confirmado! Almoxarife notificado — sobras de materiais aguardam conferência.');
+      } else {
+        progShowToast('✅ Retorno confirmado — '+(saida.placa||eq.codigo||'equipe'));
+      }
+    };
+  },50);
+}
+
+
 function portMostrarAba(aba){
   var aca=document.getElementById('app-content-area');if(aca)aca.scrollTop=0;
-  ['equipes','saida','liberacao','registros','reservas','config'].forEach(function(a){
+  ['equipes','saida','liberacao','registros','reservas','config','retorno'].forEach(function(a){
     var el=document.getElementById('port-aba-'+a);
     var btn=document.getElementById('port-tab-'+a);
     if(el) el.style.display = a===aba?'':'none';
     if(btn){ btn.style.color=a===aba?'#185FA5':'#888'; btn.style.borderBottomColor=a===aba?'#185FA5':'transparent'; btn.style.fontWeight=a===aba?'600':'500'; }
   });
-  if(aba==='equipes')   portRenderEquipesDia();
+  if(aba==='equipes'){  portCarregarReqMateriais(); portRenderEquipesDia(); }
   if(aba==='saida')     portRenderAguardando();
   if(aba==='liberacao') portRenderLiberacao();
   if(aba==='registros') frtPortariaRender();
   if(aba==='reservas')  portRenderReservas();
   if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
+  if(aba==='retorno')  portRenderRetorno();
 }
 
 // ── Aba: Equipes do Dia ──────────────────────────────────
@@ -36501,7 +36705,7 @@ function portRenderEquipesDia(){
       +'</div>'
       +(placa?'<span style="font-family:monospace;font-size:11px;background:#f5f5f3;border-radius:4px;padding:2px 7px;font-weight:600">'+escHtml(placa)+'</span>'+(modelo?' <span style="font-size:10px;color:#888">'+escHtml(modelo)+'</span>':''):'') 
       +(saida&&saida.data_saida?'<span style="font-size:10px;color:#555;white-space:nowrap;margin-left:4px">⏰ '+new Date(saida.data_saida).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'</span>':'')
-      +(item.comp&&!item.saida?'<button class="btn btn-sm" onclick="portAbrirLiberacaoEquipe(this.dataset.eq,this.dataset.dt)" data-eq="'+eq.id+'" data-dt="'+data+'" style="font-size:10px;color:#3B6D11;border-color:#3B6D11;white-space:nowrap;margin-left:4px">Liberar ✅</button>':'')
+      +(item.comp&&!item.saida?(function(){var _hasM=typeof window._portReqMateriais!=='undefined'&&window._portReqMateriais.some(function(r){return r.equipe_id===eq.id&&(r.status==='Aprovada'||r.status==='Separação');});return (_hasM?'<span style="background:#FEF3E2;color:#854F0B;font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;margin-left:3px">📦 MAT</span>':'')+'<button class="btn btn-sm" onclick="portAbrirLiberacaoEquipe(this.dataset.eq,this.dataset.dt)" data-eq="'+eq.id+'" data-dt="'+data+'" style="font-size:10px;color:#3B6D11;border-color:#3B6D11;white-space:nowrap;margin-left:4px">Liberar ✅</button>';})():'')
       +'</div>'
       +(nomes.length?'<div style="font-size:11px;color:#555;padding-left:23px;line-height:1.7">'+nomes.map(function(n){return escHtml(n);}).join(' &nbsp;·&nbsp; ')+'</div>':'')
       +'</div>';
@@ -36663,7 +36867,6 @@ function portBloquear(placa){
 function portAbrirLiberacaoEquipe(eqId, data){
   var comp=composicao_dia.find(function(x){return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data;});
   var eq=equipes_disp.find(function(e){return e.id===eqId;})||equipes.find(function(e){return e.id===eqId;})||{codigo:'—'};
-  // Buscar placa: composicao_dia → _progVeiculos → frt_portaria
   var _pv=(typeof _progVeiculos!=='undefined'?_progVeiculos[eqId+'_'+data]:null)||null;
   var placa=(comp&&comp.placa)||(_pv&&_pv.placa)||'';
   var modelo=(_pv&&_pv.modelo)||'';
@@ -36672,27 +36875,69 @@ function portAbrirLiberacaoEquipe(eqId, data){
     if(veic) modelo=veic.modelo||veic.tipo||'';
   }
   var ids=comp?parseColabIds(comp.colaborador_ids).filter(Boolean):[];
-  var nomesColab=ids.map(function(id){var c=colaboradores.find(function(x){return x.id===id;});return c?c.nome:'?';});
+  var nomesColab=ids.map(function(id){var f=colaboradores.find(function(x){return x.id===id;});return f?f.nome:'?';});
 
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:400px">'
-    +'<h3 style="margin-bottom:.75rem">✅ Liberar Saída</h3>'
+  // Verificar se equipe tem requisição de materiais aprovada/separada
+  var temMateriais = false;
+  var itensMat = [];
+  if(typeof frt_portaria !== 'undefined'){
+    // Checar em plpt_requisicoes_materiais na memória se houver
+  }
+  // Verificar no histórico de requisições
+  if(typeof window._portReqMateriais !== 'undefined'){
+    var reqEq = window._portReqMateriais.filter(function(r){
+      return r.equipe_id===eqId && (r.status==='Aprovada'||r.status==='Separação'||r.status==='Em campo');
+    });
+    temMateriais = reqEq.length > 0;
+    if(temMateriais) itensMat = reqEq;
+  }
+
+  var alertMatHtml = temMateriais
+    ? '<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:10px 14px;margin-bottom:.75rem">'
+      +'<div style="font-weight:700;color:#854F0B;font-size:13px;margin-bottom:3px">⚠️ ATENÇÃO: Equipe com MATERIAIS</div>'
+      +'<div style="font-size:12px;color:#555">Esta equipe possui '+itensMat.length+' requisição(ões) de material aprovada(s). '
+      +'<strong>Confira a carga antes de liberar a saída.</strong></div>'
+      +'</div>'
+    : '';
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:.75rem">🛫 Vistoria de Saída</h3>'
     +'<div style="background:#EAF3DE;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:12px">'
     +'<div style="font-weight:700">'+escHtml(eq.codigo||eq.nome||'—')+'</div>'
-    +(placa?'<div style="font-family:monospace;color:#555;font-weight:600">'+escHtml(placa)+(modelo?' <span style="font-family:sans-serif;font-weight:400;color:#888;font-size:11px">'+escHtml(modelo)+'</span>':'')+'</div>':'')
+    +(placa?'<div style="font-family:monospace;color:#555;font-weight:600">'+escHtml(placa)
+      +(modelo?' <span style="font-family:sans-serif;font-weight:400;color:#888;font-size:11px">'+escHtml(modelo)+'</span>':'')+'</div>':'')
     +(nomesColab.length?'<div style="color:#888;margin-top:2px">'+nomesColab.map(escHtml).join(', ')+'</div>':'')
     +'</div>'
+    + alertMatHtml
     +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px">Destino / Atividade <span style="color:#A32D2D">*</span></label>'
     +'<input class="inp" id="lib-eq-destino" style="width:100%" placeholder="Ex: Manutenção Rua X, Inspeção..."/></div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.5rem">'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
     +'<div class="fg"><label style="font-size:11px">KM saída</label>'
     +'<input class="inp" id="lib-eq-km" type="number" style="width:100%" placeholder="0"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Motorista responsável</label>'
+    +'<div class="fg"><label style="font-size:11px">Motorista</label>'
     +'<input class="inp" id="lib-eq-quem" list="lib-eq-quem-list" style="width:100%" placeholder="Nome..."/>'
     +'<datalist id="lib-eq-quem-list">'+nomesColab.map(function(n){return '<option>'+escHtml(n)+'</option>';}).join('')+'</datalist>'
     +'</div></div>'
-    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    // Foto da carga — só exibir campo se tem materiais ou sempre (boas práticas)
+    +'<div style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">'
+    +(temMateriais?'📷 Foto da carga <span style="color:#A32D2D">*</span>':'📷 Foto da carga (opcional)')
+    +'</label>'
+    +'<div style="display:flex;gap:8px;align-items:flex-start">'
+    +'<label style="cursor:pointer;background:#185FA5;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap">'
+    +'📸 Tirar Foto'
+    +'<input type="file" accept="image/*" capture="environment" style="display:none" '
+    +'onchange="portFotoPreview(this,\'lib-foto-prev\',\'lib-foto-b64\')">'
+    +'</label>'
+    +'<div id="lib-foto-prev" style="width:80px;height:60px;background:#f0f0f0;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8;flex-shrink:0">'
+    +'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:10px;text-align:center">Sem foto</div>'
+    +'</div>'
+    +'<input type="hidden" id="lib-foto-b64" value=""/>'
+    +'</div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:.25rem">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" id="lib-eq-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Confirmar saída</button>'
+    +'<button class="btn btn-pri" id="lib-eq-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Liberar Saída</button>'
     +'</div></div></div>');
 
   setTimeout(function(){
@@ -36701,22 +36946,39 @@ function portAbrirLiberacaoEquipe(eqId, data){
       var destino=((document.getElementById('lib-eq-destino')||{}).value||'').trim();
       var km=parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
       var quem=((document.getElementById('lib-eq-quem')||{}).value||'').trim();
-      if(!destino){progShowToast('⚠ Informe o destino/atividade.');return;}
+      var fotoB64=((document.getElementById('lib-foto-b64')||{}).value||'');
+
+      if(!destino){progShowToast('⚠ Informe o destino/atividade.','erro');return;}
+      if(temMateriais && !fotoB64){
+        progShowToast('⚠ Obrigatório: tire a foto da carga antes de liberar.','erro');
+        return;
+      }
+
       var saida={
         id:Date.now().toString(), placa:placa, tipo_liberacao:'equipe',
         destino:destino, km_saida:km, data_saida:new Date().toISOString(),
         status:'Em campo', equipe:eqId, quem_saiu:quem,
-        liberado_por:usuarioLogado?usuarioLogado.nome:'Portaria'
+        liberado_por:usuarioLogado?usuarioLogado.nome:'Portaria',
+        foto_carga_saida_b64:  fotoB64||null,
+        foto_carga_saida_ts:   fotoB64?new Date().toISOString():null,
+        tem_materiais_saida:   temMateriais,
       };
       frt_portaria.unshift(saida);
-      if(!DEMO) sbInsert('frotas_portaria_saidas',_semId(saida));
+      if(!DEMO){
+        var payload=Object.assign({},saida); delete payload.id;
+        // Não enviar base64 gigante — salvar só URL se houver upload
+        // Por ora salva indicador e ts (imagem fica local para economizar banda)
+        payload.foto_carga_saida_b64 = fotoB64 ? '[foto_registrada]' : null;
+        sbInsert('frotas_portaria_saidas', payload).catch(function(){});
+      }
       if(comp) comp._portaria_liberado=true;
       closeModal();
       portRenderEquipesDia();
-      progShowToast('✅ Saída liberada — '+(placa||eq.codigo||'equipe')+' · '+destino);
+      progShowToast('✅ Saída liberada'+(fotoB64?' com foto da carga':'')+' — '+(placa||eq.codigo||'equipe')+' · '+destino);
     };
   },50);
 }
+
 
 function portLiberarEquipe(eqId, data){
   portAbrirLiberacaoEquipe(eqId, data);
@@ -39788,6 +40050,7 @@ window.addEventListener('load',async function(){
     <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Liberação</button>
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📝 Registros</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
+    <button class="port-tab-btn" id="port-tab-retorno" onclick="portMostrarAba('retorno')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🛬 Retorno</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
 
@@ -39962,7 +40225,9 @@ window.addEventListener('load',async function(){
   </div>
 
   <!-- ABA: CONFIGURAÇÃO -->
-  <div id="port-aba-config" style="display:none"></div>
+  <div id="port-aba-config" style="display:none">
+  <div id="port-aba-retorno" style="display:none"></div>
+</div>
 
 </div>
 
@@ -50805,7 +51070,9 @@ function comgasRemoverFoto(ncId, idx) {
   </div>
 
   <!-- ABA: CONFIGURAÇÃO -->
-  <div id="port-aba-config" style="display:none"></div>
+  <div id="port-aba-config" style="display:none">
+  <div id="port-aba-retorno" style="display:none"></div>
+</div>
 
 </div>
 
