@@ -1107,6 +1107,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
       <button class="sb-mod-btn" id="mn-dashboard"       onclick="showMain('dashboard')"       >📊 Dashboard</button>
       <button class="sb-mod-btn" id="mn-contratos"       onclick="showMain('contratos')"       >📁 Contratos</button>
       <button class="sb-mod-btn" id="mn-operacional"     onclick="showMain('operacional')"     >🏗 Operacional</button>
+      <button class="sb-mod-btn" id="mn-obras"           onclick="showMain('obras')"           >🏚️ Obras</button>
       <button class="sb-mod-btn" id="mn-movimentacao"    onclick="showMain('movimentacao')"    >💰 Financeiro</button>
       <button class="sb-mod-btn" id="mn-almoxarifado"    onclick="showMain('almoxarifado')"    >🏭 Almoxarifado</button>
       <button class="sb-mod-btn" id="mn-frotas"          onclick="showMain('frotas')"          >🚗 Frotas</button>
@@ -11736,6 +11737,7 @@ function renderDiarioPlpt(){
     acoesHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem">'
       +'<button onclick="plptAbrirAtividades(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#EBF4FD;color:#185FA5;border:.5px solid #185FA5;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">⚡ Atividades</button>'      +'<button onclick="(_isContratoEquatorial(eq.contrato_id||(usuarioLogado&&usuarioLogado.contrato_id)||\"\")?abrirAPREquatorial(eq.contrato_id||(usuarioLogado&&usuarioLogado.contrato_id)||\"\",eq.id,hoje,projId):showSub(\"campo-apr\"))" style="flex:1;padding:10px 8px;background:#185FA5;color:#fff;border:.5px solid #185FA5;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">📋 APR</button>'      +'<button onclick="plptAbrirMateriais(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D11;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">📦 Materiais</button>'
       +'<button onclick="plptAbrirBaixaMateriais(\''+projId+'\')" style="flex:1;padding:10px 8px;background:#f9f9f7;color:#555;border:.5px solid #e0dfd8;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">📋 Baixa de materiais</button>'
+      +'<button onclick="plptAbrirReservaMateriais(\\\''+projId+'\\\')" style="flex:1;padding:10px 8px;background:#533AB7;color:#fff;border:.5px solid #533AB7;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">🧰 Reservar Materiais</button>'
       +'</div>';
   }
 
@@ -11924,6 +11926,300 @@ function diarioConfirmarEscala(){
   progShowToast('✅ Escala confirmada!');
   renderDiarioPlpt();
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLPT — RESERVA DE MATERIAIS
+// Fluxo: Equipe solicita → Gerente aprova → Almoxarifado separa → Campo usa → Devolução
+// ═══════════════════════════════════════════════════════════════════════
+
+var _plptReservaAtual = null; // {projeto_id, equipe_id, data, itens:[{mat_id, nome, qtd_prog, qtd_req}]}
+
+function plptAbrirReservaMateriais(projetoId){
+  var proj = sot_projetos.find(function(p){ return p.id===projetoId; });
+  if(!proj){ progShowToast('⚠ Projeto não encontrado.'); return; }
+
+  // Buscar materiais programados para este projeto
+  var matsProg = (typeof sot_materiais !== 'undefined' ? sot_materiais : [])
+    .filter(function(m){ return m.projeto_id===projetoId && m.status !== 'Devolvido'; });
+
+  if(!matsProg.length){
+    progShowToast('⚠ Nenhum material programado para este projeto. Cadastre na aba Materiais primeiro.', 'erro');
+    return;
+  }
+
+  _plptReservaAtual = {
+    projeto_id: projetoId,
+    equipe_id:  _dbEquipe ? _dbEquipe.id : null,
+    data:       dataHojeLocal(),
+    itens:      matsProg.map(function(m){
+      return {
+        mat_id:    m.id,
+        codigo:    m.codigo||'',
+        nome:      m.nome||'Material',
+        unidade:   m.unidade||'UN',
+        qtd_prog:  Number(m.quantidade||0),
+        qtd_req:   0,
+        qtd_dev:   0,
+        selecionado: false,
+      };
+    })
+  };
+
+  _plptRenderModalReserva(proj);
+}
+
+function _plptRenderModalReserva(proj){
+  var itens = _plptReservaAtual.itens;
+
+  var linhas = itens.map(function(it, i){
+    return '<tr style="border-bottom:.5px solid #f0efe8">'
+      +'<td style="padding:7px 8px">'
+      +'<input type="checkbox" id="rsv-chk-'+i+'" onchange="_plptReservaToggle('+i+')" style="cursor:pointer"/>'
+      +'</td>'
+      +'<td style="padding:7px 8px;font-size:12px">'
+      +(it.codigo?'<span style="font-size:10px;color:#888;display:block">'+escHtml(it.codigo)+'</span>':'')
+      +escHtml(it.nome)+'</td>'
+      +'<td style="padding:7px 8px;text-align:center;font-size:12px;color:#185FA5;font-weight:600">'+it.qtd_prog+' '+escHtml(it.unidade)+'</td>'
+      +'<td style="padding:7px 8px;text-align:center">'
+      +'<input type="number" id="rsv-qtd-'+i+'" min="0" max="'+it.qtd_prog+'" value="0" '
+      +'style="width:70px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
+      +'oninput="_plptReservaQtd('+i+',this.value)" disabled/>'
+      +'</td>'
+      +'</tr>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:640px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
+    +'<div>'
+    +'<div style="font-weight:700;font-size:15px">🧰 Reserva de Materiais</div>'
+    +'<div style="font-size:11px;color:#888;margin-top:2px">'+escHtml(proj.nome||proj.codigo||'Projeto')
+    +' · '+escHtml(_dbEquipe?(_dbEquipe.codigo||_dbEquipe.nome):'')+'</div>'
+    +'</div>'
+    +'<span style="font-size:11px;color:#533AB7;font-weight:600">'+dataHojeLocal().split('-').reverse().join('/')+'</span>'
+    +'</div>'
+    +'<div style="font-size:12px;color:#555;background:#F0EEFF;border-radius:8px;padding:.6rem .85rem;margin-bottom:.75rem">'
+    +'Selecione os materiais que serão utilizados hoje e informe a quantidade. '
+    +'Pode ser menor que o programado. Após envio, o gerente aprovará e o almoxarifado fará a separação.'
+    +'</div>'
+    +'<div style="max-height:320px;overflow-y:auto;margin-bottom:1rem">'
+    +'<table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr style="background:#1a1a18;color:#fff;font-size:11px">'
+    +'<th style="padding:7px 8px;width:32px"></th>'
+    +'<th style="padding:7px 8px;text-align:left">Material</th>'
+    +'<th style="padding:7px 8px">Programado</th>'
+    +'<th style="padding:7px 8px">Qtd a usar</th>'
+    +'</tr></thead>'
+    +'<tbody id="rsv-tbody">'+linhas+'</tbody>'
+    +'</table>'
+    +'</div>'
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:.6rem .85rem;margin-bottom:.75rem;font-size:12px">'
+    +'<b>Observações:</b><input class="inp" id="rsv-obs" placeholder="Opcional — informar necessidade especial, urgência, etc." style="width:100%;margin-top:4px"/>'
+    +'</div>'
+    +'<div class="ma">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="plptEnviarReserva()" style="background:#533AB7;border-color:#533AB7">📤 Enviar para Aprovação</button>'
+    +'</div>'
+    +'</div></div>');
+}
+
+function _plptReservaToggle(i){
+  var chk  = document.getElementById('rsv-chk-'+i);
+  var inp  = document.getElementById('rsv-qtd-'+i);
+  if(!chk || !inp) return;
+  var on = chk.checked;
+  inp.disabled = !on;
+  _plptReservaAtual.itens[i].selecionado = on;
+  if(on && Number(inp.value)===0){
+    inp.value = _plptReservaAtual.itens[i].qtd_prog;
+    _plptReservaAtual.itens[i].qtd_req = _plptReservaAtual.itens[i].qtd_prog;
+  }
+  if(!on){ inp.value=0; _plptReservaAtual.itens[i].qtd_req=0; }
+}
+
+function _plptReservaQtd(i, val){
+  var it  = _plptReservaAtual.itens[i];
+  var qtd = Math.min(Math.max(0, Number(val)||0), it.qtd_prog);
+  it.qtd_req = qtd;
+  var inp = document.getElementById('rsv-qtd-'+i);
+  if(inp && Number(inp.value) > it.qtd_prog) inp.value = it.qtd_prog;
+}
+
+function plptEnviarReserva(){
+  var d     = _plptReservaAtual;
+  var itensSel = d.itens.filter(function(it){ return it.selecionado && it.qtd_req > 0; });
+  if(!itensSel.length){
+    progShowToast('⚠ Selecione ao menos um material com quantidade maior que zero.', 'erro');
+    return;
+  }
+  var obs = (document.getElementById('rsv-obs')||{}).value||'';
+  var payload = {
+    projeto_id:  d.projeto_id,
+    equipe_id:   d.equipe_id,
+    data:        d.data,
+    status:      'Aguardando aprovação',
+    solicitante: usuarioLogado ? usuarioLogado.nome : '',
+    observacoes: obs,
+    itens:       JSON.stringify(itensSel.map(function(it){
+      return {mat_id:it.mat_id, codigo:it.codigo, nome:it.nome, unidade:it.unidade,
+              qtd_prog:it.qtd_prog, qtd_req:it.qtd_req};
+    })),
+    criado_em:   new Date().toISOString(),
+  };
+
+  if(!DEMO){
+    sbInsert('plpt_requisicoes_materiais', payload).catch(function(e){
+      console.error('plptEnviarReserva erro:', e);
+    });
+  }
+  closeModal();
+  progShowToast('✅ Requisição enviada para aprovação do gerente!');
+  // Registrar no histórico do turno
+  if(_dbSessao){
+    var ev = {tipo:'REQUISICAO_MAT', ts:Date.now(),
+      obs:'Requisição de '+itensSel.length+' material(is) — Projeto '+d.projeto_id};
+    _dbSessao.eventos = _dbSessao.eventos||[];
+    _dbSessao.eventos.push(ev);
+  }
+}
+
+// ── Admin: visualizar e aprovar requisições ────────────────────────────
+function plptRenderRequisicoes(contratoId){
+  var tbl = document.getElementById('plpt-req-tbl');
+  if(!tbl) return;
+  tbl.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
+
+  if(DEMO){ tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Sem requisições no modo demo.</div>'; return; }
+
+  var filters = ['deleted_at=is.null', 'status=in.(Aguardando aprovação,Aprovada,Separação,Em campo)'];
+  if(contratoId){
+    // filtrar por equipes do contrato
+  }
+
+  sbFetch('plpt_requisicoes_materiais',{filters:filters, order:'criado_em.desc', limit:100})
+    .then(function(rows){
+      if(!rows||!rows.length){
+        tbl.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Nenhuma requisição pendente.</div>';
+        return;
+      }
+      var STATUS_COR = {
+        'Aguardando aprovação': {bg:'#FEF3E2',c:'#854F0B'},
+        'Aprovada':             {bg:'#EAF3DE',c:'#3B6D11'},
+        'Separação':            {bg:'#EBF4FD',c:'#185FA5'},
+        'Em campo':             {bg:'#F0EEFF',c:'#533AB7'},
+        'Devolvida':            {bg:'#f5f5f3',c:'#888'},
+        'Reprovada':            {bg:'#FFF0F0',c:'#A32D2D'},
+      };
+      tbl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+        +'<thead><tr style="background:#1a1a18;color:#fff">'
+        +'<th style="padding:7px 10px;text-align:left">Data</th>'
+        +'<th style="padding:7px 10px;text-align:left">Equipe</th>'
+        +'<th style="padding:7px 10px;text-align:left">Projeto</th>'
+        +'<th style="padding:7px 10px">Itens</th>'
+        +'<th style="padding:7px 10px">Status</th>'
+        +'<th style="padding:7px 10px">Ações</th>'
+        +'</tr></thead><tbody>'
+        + rows.map(function(r){
+            var eq   = equipes_disp.find(function(e){return e.id===r.equipe_id;})
+                    || equipes.find(function(e){return e.id===r.equipe_id;});
+            var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===r.projeto_id;});
+            var itens= parseJsonField(r.itens,[]);
+            var sc   = STATUS_COR[r.status]||{bg:'#f5f5f3',c:'#555'};
+            var btns = '';
+            if(r.status==='Aguardando aprovação'){
+              btns='<button class="btn btn-sm" onclick="plptAprovarReq(\''+r.id+'\')" style="background:#3B6D11;color:#fff;font-size:10px">✅ Aprovar</button> '
+                 +'<button class="btn btn-sm" onclick="plptReprovarReq(\''+r.id+'\')" style="background:#A32D2D;color:#fff;font-size:10px">❌ Reprovar</button>';
+            } else if(r.status==='Aprovada'){
+              btns='<button class="btn btn-sm" onclick="plptSepararReq(\''+r.id+'\')" style="background:#185FA5;color:#fff;font-size:10px">📦 Separar</button>';
+            } else if(r.status==='Separação'){
+              btns='<button class="btn btn-sm" onclick="plptEnviarCampoReq(\''+r.id+'\')" style="background:#533AB7;color:#fff;font-size:10px">🚚 Enviar ao campo</button>';
+            } else if(r.status==='Em campo'){
+              btns='<button class="btn btn-sm" onclick="plptDevolverReq(\''+r.id+'\')" style="font-size:10px">🔄 Registrar devolução</button>';
+            }
+            return '<tr style="border-bottom:.5px solid #f0efe8">'
+              +'<td style="padding:7px 10px">'+fmtD(r.data)+'</td>'
+              +'<td style="padding:7px 10px">'+escHtml(eq?eq.codigo||eq.nome:'—')+'</td>'
+              +'<td style="padding:7px 10px">'+escHtml(proj?proj.nome||proj.codigo:'—')+'</td>'
+              +'<td style="padding:7px 10px;text-align:center">'+itens.length+' item(ns)</td>'
+              +'<td style="padding:7px 10px;text-align:center">'
+              +'<span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:2px 8px;font-size:10px;font-weight:600">'+r.status+'</span>'
+              +'</td>'
+              +'<td style="padding:7px 10px">'+btns+'</td>'
+              +'</tr>';
+          }).join('')
+        +'</tbody></table>';
+    }).catch(function(){ tbl.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar.</div>'; });
+}
+
+function plptAprovarReq(id){ plptMudarStatusReq(id,'Aprovada','Aprovada'); }
+function plptReprovarReq(id){ plptMudarStatusReq(id,'Reprovada','Reprovada pelo gerente'); }
+function plptSepararReq(id){ plptMudarStatusReq(id,'Separação','Em separação no almoxarifado'); }
+function plptEnviarCampoReq(id){ plptMudarStatusReq(id,'Em campo','Materiais enviados ao campo'); }
+
+function plptMudarStatusReq(id, novoStatus, obs){
+  if(!DEMO){
+    sbUpdate('plpt_requisicoes_materiais',{status:novoStatus, obs_status:obs, updated_at:new Date().toISOString()},'id=eq.'+id)
+      .then(function(){ plptRenderRequisicoes(); progShowToast('✅ Status atualizado: '+novoStatus); })
+      .catch(function(e){ console.error(e); });
+  }
+}
+
+function plptDevolverReq(id){
+  var rows = typeof plpt_requisicoes !== 'undefined' ? plpt_requisicoes : [];
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3>🔄 Registrar Devolução</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">Informe as quantidades devolvidas por item:</div>'
+    +'<div id="dev-body">⏳ Carregando...</div>'
+    +'<div class="ma" style="margin-top:1rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="plptSalvarDevolucao(\''+id+'\')">💾 Salvar Devolução</button>'
+    +'</div></div></div>');
+  // Load itens
+  sbFetch('plpt_requisicoes_materiais',{filters:['id=eq.'+id]}).then(function(rows){
+    var r = rows && rows[0];
+    if(!r){ document.getElementById('dev-body').textContent='Requisição não encontrada.'; return; }
+    var itens = parseJsonField(r.itens,[]);
+    document.getElementById('dev-body').innerHTML = '<table style="width:100%;font-size:12px;border-collapse:collapse">'
+      +'<thead><tr style="background:#f5f5f3"><th style="padding:6px 8px;text-align:left">Material</th>'
+      +'<th style="padding:6px 8px">Enviado</th><th style="padding:6px 8px">Devolvido</th></tr></thead>'
+      +'<tbody>'
+      +itens.map(function(it,i){
+        return '<tr style="border-bottom:.5px solid #f0efe8">'
+          +'<td style="padding:6px 8px">'+escHtml(it.nome)+'</td>'
+          +'<td style="padding:6px 8px;text-align:center">'+it.qtd_req+' '+escHtml(it.unidade||'UN')+'</td>'
+          +'<td style="padding:6px 8px;text-align:center">'
+          +'<input type="number" id="dev-qtd-'+i+'" min="0" max="'+it.qtd_req+'" value="'+it.qtd_req+'" '
+          +'style="width:65px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center"/>'
+          +'</td></tr>';
+      }).join('')
+      +'</tbody></table>';
+    document.getElementById('dev-body').setAttribute('data-req-id', id);
+    document.getElementById('dev-body').setAttribute('data-itens', JSON.stringify(itens));
+  });
+}
+
+function plptSalvarDevolucao(reqId){
+  var body = document.getElementById('dev-body');
+  if(!body) return;
+  var itens = parseJsonField(body.getAttribute('data-itens'),[]);
+  var devolvidos = itens.map(function(it,i){
+    var inp = document.getElementById('dev-qtd-'+i);
+    return Object.assign({}, it, {qtd_dev: Number((inp&&inp.value)||0)});
+  });
+  if(!DEMO){
+    sbUpdate('plpt_requisicoes_materiais',{
+      status:'Devolvida',
+      itens_devolucao: JSON.stringify(devolvidos),
+      data_devolucao:  new Date().toISOString(),
+    },'id=eq.'+reqId)
+    .then(function(){ closeModal(); plptRenderRequisicoes(); progShowToast('✅ Devolução registrada!'); })
+    .catch(function(e){ console.error(e); });
+  } else {
+    closeModal();
+    progShowToast('✅ Devolução registrada (demo)');
+  }
+}
+
 
 function plptAbrirAtividades(projId){
   var pj=_plptDiario.projetos.find(function(p){return p.projeto_id===projId;})
@@ -21400,9 +21696,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.7.9',
+  numero: '6.8.0',
   data:   '21/05/2026',
-  build:  '20260521-1400',
+  build:  '20260521-1500',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -32468,7 +32764,7 @@ var _ppAba = 'programacao';
 
 function ppSetAba(aba){
   _ppAba = aba;
-  ['dashboard','programacao'].forEach(function(a){
+  ['dashboard','programacao','requisicoes'].forEach(function(a){
     var btn = document.getElementById('pp-tab-'+a);
     var pnl = document.getElementById('pp-painel-'+a);
     if(btn){
@@ -32477,7 +32773,8 @@ function ppSetAba(aba){
     }
     if(pnl) pnl.classList[a===aba ? 'remove' : 'add']('hidden');
   });
-  if(aba==='dashboard') ppRenderDashboard();
+  if(aba==='dashboard')   ppRenderDashboard();
+  if(aba==='requisicoes') plptRenderRequisicoes();
 }
 
 function ppRenderDashboard(){
@@ -46721,6 +47018,7 @@ async function lcAnalisarContrato(){
   <div style="display:flex;gap:0;border-bottom:2px solid #e0dfd8;margin-bottom:1rem;background:#fff;border-radius:10px 10px 0 0;padding:0 .5rem">
     <button id="pp-tab-dashboard"    onclick="ppSetAba('dashboard')"   style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#aaa;transition:all .15s">📊 Dashboard</button>
     <button id="pp-tab-programacao"  onclick="ppSetAba('programacao')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18;transition:all .15s">📅 Programação</button>
+    <button id="pp-tab-requisicoes" onclick="ppSetAba('requisicoes')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">🧰 Requisições</button>
   </div>
 
   <!-- Painel Dashboard -->
@@ -46767,6 +47065,7 @@ async function lcAnalisarContrato(){
       <span style="font-size:10px;background:#EEEDFE;color:#534AB7;padding:1px 6px;border-radius:4px">Treinamento</span>
     </div>
   </div>
+<div id="pp-painel-requisicoes" class="hidden" style="padding:1rem"><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
 
   <!-- Quadro principal -->
   <div id="pp-quadro">
