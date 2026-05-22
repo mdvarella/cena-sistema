@@ -18483,9 +18483,10 @@ function sotRenderDetalhe(p, docs){
     // Abas de detalhe
     +'<div class="card">'
     +'<div style="display:flex;border-bottom:.5px solid #e0dfd8;overflow-x:auto">'
-    +['atividades','materiais','documentos','adicional'].map(function(t,i){
+    +['atividades','materiais','reserva','documentos','adicional'].map(function(t,i){
       var labels={atividades:'📋 Atividades ('+sot_atividades.length+')',
         materiais:'📦 Materiais ('+sot_materiais_proj.length+')',
+        reserva:'🧰 Reservar Materiais',
         documentos:'📄 Documentos ('+(docs.length)+')',
         adicional:'➕ Adicional'};
       return '<button id="sot-tab-'+t+'" onclick="sotMostrarTab(\''+t+'\')" '
@@ -18565,7 +18566,7 @@ function sotMostrarTab(tab){
   var p=sot_projetos.find(function(x){return x.id===_sotProjetoAtual;});
   if(!p)return;
   var sc=SOT_STATUS_COR[p.status]||{cor:'#555'};
-  ['atividades','materiais','documentos','adicional'].forEach(function(t){
+  ['atividades','materiais','reserva','documentos','adicional'].forEach(function(t){
     var btn=document.getElementById('sot-tab-'+t);
     if(btn){
       btn.style.borderBottomColor=t===tab?sc.cor:'transparent';
@@ -18583,6 +18584,7 @@ function sotMostrarTab(tab){
     },50);
   }
   else if(tab==='documentos')content.innerHTML=sotRenderTabDocumentos(p.id);
+  else if(tab==='reserva') sotRenderTabReserva(p.id, content);
   else if(tab==='adicional')sotRenderTabAdicional(p.id,content);
   else if(tab==='validacoes'){
     content.innerHTML='<div style="padding:1rem"><div style="font-size:13px;font-weight:600;margin-bottom:.75rem;color:#854F0B">⏳ Lançamentos do campo — aguardando validação</div>'
@@ -21545,6 +21547,192 @@ function sotProcessarImportacaoMat(projetoId){
 }
 
 
+
+function sotRenderTabReserva(projetoId, container){
+  var mats = sot_materiais_proj.filter(function(m){ return m.projeto_id===projetoId; });
+
+  // Se materiais não carregados ainda, buscar do banco
+  if(!mats.length && !DEMO){
+    if(container) container.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando materiais...</div>';
+    sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId]})
+      .then(function(rows){
+        if(rows&&rows.length){
+          rows.forEach(function(r){
+            if(!sot_materiais_proj.find(function(x){return x.id===r.id;}))
+              sot_materiais_proj.push(r);
+          });
+        }
+        sotRenderTabReserva(projetoId, container);
+      }).catch(function(){
+        if(container) container.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar materiais.</div>';
+      });
+    return;
+  }
+
+  if(!mats.length){
+    if(container) container.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa;background:#f9f9f7;border-radius:10px;margin:.5rem">'
+      +'<div style="font-size:28px;margin-bottom:.5rem">📦</div>'
+      +'<div style="font-weight:600">Nenhum material programado para este projeto</div>'
+      +'<div style="font-size:12px;margin-top:.4rem">Cadastre materiais na aba Materiais antes de fazer uma reserva.</div>'
+      +'</div>';
+    return;
+  }
+
+  // Verificar requisições existentes para este projeto
+  var html = '<div style="padding:.5rem">';
+
+  // Formulário de nova requisição
+  html += '<div style="background:#F0EEFF;border-radius:10px;padding:1rem;margin-bottom:1rem">'
+    +'<div style="font-weight:700;font-size:13px;color:#533AB7;margin-bottom:.6rem">📤 Nova Requisição de Materiais</div>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'
+    +'Selecione os materiais e quantidades para esta atividade. '
+    +'Após envio, o gerente aprovará e o almoxarifado fará a separação.'
+    +'</div>';
+
+  // Tabela de materiais
+  html += '<div style="background:#fff;border-radius:8px;overflow:hidden;margin-bottom:.75rem">'
+    +'<table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr style="background:#1a1a18;color:#fff;font-size:11px">'
+    +'<th style="padding:7px 8px;width:32px"></th>'
+    +'<th style="padding:7px 8px;text-align:left">Material</th>'
+    +'<th style="padding:7px 8px">Programado</th>'
+    +'<th style="padding:7px 8px">Qtd a usar</th>'
+    +'</tr></thead><tbody>';
+
+  mats.forEach(function(m, i){
+    html += '<tr style="border-bottom:.5px solid #f0efe8">'
+      +'<td style="padding:7px 8px"><input type="checkbox" id="sot-rsv-chk-'+i+'" '
+      +'onchange="sotReservaToggle('+i+')" style="cursor:pointer;width:16px;height:16px"/></td>'
+      +'<td style="padding:7px 8px;font-size:12px">'
+      +(m.codigo_sap?'<span style="font-size:10px;color:#888;display:block">'+escHtml(m.codigo_sap)+'</span>':'')
+      +escHtml(m.descricao||'Material')+'</td>'
+      +'<td style="padding:7px 8px;text-align:center;font-size:12px;color:#185FA5;font-weight:600">'
+      +(m.qtd_projetada||0)+' '+escHtml(m.unidade||'UN')+'</td>'
+      +'<td style="padding:7px 8px;text-align:center">'
+      +'<input type="number" id="sot-rsv-qtd-'+i+'" min="0" max="'+(m.qtd_projetada||0)+'" value="0" disabled '
+      +'style="width:70px;padding:5px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
+      +'oninput="sotReservaQtd('+i+',this.value,'+( m.qtd_projetada||0)+')"/>'
+      +'</td></tr>';
+  });
+
+  html += '</tbody></table></div>';
+
+  html += '<div style="display:grid;grid-template-columns:1fr auto;gap:.5rem;align-items:end">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Observações</label>'
+    +'<input class="inp" id="sot-rsv-obs" placeholder="Data prevista de uso, urgência, local de entrega..." style="width:100%"/></div>'
+    +'<button class="btn btn-pri" onclick="sotEnviarRequisicao(\''+projetoId+'\')" '
+    +'style="background:#533AB7;border-color:#533AB7;white-space:nowrap;height:38px">📤 Solicitar</button>'
+    +'</div>';
+
+  html += '</div>';
+
+  // Histórico de requisições
+  html += '<div id="sot-rsv-historico"><div style="padding:1rem;text-align:center;color:#aaa;font-size:12px">⏳ Carregando histórico...</div></div>';
+
+  html += '</div>';
+
+  if(container) container.innerHTML = html;
+
+  // Guardar itens disponíveis globalmente para o envio
+  window._sotReservaItensMats = mats;
+  window._sotReservaProjId    = projetoId;
+
+  // Carregar histórico
+  sotCarregarHistoricoRequisicoes(projetoId);
+}
+
+function sotReservaToggle(i){
+  var chk = document.getElementById('sot-rsv-chk-'+i);
+  var inp = document.getElementById('sot-rsv-qtd-'+i);
+  if(!chk||!inp) return;
+  inp.disabled = !chk.checked;
+  var mats = window._sotReservaItensMats||[];
+  if(chk.checked && Number(inp.value)===0 && mats[i]){
+    inp.value = mats[i].qtd_projetada||1;
+  }
+  if(!chk.checked) inp.value=0;
+}
+
+function sotReservaQtd(i, val, max){
+  var inp = document.getElementById('sot-rsv-qtd-'+i);
+  if(inp && Number(val)>max) inp.value = max;
+}
+
+function sotEnviarRequisicao(projetoId){
+  var mats = window._sotReservaItensMats||[];
+  var itensSel = [];
+  mats.forEach(function(m,i){
+    var chk = document.getElementById('sot-rsv-chk-'+i);
+    var inp = document.getElementById('sot-rsv-qtd-'+i);
+    if(chk&&chk.checked&&inp){
+      var qtd = Math.min(parseFloat(inp.value)||0, m.qtd_projetada||0);
+      if(qtd>0) itensSel.push({
+        mat_id:m.id, codigo:m.codigo_sap||'', nome:m.descricao||'',
+        unidade:m.unidade||'UN', qtd_prog:m.qtd_projetada||0, qtd_req:qtd
+      });
+    }
+  });
+  if(!itensSel.length){
+    progShowToast('⚠ Selecione ao menos um material com quantidade.','erro');
+    return;
+  }
+  var obs = (document.getElementById('sot-rsv-obs')||{}).value||'';
+  var payload = {
+    projeto_id:  projetoId,
+    equipe_id:   null,
+    data:        dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10),
+    status:      'Aguardando aprovação',
+    solicitante: usuarioLogado ? usuarioLogado.nome : '',
+    observacoes: obs,
+    itens:       JSON.stringify(itensSel),
+    criado_em:   new Date().toISOString(),
+  };
+  if(!DEMO){
+    sbInsert('plpt_requisicoes_materiais', payload)
+      .then(function(){
+        progShowToast('✅ Requisição enviada! Aguardando aprovação do gerente.');
+        var content = document.getElementById('sot-tab-content');
+        sotRenderTabReserva(projetoId, content);
+      })
+      .catch(function(e){ progShowToast('⚠ Erro: '+e.message,'erro'); });
+  } else {
+    progShowToast('✅ Requisição enviada (demo)');
+  }
+}
+
+function sotCarregarHistoricoRequisicoes(projetoId){
+  var el = document.getElementById('sot-rsv-historico');
+  if(!el) return;
+  if(DEMO){ el.innerHTML=''; return; }
+  sbFetch('plpt_requisicoes_materiais',{
+    filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'],
+    order:'criado_em.desc', limit:20
+  }).then(function(rows){
+    if(!rows||!rows.length){ el.innerHTML=''; return; }
+    var STATUS_COR={'Aguardando aprovação':{bg:'#FEF3E2',c:'#854F0B'},
+      'Aprovada':{bg:'#EAF3DE',c:'#3B6D11'},'Separação':{bg:'#EBF4FD',c:'#185FA5'},
+      'Em campo':{bg:'#F0EEFF',c:'#533AB7'},'Devolvida':{bg:'#f5f5f3',c:'#888'},
+      'Reprovada':{bg:'#FFF0F0',c:'#A32D2D'}};
+    el.innerHTML = '<div style="margin-top:.5rem">'
+      +'<div style="font-size:12px;font-weight:700;color:#555;margin-bottom:.5rem">Histórico de Requisições</div>'
+      +rows.map(function(r){
+        var sc=STATUS_COR[r.status]||{bg:'#f5f5f3',c:'#555'};
+        var itens=parseJsonField(r.itens,[]);
+        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .85rem;margin-bottom:.4rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">'
+          +'<div>'
+          +'<div style="font-size:12px;font-weight:600">'+fmtD(r.data)
+          +(r.solicitante?' · '+escHtml(r.solicitante):'')+'</div>'
+          +'<div style="font-size:11px;color:#888">'+itens.length+' item(ns)'
+          +(r.observacoes?' · '+escHtml(r.observacoes.slice(0,50)):'')+'</div>'
+          +'</div>'
+          +'<span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:2px 10px;font-size:11px;font-weight:600">'+r.status+'</span>'
+          +'</div>';
+      }).join('')
+      +'</div>';
+  }).catch(function(){ el.innerHTML=''; });
+}
+
+
 function sotLancarBaixaMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
@@ -21851,9 +22039,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '6.8.5',
+  numero: '6.8.6',
   data:   '22/05/2026',
-  build:  '20260522-0500',
+  build:  '20260522-0600',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
