@@ -12692,40 +12692,9 @@ function plptLimparFiltrosReq(){
 
 
 function plptAprovarReq(id){
-  // Fetch the requisição to get its itens and create sol_materiais entries
-  if(!DEMO){
-    sbFetch('plpt_requisicoes_materiais',{filters:['id=eq.'+id]})
-      .then(function(rows){
-        var r = rows&&rows[0];
-        if(!r) return;
-        var itens = parseJsonField(r.itens,[]);
-        // Create one sol_materiais entry per item
-        itens.forEach(function(it){
-          // Buscar contrato_id via sot_projetos
-          var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[])
-            .find(function(p){return p.id===r.projeto_id;})
-            || projetos.find(function(p){return p.id===r.projeto_id;});
-          var entry = {
-            contrato_id:     proj ? proj.contrato_id : null,
-            projeto_id:      r.projeto_id,
-            encarregado_nome: r.solicitante||'',
-            descricao:       it.nome||it.codigo||'Material',
-            codigo_sap:      it.codigo||null,
-            qtd:             it.qtd_req||0,
-            unidade:         it.unidade||'UN',
-            motivo:          'Requisição aprovada — Req: '+id.slice(0,8),
-            status:          'Separado',
-            data:            r.data||new Date().toISOString().slice(0,10),
-          };
-          sol_materiais.push(Object.assign({id:'sm'+Date.now()+Math.random()}, entry));
-          sbInsert('sol_materiais', entry).catch(function(e){ console.error('sol_materiais insert:',e); });
-        });
-        // Atualizar kanban se visível
-        if(typeof coRenderMateriais==='function') coRenderMateriais();
-      })
-      .catch(function(){});
-  }
+  // plpt_requisicoes_materiais é a fonte de verdade — não criar duplicatas em sol_materiais
   plptMudarStatusReq(id,'Aprovada','Aprovada');
+  if(window._coMatFetched) window._coMatFetched = {};
 }
 function plptReprovarReq(id){ plptMudarStatusReq(id,'Reprovada','Reprovada pelo gerente'); }
 function plptSepararReq(id){ plptMudarStatusReq(id,'Separação','Em separação no almoxarifado'); }
@@ -18393,6 +18362,133 @@ function coRegistrarDevolucao(id){
 }
 
 // Botão de avanço por status (chamado pelo card)
+
+// ═══════════════════════════════════════════════════════════════════════
+// KANBAN — Reversão de Status
+// ═══════════════════════════════════════════════════════════════════════
+
+function coReverterStatus(id){
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+
+  var anterior = {
+    'Separado':                      'Pendente',
+    'Aguardando confirmação almox':  'Separado',
+    'Entregue':                      'Aguardando confirmação almox',
+    'Aplicado':                      'Entregue',
+    'Devolvido':                     'Entregue',
+  }[m.status];
+
+  if(!anterior) return;
+
+  // Livre (sem modal)
+  if(m.status==='Separado' || m.status==='Aguardando confirmação almox'){
+    _coSalvarStatusMaterial(m, anterior, {observacoes: 'Revertido de '+m.status+' para '+anterior+' em '+new Date().toLocaleString('pt-BR')});
+    progShowToast('↩ Status revertido para: '+anterior);
+    return;
+  }
+
+  // Entregue → Aguardando confirmação almox: justificativa + responsável da área
+  if(m.status==='Entregue'){
+    _coModalReverterComResponsavel(m, anterior);
+    return;
+  }
+
+  // Aplicado ou Devolvido: autorização do coordenador
+  if(m.status==='Aplicado' || m.status==='Devolvido'){
+    _coModalAutorizacaoCoordenador(m, anterior);
+    return;
+  }
+}
+
+function _coModalReverterComResponsavel(m, anterior){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.5rem">↩ Reverter para: '+anterior+'</h3>'
+    +'<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700">'+escHtml(m.descricao||'')+'</div>'
+    +'<div>Status atual: <strong>'+m.status+'</strong> → <strong>'+anterior+'</strong></div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<input class="inp" id="rev-just" placeholder="Motivo da reversão..." style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Responsável da área que autoriza *</label>'
+    +'<input class="inp" id="rev-resp" placeholder="Nome do responsável" style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="rev-confirmar" style="flex:2;background:#854F0B;border-color:#854F0B">↩ Confirmar Reversão</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('rev-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var just = ((document.getElementById('rev-just')||{}).value||'').trim();
+      var resp = ((document.getElementById('rev-resp')||{}).value||'').trim();
+      if(!just){ progShowToast('⚠ Informe a justificativa.','erro'); return; }
+      if(!resp){ progShowToast('⚠ Informe o responsável que autorizou.','erro'); return; }
+      closeModal();
+      _coSalvarStatusMaterial(m, anterior, {
+        observacoes: 'REVERTIDO por '+resp+' | Motivo: '+just+' | '+new Date().toLocaleString('pt-BR'),
+      });
+      progShowToast('↩ Revertido para "'+anterior+'" — autorizado por '+resp);
+    };
+  },50);
+}
+
+function _coModalAutorizacaoCoordenador(m, anterior){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.5rem;color:#A32D2D">🔒 Autorização do Coordenador</h3>'
+    +'<div style="background:#FCEBEB;border:.5px solid #A32D2D;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700">'+escHtml(m.descricao||'')+'</div>'
+    +'<div>Reverter de <strong>'+m.status+'</strong> para <strong>'+anterior+'</strong></div>'
+    +'<div style="margin-top:4px;color:#A32D2D">Esta operação requer autorização do coordenador.</div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:600">Nome do coordenador *</label>'
+    +'<input class="inp" id="coord-nome" placeholder="Nome completo" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<input class="inp" id="coord-just" placeholder="Motivo detalhado da reversão..." style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Código de autorização (coordenador informa) *</label>'
+    +'<input class="inp" id="coord-cod" placeholder="Ex: nome+data ou código interno" style="width:100%" '
+    +'style="font-family:monospace"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="coord-confirmar" style="flex:2;background:#A32D2D;border-color:#A32D2D">🔒 Autorizar Reversão</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('coord-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var nome = ((document.getElementById('coord-nome')||{}).value||'').trim();
+      var just = ((document.getElementById('coord-just')||{}).value||'').trim();
+      var cod  = ((document.getElementById('coord-cod')||{}).value||'').trim();
+      if(!nome){ progShowToast('⚠ Informe o nome do coordenador.','erro'); return; }
+      if(!just){ progShowToast('⚠ Informe a justificativa.','erro'); return; }
+      if(!cod){  progShowToast('⚠ Informe o código de autorização.','erro'); return; }
+      // Validação simples: código deve conter o nome (primeiros 4 letras) + algum número
+      var nomeBase = nome.toLowerCase().replace(/\s/g,'').slice(0,4);
+      var codLower = cod.toLowerCase().replace(/\s/g,'');
+      if(!codLower.includes(nomeBase)){
+        progShowToast('⚠ Código de autorização inválido — deve conter as iniciais do coordenador.','erro');
+        return;
+      }
+      closeModal();
+      _coSalvarStatusMaterial(m, anterior, {
+        observacoes: 'REVERSÃO AUTORIZADA pelo coordenador '+nome+' (cód: '+cod+') | '+just+' | '+new Date().toLocaleString('pt-BR'),
+      });
+      progShowToast('🔓 Reversão autorizada por '+nome+' — status: '+anterior);
+    };
+  },50);
+}
+
+
 function coAvancarMaterial(id, novoStatus){
   if(novoStatus==='Separado')                       return coSepararMaterial(id);
   if(novoStatus==='Aguardando confirmação almox')   return coConfirmarEntregaAlmox(id);
@@ -18422,10 +18518,21 @@ function coRenderMateriais(){
     ]).then(function(res){
       var solRows  = res[0]||[];
       var plptRows = res[1]||[];
-      // Adicionar sol_materiais ao array local
+      // Adicionar sol_materiais ao array local (excluir itens já cobertos pelo plpt)
       solRows.forEach(function(r){
         if(!sol_materiais.find(function(x){return x.id===r.id;}))
           sol_materiais.push(r);
+      });
+      // Remover do array local entradas de sol_materiais que sejam duplicatas de plpt
+      // (criadas antes da migração para plpt como fonte única)
+      var plptReqIds = (res[1]||[]).map(function(r){return r.id;});
+      sol_materiais = sol_materiais.filter(function(m){
+        // Manter se não tem motivo de requisição plpt
+        if(!m.motivo || !m.motivo.startsWith('Requisição aprovada')) return true;
+        // Manter se não há plpt rows carregadas
+        if(!plptReqIds.length) return true;
+        // Remover — é uma duplicata de plpt
+        return false;
       });
       // Converter plpt_requisicoes aprovadas/separação em itens do kanban
       plptRows.forEach(function(req){
@@ -18501,6 +18608,7 @@ function coRenderMateriais(){
           // Almox só age em: Pendente→Separado, AguardandoConf→Entregue, Entregue→Aplicado, Aplicado→Devolvido
           // 'Separado' não tem botão — aguarda confirmação da equipe
           var ns={'Pendente':'Separado','Aguardando confirmação almox':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
+          var prevStatus={'Separado':'Pendente','Aguardando confirmação almox':'Separado','Entregue':'Aguardando confirmação almox','Aplicado':'Entregue','Devolvido':'Entregue'}[m.status];
           var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Confirmar Entrega','Entregue':'✅ Aplicado','Aplicado':'🔄 Registrar Devolução','Devolvido':''}[ns]||('→ '+ns);
           var waitingMsg = m.status==='Separado'
             ? '<div style="margin-top:5px;background:#EBF4FD;border-radius:4px;padding:4px 6px;font-size:10px;color:#185FA5;font-weight:600;text-align:center">⏳ Aguardando confirmação da equipe</div>'
@@ -18551,7 +18659,11 @@ function coRenderMateriais(){
             +(m.encarregado_nome&&m.encarregado_nome!==eqLabel?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#FEF3E2;color:#854F0B;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">SOLICITANTE</span> <span>'+escHtml(m.encarregado_nome)+'</span></div>':'')
             +(colabStr?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#F0EEFF;color:#533AB7;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">COLABORADORES</span><br><span style="color:#555">'+escHtml(colabStr)+'</span></div>':'')
             +(m.obs_divergencia?'<div style="background:#FFF0F0;border-radius:4px;padding:4px 6px;margin-top:4px;font-size:10px;color:#A32D2D;font-weight:600">⚠ '+escHtml(m.obs_divergencia.slice(0,120))+'</div>':'')+(m.data?'<div style="font-size:10px;color:#aaa;margin-top:2px">📅 '+fmtD(m.data)+'</div>':'')
-            +btn+(typeof waitingMsg!=='undefined'?waitingMsg:'')+'</div>';
+            +btn+(typeof waitingMsg!=='undefined'?waitingMsg:'')
+            +(prevStatus?'<button onclick="coReverterStatus(\''+m.id+'\')" '
+            +'style="margin-top:2px;width:100%;padding:3px 0;background:none;color:#999;border:.5px solid #e0dfd8;'
+            +'border-radius:4px;font-size:10px;cursor:pointer">↩ Voltar para '+prevStatus+'</button>':'')
+            +'</div>';
         })(m);
       }).join('')
       +(items.length>10?'<div style="text-align:center;font-size:11px;color:#aaa">+'+( items.length-10)+' mais</div>':'')
@@ -22993,9 +23105,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.2.3',
+  numero: '7.2.5',
   data:   '22/05/2026',
-  build:  '20260522-2359t',
+  build:  '20260522-2359v',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -23819,7 +23931,7 @@ function progRenderEquipeRow(eq, data){
   var projTagsHtml = projetoIdsEq.map(function(pid){
     var p=projs.find(function(x){return x.id===pid;});
     return p
-      ?'<div style="display:flex;align-items:center;gap:2px;background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 0">'
+      ?'<div style="display:flex;align-items:center;gap:2px;background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 0" onclick=\"event.stopPropagation();\">'
         +'<span onclick="event.stopPropagation();_progIrParaProjeto(\''+pid+'\')" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px" title="Abrir projeto">'+p.nome+'</span>'
         +'<span onclick="progEqRemoverProjeto(\''+eq.id+'\',\''+pid+'\')" style="cursor:pointer;color:#A32D2D;margin-left:3px;font-size:11px">✕</span></div>'
       :'';
