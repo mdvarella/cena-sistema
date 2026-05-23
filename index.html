@@ -12146,12 +12146,12 @@ function _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao){
   var payload = {
     status:          'Aguardando confirmação almox',
     itens_retirada:  JSON.stringify(itensFinal),
-    obs_retirada:    obs||null,
+    obs_retirada:    (obs||(autorizacao?'Autorizado por: '+autorizacao.autorizado_por+' | '+autorizacao.justificativa:null))||null,
     retirada_em:     new Date().toISOString(),
     retirado_por:    usuarioLogado ? usuarioLogado.nome : '',
     tem_divergencia: temDiverg,
     obs_divergencia: temDiverg ? divStr.join(' | ') : null,
-    autorizacao_extra: autorizacao ? JSON.stringify(autorizacao) : null,
+    // autorizacao_extra não existe na tabela — guardar em obs_retirada
     // Atualizar itens com qtd efetivamente retirada (para baixa correta no estoque)
     itens: JSON.stringify(itensFinal.filter(function(it){return it.incluido;}).map(function(it){
       return {
@@ -12170,6 +12170,8 @@ function _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao){
       sbUpdate('plpt_requisicoes_materiais', payload, 'id=eq.'+rid)
         .catch(function(e){ console.error('retirada update:',e); });
     });
+    // Forçar refresh do kanban do almox na próxima abertura
+    if(window._coMatFetched) window._coMatFetched = {};
   }
 
   // Remover banner
@@ -18443,7 +18445,13 @@ function coRenderMateriais(){
     return true;
   });
 
-  kanban.innerHTML = COLUNAS.map(function(col){
+  // Botão de atualização manual
+  var refreshBtn = '<div style="text-align:right;margin-bottom:6px">'
+    +'<button onclick="if(window._coMatFetched)window._coMatFetched={};coRenderMateriais()" '
+    +'style="font-size:11px;background:none;border:.5px solid #e0dfd8;border-radius:6px;padding:3px 10px;cursor:pointer;color:#888">🔄 Atualizar</button>'
+    +'</div>';
+
+  kanban.innerHTML = refreshBtn + COLUNAS.map(function(col){
     var items = rows.filter(function(m){return (m.status||'Pendente')===col;});
     var cor = {Pendente:'#888',Separado:'#185FA5','Aguardando confirmação almox':'#533AB7',Entregue:'#3B6D11',
                Aplicado:'#085041',Devolvido:'#854F0B'}[col]||'#555';
@@ -18453,8 +18461,11 @@ function coRenderMateriais(){
       +'<div style="padding:.5rem;display:flex;flex-direction:column;gap:.5rem;min-height:100px">'
       +items.slice(0,10).map(function(m){
         return (function(m){
-          var ns={'Pendente':'Separado','Separado':'Aguardando confirmação almox','Aguardando confirmação almox':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
-          var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Confirmar Entrega (Almox)','Entregue':'➡️ Entregue','Aplicado':'✅ Aplicado','Devolvido':'🔄 Registrar Devolução'}[ns]||('→ '+ns);
+          // Almox só age em: Pendente→Separado, AguardandoConf→Entregue, Entregue→Aplicado, Aplicado→Devolvido
+          // 'Separado' não tem botão — aguarda confirmação da equipe
+          var ns={'Pendente':'Separado','Aguardando confirmação almox':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
+          var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Confirmar Entrega','Entregue':'✅ Aplicado','Aplicado':'🔄 Registrar Devolução','Devolvido':''}[ns]||('→ '+ns);
+          var waitingMsg = m.status==='Separado' ? '<div style="margin-top:5px;font-size:10px;color:#185FA5;font-weight:600;text-align:center">⏳ Aguardando confirmação da equipe</div>' : '';
           var btn=ns?'<button onclick="coAvancarMaterial(\''+m.id+'\',\''+ns+'\')" style="margin-top:6px;width:100%;padding:5px;background:#1a1a18;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">'+ns_label+'</button>':'';
 
           // Projeto
@@ -18499,7 +18510,7 @@ function coRenderMateriais(){
             +(m.encarregado_nome&&m.encarregado_nome!==eqLabel?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#FEF3E2;color:#854F0B;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">SOLICITANTE</span> <span>'+escHtml(m.encarregado_nome)+'</span></div>':'')
             +(colabStr?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#F0EEFF;color:#533AB7;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">COLABORADORES</span><br><span style="color:#555">'+escHtml(colabStr)+'</span></div>':'')
             +(m.obs_divergencia?'<div style="background:#FFF0F0;border-radius:4px;padding:4px 6px;margin-top:4px;font-size:10px;color:#A32D2D;font-weight:600">⚠ '+escHtml(m.obs_divergencia.slice(0,120))+'</div>':'')+(m.data?'<div style="font-size:10px;color:#aaa;margin-top:2px">📅 '+fmtD(m.data)+'</div>':'')
-            +btn+'</div>';
+            +btn+(typeof waitingMsg!=='undefined'?waitingMsg:'')+'</div>';
         })(m);
       }).join('')
       +(items.length>10?'<div style="text-align:center;font-size:11px;color:#aaa">+'+( items.length-10)+' mais</div>':'')
@@ -22915,9 +22926,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.1.4',
+  numero: '7.1.5',
   data:   '22/05/2026',
-  build:  '20260522-2359k',
+  build:  '20260522-2359l',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
