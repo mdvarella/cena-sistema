@@ -11947,7 +11947,9 @@ function _plptMostrarBannerMateriais(reqs){
   // Se banner já existe com mesmo número de reqs, não recriar
   var old = document.getElementById('plpt-mat-banner');
   var oldCount = old ? parseInt(old.dataset.reqCount||'0') : -1;
-  if(old && oldCount === reqs.length) return;
+  var oldStatus = old ? old.dataset.status : '';
+  var newStatus = reqs.some(function(r){return r.status==='Separação';}) ? 'pendente' : 'aguardando';
+  if(old && oldCount === reqs.length && oldStatus === newStatus) return;
   if(old) old.remove();
 
   var totalItens = 0;
@@ -11956,18 +11958,33 @@ function _plptMostrarBannerMateriais(reqs){
     totalItens += itens.length;
   });
 
+  // Verificar se todas já foram confirmadas pela equipe ou ainda há pendentes
+  var pendentes   = reqs.filter(function(r){ return r.status==='Separação'; });
+  var aguardando  = reqs.filter(function(r){ return r.status==='Aguardando confirmação almox'; });
+
+  var bgColor  = pendentes.length ? '#533AB7' : '#854F0B';
+  var titulo   = pendentes.length
+    ? '📦 Material separado aguardando retirada!'
+    : '⏳ Aguardando liberação do almoxarifado';
+  var subtitulo = pendentes.length
+    ? totalItens+' item(ns) em '+pendentes.length+' requisição(ões) — toque para conferir e retirar'
+    : aguardando.length+' requisição(ões) confirmada(s) — almoxarife irá liberar em breve';
+
   var banner = document.createElement('div');
   banner.id = 'plpt-mat-banner';
   banner.dataset.reqCount = reqs.length;
-  banner.style.cssText = 'position:sticky;top:0;z-index:100;background:#533AB7;color:#fff;padding:.75rem 1rem;border-radius:0 0 10px 10px;margin-bottom:.5rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+  banner.dataset.status   = pendentes.length ? 'pendente' : 'aguardando';
+  banner.style.cssText = 'position:sticky;top:0;z-index:100;background:'+bgColor+';color:#fff;padding:.75rem 1rem;border-radius:0 0 10px 10px;margin-bottom:.5rem;cursor:'+(pendentes.length?'pointer':'default')+';box-shadow:0 2px 8px rgba(0,0,0,.2)';
   banner.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between">'
     +'<div>'
-    +'<div style="font-weight:700;font-size:14px">📦 Material separado aguardando retirada!</div>'
-    +'<div style="font-size:12px;opacity:.9">'+totalItens+' item(ns) em '+reqs.length+' requisição(ões) — toque para conferir e retirar</div>'
+    +'<div style="font-weight:700;font-size:14px">'+titulo+'</div>'
+    +'<div style="font-size:12px;opacity:.9">'+subtitulo+'</div>'
     +'</div>'
-    +'<div style="font-size:22px">→</div>'
+    +(pendentes.length?'<div style="font-size:22px">→</div>':'<div style="font-size:22px">⏳</div>')
     +'</div>';
-  banner.onclick = function(){ plptAbrirRetiradaMateriais(reqs); };
+  if(pendentes.length){
+    banner.onclick = function(){ plptAbrirRetiradaMateriais(pendentes); };
+  }
   pg.insertBefore(banner, pg.firstChild);
 }
 
@@ -12143,24 +12160,26 @@ function _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao){
     divStr.push('✕ '+it.nome+': NÃO RETIRADO');
   });
 
+  // Montar observacoes completas (inclui divergência e autorização)
+  var obsCompleta = [];
+  if(obs) obsCompleta.push(obs);
+  if(temDiverg) obsCompleta.push('Divergência: '+divStr.join(' | '));
+  if(autorizacao) obsCompleta.push('Autorizado por: '+autorizacao.autorizado_por+' | '+autorizacao.justificativa);
+
   var payload = {
-    status:          'Aguardando confirmação almox',
-    itens_retirada:  JSON.stringify(itensFinal),
-    obs_retirada:    (obs||(autorizacao?'Autorizado por: '+autorizacao.autorizado_por+' | '+autorizacao.justificativa:null))||null,
-    retirada_em:     new Date().toISOString(),
-    retirado_por:    usuarioLogado ? usuarioLogado.nome : '',
-    tem_divergencia: temDiverg,
-    obs_divergencia: temDiverg ? divStr.join(' | ') : null,
-    // autorizacao_extra não existe na tabela — guardar em obs_retirada
+    status:      'Aguardando confirmação almox',
+    observacoes: obsCompleta.length ? obsCompleta.join(' || ') : null,
     // Atualizar itens com qtd efetivamente retirada (para baixa correta no estoque)
+    // Guardamos no campo itens existente, adicionando qtd_ret e info de retirada
     itens: JSON.stringify(itensFinal.filter(function(it){return it.incluido;}).map(function(it){
       return {
-        mat_id:  it.mat_id,
-        codigo:  it.codigo,
-        nome:    it.nome,
-        unidade: it.unidade,
-        qtd_req: it.qtd_prog,   // qtd original aprovada
-        qtd_ret: it.qtd_ret,    // qtd efetivamente retirada (para baixa no estoque)
+        mat_id:    it.mat_id,
+        codigo:    it.codigo,
+        nome:      it.nome,
+        unidade:   it.unidade,
+        qtd_req:   it.qtd_prog,   // qtd original aprovada
+        qtd_ret:   it.qtd_ret,    // qtd efetivamente retirada
+        divergente: it.qtd_ret !== it.qtd_prog,
       };
     })),
   };
@@ -18170,10 +18189,27 @@ function _coSalvarStatusMaterial(m, novoStatus, extra){
   if(extra) Object.assign(m, extra);
   if(!DEMO){
     if(m._from_plpt && m._req_id){
-      var plptStatus = {'Separado':'Separação','Entregue':'Em campo','Devolvido':'Devolvida'}[novoStatus]||novoStatus;
-      sbUpdate('plpt_requisicoes_materiais', Object.assign({status:plptStatus}, extra||{}), 'id=eq.'+m._req_id)
+      // plpt_requisicoes_materiais: só colunas existentes (status, observacoes)
+      var plptStatus = {'Separado':'Separação','Aguardando confirmação almox':'Aguardando confirmação almox',
+                        'Entregue':'Em campo','Devolvido':'Devolvida'}[novoStatus]||novoStatus;
+      // Construir observacoes com os campos extras
+      var obsExtra = [];
+      if(extra){
+        if(extra.retirado_por)       obsExtra.push('Retirado por: '+extra.retirado_por);
+        if(extra.confirmado_almox)   obsExtra.push('Confirmado por: '+extra.confirmado_almox);
+        if(extra.veiculo_saida)      obsExtra.push('Veículo: '+extra.veiculo_saida);
+        if(extra.retirado_obs)       obsExtra.push(extra.retirado_obs);
+        if(extra.obs_divergencia)    obsExtra.push(extra.obs_divergencia);
+        if(extra.qtd_devolvida!==undefined) obsExtra.push('Devolvido: '+extra.qtd_devolvida+' | Aplicado: '+(extra.qtd_aplicada||0));
+        if(extra.devolvido_por)      obsExtra.push('Recebido por: '+extra.devolvido_por);
+        if(extra.devolvido_obs)      obsExtra.push(extra.devolvido_obs);
+      }
+      var plptPayload = {status: plptStatus};
+      if(obsExtra.length) plptPayload.observacoes = obsExtra.join(' | ');
+      sbUpdate('plpt_requisicoes_materiais', plptPayload, 'id=eq.'+m._req_id)
         .catch(function(e){ console.error('plpt update:',e); });
     } else {
+      // sol_materiais aceita campos extras livremente
       sbUpdate('sol_materiais', Object.assign({status:novoStatus}, extra||{}), 'id=eq.'+m.id)
         .catch(function(e){ console.error('sol_materiais update:',e); });
     }
@@ -22926,9 +22962,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.1.5',
+  numero: '7.1.7',
   data:   '22/05/2026',
-  build:  '20260522-2359l',
+  build:  '20260522-2359n',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
