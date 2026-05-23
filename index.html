@@ -18547,6 +18547,30 @@ function _coSalvarStatusMaterial(m, novoStatus, extra){
   // Atualiza em memória
   m.status = novoStatus;
   if(extra) Object.assign(m, extra);
+
+  // Quando material é confirmado como Entregue → atualizar qtd_entregue em sot_materiais
+  if(novoStatus === 'Entregue' && m.projeto_id && !DEMO){
+    var qtdEnt = m.qtd || 0;
+    // Buscar sot_materiais row pelo projeto e material
+    sbFetch('sot_materiais', {
+      filters: [
+        'projeto_id=eq.'+m.projeto_id,
+        m.codigo_sap ? 'codigo_sap=eq.'+m.codigo_sap : 'descricao=eq.'+encodeURIComponent(m.descricao||'')
+      ], limit: 1
+    }).then(function(rows){
+      var row = rows && rows[0];
+      if(row){
+        var novaQtd = (row.qtd_entregue||0) + qtdEnt;
+        sbUpdate('sot_materiais', {qtd_entregue: novaQtd}, 'id=eq.'+row.id)
+          .then(function(){
+            // Atualizar array local também
+            var loc = sot_materiais_proj.find(function(x){return x.id===row.id;});
+            if(loc) loc.qtd_entregue = novaQtd;
+          }).catch(function(e){ console.error('qtd_entregue update:',e); });
+      }
+    }).catch(function(e){ console.error('sot_materiais fetch:',e); });
+  }
+
   if(!DEMO){
     if(m._from_plpt && m._req_id){
       // plpt_requisicoes_materiais: só colunas existentes (status, observacoes)
@@ -23290,7 +23314,11 @@ function sotLancarBaixaMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
 
-  var emCampo = (m.qtd_entregue||0) - (m.qtd_aplicada||0) - (m.qtd_devolvida||0);
+  // Calcular emCampo buscando de plpt_requisicoes_materiais em tempo real
+  function _abrirBaixaModal(qtdEntregueReal){
+    var _qtdEntregue = qtdEntregueReal || (m.qtd_entregue||0);
+    var emCampo = _qtdEntregue - (m.qtd_aplicada||0) - (m.qtd_devolvida||0);
+    if(emCampo < 0) emCampo = 0; // nunca negativo
   var html = '<div class="modal-bg"><div class="modal" style="max-width:420px">'
     +'<h3 style="margin-bottom:.25rem">📥 Baixa de Material</h3>'
     +'<div style="font-size:12px;color:#555;margin-bottom:.75rem;font-weight:500">'+m.descricao+'</div>'
@@ -23349,6 +23377,33 @@ function sotLancarBaixaMaterial(id){
       progShowToast('Baixa registrada: '+aplic+' '+m.unidade+' aplicado(s)');
     };
   },50);
+  } // end _abrirBaixaModal
+
+  // Buscar qtd real entregue de plpt_requisicoes_materiais
+  if(!DEMO && m.projeto_id){
+    sbFetch('plpt_requisicoes_materiais',{
+      filters:['projeto_id=eq.'+m.projeto_id,'status=eq.Em campo'],
+      limit:20
+    }).then(function(reqs){
+      var qtdRet = 0;
+      (reqs||[]).forEach(function(r){
+        var itens = parseJsonField(r.itens,[]);
+        itens.forEach(function(it){
+          if(it.codigo===m.codigo_sap || it.nome===m.descricao){
+            qtdRet += (it.qtd_ret||it.qtd_req||0);
+          }
+        });
+      });
+      // Sincronizar qtd_entregue se diferente
+      if(qtdRet > 0 && qtdRet !== (m.qtd_entregue||0)){
+        m.qtd_entregue = qtdRet;
+        sbUpdate('sot_materiais',{qtd_entregue:qtdRet},'id=eq.'+m.id).catch(function(){});
+      }
+      _abrirBaixaModal(qtdRet || m.qtd_entregue || 0);
+    }).catch(function(){ _abrirBaixaModal(m.qtd_entregue||0); });
+  } else {
+    _abrirBaixaModal(m.qtd_entregue||0);
+  }
 }
 
 function sotEditarMaterial(id){
@@ -23596,9 +23651,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.9',
+  numero: '7.4.1',
   data:   '23/05/2026',
-  build:  '20260523-1000',
+  build:  '20260523-1200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34678,12 +34733,14 @@ function ppSetAba(aba){
   var paineis = {
     'dashboard':   document.getElementById('pp-painel-dashboard'),
     'programacao': document.getElementById('pp-painel-programacao'),
-    'requisicoes': document.getElementById('pp-painel-requisicoes')
+    'requisicoes': document.getElementById('pp-painel-requisicoes'),
+    'obras':       document.getElementById('pp-painel-obras')
   };
   var tabs = {
     'dashboard':   document.getElementById('pp-tab-dashboard'),
     'programacao': document.getElementById('pp-tab-programacao'),
-    'requisicoes': document.getElementById('pp-tab-requisicoes')
+    'requisicoes': document.getElementById('pp-tab-requisicoes'),
+    'obras':       document.getElementById('pp-tab-obras')
   };
   // Esconder todos
   Object.keys(paineis).forEach(function(a){
@@ -34711,6 +34768,7 @@ function ppSetAba(aba){
   if(aba==='dashboard')   ppRenderDashboard();
   if(aba==='programacao') progProjRenderQuadro && progProjRenderQuadro();
   if(aba==='requisicoes') plptRenderRequisicoes();
+  if(aba==='obras')       _ppRenderObras();
 }
 
 function ppRenderDashboard(){
@@ -34879,6 +34937,104 @@ function ppRenderDashboard(){
 
   el.innerHTML = filtroHtml + tabelaHtml;
 }
+
+
+function _ppRenderObras(){
+  var inner = document.getElementById('pp-obras-inner');
+  if(!inner) return;
+  inner.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando Projetos de Obras...</div>';
+
+  // Load the obras module and render into pp-obras-inner
+  _precisaModulo('obras', function(){
+    // Render the obras-projetos content directly into pp-obras-inner
+    // Re-use the existing pg-obras-projetos page but embed its content here
+    var pgObras = document.getElementById('pg-obras-projetos');
+    if(pgObras){
+      // Clone content into our panel
+      inner.innerHTML = '';
+      // Instead of cloning, just show the existing page inside a scrollable div
+      inner.style.cssText = 'min-height:500px';
+      // Use popularFiltrosObras to initialize
+      if(typeof popularFiltrosObras === 'function') popularFiltrosObras();
+      if(typeof projMostrarTab === 'function') projMostrarTab('tma');
+      // Render the obras projetos table inside our panel
+      _ppRenderObrasProjetos(inner);
+    } else {
+      inner.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">Módulo Obras não disponível.</div>';
+    }
+  });
+}
+
+function _ppRenderObrasProjetos(container){
+  // Show contract selector + projects list inline
+  var conts = typeof _contratosVisiveis==='function' ? _contratosVisiveis() : contratos;
+
+  var html = '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;margin-bottom:.75rem">'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<label style="font-size:11px;font-weight:600">Contrato</label>'
+    +'<select class="inp" id="pp-obras-cont" style="min-width:200px" onchange="_ppObrasCarregarProjetos()">'
+    +'<option value="">Selecione...</option>'
+    +conts.map(function(ct){
+      return '<option value="'+ct.id+'">'+escHtml(ct.nome||ct.codigo||ct.id)+'</option>';
+    }).join('')
+    +'</select>'
+    +'<input class="inp" id="pp-obras-busca" placeholder="Buscar projeto..." style="min-width:180px" oninput="_ppObrasCarregarProjetos()"/>'
+    +'</div>'
+    +'</div>'
+    +'<div id="pp-obras-lista"></div>';
+
+  container.innerHTML = html;
+}
+
+function _ppObrasCarregarProjetos(){
+  var cid   = (document.getElementById('pp-obras-cont')||{}).value||'';
+  var busca = ((document.getElementById('pp-obras-busca')||{}).value||'').toLowerCase().trim();
+  var lista = document.getElementById('pp-obras-lista');
+  if(!lista) return;
+
+  if(!cid){ lista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#aaa">Selecione um contrato.</div>'; return; }
+
+  lista.innerHTML = '<div style="padding:1rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
+
+  // Load sot_projetos for this contract
+  var projs = typeof sot_projetos!=='undefined'
+    ? sot_projetos.filter(function(p){ return p.contrato_id===cid; })
+    : [];
+
+  var render = function(projs){
+    if(busca) projs = projs.filter(function(p){
+      return (p.codigo_cliente||p.codigo||p.nome||'').toLowerCase().includes(busca)
+          || (p.nome||'').toLowerCase().includes(busca);
+    });
+    if(!projs.length){
+      lista.innerHTML = '<div style="padding:1.5rem;text-align:center;color:#aaa">Nenhum projeto encontrado.</div>';
+      return;
+    }
+    lista.innerHTML = projs.map(function(p){
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:.6rem .75rem;border-bottom:.5px solid #f0efe8;cursor:pointer;background:#fff;border-radius:6px;margin-bottom:4px" '
+        +'onclick="coAbrirContrato(\''+cid+'\');setTimeout(function(){sotAbrirProjeto(\''+p.id+'\');},400)">'
+        +'<div>'
+        +'<div style="font-weight:600;font-size:13px">'+escHtml(p.codigo_cliente||p.codigo||p.nome||p.id)+'</div>'
+        +(p.nome?'<div style="font-size:11px;color:#888">'+escHtml(p.nome)+'</div>':'')
+        +'</div>'
+        +'<div style="font-size:10px;color:#185FA5;font-weight:600">→ Abrir</div>'
+        +'</div>';
+    }).join('');
+  };
+
+  if(!projs.length && !DEMO){
+    sbFetch('sot_projetos',{filters:['contrato_id=eq.'+cid],order:'codigo_cliente'})
+      .then(function(rows){
+        if(rows&&rows.length) rows.forEach(function(p){
+          if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p);
+        });
+        render(rows||[]);
+      }).catch(function(){ render([]); });
+  } else {
+    render(projs);
+  }
+}
+
 
 function progProjInit(){
   ppSetAba(_ppAba || 'programacao');
@@ -49299,6 +49455,7 @@ async function lcAnalisarContrato(){
     <button id="pp-tab-dashboard"    onclick="ppSetAba('dashboard')"   style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#aaa;transition:all .15s">📊 Dashboard</button>
     <button id="pp-tab-programacao"  onclick="ppSetAba('programacao')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18;transition:all .15s">📅 Programação</button>
     <button id="pp-tab-requisicoes" onclick="ppSetAba('requisicoes')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">🧰 Requisições</button>
+    <button id="pp-tab-obras" onclick="ppSetAba('obras')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">📋 Projetos de Obras</button>
   </div>
 
   <!-- Painel Dashboard -->
@@ -49355,7 +49512,8 @@ async function lcAnalisarContrato(){
 
   </div><!-- /pp-painel-programacao -->
 
-<div id="pp-painel-requisicoes" class="hidden" style="padding:1rem;background:yellow"><div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;margin-bottom:.75rem"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end"><div class="fg"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="req-fil-contrato" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Filial</label><select class="inp" id="req-fil-filial" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todas</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Status</label><select class="inp" id="req-fil-status" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option><option>Aguardando aprovação</option><option>Aprovada</option><option>Separação</option><option>Em campo</option><option>Devolvida</option><option>Reprovada</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Data início</label><input class="inp" type="date" id="req-fil-de" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg"><label style="font-size:11px;font-weight:600">Data fim</label><input class="inp" type="date" id="req-fil-ate" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg" style="display:flex;align-items:flex-end"><button class="btn" onclick="plptLimparFiltrosReq()" style="width:100%">✕ Limpar</button></div></div></div><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
+<div id="pp-painel-requisicoes" class="hidden" style="padding:1rem"><div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;margin-bottom:.75rem"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end"><div class="fg"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="req-fil-contrato" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Filial</label><select class="inp" id="req-fil-filial" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todas</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Status</label><select class="inp" id="req-fil-status" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option><option>Aguardando aprovação</option><option>Aprovada</option><option>Separação</option><option>Em campo</option><option>Devolvida</option><option>Reprovada</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Data início</label><input class="inp" type="date" id="req-fil-de" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg"><label style="font-size:11px;font-weight:600">Data fim</label><input class="inp" type="date" id="req-fil-ate" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg" style="display:flex;align-items:flex-end"><button class="btn" onclick="plptLimparFiltrosReq()" style="width:100%">✕ Limpar</button></div></div></div><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
+<div id="pp-painel-obras" class="hidden" style="display:none;padding:1rem;min-height:400px"><div id="pp-obras-inner"><div style="padding:2rem;text-align:center;color:#aaa">Carregando Projetos de Obras...</div></div></div>
 </div><!-- /pg-programacao-projetos -->
 
 <div id="pg-plpt-programacao" class="hidden">
