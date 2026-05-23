@@ -11673,10 +11673,22 @@ function renderDiarioPlpt(){
   var sessao  = _plptDiario.sessao;
   var PLPT_CID = usuarioLogado ? usuarioLogado.contrato_id : CONTRATOS_UUID_MAP['PLPT'];
 
+  // Se turno é de ontem, usar data da sessão para encontrar composição
+  var dataBusca = hoje;
   var compDia = composicao_dia.find(function(c){
     var cd=(c.data||'').split('T')[0];
     return c.equipe_id===eq.id && (cd===hoje||c.data===hoje);
   });
+  if(!compDia && sessao && sessao.data){
+    var dataSess = (sessao.data||'').slice(0,10);
+    if(dataSess && dataSess !== hoje){
+      compDia = composicao_dia.find(function(c){
+        var cd=(c.data||'').split('T')[0];
+        return c.equipe_id===eq.id && cd===dataSess;
+      });
+      if(compDia) dataBusca = dataSess;
+    }
+  }
   var temEscala = prog || compDia;
   var escalaConfirmada = !!(compDia && compDia.confirmada) || !!_plptDiario.composConfirm;
 
@@ -11999,7 +12011,7 @@ function _plptVerificarMateriaisSeparados(eqId){
   var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
 
   sbFetch('plpt_requisicoes_materiais',{
-    filters:['status=in.(Separação,Aguardando confirmação almox)'],
+    filters:['status=in.(Separação,Aguardando confirmação almox,Em campo)'],
     order:'criado_em.desc', limit:50
   }).then(function(rows){
     // Guard: verificar se ainda estamos no diário
@@ -12028,22 +12040,33 @@ function _plptMostrarBannerMateriais(reqs){
   if(old) old.remove();
 
   var totalItens = 0;
+  var emCampo = 0;
   reqs.forEach(function(r){
     var itens = parseJsonField(r.itens,[]);
     totalItens += itens.length;
+    if(r.status==='Em campo') emCampo += itens.length;
   });
+  var paraRetirar = totalItens - emCampo;
 
   // Verificar se todas já foram confirmadas pela equipe ou ainda há pendentes
   var pendentes   = reqs.filter(function(r){ return r.status==='Separação'; });
   var aguardando  = reqs.filter(function(r){ return r.status==='Aguardando confirmação almox'; });
 
-  var bgColor  = pendentes.length ? '#533AB7' : '#854F0B';
-  var titulo   = pendentes.length
-    ? '📦 Material separado aguardando retirada!'
-    : '⏳ Aguardando liberação do almoxarifado';
-  var subtitulo = pendentes.length
-    ? totalItens+' item(ns) em '+pendentes.length+' requisição(ões) — toque para conferir e retirar'
-    : aguardando.length+' requisição(ões) confirmada(s) — almoxarife irá liberar em breve';
+  var emCampReqs = reqs.filter(function(r){ return r.status==='Em campo'; });
+  var bgColor, titulo, subtitulo;
+  if(pendentes.length){
+    bgColor   = '#533AB7';
+    titulo    = '📦 Material separado aguardando retirada!';
+    subtitulo = totalItens+' item(ns) em '+pendentes.length+' requisição(ões) — toque para conferir e retirar';
+  } else if(aguardando.length){
+    bgColor   = '#854F0B';
+    titulo    = '⏳ Aguardando liberação do almoxarifado';
+    subtitulo = aguardando.length+' requisição(ões) confirmada(s) — almoxarife irá liberar em breve';
+  } else {
+    bgColor   = '#185FA5';
+    titulo    = '🔧 Materiais em campo';
+    subtitulo = emCampReqs.length+' requisição(ões) com materiais ativos — '+emCampo+' item(ns)';
+  }
 
   var banner = document.createElement('div');
   banner.id = 'plpt-mat-banner';
@@ -13042,6 +13065,7 @@ function _plptRestaurarSessao(sessaoRow){
 
   _plptDiario.sessao = {
     id:         sessaoRow.id,
+    data:       sessaoRow.data || (inicioIso ? inicioIso.slice(0,10) : null),
     login_ts:   loginTs,
     inicio_ts:  inicioIso,
     fim_ts:     sessaoRow.logout_ts ? new Date(sessaoRow.logout_ts).toISOString() : null,
@@ -23180,9 +23204,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.0',
+  numero: '7.3.1',
   data:   '23/05/2026',
-  build:  '20260523-0100',
+  build:  '20260523-0200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
