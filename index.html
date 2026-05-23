@@ -11922,7 +11922,7 @@ function _plptVerificarMateriaisSeparados(eqId){
   var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
 
   sbFetch('plpt_requisicoes_materiais',{
-    filters:['status=eq.Separação'],
+    filters:['status=in.(Separação,Aguardando confirmação almox)'],
     order:'criado_em.desc', limit:50
   }).then(function(rows){
     if(!rows||!rows.length) return;
@@ -12022,7 +12022,7 @@ function plptAbrirRetiradaMateriais(reqs){
     +'</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()">Cancelar</button>'
-    +'<button class="btn btn-pri" onclick="_plptConfirmarRetirada('+JSON.stringify(todosItens).replace(/'/g,"\\'")+','+JSON.stringify(reqs.map(function(r){return r.id;}))+') " '
+    +'<button class="btn btn-pri" onclick="_plptConfirmarRetirada()" '
     +'style="flex:2;background:#533AB7;border-color:#533AB7">✅ Confirmar Retirada</button>'
     +'</div></div></div>');
 
@@ -12047,7 +12047,9 @@ function _plptRetQtdCheck(i, qtdProg, input){
   if(warn) warn.style.display = val > qtdProg ? '' : 'none';
 }
 
-function _plptConfirmarRetirada(itens, reqIds){
+function _plptConfirmarRetirada(){
+  var itens  = window._plptRetItens  || [];
+  var reqIds = window._plptRetReqIds || [];
   var g   = function(id){ return parseFloat((document.getElementById(id)||{}).value||'0')||0; };
   var obs = ((document.getElementById('ret-obs-mat')||{}).value||'').trim();
 
@@ -12076,6 +12078,7 @@ function _plptConfirmarRetirada(itens, reqIds){
 }
 
 function _plptSolicitarAutorizacaoAcima(acima, itensFinal, reqIds, obs){
+  // reqIds e itensFinal passados como parâmetro (não via window para evitar sobrescrita)
   // Modal exigindo autorização de responsável
   var listaAcima = acima.map(function(it){
     return '<div style="padding:4px 0;border-bottom:.5px solid #F59E0B33;font-size:12px">'
@@ -12141,7 +12144,7 @@ function _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao){
   });
 
   var payload = {
-    status:          'Em campo',
+    status:          'Aguardando confirmação almox',
     itens_retirada:  JSON.stringify(itensFinal),
     obs_retirada:    obs||null,
     retirada_em:     new Date().toISOString(),
@@ -18186,42 +18189,118 @@ function coSepararMaterial(id){
 }
 
 // Confirmar Retirada — modal com assinatura da equipe
-function coConfirmarRetirada(id){
+function coConfirmarRetirada(id){ coConfirmarEntregaAlmox(id); }
+
+function coConfirmarEntregaAlmox(id){
   var m = sol_materiais.find(function(x){ return x.id===id; });
   if(!m) return;
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:400px">'
-    +'<h3 style="margin-bottom:.75rem">🤝 Confirmar Retirada</h3>'
-    +'<div style="background:#EBF4FD;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
-    +'<div style="font-weight:700">'+escHtml(m.descricao||'')+'</div>'
-    +'<div>Qtd: '+(m.qtd||0)+' '+(m.unidade||'UN')+'</div>'
-    +(m.encarregado_nome?'<div style="color:#888">Solicitante: '+escHtml(m.encarregado_nome)+'</div>':'')
+
+  // Buscar dados automáticos
+  var almoxNome = usuarioLogado ? usuarioLogado.nome : '';
+  var hoje      = dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10);
+
+  // Buscar equipe e veículo via composicao_dia
+  var comp = null;
+  if(m.equipe_id){
+    comp = composicao_dia.find(function(x){ return x.equipe_id===m.equipe_id && (x.data||'').slice(0,10)===hoje; });
+  } else if(m.projeto_id){
+    comp = composicao_dia.find(function(x){
+      var pids = parseColabIds(x.projeto_ids||'[]');
+      return (x.data||'').slice(0,10)===hoje && pids.indexOf(m.projeto_id)>=0;
+    });
+  }
+  var eq        = comp ? (equipes_disp.find(function(e){return e.id===comp.equipe_id;})||equipes.find(function(e){return e.id===comp.equipe_id;}))||{} : {};
+  var placa     = comp ? (comp.placa||'') : '';
+  var veiculo   = placa ? placa : '';
+  if(placa && frt_veiculos){
+    var veic = frt_veiculos.find(function(v){return v.placa===placa;});
+    if(veic) veiculo = placa + ' ' + (veic.modelo||veic.tipo||'');
+  }
+
+  // Quem retirou: da confirmação da equipe (retirado_por)
+  var retiradoPor = m.retirado_por || (comp ? (function(){
+    var ids = parseColabIds(comp.colaborador_ids||'[]');
+    var nomes = ids.map(function(id){var f=colaboradores.find(function(x){return x.id===id;});return f?f.nome.split(' ').slice(0,2).join(' '):'';}).filter(Boolean);
+    return nomes.join(', ');
+  })() : '');
+
+  // Informações de divergência (se equipe ajustou qtd)
+  var temDiverg  = !!(m.obs_divergencia);
+  var divAlert   = temDiverg
+    ? '<div style="background:#FFF0F0;border:.5px solid #A32D2D;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:11px">'
+      +'<div style="font-weight:700;color:#A32D2D;margin-bottom:3px">⚠ Divergência reportada pela equipe:</div>'
+      +'<div style="color:#555">'+escHtml(m.obs_divergencia||'')+'</div>'
+      +'</div>'
+    : '';
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:.75rem">✅ Confirmar Entrega ao Campo</h3>'
+    // Material
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700;font-size:13px">'+escHtml(m.descricao||'')+'</div>'
+    +(m.codigo_sap?'<div style="font-family:monospace;font-size:10px;color:#888">'+escHtml(m.codigo_sap)+'</div>':'')
+    +'<div style="color:#185FA5;font-weight:600">Qtd: '+(m.qtd||0)+' '+(m.unidade||'UN')+'</div>'
     +'</div>'
-    +'<div class="fg" style="margin-bottom:.75rem">'
-    +'<label style="font-size:11px;font-weight:600">Nome de quem está retirando *</label>'
-    +'<input class="inp" id="ret-nome" placeholder="Nome completo" style="width:100%"/>'
+    // Divergência
+    + divAlert
+    // Quem retirou (auto)
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +(retiradoPor?'<div><span style="color:#888;font-size:11px">Retirado por:</span> <strong>'+escHtml(retiradoPor)+'</strong></div>':'')
+    +(veiculo?'<div><span style="color:#888;font-size:11px">Veículo:</span> <strong>'+escHtml(veiculo)+'</strong></div>':'')
+    +(eq.codigo?'<div><span style="color:#888;font-size:11px">Equipe:</span> '+escHtml(eq.codigo||eq.nome||'')+'</div>':'')
     +'</div>'
+    // Almoxarife (auto do logado)
     +'<div class="fg" style="margin-bottom:.75rem">'
-    +'<label style="font-size:11px;font-weight:600">Observação (opcional)</label>'
-    +'<input class="inp" id="ret-obs" placeholder="Equipe, veículo, destino..." style="width:100%"/>'
+    +'<label style="font-size:11px;font-weight:600">Confirmado por (almoxarife)</label>'
+    +'<input class="inp" id="co-alm-nome" value="'+escHtml(almoxNome)+'" style="width:100%"/>'
+    +'</div>'
+    +(temDiverg?
+      '<div class="fg" style="margin-bottom:.75rem">'
+      +'<label style="font-size:11px;font-weight:600">Validar divergência</label>'
+      +'<select class="inp" id="co-alm-diverg" style="width:100%">'
+      +'<option value="aceito">✅ Aceitar — baixar com qtd informada pela equipe</option>'
+      +'<option value="recusar">❌ Recusar — devolver para conferência</option>'
+      +'</select></div>':''
+    )
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Observações</label>'
+    +'<input class="inp" id="co-alm-obs" placeholder="Opcional" style="width:100%"/>'
     +'</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()">Cancelar</button>'
-    +'<button class="btn btn-pri" id="ret-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Confirmar Retirada</button>'
+    +'<button class="btn btn-pri" id="co-alm-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Confirmar Entrega</button>'
     +'</div></div></div>');
+
   setTimeout(function(){
-    var btn = document.getElementById('ret-confirmar');
+    var btn = document.getElementById('co-alm-confirmar');
     if(!btn) return;
     btn.onclick = function(){
-      var nome = ((document.getElementById('ret-nome')||{}).value||'').trim();
-      if(!nome){ progShowToast('⚠ Informe o nome de quem está retirando.','erro'); return; }
-      var obs  = ((document.getElementById('ret-obs')||{}).value||'').trim();
+      var almNome = ((document.getElementById('co-alm-nome')||{}).value||'').trim();
+      var obs     = ((document.getElementById('co-alm-obs')||{}).value||'').trim();
+      var divDecisao = ((document.getElementById('co-alm-diverg')||{}).value||'aceito');
+
+      if(!almNome){ progShowToast('⚠ Informe o nome do almoxarife.','erro'); return; }
+
+      if(temDiverg && divDecisao==='recusar'){
+        // Devolver para Separado com flag
+        closeModal();
+        _coSalvarStatusMaterial(m, 'Separado', {
+          obs_divergencia: (m.obs_divergencia||'')+' | RECUSADO pelo almox: '+almNome,
+        });
+        progShowToast('⚠ Entrega recusada — material voltou para Separado para conferência.');
+        return;
+      }
+
       closeModal();
       _coSalvarStatusMaterial(m, 'Entregue', {
-        retirado_por: nome,
-        retirado_obs: obs||null,
-        retirado_em:  new Date().toISOString(),
+        retirado_por:    retiradoPor||almNome,
+        confirmado_almox: almNome,
+        veiculo_saida:   veiculo||null,
+        retirado_obs:    obs||null,
+        retirado_em:     new Date().toISOString(),
+        divergencia_aceita: temDiverg ? true : null,
       });
-      progShowToast('✅ Retirada confirmada por '+nome);
+      progShowToast('✅ Entrega confirmada por '+almNome+(veiculo?' — '+placa:''));
     };
   },50);
 }
@@ -18278,9 +18357,9 @@ function coRegistrarDevolucao(id){
 
 // Botão de avanço por status (chamado pelo card)
 function coAvancarMaterial(id, novoStatus){
-  if(novoStatus==='Separado')   return coSepararMaterial(id);
-  if(novoStatus==='Entregue')   return coConfirmarRetirada(id);
-  if(novoStatus==='Devolvido')  return coRegistrarDevolucao(id);
+  if(novoStatus==='Separado')                       return coSepararMaterial(id);
+  if(novoStatus==='Aguardando confirmação almox')   return coConfirmarEntregaAlmox(id);
+  if(novoStatus==='Devolvido')                      return coRegistrarDevolucao(id);
   // Fallback genérico
   var m = sol_materiais.find(function(x){ return x.id===id; });
   if(!m) return;
@@ -18321,7 +18400,7 @@ function coRenderMateriais(){
         itens.forEach(function(it){
           var fakeId = 'plpt-'+req.id+'-'+it.mat_id;
           if(sol_materiais.find(function(x){return x.id===fakeId;})) return;
-          var statusMap = {'Aprovada':'Pendente','Separação':'Separado','Em campo':'Entregue','Devolvida':'Devolvido'};
+          var statusMap = {'Aprovada':'Pendente','Separação':'Separado','Aguardando confirmação almox':'Aguardando confirmação almox','Em campo':'Entregue','Devolvida':'Devolvido'};
           sol_materiais.push({
             id:              fakeId,
             contrato_id:     cid,
@@ -18347,7 +18426,7 @@ function coRenderMateriais(){
   }
 
   var stFil = (document.getElementById('co-mat-status')||{}).value||'';
-  var COLUNAS = ['Pendente','Separado','Entregue','Aplicado','Devolvido'];
+  var COLUNAS = ['Pendente','Separado','Aguardando confirmação almox','Entregue','Aplicado','Devolvido'];
 
   var rows = sol_materiais.filter(function(m){
     // Filtrar pelo contrato — checar diretamente ou via projetos/sot_projetos
@@ -18366,7 +18445,7 @@ function coRenderMateriais(){
 
   kanban.innerHTML = COLUNAS.map(function(col){
     var items = rows.filter(function(m){return (m.status||'Pendente')===col;});
-    var cor = {Pendente:'#888',Separado:'#185FA5',Entregue:'#3B6D11',
+    var cor = {Pendente:'#888',Separado:'#185FA5','Aguardando confirmação almox':'#533AB7',Entregue:'#3B6D11',
                Aplicado:'#085041',Devolvido:'#854F0B'}[col]||'#555';
     return '<div style="background:#f9f9f7;border-radius:8px;overflow:hidden">'
       +'<div style="background:'+cor+';color:#fff;padding:.5rem .75rem;font-size:12px;font-weight:600">'
@@ -18374,8 +18453,8 @@ function coRenderMateriais(){
       +'<div style="padding:.5rem;display:flex;flex-direction:column;gap:.5rem;min-height:100px">'
       +items.slice(0,10).map(function(m){
         return (function(m){
-          var ns={'Pendente':'Separado','Separado':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
-          var ns_label={'Separado':'📦 Separar','Entregue':'🤝 Confirmar Retirada','Aplicado':'✅ Aplicado','Devolvido':'🔄 Registrar Devolução'}[ns]||('→ '+ns);
+          var ns={'Pendente':'Separado','Separado':'Aguardando confirmação almox','Aguardando confirmação almox':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
+          var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Confirmar Entrega (Almox)','Entregue':'➡️ Entregue','Aplicado':'✅ Aplicado','Devolvido':'🔄 Registrar Devolução'}[ns]||('→ '+ns);
           var btn=ns?'<button onclick="coAvancarMaterial(\''+m.id+'\',\''+ns+'\')" style="margin-top:6px;width:100%;padding:5px;background:#1a1a18;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">'+ns_label+'</button>':'';
 
           // Projeto
@@ -22836,9 +22915,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.1.3',
+  numero: '7.1.4',
   data:   '22/05/2026',
-  build:  '20260522-2359j',
+  build:  '20260522-2359k',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
