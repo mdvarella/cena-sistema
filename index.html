@@ -18369,6 +18369,12 @@ function _coSalvarStatusMaterial(m, novoStatus, extra){
       }
       var plptPayload = {status: plptStatus};
       if(obsExtra.length) plptPayload.observacoes = obsExtra.join(' | ');
+      // Campos diretos que existem na tabela
+      if(extra && extra.qtd_aplicada !== undefined){
+        // Atualizar itens com qtd_aplicada
+        var itensAtual = parseJsonField(m._itens_json||'[]', []);
+        if(itensAtual.length) plptPayload.itens = JSON.stringify(itensAtual);
+      }
       sbUpdate('plpt_requisicoes_materiais', plptPayload, 'id=eq.'+m._req_id)
         .catch(function(e){ console.error('plpt update:',e); });
     } else {
@@ -18562,6 +18568,83 @@ function coRegistrarDevolucao(id){
 // KANBAN — Reversão de Status
 // ═══════════════════════════════════════════════════════════════════════
 
+
+// ── Lançar Aplicação de Material (pelo almoxarife/equipe no kanban) ──
+function coLancarAplicacao(id){
+  var m = sol_materiais.find(function(x){ return x.id===id; });
+  if(!m) return;
+
+  var qtdAplic = m.qtd_aplicada||0;
+  var qtdTotal = m.qtd||0;
+  var qtdRest  = qtdTotal - qtdAplic;
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.75rem">✅ Registrar Aplicação</h3>'
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700;font-size:13px">'+escHtml(m.descricao||'')+'</div>'
+    +(m.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(m.codigo_sap)+'</div>':'')
+    +'<div style="margin-top:4px">'
+    +'Enviado ao campo: <strong>'+qtdTotal+' '+(m.unidade||'UN')+'</strong>'
+    +(qtdAplic>0?' · Já aplicado: <strong style="color:#085041">'+qtdAplic+'</strong>':'')
+    +'</div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Qtd aplicada agora *</label>'
+    +'<input class="inp" id="apl-qtd" type="number" step="0.01" min="0" max="'+qtdRest+'" value="'+qtdRest+'" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Qtd a devolver</label>'
+    +'<input class="inp" id="apl-dev" type="number" step="0.01" min="0" value="0" style="width:100%" readonly/></div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Registrado por *</label>'
+    +'<input class="inp" id="apl-quem" placeholder="Nome" value="'+(usuarioLogado?escHtml(usuarioLogado.nome||''):'')+'" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Observações</label>'
+    +'<input class="inp" id="apl-obs" placeholder="Local de aplicação, OS, observações..." style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="apl-confirmar" style="flex:2;background:#085041;border-color:#085041">✅ Confirmar Aplicação</button>'
+    +'</div></div></div>');
+
+  // Auto-calc devolução
+  setTimeout(function(){
+    var inpQtd = document.getElementById('apl-qtd');
+    var inpDev = document.getElementById('apl-dev');
+    if(inpQtd && inpDev){
+      inpQtd.oninput = function(){
+        var v = parseFloat(inpQtd.value)||0;
+        inpDev.value = Math.max(0, qtdRest - v).toFixed(2).replace(/\.?0+$/,'');
+      };
+    }
+    var btn = document.getElementById('apl-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var qtdNova = parseFloat((document.getElementById('apl-qtd')||{}).value||'0')||0;
+      var quem    = ((document.getElementById('apl-quem')||{}).value||'').trim();
+      var obs     = ((document.getElementById('apl-obs')||{}).value||'').trim();
+      if(!quem){ progShowToast('⚠ Informe quem está registrando.','erro'); return; }
+      if(qtdNova<=0){ progShowToast('⚠ Informe a quantidade aplicada.','erro'); return; }
+      closeModal();
+
+      var totalAplic = (m.qtd_aplicada||0) + qtdNova;
+      var novoStatus = totalAplic >= qtdTotal ? 'Aplicado' : 'Entregue'; // Fica em Entregue se parcial
+
+      _coSalvarStatusMaterial(m, novoStatus, {
+        qtd_aplicada:    totalAplic,
+        observacoes:     'Aplicação: '+qtdNova+' '+(m.unidade||'UN')+' por '+quem+(obs?' | '+obs:''),
+      });
+
+      if(novoStatus==='Entregue'){
+        progShowToast('📦 Aplicação parcial registrada: '+qtdNova+' '+(m.unidade||'UN')+' aplicados. Material permanece em campo.');
+      } else {
+        progShowToast('✅ Material totalmente aplicado! '+totalAplic+' '+(m.unidade||'UN'));
+      }
+    };
+  },50);
+}
+
+
 function coReverterStatus(id){
   var m = sol_materiais.find(function(x){ return x.id===id; });
   if(!m) return;
@@ -18688,6 +18771,7 @@ function coAvancarMaterial(id, novoStatus){
   if(novoStatus==='Separado')                       return coSepararMaterial(id);
   if(novoStatus==='Aguardando confirmação almox')   return coConfirmarEntregaAlmox(id);
   if(novoStatus==='Entregue')                       return coConfirmarEntregaAlmox(id);
+  if(novoStatus==='Aplicado')                       return coLancarAplicacao(id);
   if(novoStatus==='Devolvido')                      return coRegistrarDevolucao(id);
   // Fallback genérico
   var m = sol_materiais.find(function(x){ return x.id===id; });
@@ -18800,15 +18884,32 @@ function coRenderMateriais(){
         return (function(m){
           // Almox só age em: Pendente→Separado, AguardandoConf→Entregue, Entregue→Aplicado, Aplicado→Devolvido
           // 'Separado' não tem botão — aguarda confirmação da equipe
-          var ns={'Pendente':'Separado','Aguardando confirmação almox':'Entregue','Entregue':'Aplicado','Aplicado':'Devolvido'}[m.status];
+          // Para Entregue: dois botões (Aplicação + Devolução)
+          var ns={'Pendente':'Separado','Aguardando confirmação almox':'Entregue','Aplicado':'Devolvido'}[m.status];
           var prevStatus={'Separado':'Pendente','Aguardando confirmação almox':'Separado','Entregue':'Aguardando confirmação almox','Aplicado':'Entregue','Devolvido':'Entregue'}[m.status];
-          var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Aguard. Conf. Almox','Entregue':'✅ Confirmar Entrega','Aplicado':'🔄 Registrar Devolução','Devolvido':''}[ns]||('→ '+ns);
+          var ns_label={'Separado':'📦 Separar','Aguardando confirmação almox':'✅ Aguard. Conf. Almox','Aplicado':'🔄 Registrar Devolução','Devolvido':''}[ns]||('→ '+ns);
           var waitingMsg = m.status==='Separado'
             ? '<div style="margin-top:5px;background:#EBF4FD;border-radius:4px;padding:4px 6px;font-size:10px;color:#185FA5;font-weight:600;text-align:center">⏳ Aguardando confirmação da equipe</div>'
             : m.status==='Aguardando confirmação almox'
             ? '<div style="margin-top:5px;background:#EAF3DE;border-radius:4px;padding:4px 6px;font-size:10px;color:#3B6D11;font-weight:700;text-align:center">✅ Equipe confirmou — clique para liberar</div>'
             : '';
-          var btn=ns?'<button onclick="coAvancarMaterial(\''+m.id+'\',\''+ns+'\')" style="margin-top:6px;width:100%;padding:5px;background:#1a1a18;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">'+ns_label+'</button>':'';
+          var btn = '';
+          if(m.status==='Entregue'){
+            var qtdAplic = m.qtd_aplicada||0;
+            var qtdTotal = m.qtd||0;
+            btn = '<div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px">'
+              +'<button onclick="coLancarAplicacao(\''+m.id+'\')" style="padding:5px;background:#085041;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">✅ Lançar Aplicação</button>'
+              +'<button onclick="coRegistrarDevolucao(\''+m.id+'\')" style="padding:5px;background:#854F0B;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🔄 Registrar Devolução</button>'
+              +'</div>';
+            if(qtdAplic>0){
+              btn = '<div style="background:#EAF3DE;border-radius:4px;padding:3px 6px;font-size:10px;color:#085041;font-weight:600;margin-top:4px">'
+                +'✅ Aplicado: '+qtdAplic+'/'+qtdTotal+' '+(m.unidade||'UN')
+                +(qtdAplic<qtdTotal?' <span style="color:#854F0B">(parcial)</span>':'')
+                +'</div>' + btn;
+            }
+          } else {
+            btn = ns?'<button onclick="coAvancarMaterial(\''+m.id+'\',\''+ns+'\')" style="margin-top:6px;width:100%;padding:5px;background:#1a1a18;color:#fff;border:none;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">'+ns_label+'</button>':'';
+          }
 
           // Projeto
           var proj=(typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===m.projeto_id;})
@@ -23298,9 +23399,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.6',
+  numero: '7.3.7',
   data:   '23/05/2026',
-  build:  '20260523-0700',
+  build:  '20260523-0800',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
