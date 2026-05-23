@@ -12684,9 +12684,15 @@ async function plptRenderRequisicoes(contratoId){
       +'<select class="inp" id="req-fil-filial" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todas</option></select></div>'
       +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Status</label>'
       +'<select class="inp" id="req-fil-status" style="width:100%" onchange="plptRenderRequisicoes()">'
-      +'<option value="">Todos</option><option>Aguardando aprovação</option>'
-      +'<option>Aprovada</option><option>Separação</option>'
-      +'<option>Em campo</option><option>Devolvida</option><option>Reprovada</option>'
+      +'<option value="">Todos</option>'
+      +'<option value="Aguardando aprovação">⏳ Aguardando aprovação</option>'
+      +'<option value="Aprovada">✅ Aprovada</option>'
+      +'<option value="Separação">📦 Separação</option>'
+      +'<option value="Aguardando confirmação almox">⏳ Aguardando confirmação almox</option>'
+      +'<option value="Em campo">🔧 Em campo</option>'
+      +'<option value="Devolvida">🔄 Devolvida</option>'
+      +'<option value="Reprovada">❌ Reprovada</option>'
+      +'<option value="Excluída">🗑 Excluída</option>'
       +'</select></div>'
       +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Data início</label>'
       +'<input class="inp" type="date" id="req-fil-de" style="width:100%" onchange="plptRenderRequisicoes()"/></div>'
@@ -12738,13 +12744,20 @@ async function plptRenderRequisicoes(contratoId){
     var fAte      = (document.getElementById('req-fil-ate')||{}).value||'';
 
     var filtered = rows.filter(function(r){
-      if(fStatus && r.status !== fStatus) return false;
+      // Handle Excluída: show only deleted if filter=Excluída, hide deleted otherwise
+      if(fStatus === 'Excluída'){
+        if(!r.deleted_at) return false;
+      } else {
+        if(r.deleted_at) return false; // always hide deleted unless specifically requested
+        if(fStatus && r.status !== fStatus) return false;
+      }
       var rData = (r.data||r.criado_em||'').slice(0,10);
       if(fDe  && rData < fDe)  return false;
       if(fAte && rData > fAte) return false;
       if(fContrato){
         var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===r.projeto_id;});
-        if(!proj || proj.contrato_id !== fContrato) return false;
+        // Compare as string to handle UUID vs text type differences
+        if(!proj || String(proj.contrato_id) !== String(fContrato)) return false;
       }
       if(fFilial){
         var eq = equipes_disp.find(function(e){return e.id===r.equipe_id;})
@@ -12764,8 +12777,9 @@ async function plptRenderRequisicoes(contratoId){
     }
 
     var SC = {'Aguardando aprovação':{bg:'#FEF3E2',c:'#854F0B'},'Aprovada':{bg:'#EAF3DE',c:'#3B6D11'},
-      'Separação':{bg:'#EBF4FD',c:'#185FA5'},'Em campo':{bg:'#F0EEFF',c:'#533AB7'},
-      'Devolvida':{bg:'#f5f5f3',c:'#888'},'Reprovada':{bg:'#FFF0F0',c:'#A32D2D'}};
+      'Separação':{bg:'#EBF4FD',c:'#185FA5'},'Aguardando confirmação almox':{bg:'#F0EEFF',c:'#533AB7'},
+      'Em campo':{bg:'#EAF3DE',c:'#085041'},'Devolvida':{bg:'#f5f5f3',c:'#888'},
+      'Reprovada':{bg:'#FFF0F0',c:'#A32D2D'},'Excluída':{bg:'#f5f5f3',c:'#bbb'}};
 
     var counts={};
     filtered.forEach(function(r){counts[r.status]=(counts[r.status]||0)+1;});
@@ -12792,7 +12806,11 @@ async function plptRenderRequisicoes(contratoId){
         : r.status==='Em campo'
           ? '<button class="btn btn-sm" onclick="plptDevolverReq(\''+r.id+'\')" style="font-size:10px">🔄 Devolução</button>'
           : '<button class="btn btn-sm" onclick="plptVerItens(\''+r.id+'\')" style="font-size:10px">👁 Ver</button>';
-      return '<tr style="border-bottom:.5px solid #f0efe8">'
+      // Botão excluir — sempre visível com justificativa obrigatória
+      var btnDel = r.deleted_at ? '' :
+        '<button class="btn btn-sm" onclick="plptExcluirReq(\''+r.id+'\')" '
+        +'style="background:none;color:#A32D2D;border:.5px solid #A32D2D;font-size:10px;margin-left:4px" title="Excluir">🗑</button>';
+      return '<tr style="border-bottom:.5px solid #f0efe8;opacity:'+(r.deleted_at?'0.5':'1')+'">'
         +'<td style="padding:7px 10px;white-space:nowrap">'+fmtD(r.data||r.criado_em)+'</td>'
         +'<td style="padding:7px 10px"><div style="font-weight:500">'+escHtml(eq?eq.codigo||eq.nome:'—')+'</div>'
         +(fil?'<div style="font-size:10px;color:#888">'+escHtml(fil.codigo||fil.nome)+'</div>':'')
@@ -12801,7 +12819,7 @@ async function plptRenderRequisicoes(contratoId){
         +(cont?'<div style="font-size:10px;color:#888">'+escHtml(cont.codigo||cont.nome)+'</div>':'')+'</td>'
         +'<td style="padding:7px 10px;text-align:center"><button class="btn btn-sm" onclick="plptVerItens(\''+r.id+'\')" style="font-size:10px">'+itens.length+' item(ns)</button></td>'
         +'<td style="padding:7px 10px;text-align:center"><span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:2px 8px;font-size:10px;font-weight:600">'+r.status+'</span></td>'
-        +'<td style="padding:7px 10px">'+btns+'</td>'
+        +'<td style="padding:7px 10px"><div style="display:flex;gap:2px;align-items:center;flex-wrap:wrap">'+btns+btnDel+'</div></td>'
         +'</tr>';
     }).join('');
 
@@ -12827,39 +12845,49 @@ async function plptRenderRequisicoes(contratoId){
 }
 
 function _plptPopularFiltrosReq(rows){
-  // Popular select de Contrato — usar nome do contrato
+  // Popular select de Contrato — preservar seleção atual
   var selCont = document.getElementById('req-fil-contrato');
   if(selCont){
+    var valAtualCont = selCont.value; // salvar antes de repopular
     var conts = typeof _contratosVisiveis==='function' ? _contratosVisiveis() : contratos;
-    while(selCont.options.length > 1) selCont.remove(1);
-    conts
-      .slice()
-      .sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||''); })
-      .forEach(function(ct){
-        var opt = document.createElement('option');
-        opt.value = ct.id;
-        opt.textContent = ct.nome || ct.codigo || ct.id;
-        selCont.appendChild(opt);
-      });
-  }
-
-  // Popular select de Filial — buscar se não carregado
-  var selFil = document.getElementById('req-fil-filial');
-  if(selFil){
-    var doPopular = function(){
-      while(selFil.options.length > 1) selFil.remove(1);
-      filiais
+    // Só repopular se ainda não tiver opções suficientes
+    if(selCont.options.length < conts.length + 1){
+      while(selCont.options.length > 1) selCont.remove(1);
+      conts
         .slice()
         .sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||''); })
-        .forEach(function(f){
+        .forEach(function(ct){
           var opt = document.createElement('option');
-          opt.value = f.id;
-          opt.textContent = (f.codigo ? f.codigo+' — ' : '') + (f.nome||f.id);
-          selFil.appendChild(opt);
+          opt.value = ct.id;
+          opt.textContent = ct.nome || ct.codigo || ct.id;
+          selCont.appendChild(opt);
         });
+    }
+    // Restaurar seleção anterior
+    if(valAtualCont) selCont.value = valAtualCont;
+  }
+
+  // Popular select de Filial — preservar seleção atual
+  var selFil = document.getElementById('req-fil-filial');
+  if(selFil){
+    var valAtualFil = selFil.value; // salvar antes de repopular
+    var doPopular = function(){
+      if(selFil.options.length < filiais.length + 1){
+        while(selFil.options.length > 1) selFil.remove(1);
+        filiais
+          .slice()
+          .sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||''); })
+          .forEach(function(f){
+            var opt = document.createElement('option');
+            opt.value = f.id;
+            opt.textContent = (f.codigo ? f.codigo+' — ' : '') + (f.nome||f.id);
+            selFil.appendChild(opt);
+          });
+      }
+      // Restaurar seleção anterior
+      if(valAtualFil) selFil.value = valAtualFil;
     };
     if(!filiais.length && !DEMO){
-      // Filiais não carregadas (contexto fora do módulo almoxarifado) — buscar do banco
       sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'})
         .then(function(rows){ if(rows&&rows.length) filiais=rows; doPopular(); })
         .catch(function(){ doPopular(); });
@@ -12874,6 +12902,54 @@ function plptLimparFiltrosReq(){
   ['req-fil-contrato','req-fil-filial','req-fil-status','req-fil-de','req-fil-ate']
     .forEach(function(id){ var el=document.getElementById(id); if(el) el.value=''; });
   plptRenderRequisicoes();
+}
+
+
+
+function plptExcluirReq(id){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:400px">'
+    +'<h3 style="margin-bottom:.5rem;color:#A32D2D">🗑 Excluir Requisição</h3>'
+    +'<div style="background:#FFF0F0;border:.5px solid #A32D2D;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div>Esta ação marcará a requisição como excluída. Ela não aparecerá mais na lista padrão, mas pode ser consultada com o filtro "Excluída".</div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Justificativa obrigatória *</label>'
+    +'<textarea class="inp" id="excl-just" placeholder="Motivo da exclusão..." rows="3" style="width:100%;resize:vertical"></textarea>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Seu nome *</label>'
+    +'<input class="inp" id="excl-nome" value="'+(usuarioLogado?escHtml(usuarioLogado.nome||''):'')+'" style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="excl-confirmar" style="flex:2;background:#A32D2D;border-color:#A32D2D">🗑 Confirmar Exclusão</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('excl-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var just = ((document.getElementById('excl-just')||{}).value||'').trim();
+      var nome = ((document.getElementById('excl-nome')||{}).value||'').trim();
+      if(!just){ progShowToast('⚠ Informe a justificativa.','erro'); return; }
+      if(!nome){ progShowToast('⚠ Informe seu nome.','erro'); return; }
+      closeModal();
+      if(!DEMO){
+        sbUpdate('plpt_requisicoes_materiais', {
+          deleted_at:  new Date().toISOString(),
+          observacoes: 'EXCLUÍDA por '+nome+' em '+new Date().toLocaleString('pt-BR')+' | '+just,
+        }, 'id=eq.'+id)
+        .then(function(){
+          progShowToast('✅ Requisição excluída por '+nome);
+          plptRenderRequisicoes();
+        })
+        .catch(function(e){ progShowToast('⚠ Erro: '+(e&&e.message||e),'erro'); });
+      } else {
+        progShowToast('✅ Requisição excluída (demo)');
+        plptRenderRequisicoes();
+      }
+    };
+  },50);
 }
 
 
@@ -23399,9 +23475,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.7',
+  numero: '7.3.8',
   data:   '23/05/2026',
-  build:  '20260523-0800',
+  build:  '20260523-0900',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
