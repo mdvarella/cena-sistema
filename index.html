@@ -13611,6 +13611,12 @@ function _plptRenderProjetoDetalhe(projId){
       +'<span style="font-size:9px;color:#854F0B;font-weight:600">ADICIONAL</span>'
       +'<button onclick="plptEditarAdicional(\''+projId+'\','+i+',\''+item.tipo+'\')" '
       +'style="padding:3px 8px;background:#fff;color:#555;border:.5px solid #e0dfd8;border-radius:5px;cursor:pointer;font-size:10px">✏️</button>'
+      +(item.status==='pendente'&&item.tipo==='material'
+        ? '<button onclick="plptAprovarAdicional(\''+projId+'\',\''+item.id+'\',\''+item.catalog_id+'\',\''+(item.descricao||'')+'\',' +item.qtd_solicitada+',\''+item.unidade+'\',\''+item.codigo_sap+'\')" '
+          +'style="padding:3px 8px;background:#3B6D11;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10px;margin-top:2px">✅ Aprovar</button>'
+        : item.status==='aprovado'
+          ? '<span style="font-size:9px;background:#EAF3DE;color:#3B6D11;border-radius:3px;padding:2px 6px">✅ Aprovado</span>'
+          : '')
       +'</div></div></div>';
   }
 
@@ -14027,6 +14033,121 @@ function plptSalvarAdicional(projId, tipo){
     r.readAsDataURL(f);
   });
 }
+
+
+function plptAprovarAdicional(projId, adicId, catalogId, descricao, qtd, unidade, codigoSap){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.5rem">✅ Aprovar Material Adicional</h3>'
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:10px 14px;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="font-weight:700;font-size:13px">'+escHtml(descricao)+'</div>'
+    +(codigoSap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(codigoSap)+'</div>':'')
+    +'<div style="margin-top:4px">Quantidade solicitada: <strong>'+qtd+' '+escHtml(unidade)+'</strong></div>'
+    +'<div style="font-size:11px;color:#555;margin-top:4px">Ao aprovar, este material será adicionado ao saldo do projeto e ficará disponível para reserva pela equipe.</div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:600">Qtd aprovada *</label>'
+    +'<input class="inp" id="apadv-qtd" type="number" step="0.01" min="0" value="'+qtd+'" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Aprovado por *</label>'
+    +'<input class="inp" id="apadv-nome" value="'+(usuarioLogado?escHtml(usuarioLogado.nome||''):'')+'" style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="apadv-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Confirmar Aprovação</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('apadv-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var qtdAp = parseFloat((document.getElementById('apadv-qtd')||{}).value||'0')||0;
+      var nome  = ((document.getElementById('apadv-nome')||{}).value||'').trim();
+      if(!nome){   progShowToast('⚠ Informe quem está aprovando.','erro'); return; }
+      if(qtdAp<=0){ progShowToast('⚠ Informe a quantidade aprovada.','erro'); return; }
+      closeModal();
+
+      if(DEMO){
+        _plptAplicarAprovacaoAdicional(projId, adicId, catalogId, descricao, qtdAp, unidade, codigoSap, nome);
+        return;
+      }
+
+      // 1. Atualizar sot_adicionais
+      sbUpdate('sot_adicionais', {
+        status:       'aprovado',
+        qtd_aprovada: qtdAp,
+        aprovado_por: nome,
+        aprovado_em:  new Date().toISOString(),
+      }, 'id=eq.'+adicId)
+      .then(function(){
+        // 2. Verificar se já existe entrada em sot_materiais para este projeto+catálogo
+        return sbFetch('sot_materiais', {
+          filters: ['projeto_id=eq.'+projId, catalogId ? 'catalog_id=eq.'+catalogId : 'descricao=eq.'+encodeURIComponent(descricao)],
+          limit: 1
+        });
+      })
+      .then(function(existing){
+        var matRow = existing && existing[0];
+        if(matRow){
+          // Adicionar ao viabilizado existente
+          var novaQtd = (matRow.qtd_viabilizada||0) + qtdAp;
+          return sbUpdate('sot_materiais', {qtd_viabilizada: novaQtd}, 'id=eq.'+matRow.id);
+        } else {
+          // Criar nova entrada em sot_materiais
+          return sbInsert('sot_materiais', {
+            projeto_id:      projId,
+            catalog_id:      catalogId||null,
+            descricao:       descricao,
+            codigo_sap:      codigoSap||null,
+            unidade:         unidade,
+            qtd_projetada:   qtdAp,
+            qtd_viabilizada: qtdAp,
+            adicional:       true,
+          });
+        }
+      })
+      .then(function(){
+        _plptAplicarAprovacaoAdicional(projId, adicId, catalogId, descricao, qtdAp, unidade, codigoSap, nome);
+      })
+      .catch(function(e){
+        progShowToast('⚠ Erro ao aprovar: '+(e&&e.message||e),'erro');
+      });
+    };
+  },50);
+}
+
+function _plptAplicarAprovacaoAdicional(projId, adicId, catalogId, descricao, qtdAp, unidade, codigoSap, nome){
+  // Atualizar array local
+  var pj = _plptDiario.projetoAtivo;
+  if(pj && pj._adicionais){
+    var adic = pj._adicionais.find(function(a){return a.id===adicId;});
+    if(adic){ adic.status='aprovado'; adic.qtd_aprovada=qtdAp; adic.aprovado_por=nome; }
+  }
+  // Atualizar sot_materiais_proj local
+  if(typeof sot_materiais_proj!=='undefined'){
+    var matExist = sot_materiais_proj.find(function(m){
+      return m.projeto_id===projId && (m.catalog_id===catalogId || m.descricao===descricao);
+    });
+    if(matExist){
+      matExist.qtd_viabilizada = (matExist.qtd_viabilizada||0) + qtdAp;
+    } else {
+      sot_materiais_proj.push({
+        id: 'adic-'+Date.now(),
+        projeto_id:      projId,
+        catalog_id:      catalogId||null,
+        descricao:       descricao,
+        codigo_sap:      codigoSap||null,
+        unidade:         unidade,
+        qtd_projetada:   qtdAp,
+        qtd_viabilizada: qtdAp,
+        adicional:       true,
+      });
+    }
+  }
+  progShowToast('✅ Adicional aprovado! '+qtdAp+' '+unidade+' adicionados ao saldo do projeto.');
+  _plptRenderProjetoDetalhe(projId);
+}
+
 
 function plptEditarAdicional(projId, idx, tipo){
   var pj=_plptDiario.projetoAtivo; if(!pj) return;
@@ -23475,9 +23596,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.8',
+  numero: '7.3.9',
   data:   '23/05/2026',
-  build:  '20260523-0900',
+  build:  '20260523-1000',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
