@@ -1093,7 +1093,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
       </button>
     </form>
     <span id="db-status" style="font-size:10px;color:#666;padding:3px 7px;background:#2a2a28;border-radius:6px">●</span>
-    <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:10px;color:#aaa;background:#2a2a28;border:.5px solid #444;border-radius:6px;padding:3px 8px;cursor:pointer" id="btn-versao">v<span id="badge-versao">...</span></button>
+    <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:10px;color:#aaa;background:#2a2a28;border:.5px solid #444;border-radius:6px;padding:3px 10px;cursor:pointer;white-space:nowrap;max-width:none" id="btn-versao">🛠 CENA ERP v<span id="badge-versao">...</span><span id="badge-build" style="font-size:9px;opacity:.6;margin-left:4px"></span></button>
     <button class="btn" onclick="fazerLogout()">Sair</button>
   </div>
 </div>
@@ -4542,6 +4542,60 @@ function renderHomeDashProjetos(){
         +'<td style="text-align:center;padding:5px 4px;font-weight:'+(escalados?700:400)+';color:'+(escalados?'#3B6D11':'#ccc')+'">'+escalados+'</td>'
         +'</tr>';
     }).join('')+'</tbody></table></div>';
+
+  // ── Adicionais pendentes de aprovação ────────────────────────────
+  // pj may be set via _coContratoAtual context or passed — try to get from sot globals
+  var _pjId = projetoId;
+  var _adics = [];
+  // Check if adicionais were loaded into sot_projetos extended data
+  var _projLocal = typeof sot_projetos!=='undefined' ? sot_projetos.find(function(p){return p.id===_pjId;}) : null;
+  if(_projLocal && _projLocal._adicionais){
+    _adics = _projLocal._adicionais.filter(function(a){return a.tipo==='material'&&a.status!=='aprovado';});
+  }
+  // Also check window-level cache from PLPT diary
+  if(!_adics.length && typeof _plptDiario!=='undefined' && _plptDiario.projetoAtivo && _plptDiario.projetoAtivo.projeto_id===_pjId){
+    var _pjAtivo = _plptDiario.projetoAtivo;
+    if(_pjAtivo._adicionais) _adics = _pjAtivo._adicionais.filter(function(a){return a.tipo==='material'&&a.status!=='aprovado';});
+  }
+
+  if(_adics.length){
+    html += '<div style="margin-top:1rem;border-top:.5px solid #f0efe8;padding-top:1rem">'
+      +'<div style="font-weight:700;font-size:13px;color:#854F0B;margin-bottom:.5rem">'
+      +'📋 Materiais Adicionais aguardando aprovação ('+_adics.length+')</div>';
+    _adics.forEach(function(item){
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;background:#FFFBF5;border:.5px solid #854F0B44;border-radius:8px;padding:.6rem .75rem;margin-bottom:6px">'
+        +'<div>'
+        +'<div style="font-weight:600;font-size:13px">'+escHtml(item.descricao||'—')+'</div>'
+        +(item.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(item.codigo_sap)+'</div>':'')
+        +'<div style="font-size:12px;color:#854F0B;font-weight:600">'+item.qtd_solicitada+' '+(item.unidade||'UN')+'</div>'
+        +(item.observacoes?'<div style="font-size:11px;color:#555;font-style:italic">'+escHtml(item.observacoes)+'</div>':'')
+        +(item.fotos&&item.fotos.length?'<div style="font-size:10px;color:#185FA5">📷 '+item.fotos.length+' foto(s)</div>':'')
+        +'<div style="font-size:10px;color:#888">Solicitado por: '+escHtml(item.criado_por||'—')+'</div>'
+        +'</div>'
+        +'<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">'
+        +'<button onclick="plptAprovarAdicional(\''+_pjId+'\',\''+item.id+'\',\''+item.catalog_id+'\',\''+escHtml(item.descricao||'')+'\',' +item.qtd_solicitada+',\''+item.unidade+'\',\''+escHtml(item.codigo_sap||'')+'\') " '
+        +'style="padding:6px 12px;background:#3B6D11;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">✅ Aprovar</button>'
+        +'<button onclick="sotRecusarAdicional(\''+_pjId+'\',\''+item.id+'\')" '
+        +'style="padding:5px 10px;background:none;color:#A32D2D;border:.5px solid #A32D2D;border-radius:6px;cursor:pointer;font-size:11px">❌ Recusar</button>'
+        +'</div></div>';
+    });
+    html += '</div>';
+  } else if(!_adics.length){
+    // Try to fetch from DB if not loaded
+    if(!DEMO && _pjId){
+      sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+_pjId,'tipo=eq.material','status=neq.aprovado'],order:'criado_em.desc'})
+        .then(function(rows){
+          if(rows&&rows.length){
+            // Store and re-render
+            var proj = typeof sot_projetos!=='undefined' ? sot_projetos.find(function(p){return p.id===_pjId;}) : null;
+            if(proj){ proj._adicionais = rows; }
+            sotAtualizarAbaAtual(_pjId);
+          }
+        }).catch(function(){});
+    }
+  }
+
+  return html;
 }
 
 // ── Painel TMA ───────────────────────────────────────────────
@@ -11540,7 +11594,22 @@ function renderDiario(){
           });
 
           if(sessaoRow && !_plptDiario.sessao){
-            _plptRestaurarSessao(sessaoRow);
+            // Check if this session is from today or a previous day
+            var sessData = (sessaoRow.data||'').slice(0,10);
+            var hoje2    = dataHojeLocal();
+            if(sessData && sessData === hoje2){
+              // Session from TODAY — restore normally (same day continuation)
+              _plptRestaurarSessao(sessaoRow);
+            } else if(sessData && sessData !== hoje2){
+              // Session from PREVIOUS DAY — restore timer/state BUT NOT projetoAtivo
+              // Today's prog_dia defines what projects are active today
+              _plptRestaurarSessaoMinima(sessaoRow);
+              // Mark as "virada de dia" so the banner shows
+              _plptDiario._turnoViradaDia = true;
+            } else {
+              // No date info — restore normally
+              _plptRestaurarSessao(sessaoRow);
+            }
           } else if(!sessaoRow && !_plptDiario.sessao){
             var localEstadoProg = _plptCarregarLocal();
             if(localEstadoProg && localEstadoProg.sessao && localEstadoProg.sessao.inicio_ts){
@@ -11658,6 +11727,37 @@ var _plptDiario = {
 };
 
 var _plptModalTurnoAberto = false;
+
+
+
+function _plptIniciarNovaExecucao(){
+  _plptDiario._novaExecucaoHoje = true;
+
+  // Encerrar turno anterior automaticamente
+  if(_plptDiario.sessao && _plptDiario.sessao.id && !DEMO){
+    sbUpdate('plpt_sessoes', {
+      logout_ts:   Date.now(),
+      status:      'Encerrado automático — nova programação',
+    }, 'id=eq.'+_plptDiario.sessao.id)
+    .catch(function(e){ console.error('encerrar sessao anterior:', e); });
+  }
+
+  // Reset da sessão e projeto ativo para começar do zero
+  _plptDiario.sessao       = null;
+  _plptDiario.projetoAtivo = null;
+  _plptDiario.composConfirm = false;
+  // Keep _plptDiario.projetos (from today's prog_dia) — these are today's projects
+  // Clear old events from localStorage
+  // Limpar estado local do turno anterior
+  try{
+    localStorage.removeItem('plpt_diario_state');
+    localStorage.removeItem('plpt_diario_state_prog');
+  } catch(e){}
+
+
+  progShowToast('✅ Nova execução iniciada! O histórico da obra está disponível nos projetos.');
+  renderDiarioPlpt();
+}
 
 
 function _plptContinuarTurnoAnterior(){
@@ -11953,18 +12053,28 @@ function renderDiarioPlpt(){
   }
 
   var viradaBanner = '';
-  console.log('[renderDiarioPlpt] turnoDeOntem:', turnoDeOntem, 'dataSessao:', dataSessao, 'hoje:', hoje);
+  var temProgHoje = !!(prog && (prog.data||'').slice(0,10)===hoje);
+  console.log('[renderDiarioPlpt] turnoDeOntem:', turnoDeOntem, 'dataSessao:', dataSessao, 'hoje:', hoje, 'temProgHoje:', temProgHoje);
   if(turnoDeOntem){
-    var _btnCont = _plptDiario._continuarTurnoAnterior
-      ? ''
-      : '<button onclick="_plptContinuarTurnoAnterior()" '
+    var _jaDecidiu = _plptDiario._continuarTurnoAnterior || _plptDiario._novaExecucaoHoje;
+    if(temProgHoje && !_jaDecidiu){
+      // Nova programação hoje + turno anterior aberto — mostrar duas opções
+      viradaBanner = '<div style="background:#533AB7;color:#fff;padding:.75rem 1rem;border-radius:0 0 12px 12px;margin-bottom:.75rem">'
+        +'<div style="font-weight:700;font-size:14px">📅 Nova programação para hoje — turno anterior ainda aberto</div>'
+        +'<div style="font-size:12px;opacity:.9;margin-top:2px">A obra foi programada novamente. Como deseja prosseguir?</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">'
+        +'<button onclick="_plptIniciarNovaExecucao()" style="padding:9px;background:#fff;color:#533AB7;border:none;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;line-height:1.4">🆕 Nova execução hoje<br><span style=\'font-size:10px;font-weight:400;opacity:.8\'>Encerra turno anterior</span></button>'
+        +'<button onclick="_plptContinuarTurnoAnterior()" style="padding:9px;background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;line-height:1.4">▶ Continuar turno anterior<br><span style=\'font-size:10px;font-weight:400;opacity:.8\'>Mesma execução</span></button>'
+        +'</div></div>';
+    } else if(!_jaDecidiu){
+      var _btnCont = '<button onclick="_plptContinuarTurnoAnterior()" '
         +'style="margin-top:8px;width:100%;padding:9px;background:#fff;color:#A32D2D;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">'
         +'▶ Continuar trabalhando neste turno</button>';
-    viradaBanner = '<div style="background:#A32D2D;color:#fff;padding:.75rem 1rem;border-radius:0 0 12px 12px;margin-bottom:.75rem">'
-      +'<div style="font-weight:700;font-size:14px">⚠️ Turno em andamento desde '+fmtD(dataSessao)+'</div>'
-      +'<div style="font-size:12px;opacity:.9;margin-top:2px">Este turno ainda está aberto. Clique abaixo para continuar registrando atividades e materiais.</div>'
-      +_btnCont
-      +'</div>';
+      viradaBanner = '<div style="background:#A32D2D;color:#fff;padding:.75rem 1rem;border-radius:0 0 12px 12px;margin-bottom:.75rem">'
+        +'<div style="font-weight:700;font-size:14px">⚠️ Turno em andamento desde '+fmtD(dataSessao)+'</div>'
+        +'<div style="font-size:12px;opacity:.9;margin-top:2px">Este turno ainda está aberto. Clique abaixo para continuar.</div>'
+        +_btnCont+'</div>';
+    }
   }
 
   pg.innerHTML='<div style="max-width:600px;margin:0 auto;padding:1rem">'
@@ -12089,27 +12199,49 @@ function plptDiarioConfirmarComposicao(){
 
 function _plptVerificarMateriaisSeparados(eqId){
   if(DEMO) return;
-  // Buscar requisições Separação para esta equipe ou projetos dela
   var hoje = dataHojeLocal();
+  // Get today's prog_dia to know which projects are scheduled today
+  var progHoje = _plptDiario.prog;
+  var progData = progHoje ? (progHoje.data||'').slice(0,10) : hoje;
+
+  // Get today's composicao for this equipe
   var comp = composicao_dia.find(function(x){
     return x.equipe_id===eqId && (x.data||'').slice(0,10)===hoje;
   });
   var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
+  // Also include projects from prog_dia
+  if(_plptDiario.projetos && _plptDiario.projetos.length){
+    _plptDiario.projetos.forEach(function(p){
+      if(p.projeto_id && projIds.indexOf(p.projeto_id) < 0)
+        projIds.push(p.projeto_id);
+    });
+  }
 
   sbFetch('plpt_requisicoes_materiais',{
     filters:['status=in.(Separação,Aguardando confirmação almox,Em campo)'],
-    order:'criado_em.desc', limit:50
+    order:'criado_em.desc', limit:100
   }).then(function(rows){
-    // Guard: verificar se ainda estamos no diário
     if(!document.getElementById('pg-diario')) return;
     if(!rows||!rows.length) return;
     var minhas = rows.filter(function(r){
+      // Must belong to this equipe OR to today's projects
       if(r.equipe_id===eqId) return true;
       if(projIds.length && projIds.indexOf(r.projeto_id)>=0) return true;
       return false;
     });
-    if(!minhas.length) return;
-    _plptMostrarBannerMateriais(minhas);
+    // Separate: current prog requisitions vs historical
+    var dataCorte = progData || hoje;
+    var atuais    = minhas.filter(function(r){
+      return (r.data||r.criado_em||'').slice(0,10) >= dataCorte;
+    });
+    var historicos = minhas.filter(function(r){
+      return (r.data||r.criado_em||'').slice(0,10) < dataCorte;
+    });
+    // Show banner only for current requisitions
+    // Historical ones are still "Em campo" but from previous days
+    var paraExibir = atuais.length ? atuais : minhas;
+    if(!paraExibir.length) return;
+    _plptMostrarBannerMateriais(paraExibir);
   }).catch(function(){});
 }
 
@@ -13213,6 +13345,38 @@ function _plptLimparLocal(){
   try{ localStorage.removeItem(key); } catch(e){}
 }
 
+
+// Restore session state without overwriting today's project (used for "virada de dia" with new prog)
+function _plptRestaurarSessaoMinima(sessaoRow){
+  if(!sessaoRow || _plptDiario.sessao) return;
+  console.log('[PLPT RESTORE MINIMA] apenas estado do turno, sem projeto ativo:', sessaoRow.id);
+  var loginTs   = typeof sessaoRow.login_ts === 'number'
+    ? new Date(sessaoRow.login_ts).toISOString()
+    : sessaoRow.login_ts || new Date().toISOString();
+  var inicioIso = sessaoRow.inicio_ts
+    ? (typeof sessaoRow.inicio_ts === 'number'
+        ? new Date(sessaoRow.inicio_ts).toISOString()
+        : sessaoRow.inicio_ts)
+    : loginTs;
+
+  // Restore session info (timer, login) but NOT projetoAtivo
+  _plptDiario.sessao = {
+    id:         sessaoRow.id,
+    data:       sessaoRow.data || (inicioIso ? inicioIso.slice(0,10) : null),
+    login_ts:   loginTs,
+    inicio_ts:  inicioIso,
+    fim_ts:     sessaoRow.logout_ts ? new Date(sessaoRow.logout_ts).toISOString() : null,
+    logout_ts:  sessaoRow.logout_ts || null,
+    almoco_ts:  sessaoRow.almoco_ts || null,
+    retorno_ts: sessaoRow.retorno_ts || null,
+    eventos:    []  // don't restore old events — today is a fresh start
+  };
+  // _plptDiario.projetoAtivo remains null — will be set when user opens a project today
+  // _plptDiario.projetos is already set from prog_dia
+  console.log('[PLPT RESTORE MINIMA] sessao restaurada, projetoAtivo = null (nova execução hoje)');
+}
+
+
 function _plptRestaurarSessao(sessaoRow){
   console.log('[PLPT RESTORE] entrou', sessaoRow&&sessaoRow.id, 'já tem sessao?', !!_plptDiario.sessao, 'login_ts:', sessaoRow&&sessaoRow.login_ts, 'logout_ts:', sessaoRow&&sessaoRow.logout_ts, 'data:', sessaoRow&&sessaoRow.data);
   if(!sessaoRow || _plptDiario.sessao) return;
@@ -13611,12 +13775,9 @@ function _plptRenderProjetoDetalhe(projId){
       +'<span style="font-size:9px;color:#854F0B;font-weight:600">ADICIONAL</span>'
       +'<button onclick="plptEditarAdicional(\''+projId+'\','+i+',\''+item.tipo+'\')" '
       +'style="padding:3px 8px;background:#fff;color:#555;border:.5px solid #e0dfd8;border-radius:5px;cursor:pointer;font-size:10px">✏️</button>'
-      +(item.status==='pendente'&&item.tipo==='material'
-        ? '<button onclick="plptAprovarAdicional(\''+projId+'\',\''+item.id+'\',\''+item.catalog_id+'\',\''+(item.descricao||'')+'\',' +item.qtd_solicitada+',\''+item.unidade+'\',\''+item.codigo_sap+'\')" '
-          +'style="padding:3px 8px;background:#3B6D11;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:10px;margin-top:2px">✅ Aprovar</button>'
-        : item.status==='aprovado'
-          ? '<span style="font-size:9px;background:#EAF3DE;color:#3B6D11;border-radius:3px;padding:2px 6px">✅ Aprovado</span>'
-          : '')
+      +(item.status==='aprovado'
+        ? '<span style="font-size:9px;background:#EAF3DE;color:#3B6D11;border-radius:3px;padding:2px 6px">✅ Aprovado</span>'
+        : '<span style="font-size:9px;background:#FEF3E2;color:#854F0B;border-radius:3px;padding:2px 6px">⏳ Aguard. aprovação</span>')
       +'</div></div></div>';
   }
 
@@ -23325,9 +23486,9 @@ function sotLancarBaixaMaterial(id){
     // Resumo atual
     +'<div style="background:#f5f5f3;border-radius:8px;padding:.6rem .75rem;margin-bottom:.75rem;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;text-align:center">'
     +'<div><div style="font-size:10px;color:#888">Projetado</div><div style="font-weight:600">'+(m.qtd_projetada||0)+'</div></div>'
-    +'<div><div style="font-size:10px;color:#888">Entregue</div><div style="font-weight:600;color:#185FA5">'+(m.qtd_entregue||0)+'</div></div>'
+    +'<div><div style="font-size:10px;color:#888">Entregue</div><div style="font-weight:600;color:#185FA5">'+_qtdEntregue+'</div></div>'
     +'<div><div style="font-size:10px;color:#888">Aplicado</div><div style="font-weight:600;color:#3B6D11">'+(m.qtd_aplicada||0)+'</div></div>'
-    +'<div><div style="font-size:10px;color:#888">Saldo campo</div><div style="font-weight:600;color:'+(emCampo>0?'#854F0B':'#888')+'">'+emCampo+'</div></div>'
+    +'<div><div style="font-size:10px;color:#888">Saldo campo</div><div style="font-weight:600;color:'+(emCampo>0?'#854F0B':emCampo<0?'#A32D2D':'#888')+'">'+emCampo+'</div></div>'
     +'</div>'
     // Campos de lançamento
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
@@ -23405,6 +23566,41 @@ function sotLancarBaixaMaterial(id){
     _abrirBaixaModal(m.qtd_entregue||0);
   }
 }
+
+
+function sotRecusarAdicional(projId, adicId){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:380px">'
+    +'<h3 style="margin-bottom:.5rem;color:#A32D2D">❌ Recusar Adicional</h3>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Motivo da recusa *</label>'
+    +'<textarea class="inp" id="recusa-motivo" rows="3" style="width:100%;resize:vertical" placeholder="Explique o motivo..."></textarea>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="recusa-confirmar" style="flex:2;background:#A32D2D;border-color:#A32D2D">❌ Confirmar Recusa</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('recusa-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var motivo = ((document.getElementById('recusa-motivo')||{}).value||'').trim();
+      if(!motivo){ progShowToast('⚠ Informe o motivo.','erro'); return; }
+      closeModal();
+      if(!DEMO){
+        sbUpdate('sot_adicionais',{
+          status:'recusado',
+          observacoes: 'RECUSADO: '+motivo,
+          aprovado_em: new Date().toISOString(),
+          aprovado_por: usuarioLogado?usuarioLogado.nome:'',
+        },'id=eq.'+adicId).then(function(){
+          progShowToast('❌ Adicional recusado.');
+          sotAtualizarAbaAtual(projId);
+        }).catch(function(e){ progShowToast('⚠ Erro: '+(e&&e.message||e),'erro'); });
+      }
+    };
+  },50);
+}
+
 
 function sotEditarMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
@@ -23651,9 +23847,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.4.1',
+  numero: '7.4.4',
   data:   '23/05/2026',
-  build:  '20260523-1200',
+  build:  '20260523-1500',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34613,7 +34809,11 @@ async function fazerLogin(){
     document.getElementById('topbar-user').textContent=user.nome;
     // Badge de versão
     var bv=document.getElementById('badge-versao');
-    if(bv&&typeof APP_VERSAO!=='undefined')bv.textContent=APP_VERSAO.numero;
+    if(bv&&typeof APP_VERSAO!=='undefined'){
+      bv.textContent=APP_VERSAO.numero;
+      var bb=document.getElementById('badge-build');
+      if(bb) bb.textContent=APP_VERSAO.data||'';
+    }
 
     // Perfil equipe (Eletricista TMA): tela dedicada sem sidebar
     if(user.perfil==='equipe'){
