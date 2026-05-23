@@ -11903,6 +11903,304 @@ function plptDiarioConfirmarComposicao(){
   renderDiarioPlpt();
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// PLPT — RETIRADA DE MATERIAIS (Equipe confirma após composição)
+// ═══════════════════════════════════════════════════════════════════════
+
+function _plptVerificarMateriaisSeparados(eqId){
+  if(DEMO) return;
+  // Buscar requisições Separação para esta equipe ou projetos dela
+  var hoje = dataHojeLocal();
+  var comp = composicao_dia.find(function(x){
+    return x.equipe_id===eqId && (x.data||'').slice(0,10)===hoje;
+  });
+  var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
+
+  sbFetch('plpt_requisicoes_materiais',{
+    filters:['status=eq.Separação'],
+    order:'criado_em.desc', limit:50
+  }).then(function(rows){
+    if(!rows||!rows.length) return;
+    var minhas = rows.filter(function(r){
+      if(r.equipe_id===eqId) return true;
+      if(projIds.length && projIds.indexOf(r.projeto_id)>=0) return true;
+      return false;
+    });
+    if(!minhas.length) return;
+    // Mostrar banner no diário
+    _plptMostrarBannerMateriais(minhas);
+  }).catch(function(){});
+}
+
+function _plptMostrarBannerMateriais(reqs){
+  var pg = document.getElementById('pg-diario');
+  if(!pg) return;
+
+  // Remover banner anterior se existir
+  var old = document.getElementById('plpt-mat-banner');
+  if(old) old.remove();
+
+  var totalItens = 0;
+  reqs.forEach(function(r){
+    var itens = parseJsonField(r.itens,[]);
+    totalItens += itens.length;
+  });
+
+  var banner = document.createElement('div');
+  banner.id = 'plpt-mat-banner';
+  banner.style.cssText = 'position:sticky;top:0;z-index:100;background:#533AB7;color:#fff;padding:.75rem 1rem;border-radius:0 0 10px 10px;margin-bottom:.5rem;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+  banner.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between">'
+    +'<div>'
+    +'<div style="font-weight:700;font-size:14px">📦 Material separado aguardando retirada!</div>'
+    +'<div style="font-size:12px;opacity:.9">'+totalItens+' item(ns) em '+reqs.length+' requisição(ões) — toque para conferir e retirar</div>'
+    +'</div>'
+    +'<div style="font-size:22px">→</div>'
+    +'</div>';
+  banner.onclick = function(){ plptAbrirRetiradaMateriais(reqs); };
+  pg.insertBefore(banner, pg.firstChild);
+}
+
+function plptAbrirRetiradaMateriais(reqs){
+  // Montar lista de todos os itens com edição de qtd
+  var todosItens = [];
+  reqs.forEach(function(req){
+    var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===req.projeto_id;})||{};
+    parseJsonField(req.itens,[]).forEach(function(it){
+      todosItens.push({
+        req_id:   req.id,
+        mat_id:   it.mat_id||'',
+        projeto:  proj.codigo_cliente||proj.codigo||proj.nome||'—',
+        nome:     it.nome||it.codigo||'Material',
+        codigo:   it.codigo||'',
+        unidade:  it.unidade||'UN',
+        qtd_prog: it.qtd_req||0,    // qtd separada pelo almox
+        qtd_ret:  it.qtd_req||0,    // qtd que a equipe vai retirar (editável)
+      });
+    });
+  });
+
+  var linhas = todosItens.map(function(it, i){
+    return '<div style="padding:8px 0;border-bottom:.5px solid #f0efe8">'
+      +'<div style="display:flex;align-items:center;gap:8px">'
+      +'<input type="checkbox" id="ret-chk-'+i+'" checked style="width:18px;height:18px;cursor:pointer" onchange="_plptRetCheckToggle('+i+')"/>'
+      +'<div style="flex:1">'
+      +'<div style="font-weight:600;font-size:13px">'+escHtml(it.nome)+'</div>'
+      +(it.codigo?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(it.codigo)+'</div>':'')
+      +'<div style="font-size:11px;color:#555">Proj: '+escHtml(it.projeto)+'</div>'
+      +'</div>'
+      +'<div style="text-align:right">'
+      +'<div style="font-size:10px;color:#888;margin-bottom:2px">Separado: '+it.qtd_prog+' '+escHtml(it.unidade)+'</div>'
+      +'<div style="display:flex;align-items:center;gap:4px">'
+      +'<label style="font-size:10px;color:#533AB7;font-weight:600">Qtd:</label>'
+      +'<input type="number" id="ret-qtd-'+i+'" value="'+it.qtd_prog+'" min="0" step="0.01" '
+      +'style="width:65px;padding:4px;border:.5px solid #533AB7;border-radius:6px;text-align:center;font-size:12px;font-weight:600"/>'
+      +'<span style="font-size:11px;color:#888">'+escHtml(it.unidade)+'</span>'+'<span id="ret-warn-'+i+'" style="display:none;font-size:9px;color:#A32D2D;font-weight:700;margin-left:4px">⚠ ACIMA</span>'
+      +'</div></div>'
+      +'</div></div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:500px">'
+    +'<h3 style="margin-bottom:.25rem">📦 Confirmar Retirada de Materiais</h3>'
+    +'<div style="font-size:12px;color:#888;margin-bottom:.75rem">Confira cada item, ajuste a quantidade se necessário e confirme.</div>'
+    +'<div style="max-height:55vh;overflow-y:auto;margin-bottom:.75rem">'
+    +linhas
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Observações (opcional)</label>'
+    +'<input class="inp" id="ret-obs-mat" placeholder="Diferenças, danos, falta de item..." style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" onclick="_plptConfirmarRetirada('+JSON.stringify(todosItens).replace(/'/g,"\\'")+','+JSON.stringify(reqs.map(function(r){return r.id;}))+') " '
+    +'style="flex:2;background:#533AB7;border-color:#533AB7">✅ Confirmar Retirada</button>'
+    +'</div></div></div>');
+
+  window._plptRetItens = todosItens;
+  window._plptRetReqIds = reqs.map(function(r){return r.id;});
+}
+
+function _plptRetCheckToggle(i){
+  var inp = document.getElementById('ret-qtd-'+i);
+  var chk = document.getElementById('ret-chk-'+i);
+  if(inp) inp.disabled = chk && !chk.checked;
+  if(inp && chk && !chk.checked) inp.value = 0;
+}
+
+function _plptRetQtdCheck(i, qtdProg, input){
+  // Highlight in red if over programmed qty
+  var val = parseFloat(input.value)||0;
+  input.style.borderColor = val > qtdProg ? '#A32D2D' : '#533AB7';
+  input.style.color       = val > qtdProg ? '#A32D2D' : '#1a1a18';
+  // Show warning label
+  var warn = document.getElementById('ret-warn-'+i);
+  if(warn) warn.style.display = val > qtdProg ? '' : 'none';
+}
+
+function _plptConfirmarRetirada(itens, reqIds){
+  var g   = function(id){ return parseFloat((document.getElementById(id)||{}).value||'0')||0; };
+  var obs = ((document.getElementById('ret-obs-mat')||{}).value||'').trim();
+
+  var itensFinal = itens.map(function(it, i){
+    var chk    = document.getElementById('ret-chk-'+i);
+    var qtdRet = (chk&&chk.checked) ? g('ret-qtd-'+i) : 0;
+    return Object.assign({}, it, {
+      qtd_ret:  qtdRet,
+      incluido: !!(chk&&chk.checked),
+    });
+  });
+
+  // Classificar divergências
+  var acimaProg = itensFinal.filter(function(it){ return it.incluido && it.qtd_ret > it.qtd_prog; });
+  var abaixoProg = itensFinal.filter(function(it){ return it.incluido && it.qtd_ret < it.qtd_prog && it.qtd_ret > 0; });
+  var excluidos  = itensFinal.filter(function(it){ return !it.incluido; });
+
+  // Se tem retirada ACIMA do programado → exige autorização antes de continuar
+  if(acimaProg.length){
+    _plptSolicitarAutorizacaoAcima(acimaProg, itensFinal, reqIds, obs);
+    return;
+  }
+
+  // Sem acima do programado — salvar diretamente
+  _plptSalvarRetirada(itensFinal, reqIds, obs, null);
+}
+
+function _plptSolicitarAutorizacaoAcima(acima, itensFinal, reqIds, obs){
+  // Modal exigindo autorização de responsável
+  var listaAcima = acima.map(function(it){
+    return '<div style="padding:4px 0;border-bottom:.5px solid #F59E0B33;font-size:12px">'
+      +'<strong>'+escHtml(it.nome)+'</strong>'
+      +'<span style="color:#A32D2D;margin-left:8px">Programado: '+it.qtd_prog+' → Retirando: '+it.qtd_ret+' '+escHtml(it.unidade)+'</span>'
+      +'</div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.5rem;color:#A32D2D">⚠️ Retirada Acima do Autorizado</h3>'
+    +'<div style="background:#FFF0F0;border:.5px solid #A32D2D;border-radius:8px;padding:10px 14px;margin-bottom:.75rem">'
+    +'<div style="font-size:12px;margin-bottom:6px">Os itens abaixo excedem a quantidade separada pelo almoxarifado:</div>'
+    +listaAcima
+    +'</div>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'
+    +'Para retirar acima do autorizado é necessário o <strong>nome e senha</strong> de um responsável (gerente/supervisor).'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem">'
+    +'<label style="font-size:11px;font-weight:600">Nome do responsável *</label>'
+    +'<input class="inp" id="aut-nome" placeholder="Nome completo" style="width:100%"/>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<input class="inp" id="aut-just" placeholder="Motivo para retirada adicional" style="width:100%"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="aut-confirmar" style="flex:2;background:#A32D2D;border-color:#A32D2D">✅ Autorizar e Confirmar</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('aut-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var nome = ((document.getElementById('aut-nome')||{}).value||'').trim();
+      var just = ((document.getElementById('aut-just')||{}).value||'').trim();
+      if(!nome){ progShowToast('⚠ Informe o nome do responsável.','erro'); return; }
+      if(!just){ progShowToast('⚠ Informe a justificativa.','erro'); return; }
+      var autorizacao = {autorizado_por: nome, justificativa: just, ts: new Date().toISOString()};
+      closeModal();
+      _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao);
+    };
+  },50);
+}
+
+function _plptSalvarRetirada(itensFinal, reqIds, obs, autorizacao){
+  var abaixoProg = itensFinal.filter(function(it){ return it.incluido && it.qtd_ret < it.qtd_prog && it.qtd_ret > 0; });
+  var acimaProg  = itensFinal.filter(function(it){ return it.incluido && it.qtd_ret > it.qtd_prog; });
+  var excluidos  = itensFinal.filter(function(it){ return !it.incluido; });
+  var temDiverg  = abaixoProg.length > 0 || acimaProg.length > 0 || excluidos.length > 0;
+
+  // Montar obs_divergencia detalhada
+  var divStr = [];
+  acimaProg.forEach(function(it){
+    divStr.push('↑ '+it.nome+': prog '+it.qtd_prog+' → retirou '+it.qtd_ret+' '+it.unidade
+      +(autorizacao?' [aut: '+autorizacao.autorizado_por+']':''));
+  });
+  abaixoProg.forEach(function(it){
+    divStr.push('↓ '+it.nome+': prog '+it.qtd_prog+' → retirou '+it.qtd_ret+' '+it.unidade);
+  });
+  excluidos.forEach(function(it){
+    divStr.push('✕ '+it.nome+': NÃO RETIRADO');
+  });
+
+  var payload = {
+    status:          'Em campo',
+    itens_retirada:  JSON.stringify(itensFinal),
+    obs_retirada:    obs||null,
+    retirada_em:     new Date().toISOString(),
+    retirado_por:    usuarioLogado ? usuarioLogado.nome : '',
+    tem_divergencia: temDiverg,
+    obs_divergencia: temDiverg ? divStr.join(' | ') : null,
+    autorizacao_extra: autorizacao ? JSON.stringify(autorizacao) : null,
+    // Atualizar itens com qtd efetivamente retirada (para baixa correta no estoque)
+    itens: JSON.stringify(itensFinal.filter(function(it){return it.incluido;}).map(function(it){
+      return {
+        mat_id:  it.mat_id,
+        codigo:  it.codigo,
+        nome:    it.nome,
+        unidade: it.unidade,
+        qtd_req: it.qtd_prog,   // qtd original aprovada
+        qtd_ret: it.qtd_ret,    // qtd efetivamente retirada (para baixa no estoque)
+      };
+    })),
+  };
+
+  if(!DEMO){
+    reqIds.forEach(function(rid){
+      sbUpdate('plpt_requisicoes_materiais', payload, 'id=eq.'+rid)
+        .catch(function(e){ console.error('retirada update:',e); });
+    });
+  }
+
+  // Remover banner
+  var banner = document.getElementById('plpt-mat-banner');
+  if(banner) banner.remove();
+
+  if(temDiverg){
+    var msg = [];
+    if(acimaProg.length)  msg.push(acimaProg.length+' item(ns) acima do programado');
+    if(abaixoProg.length) msg.push(abaixoProg.length+' item(ns) com qtd menor');
+    if(excluidos.length)  msg.push(excluidos.length+' item(ns) não retirado(s)');
+    progShowToast('⚠ Retirada com ajustes: '+msg.join(', ')+'. Almoxarife será notificado.');
+  } else {
+    var n = itensFinal.filter(function(x){return x.incluido;}).length;
+    progShowToast('✅ Retirada confirmada! '+n+' item(ns) retirado(s).');
+  }
+
+  renderDiarioPlpt();
+}
+
+
+function _plptNotificarDivergenciaAlmox(itens, reqIds, obs){
+  // Criar entrada em sol_materiais com flag de divergência para aparecer no kanban
+  if(DEMO) return;
+  reqIds.forEach(function(rid){
+    sbFetch('plpt_requisicoes_materiais',{filters:['id=eq.'+rid]})
+      .then(function(rows){
+        var r = rows&&rows[0]; if(!r) return;
+        var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===r.projeto_id;})||{};
+        var divergStr = itens.filter(function(x){return !x.incluido||(x.qtd_ret!==x.qtd_prog);})
+          .map(function(x){
+            return x.incluido
+              ? x.nome+': separado '+x.qtd_prog+' → retirou '+x.qtd_ret+' '+x.unidade
+              : x.nome+': NÃO RETIRADO';
+          }).join('; ');
+        // Atualizar motivo com divergência para aparecer no kanban
+        sbUpdate('plpt_requisicoes_materiais',{
+          obs_divergencia: '⚠ DIVERGÊNCIA: '+divergStr+(obs?' | Obs: '+obs:''),
+        },'id=eq.'+rid).catch(function(){});
+      }).catch(function(){});
+  });
+}
+
+
 function diarioConfirmarEscala(){
   var hoje=dataHojeLocal();
   var eq=_dbEquipe; if(!eq) return;
@@ -11924,6 +12222,8 @@ function diarioConfirmarEscala(){
     }
   }
   progShowToast('✅ Escala confirmada!');
+  // Verificar materiais separados para esta equipe
+  _plptVerificarMateriaisSeparados(eq.id);
   renderDiarioPlpt();
 }
 
@@ -18025,6 +18325,7 @@ function coRenderMateriais(){
             motivo:          'Req. #'+req.id.slice(0,8),
             status:          statusMap[req.status]||'Pendente',
             data:            req.data||req.criado_em||'',
+            obs_divergencia: req.obs_divergencia||null,
             _from_plpt:      true,
             _req_id:         req.id,
           });
@@ -18108,7 +18409,7 @@ function coRenderMateriais(){
             +(eqLabel?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#EAF3DE;color:#3B6D11;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">EQUIPE</span> <span style="font-weight:600">'+escHtml(eqLabel)+'</span></div>':'')
             +(m.encarregado_nome&&m.encarregado_nome!==eqLabel?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#FEF3E2;color:#854F0B;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">SOLICITANTE</span> <span>'+escHtml(m.encarregado_nome)+'</span></div>':'')
             +(colabStr?'<div style="font-size:10px;margin-bottom:2px"><span style="background:#F0EEFF;color:#533AB7;border-radius:3px;padding:1px 5px;font-weight:700;font-size:9px">COLABORADORES</span><br><span style="color:#555">'+escHtml(colabStr)+'</span></div>':'')
-            +(m.data?'<div style="font-size:10px;color:#aaa">📅 '+fmtD(m.data)+'</div>':'')
+            +(m.obs_divergencia?'<div style="background:#FFF0F0;border-radius:4px;padding:4px 6px;margin-top:4px;font-size:10px;color:#A32D2D;font-weight:600">⚠ '+escHtml(m.obs_divergencia.slice(0,120))+'</div>':'')+(m.data?'<div style="font-size:10px;color:#aaa;margin-top:2px">📅 '+fmtD(m.data)+'</div>':'')
             +btn+'</div>';
         })(m);
       }).join('')
@@ -22525,9 +22826,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.0.9',
+  numero: '7.1.2',
   data:   '22/05/2026',
-  build:  '20260522-2359f',
+  build:  '20260522-2359i',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -37377,116 +37678,172 @@ function portBloquear(placa){
 }
 
 function portAbrirLiberacaoEquipe(eqId, data){
-  var comp=composicao_dia.find(function(x){return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data;});
-  var eq=equipes_disp.find(function(e){return e.id===eqId;})||equipes.find(function(e){return e.id===eqId;})||{codigo:'—'};
-  var _pv=(typeof _progVeiculos!=='undefined'?_progVeiculos[eqId+'_'+data]:null)||null;
-  var placa=(comp&&comp.placa)||(_pv&&_pv.placa)||'';
-  var modelo=(_pv&&_pv.modelo)||'';
+  var comp = composicao_dia.find(function(x){ return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data; });
+  var eq   = equipes_disp.find(function(e){return e.id===eqId;})||equipes.find(function(e){return e.id===eqId;})||{codigo:'—'};
+  var _pv  = (typeof _progVeiculos!=='undefined'?_progVeiculos[eqId+'_'+data]:null)||null;
+  var placa  = (comp&&comp.placa)||(_pv&&_pv.placa)||'';
+  var modelo = (_pv&&_pv.modelo)||'';
   if(!modelo && placa && frt_veiculos){
-    var veic=frt_veiculos.find(function(v){return v.placa===placa;});
-    if(veic) modelo=veic.modelo||veic.tipo||'';
+    var veic = frt_veiculos.find(function(v){return v.placa===placa;});
+    if(veic) modelo = veic.modelo||veic.tipo||'';
   }
-  var ids=comp?parseColabIds(comp.colaborador_ids).filter(Boolean):[];
-  var nomesColab=ids.map(function(id){var f=colaboradores.find(function(x){return x.id===id;});return f?f.nome:'?';});
+  var ids = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
+  var nomesColab = ids.map(function(id){
+    var f=colaboradores.find(function(x){return x.id===id;}); return f?f.nome:'?';
+  });
 
-  // Verificar se equipe tem requisição de materiais aprovada/separada
-  var temMateriais = false;
-  var itensMat = [];
-  if(typeof frt_portaria !== 'undefined'){
-    // Checar em plpt_requisicoes_materiais na memória se houver
-  }
-  // Verificar no histórico de requisições
+  // Coletar projetos da equipe hoje para buscar materiais
+  var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
+
+  // Buscar requisições desta equipe OU dos projetos dela
+  var reqs = [];
   if(typeof window._portReqMateriais !== 'undefined'){
-    var reqEq = window._portReqMateriais.filter(function(r){
-      return r.equipe_id===eqId && (r.status==='Aprovada'||r.status==='Separação'||r.status==='Em campo');
+    reqs = window._portReqMateriais.filter(function(r){
+      if(r.status!=='Separação' && r.status!=='Aprovada') return false;
+      if(r.equipe_id===eqId) return true;
+      if(projIds.length && projIds.indexOf(r.projeto_id)>=0) return true;
+      return false;
     });
-    temMateriais = reqEq.length > 0;
-    if(temMateriais) itensMat = reqEq;
   }
 
-  var alertMatHtml = temMateriais
-    ? '<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:10px 14px;margin-bottom:.75rem">'
-      +'<div style="font-weight:700;color:#854F0B;font-size:13px;margin-bottom:3px">⚠️ ATENÇÃO: Equipe com MATERIAIS</div>'
-      +'<div style="font-size:12px;color:#555">Esta equipe possui '+itensMat.length+' requisição(ões) de material aprovada(s). '
-      +'<strong>Confira a carga antes de liberar a saída.</strong></div>'
-      +'</div>'
-    : '';
+  var temMateriais = reqs.length > 0;
 
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+  // Montar lista de itens para conferência
+  var todosItens = [];
+  reqs.forEach(function(req){
+    var proj = (typeof sot_projetos!=='undefined'?sot_projetos:[]).find(function(p){return p.id===req.projeto_id;})||{};
+    var itens = parseJsonField(req.itens,[]);
+    itens.forEach(function(it, i){
+      todosItens.push({
+        idx:      todosItens.length,
+        req_id:   req.id,
+        projeto:  proj.codigo_cliente||proj.codigo||proj.nome||'—',
+        nome:     it.nome||it.codigo||'Material',
+        codigo:   it.codigo||'',
+        qtd:      it.qtd_req||0,
+        unidade:  it.unidade||'UN',
+      });
+    });
+  });
+
+  // HTML da lista de materiais
+  var listaMatHtml = '';
+  if(temMateriais){
+    listaMatHtml =
+      '<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:10px 14px;margin-bottom:.75rem">'
+      +'<div style="font-weight:700;color:#854F0B;font-size:13px;margin-bottom:6px">📦 Materiais Separados — confira cada item</div>'
+      +'<div style="max-height:180px;overflow-y:auto">'
+      + todosItens.map(function(it){
+          return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:.5px solid #F59E0B33">'
+            +'<input type="checkbox" id="port-mat-chk-'+it.idx+'" style="width:16px;height:16px;cursor:pointer"/>'
+            +'<div style="flex:1;font-size:12px">'
+            +'<span style="font-weight:600">'+escHtml(it.nome)+'</span>'
+            +(it.codigo?'<span style="font-size:10px;color:#888;font-family:monospace;margin-left:4px">'+escHtml(it.codigo)+'</span>':'')
+            +'<div style="font-size:11px;color:#854F0B">'+it.qtd+' '+escHtml(it.unidade)+' · Proj: '+escHtml(it.projeto)+'</div>'
+            +'</div></div>';
+        }).join('')
+      +'</div>'
+      +'<div style="font-size:11px;color:#854F0B;margin-top:6px;font-weight:600">✅ Marque cada item após conferir fisicamente</div>'
+      +'</div>';
+  }
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
     +'<h3 style="margin-bottom:.75rem">🛫 Vistoria de Saída</h3>'
+    // Equipe / veículo / colaboradores
     +'<div style="background:#EAF3DE;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:12px">'
-    +'<div style="font-weight:700">'+escHtml(eq.codigo||eq.nome||'—')+'</div>'
-    +(placa?'<div style="font-family:monospace;color:#555;font-weight:600">'+escHtml(placa)
+    +'<div style="font-weight:700;font-size:13px">'+escHtml(eq.codigo||eq.nome||'—')+'</div>'
+    +(placa?'<div style="font-family:monospace;font-weight:600;color:#1a1a18">'+escHtml(placa)
       +(modelo?' <span style="font-family:sans-serif;font-weight:400;color:#888;font-size:11px">'+escHtml(modelo)+'</span>':'')+'</div>':'')
-    +(nomesColab.length?'<div style="color:#888;margin-top:2px">'+nomesColab.map(escHtml).join(', ')+'</div>':'')
+    +(nomesColab.length?'<div style="color:#555;margin-top:3px;font-size:11px">👥 '+nomesColab.map(escHtml).join(' · ')+'</div>':'')
     +'</div>'
-    + alertMatHtml
-    +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px">Destino / Atividade <span style="color:#A32D2D">*</span></label>'
+    // Lista de materiais
+    + listaMatHtml
+    // Campos de saída
+    +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px;font-weight:600">Destino / Atividade <span style="color:#A32D2D">*</span></label>'
     +'<input class="inp" id="lib-eq-destino" style="width:100%" placeholder="Ex: Manutenção Rua X, Inspeção..."/></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
-    +'<div class="fg"><label style="font-size:11px">KM saída</label>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">KM saída</label>'
     +'<input class="inp" id="lib-eq-km" type="number" style="width:100%" placeholder="0"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Motorista</label>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Motorista</label>'
     +'<input class="inp" id="lib-eq-quem" list="lib-eq-quem-list" style="width:100%" placeholder="Nome..."/>'
     +'<datalist id="lib-eq-quem-list">'+nomesColab.map(function(n){return '<option>'+escHtml(n)+'</option>';}).join('')+'</datalist>'
     +'</div></div>'
-    // Foto da carga — só exibir campo se tem materiais ou sempre (boas práticas)
+    // Foto — SEMPRE obrigatória quando tem materiais
     +'<div style="margin-bottom:.75rem">'
     +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">'
-    +(temMateriais?'📷 Foto da carga <span style="color:#A32D2D">*</span>':'📷 Foto da carga (opcional)')
+    +'📷 Foto do baú/caçamba/porta-malas <span style="color:#A32D2D">*</span>'
     +'</label>'
     +'<div style="display:flex;gap:8px;align-items:flex-start">'
-    +'<label style="cursor:pointer;background:#185FA5;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap">'
+    +'<label style="cursor:pointer;background:#185FA5;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;white-space:nowrap;display:flex;align-items:center;gap:6px">'
     +'📸 Tirar Foto'
     +'<input type="file" accept="image/*" capture="environment" style="display:none" '
     +'onchange="portFotoPreview(this,\'lib-foto-prev\',\'lib-foto-b64\')">'
     +'</label>'
-    +'<div id="lib-foto-prev" style="width:80px;height:60px;background:#f0f0f0;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8;flex-shrink:0">'
-    +'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:10px;text-align:center">Sem foto</div>'
+    +'<div id="lib-foto-prev" style="width:90px;height:68px;background:#f0f0f0;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8;flex-shrink:0">'
+    +'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:10px;text-align:center">Sem<br>foto</div>'
     +'</div>'
     +'<input type="hidden" id="lib-foto-b64" value=""/>'
     +'</div>'
     +'</div>'
-    +'<div style="display:flex;gap:8px;margin-top:.25rem">'
+    +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
     +'<button class="btn btn-pri" id="lib-eq-confirmar" style="flex:2;background:#3B6D11;border-color:#3B6D11">✅ Liberar Saída</button>'
     +'</div></div></div>');
 
   setTimeout(function(){
-    var btn=document.getElementById('lib-eq-confirmar'); if(!btn) return;
-    btn.onclick=function(){
-      var destino=((document.getElementById('lib-eq-destino')||{}).value||'').trim();
-      var km=parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
-      var quem=((document.getElementById('lib-eq-quem')||{}).value||'').trim();
-      var fotoB64=((document.getElementById('lib-foto-b64')||{}).value||'');
+    var btn = document.getElementById('lib-eq-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var destino = ((document.getElementById('lib-eq-destino')||{}).value||'').trim();
+      var km      = parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
+      var quem    = ((document.getElementById('lib-eq-quem')||{}).value||'').trim();
+      var fotoB64 = ((document.getElementById('lib-foto-b64')||{}).value||'');
 
-      if(!destino){progShowToast('⚠ Informe o destino/atividade.','erro');return;}
-      if(temMateriais && !fotoB64){
-        progShowToast('⚠ Obrigatório: tire a foto da carga antes de liberar.','erro');
+      if(!destino){ progShowToast('⚠ Informe o destino/atividade.','erro'); return; }
+
+      // Foto SEMPRE obrigatória
+      if(!fotoB64){
+        progShowToast('⚠ Obrigatório: tire a foto do baú/caçamba/porta-malas antes de liberar.','erro');
         return;
       }
 
-      var saida={
-        id:Date.now().toString(), placa:placa, tipo_liberacao:'equipe',
-        destino:destino, km_saida:km, data_saida:new Date().toISOString(),
-        status:'Em campo', equipe:eqId, quem_saiu:quem,
-        liberado_por:usuarioLogado?usuarioLogado.nome:'Portaria',
+      // Verificar se todos os itens foram conferidos (quando tem materiais)
+      if(temMateriais){
+        var naoConferidos = todosItens.filter(function(it){
+          var chk = document.getElementById('port-mat-chk-'+it.idx);
+          return chk && !chk.checked;
+        });
+        if(naoConferidos.length){
+          progShowToast('⚠ Confira todos os itens da lista ('+naoConferidos.length+' pendente(s)).','erro');
+          return;
+        }
+      }
+
+      var saida = {
+        id:                    Date.now().toString(),
+        placa:                 placa,
+        tipo_liberacao:        'equipe',
+        destino:               destino,
+        km_saida:              km,
+        data_saida:            new Date().toISOString(),
+        status:                'Em campo',
+        equipe:                eqId,
+        quem_saiu:             quem,
+        liberado_por:          usuarioLogado ? usuarioLogado.nome : 'Portaria',
         foto_carga_saida_b64:  fotoB64||null,
-        foto_carga_saida_ts:   fotoB64?new Date().toISOString():null,
+        foto_carga_saida_ts:   fotoB64 ? new Date().toISOString() : null,
         tem_materiais_saida:   temMateriais,
       };
       frt_portaria.unshift(saida);
       if(!DEMO){
-        var payload=Object.assign({},saida); delete payload.id;
-        // Não enviar base64 gigante — salvar só URL se houver upload
-        // Por ora salva indicador e ts (imagem fica local para economizar banda)
+        var payload = Object.assign({},saida); delete payload.id;
         payload.foto_carga_saida_b64 = fotoB64 ? '[foto_registrada]' : null;
         sbInsert('frotas_portaria_saidas', payload).catch(function(){});
       }
-      if(comp) comp._portaria_liberado=true;
+      if(comp) comp._portaria_liberado = true;
       closeModal();
       portRenderEquipesDia();
-      progShowToast('✅ Saída liberada'+(fotoB64?' com foto da carga':'')+' — '+(placa||eq.codigo||'equipe')+' · '+destino);
+      progShowToast('✅ Saída liberada'+(fotoB64?' com foto':'')+(temMateriais?' — '+todosItens.length+' item(ns) conferido(s)':'')+' · '+(placa||eq.codigo||''));
     };
   },50);
 }
