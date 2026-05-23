@@ -11661,42 +11661,64 @@ var _plptModalTurnoAberto = false;
 
 
 function _plptContinuarTurnoAnterior(){
-  // Marcar que equipe escolheu continuar no turno anterior
   _plptDiario._continuarTurnoAnterior = true;
 
-  // Garantir que composicao_dia do dia da sessão está carregada
   var dataSess = (_plptDiario.sessao && _plptDiario.sessao.data)
-    ? (_plptDiario.sessao.data||'').slice(0,10)
-    : '';
+    ? (_plptDiario.sessao.data||'').slice(0,10) : '';
 
-  if(dataSess && !DEMO){
-    // Buscar composicao_dia do dia da sessão se não estiver em memória
-    var jaTemComp = composicao_dia.some(function(c){
-      return (c.data||'').slice(0,10)===dataSess;
+  if(!dataSess || DEMO){ renderDiarioPlpt(); return; }
+
+  var eqId = _dbEquipe && _dbEquipe.id;
+  progShowToast('⏳ Carregando turno de '+dataSess+'...');
+
+  Promise.all([
+    sbFetch('composicao_dia',{filters:['data=eq.'+dataSess,'equipe_id=neq.null'],limit:50}),
+    eqId ? sbFetch('plpt_prog_dia',{filters:['data=eq.'+dataSess,'equipe_id=eq.'+eqId],limit:5})
+         : Promise.resolve([])
+  ]).then(function(res){
+    var comps = res[0]||[];
+    var progs = res[1]||[];
+
+    comps.forEach(function(r){
+      r.colaborador_ids = parseJsonField(r.colaborador_ids,[]);
+      r.projeto_ids     = parseJsonField(r.projeto_ids||'[]',[]);
+      if(!composicao_dia.find(function(x){return x.id===r.id;}))
+        composicao_dia.push(r);
     });
-    if(!jaTemComp){
-      progShowToast('⏳ Carregando dados do turno anterior...');
-      Promise.all([
-        sbFetch('composicao_dia',{filters:['data=eq.'+dataSess,'equipe_id=neq.null'],limit:50}),
-        sbFetch('plpt_prog_dia',{filters:['data=eq.'+dataSess,'equipe_id=eq.'+(_dbEquipe&&_dbEquipe.id||'')],limit:5})
-      ]).then(function(res){
-        if(res[0]&&res[0].length){
-          res[0].forEach(function(r){
-            r.colaborador_ids=parseJsonField(r.colaborador_ids,[]);
-            r.projeto_ids=parseJsonField(r.projeto_ids||'[]',[]);
-            if(!composicao_dia.find(function(x){return x.id===r.id;}))
-              composicao_dia.push(r);
-          });
-        }
-        if(res[1]&&res[1].length && !_plptDiario.prog){
-          _plptDiario.prog = res[1][0];
-        }
-        renderDiarioPlpt();
-      }).catch(function(){ renderDiarioPlpt(); });
+
+    var prog = progs[0]||null;
+    if(prog) _plptDiario.prog = prog;
+
+    if(!prog){
+      var comp = comps.find(function(c){ return c.equipe_id===eqId; });
+      var projIds = comp ? (comp.projeto_ids||[]) : [];
+      var faltam  = projIds.filter(function(id){
+        return id && !sot_projetos.find(function(p){return p.id===id;});
+      });
+      var carregarE = faltam.length
+        ? sbFetch('sot_projetos',{filters:['id=in.('+faltam.join(',')+')']})
+            .then(function(rows){ (rows||[]).forEach(function(p){ if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p); }); })
+        : Promise.resolve();
+      carregarE.then(function(){ progShowToast('✅ Turno de '+dataSess+' carregado!'); renderDiarioPlpt(); })
+               .catch(function(){ renderDiarioPlpt(); });
       return;
     }
-  }
-  renderDiarioPlpt();
+
+    sbFetch('plpt_prog_projetos',{filters:['prog_dia_id=eq.'+prog.id],order:'ordem'})
+      .then(function(progProjs){
+        _plptDiario.projetos = progProjs||[];
+        var projIds = (progProjs||[]).map(function(p){return p.projeto_id;}).filter(Boolean);
+        var faltam  = projIds.filter(function(id){
+          return !sot_projetos.find(function(p){return p.id===id;});
+        });
+        var carregarS = faltam.length
+          ? sbFetch('sot_projetos',{filters:['id=in.('+faltam.join(',')+')']})
+              .then(function(rows){ (rows||[]).forEach(function(p){ if(!sot_projetos.find(function(x){return x.id===p.id;})) sot_projetos.push(p); }); })
+          : Promise.resolve();
+        carregarS.then(function(){ progShowToast('✅ Turno de '+dataSess+' carregado!'); renderDiarioPlpt(); })
+                 .catch(function(){ renderDiarioPlpt(); });
+      }).catch(function(){ renderDiarioPlpt(); });
+  }).catch(function(){ renderDiarioPlpt(); });
 }
 
 
@@ -23276,9 +23298,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.3.5',
+  numero: '7.3.6',
   data:   '23/05/2026',
-  build:  '20260523-0600',
+  build:  '20260523-0700',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
