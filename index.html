@@ -1093,7 +1093,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
       </button>
     </form>
     <span id="db-status" style="font-size:10px;color:#666;padding:3px 7px;background:#2a2a28;border-radius:6px">●</span>
-    <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:10px;color:#aaa;background:#2a2a28;border:.5px solid #444;border-radius:6px;padding:3px 10px;cursor:pointer;white-space:nowrap;max-width:none" id="btn-versao">🛠 CENA ERP v<span id="badge-versao">...</span><span id="badge-build" style="font-size:9px;opacity:.6;margin-left:4px"></span></button>
+    <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:12px;font-weight:600;color:#ccc;background:#2a2a28;border:.5px solid #444;border-radius:6px;padding:4px 10px;cursor:pointer;white-space:nowrap;letter-spacing:.3px" id="btn-versao">v<span id="badge-versao">...</span></button>
     <button class="btn" onclick="fazerLogout()">Sair</button>
   </div>
 </div>
@@ -12652,7 +12652,9 @@ function plptEnviarReservaInline(){
     var chk = document.getElementById('rsv-chk-'+i);
     var inp = document.getElementById('rsv-qtd-'+i);
     if(chk && chk.checked && inp){
-      var qtd = Math.min(parseFloat(inp.value)||0, m.qtd_projetada||0);
+      // Max reservável = programado - já aplicado
+      var _saldoDisp = Math.max(0, (m.qtd_projetada||0) - (m.qtd_aplicada||0));
+      var qtd = Math.min(parseFloat(inp.value)||0, _saldoDisp);
       if(qtd > 0) itensSel.push({
         mat_id:    m.id,
         codigo:    m.codigo_sap||'',
@@ -20022,7 +20024,69 @@ function sotAbrirProjeto(projetoId){
     sot_materiais_proj = res[1]||[];
     var docs = res[2]||[];
     sot_historico = res[3]||[];
-    sotRenderDetalhe(p, docs);
+
+    // Enriquecer sot_materiais_proj com breakdown completo de plpt_requisicoes
+    if(!DEMO && sot_materiais_proj.length){
+      var hoje = dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10);
+      var activeStatus = ['Aguardando aprovação','Aprovada','Separação','Aguardando confirmação almox','Em campo','Devolvida'];
+      Promise.all([
+        sbFetch('plpt_requisicoes_materiais',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.asc',limit:500}),
+        sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+projetoId,'tipo=eq.material','status=eq.aprovado']})
+      ]).then(function(results){
+        var reqs  = results[0]||[];
+        var adics = results[1]||[];
+        // Reset all counters
+        sot_materiais_proj.forEach(function(m){
+          m._res_ant=0; m._res_atual=0; m._aplic_ant=0; m._aplic_atual=0; m._dev_hoje=0; m._adicionado=0;
+        });
+        // Adicionais aprovados
+        adics.forEach(function(a){
+          var mat = sot_materiais_proj.find(function(m){
+            return (m.codigo_sap && a.codigo_sap && m.codigo_sap===a.codigo_sap)
+                || (m.descricao && a.descricao && m.descricao.toLowerCase()===a.descricao.toLowerCase());
+          });
+          if(mat) mat._adicionado = (mat._adicionado||0) + (a.qtd_aprovada||a.qtd_solicitada||0);
+        });
+        // Requisições PLPT — breakdown por data
+        reqs.forEach(function(r){
+          if(r.deleted_at) return;
+          var reqData = (r.data||r.criado_em||'').slice(0,10);
+          var isHoje  = reqData === hoje;
+          var itens   = parseJsonField(r.itens,[]);
+          itens.forEach(function(it){
+            var mat = sot_materiais_proj.find(function(m){
+              return (m.codigo_sap && it.codigo && m.codigo_sap===it.codigo)
+                  || (m.descricao && it.nome && m.descricao.toLowerCase()===it.nome.toLowerCase());
+            });
+            if(!mat) return;
+            var qtdReq = it.qtd_req||0;
+            var qtdRet = it.qtd_ret||qtdReq;
+            // Reservado
+            if(activeStatus.includes(r.status)){
+              if(isHoje) mat._res_atual = (mat._res_atual||0) + qtdReq;
+              else       mat._res_ant   = (mat._res_ant||0)  + qtdReq;
+            }
+            // Aplicado/entregue ao campo
+            if(r.status==='Em campo'||r.status==='Devolvida'){
+              if(isHoje) mat._aplic_atual = (mat._aplic_atual||0) + qtdRet;
+              else       mat._aplic_ant   = (mat._aplic_ant||0)   + qtdRet;
+            }
+            // Devolvido hoje
+            if(isHoje && r.status==='Devolvida'){
+              mat._dev_hoje = (mat._dev_hoje||0) + (it.qtd_devolvida||0);
+            }
+          });
+        });
+        // Sync sumários para aba Materiais
+        sot_materiais_proj.forEach(function(m){
+          m.qtd_requisitada = (m._res_ant||0) + (m._res_atual||0);
+          m.qtd_entregue    = (m._aplic_ant||0) + (m._aplic_atual||0);
+        });
+        sotRenderDetalhe(p, docs);
+      }).catch(function(){ sotRenderDetalhe(p, docs); });
+    } else {
+      sotRenderDetalhe(p, docs);
+    }
   });
 }
 
@@ -23213,95 +23277,133 @@ function sotProcessarImportacaoMat(projetoId){
 
 
 function sotRenderTabReserva(projetoId, container){
-  var mats = sot_materiais_proj.filter(function(m){ return m.projeto_id===projetoId; });
-
-  if(!mats.length && !DEMO){
-    if(container) container.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando materiais...</div>';
-    sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId]})
-      .then(function(rows){
-        if(rows&&rows.length) rows.forEach(function(r){
-          if(!sot_materiais_proj.find(function(x){return x.id===r.id;})) sot_materiais_proj.push(r);
-        });
-        sotRenderTabReserva(projetoId, container);
-      }).catch(function(){
-        if(container) container.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar materiais.</div>';
-      });
-    return;
-  }
+  var mats = (typeof sot_materiais_proj!=='undefined' ? sot_materiais_proj : [])
+    .filter(function(m){ return m.projeto_id===projetoId; });
 
   if(!mats.length){
-    if(container) container.innerHTML = '<div style="padding:2rem;text-align:center;color:#aaa;background:#f9f9f7;border-radius:10px;margin:.5rem">'
-      +'<div style="font-size:28px;margin-bottom:.5rem">📦</div>'
-      +'<div style="font-weight:600">Nenhum material programado para este projeto</div>'
-      +'<div style="font-size:12px;margin-top:.4rem">Cadastre materiais na aba Materiais antes de fazer uma reserva.</div>'
-      +'</div>';
+    if(!DEMO){
+      if(container) container.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
+      sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId]})
+        .then(function(rows){
+          if(rows&&rows.length) rows.forEach(function(r){
+            if(!sot_materiais_proj.find(function(x){return x.id===r.id;})) sot_materiais_proj.push(r);
+          });
+          sotRenderTabReserva(projetoId, container);
+        }).catch(function(){
+          if(container) container.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar materiais.</div>';
+        });
+      return;
+    }
+    if(container) container.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">Nenhum material programado.</div>';
     return;
   }
 
   var html = '<div style="padding:.5rem">';
 
-  html += '<div style="background:#F0EEFF;border-radius:10px;padding:1rem;margin-bottom:1rem">'
-    +'<div style="font-weight:700;font-size:13px;color:#533AB7;margin-bottom:.6rem">📤 Nova Requisição de Materiais</div>'
-    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'
-    +'Selecione os materiais e quantidades para esta atividade. '
-    +'Após envio, o gerente aprovará e o almoxarifado fará a separação.'
+  // ── Cabeçalho informativo ──────────────────────────────────────────────
+  html += '<div style="background:#F0EEFF;border-radius:10px;padding:.75rem 1rem;margin-bottom:.75rem">'
+    +'<div style="font-weight:700;font-size:13px;color:#533AB7;margin-bottom:.4rem">📤 Nova Requisição de Materiais</div>'
+    +'<div style="font-size:11px;color:#666">Selecione os materiais e informe a quantidade a usar hoje. '
+    +'A quantidade máxima é o <strong>Saldo disponível</strong> (Total Programado − Total Aplicado).</div>'
     +'</div>';
 
-  // Tabela com todas as colunas de controle
-  html += '<div style="background:#fff;border-radius:8px;overflow:auto;margin-bottom:.75rem">'
-    +'<table style="width:100%;border-collapse:collapse;min-width:620px">'
-    +'<thead><tr style="background:#1a1a18;color:#fff;font-size:11px">'
-    +'<th style="padding:7px 8px;width:32px"></th>'
-    +'<th style="padding:7px 8px;text-align:left">Material</th>'
-    +'<th style="padding:7px 8px;text-align:center" title="Quantidade programada no projeto">Programado</th>'
-    +'<th style="padding:7px 8px;text-align:center;background:#533AB744" title="Total já reservado em requisições">Reservado</th>'
-    +'<th style="padding:7px 8px;text-align:center;background:#08504422" title="Total aplicado em campo">Aplicado</th>'
-    +'<th style="padding:7px 8px;text-align:center;background:#85280022" title="Saldo em campo = Entregue − Aplicado − Devolvido">Saldo</th>'
-    +'<th style="padding:7px 8px;text-align:center">Qtd a usar</th>'
-    +'</tr></thead><tbody>';
+  // ── Tabela com todas as colunas ────────────────────────────────────────
+  html += '<div style="overflow-x:auto;margin-bottom:.75rem">'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px;min-width:900px">'
+    +'<thead>'
+    // Grupo headers
+    +'<tr style="background:#1a1a18;color:#fff;font-size:10px">'
+    +'<th rowspan="2" style="padding:5px 8px;width:28px"></th>'
+    +'<th rowspan="2" style="padding:5px 8px;text-align:left;min-width:140px">Material</th>'
+    // PROGRAMAÇÃO
+    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#185FA5">PROGRAMAÇÃO</th>'
+    // RESERVAS
+    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#533AB7">RESERVAS</th>'
+    // APLICAÇÃO
+    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#085041">APLICAÇÃO</th>'
+    // HOJE
+    +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;background:#854F0B;min-width:65px">Dev.<br>Hoje</th>'
+    +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;min-width:75px">Qtd a usar</th>'
+    +'</tr>'
+    +'<tr style="background:#222;color:#ddd;font-size:10px">'
+    // PROGRAMAÇÃO sub
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Quantidade projetada original">Prog.</th>'
+    +'<th style="padding:4px 6px;text-align:right" title="Soma de adicionais aprovados">Adic.</th>'
+    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#7CB8FF" title="Prog + Adicionado">Total</th>'
+    // RESERVAS sub
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Reservas de dias anteriores">Ant.</th>'
+    +'<th style="padding:4px 6px;text-align:right" title="Reserva de hoje">Hoje</th>'
+    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#B39DFF" title="Total Reservado — nunca > Total Programado">Total</th>'
+    // APLICAÇÃO sub
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Aplicação acumulada de dias anteriores">Ant.</th>'
+    +'<th style="padding:4px 6px;text-align:right" title="Aplicação de hoje">Hoje</th>'
+    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#81C995" title="Total Aplicado — nunca > Total Reservado">Total</th>'
+    +'</tr>'
+    +'</thead><tbody>';
 
   mats.forEach(function(m, i){
-    var reservado = m.qtd_requisitada || 0;
-    var aplicado  = m.qtd_aplicada    || 0;
-    var entregue  = m.qtd_entregue    || 0;
-    var devolvido = m.qtd_devolvida   || 0;
-    var saldo     = entregue - aplicado - devolvido;
-    var un        = escHtml(m.unidade||'UN');
-    var corSaldo  = saldo > 0 ? '#854F0B' : saldo < 0 ? '#A32D2D' : '#888';
+    var un = escHtml(m.unidade||'UN');
 
+    // ── Programação ──────────────────────────────────────────────────────
+    var prog       = m.qtd_projetada  || 0;
+    var adicionado = m._adicionado    || 0;
+    var totalProg  = prog + adicionado;
+
+    // ── Reservas ─────────────────────────────────────────────────────────
+    var resAnt     = m._res_ant   || 0;
+    var resAtual   = m._res_atual || 0;
+    var totalRes   = resAnt + resAtual;
+    // Validação: totalRes nunca > totalProg
+    var resOk      = totalRes <= totalProg;
+
+    // ── Aplicação ─────────────────────────────────────────────────────────
+    var aplicAnt   = m._aplic_ant   || 0;
+    var aplicAtual = m._aplic_atual || 0;
+    var totalAplic = aplicAnt + aplicAtual;
+    // Validação: totalAplic nunca > totalRes
+    var aplicOk    = totalAplic <= totalRes;
+
+    // ── Devolvido hoje ────────────────────────────────────────────────────
+    var devHoje    = m._dev_hoje || 0;
+
+    // ── Saldo disponível (máximo que pode reservar agora) ─────────────────
+    var saldo      = totalProg - totalAplic;
+    var maxReserva = Math.max(0, saldo);
+    var corSaldo   = saldo > 0 ? '#3B6D11' : saldo === 0 ? '#888' : '#A32D2D';
+
+    // ── Row ────────────────────────────────────────────────────────────────
     html += '<tr style="border-bottom:.5px solid #f0efe8">'
-      +'<td style="padding:7px 8px"><input type="checkbox" id="sot-rsv-chk-'+i+'" '
+      +'<td style="padding:6px 8px"><input type="checkbox" id="sot-rsv-chk-'+i+'" '
       +'onchange="sotReservaToggle('+i+')" style="cursor:pointer;width:16px;height:16px"/></td>'
-      +'<td style="padding:7px 8px;font-size:12px">'
-      +(m.codigo_sap?'<span style="font-size:10px;color:#888;display:block;font-family:monospace">'+escHtml(m.codigo_sap)+'</span>':'')
-      +'<span style="font-weight:500">'+escHtml(m.descricao||'Material')+'</span>'
+      +'<td style="padding:6px 8px">'
+      +(m.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(m.codigo_sap)+'</div>':'')
+      +'<div style="font-weight:500">'+escHtml(m.descricao||'Material')+'</div>'
       +'</td>'
-      // Programado
-      +'<td style="padding:7px 8px;text-align:center;font-size:12px;color:#185FA5;font-weight:600">'
-      +(m.qtd_projetada||0)+' <span style="font-size:10px;font-weight:400">'+un+'</span></td>'
-      // Reservado
-      +'<td style="padding:7px 8px;text-align:center;font-size:12px;background:#F0EEFF">'
-      +(reservado > 0
-        ? '<span style="color:#533AB7;font-weight:700">'+reservado+'</span> <span style="font-size:10px;color:#888">'+un+'</span>'
-        : '<span style="color:#ccc;font-size:11px">—</span>')
-      +'</td>'
-      // Aplicado
-      +'<td style="padding:7px 8px;text-align:center;font-size:12px;background:#EAF3DE44">'
-      +(aplicado > 0
-        ? '<span style="color:#085041;font-weight:700">'+aplicado+'</span> <span style="font-size:10px;color:#888">'+un+'</span>'
-        : '<span style="color:#ccc;font-size:11px">—</span>')
-      +'</td>'
-      // Saldo
-      +'<td style="padding:7px 8px;text-align:center;font-size:12px;background:#FEF3E222">'
-      +(entregue > 0
-        ? '<span style="color:'+corSaldo+';font-weight:700">'+saldo+'</span> <span style="font-size:10px;color:#888">'+un+'</span>'
-        : '<span style="color:#ccc;font-size:11px">—</span>')
-      +'</td>'
-      // Qtd a usar
-      +'<td style="padding:7px 8px;text-align:center">'
-      +'<input type="number" id="sot-rsv-qtd-'+i+'" min="0" max="'+(m.qtd_projetada||0)+'" value="0" disabled '
-      +'style="width:70px;padding:5px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
-      +'oninput="sotReservaQtd('+i+',this.value,'+(m.qtd_projetada||0)+')"/>'
+      // PROGRAMAÇÃO
+      +'<td style="padding:6px 6px;text-align:right;color:#185FA5;border-left:1px solid #f0efe8">'+prog+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;color:'+(adicionado>0?'#854F0B':'#ccc')+'">'+( adicionado>0?adicionado:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:#185FA5">'+totalProg+' <span style="font-size:9px;font-weight:400">'+un+'</span></td>'
+      // RESERVAS
+      +'<td style="padding:6px 6px;text-align:right;color:'+(resAnt>0?'#533AB7':'#ccc')+';border-left:1px solid #f0efe8">'+( resAnt>0?resAnt:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;color:'+(resAtual>0?'#533AB7':'#ccc')+'">'+( resAtual>0?resAtual:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:'+(resOk?'#533AB7':'#A32D2D')+'">'
+      +totalRes+' <span style="font-size:9px;font-weight:400">'+un+'</span>'
+      +(!resOk?'<div style="font-size:9px;color:#A32D2D">⚠ > Prog</div>':'')+'</td>'
+      // APLICAÇÃO
+      +'<td style="padding:6px 6px;text-align:right;color:'+(aplicAnt>0?'#085041':'#ccc')+';border-left:1px solid #f0efe8">'+( aplicAnt>0?aplicAnt:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;color:'+(aplicAtual>0?'#085041':'#ccc')+'">'+( aplicAtual>0?aplicAtual:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:'+(aplicOk?'#085041':'#A32D2D')+'">'
+      +totalAplic+' <span style="font-size:9px;font-weight:400">'+un+'</span>'
+      +(!aplicOk?'<div style="font-size:9px;color:#A32D2D">⚠ > Res</div>':'')+'</td>'
+      // DEVOLVIDO HOJE
+      +'<td style="padding:6px 6px;text-align:right;color:'+(devHoje>0?'#854F0B':'#ccc')+';border-left:1px solid #f0efe8">'+( devHoje>0?devHoje:'—')+'</td>'
+      // QTD A USAR
+      +'<td style="padding:6px 8px;text-align:center;border-left:1px solid #f0efe8">'
+      +'<div style="font-size:10px;color:'+corSaldo+';font-weight:600;margin-bottom:2px">Saldo: '+saldo+'</div>'
+      +'<input type="number" id="sot-rsv-qtd-'+i+'" min="0" max="'+maxReserva+'" value="0" disabled '
+      +'style="width:65px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
+      +'oninput="sotReservaQtd('+i+',this.value,'+maxReserva+')"/>'
+      +(maxReserva===0?'<div style="font-size:9px;color:#888;margin-top:2px">✅ Completo</div>':'')
       +'</td></tr>';
   });
 
@@ -23323,6 +23425,7 @@ function sotRenderTabReserva(projetoId, container){
   window._sotReservaProjId    = projetoId;
   sotCarregarHistoricoRequisicoes(projetoId);
 }
+
 
 
 function sotReservaToggle(i){
@@ -23793,9 +23896,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.4.6',
+  numero: '7.4.9',
   data:   '23/05/2026',
-  build:  '20260523-1700',
+  build:  '20260523-2000',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34757,8 +34860,6 @@ async function fazerLogin(){
     var bv=document.getElementById('badge-versao');
     if(bv&&typeof APP_VERSAO!=='undefined'){
       bv.textContent=APP_VERSAO.numero;
-      var bb=document.getElementById('badge-build');
-      if(bb) bb.textContent=APP_VERSAO.data||'';
     }
 
     // Perfil equipe (Eletricista TMA): tela dedicada sem sidebar
