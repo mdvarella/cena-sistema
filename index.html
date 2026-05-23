@@ -11375,19 +11375,23 @@ function renderDiario(){
     console.log('[PLPT RELOAD] _dbEquipe._plpt=', _dbEquipe._plpt, 'contrato=', _dbEquipe.contrato_id);
     var CID_FETCH = (_dbEquipe && _dbEquipe.contrato_id) || (usuarioLogado && usuarioLogado.contrato_id) || '';
     // Buscar programação do dia para esta equipe específica
+    // Buscar prog do dia — hoje primeiro, depois dias recentes (turno aberto de ontem)
+    var d3dias = new Date(Date.now()-3*24*60*60*1000).toISOString().slice(0,10);
     sbFetch('plpt_prog_dia',{filters:[
       'equipe_id=eq.'+_dbEquipe.id,
-      'data=eq.'+hoje,
+      'data=gte.'+d3dias,
       'contrato_id=eq.'+CID_FETCH
-    ]}).then(function(resP){
-      var prog = resP&&resP[0] ? resP[0] : null;
+    ], order:'data.desc', limit:5}).then(function(resP){
+      // Preferir prog de hoje; se não houver, pegar o mais recente com sessão aberta
+      var progHoje = (resP||[]).find(function(p){ return (p.data||'').slice(0,10)===hoje; });
+      var prog = progHoje || (resP&&resP[0]) || null;
       _plptDiario.prog = prog;
 
       if(!prog){
         // Sem plpt_prog_dia — buscar colaboradores E sessão do dia
         Promise.all([
           sbFetch('colaboradores',{filters:['contrato_id=eq.'+CID_FETCH,'equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
-          sbFetch('plpt_sessoes',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'}),
+          sbFetch('plpt_sessoes',{filters:['equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc',limit:10}),
           sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]})
         ]).then(function(resArr){
           var cols = resArr[0]||[];
@@ -11472,7 +11476,7 @@ function renderDiario(){
           } else {
             // plpt_sessoes vazia — checar sessoes_disponibilidade (sessões antigas/migração)
             console.log('[PLPT RELOAD] plpt_sessoes vazia, verificando sessoes_disponibilidade...');
-            sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'})
+            sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc',limit:10})
               .then(function(rowsAntigos){
                 var res2 = _escolherMelhorSessao(rowsAntigos||[]);
                 console.log('[PLPT RELOAD] sessoes_disponibilidade:', (rowsAntigos||[]).length, 'score:', res2.score);
@@ -11508,8 +11512,8 @@ function renderDiario(){
         // 4. Recuperar sessão — plpt_sessoes primeiro, fallback sessoes_disponibilidade
         var buscarSessao = !DEMO
           ? Promise.all([
-              sbFetch('plpt_sessoes',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'}),
-              sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje],order:'login_ts.desc'})
+              sbFetch('plpt_sessoes',{filters:['equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc',limit:10}),
+              sbFetch('sessoes_disponibilidade',{filters:['equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc',limit:10})
             ]).then(function(rs){ return (rs[0]||[]).concat(rs[1]||[]); })
           : Promise.resolve([]);
 
@@ -23176,9 +23180,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.2.9',
+  numero: '7.3.0',
   data:   '23/05/2026',
-  build:  '20260523-0002',
+  build:  '20260523-0100',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34026,7 +34030,9 @@ async function resolveEquipeUsuario(){
   // 3. Tentar por composição do dia (PLPT)
   if(!DEMO){
     var hoje = dataHojeLocal();
-    var comps = await sbFetch('composicao_dia', {filters:['data=eq.'+hoje,'equipe_id=neq.null'], limit:50});
+    // Buscar composição de hoje E dias recentes (para equipes com turno aberto de ontem)
+    var d3aAtras = new Date(Date.now()-3*24*60*60*1000).toISOString().slice(0,10);
+    var comps = await sbFetch('composicao_dia', {filters:['data=gte.'+d3aAtras,'equipe_id=neq.null'], order:'data.desc', limit:100});
     if(comps && comps.length){
       // composicao_dia.colaborador_ids contém IDs da tabela colaboradores
       var myIds = [];
