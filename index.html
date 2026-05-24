@@ -1100,6 +1100,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     </form>
     <span id="db-status" style="font-size:10px;color:#666;padding:3px 7px;background:#2a2a28;border-radius:6px">●</span>
     <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:12px;font-weight:700;color:#e8e8e8;background:#2a2a28;border:.5px solid #555;border-radius:6px;padding:4px 14px;cursor:pointer;white-space:nowrap;min-width:80px;letter-spacing:.3px" id="btn-versao">v<span id="badge-versao">...</span></button>
+    <span id="badge-local" style="display:none;background:#854F0B;color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:.5px">🔧 LOCAL</span>
     <button class="btn" onclick="fazerLogout()">Sair</button>
   </div>
 </div>
@@ -20305,7 +20306,7 @@ function sarEnviar(projetoId){
     +'<span style="font-size:11px;color:#888;margin-left:4px">Analisando relatório...</span>'
     +'</div>');
 
-  fetch('/.netlify/functions/claude-proxy', {
+  fetch('https://cena-proxy.marcos-afe.workers.dev', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -21307,7 +21308,7 @@ function wlAnalisarIA(){
   // Tentar proxy Netlify primeiro (produção); fallback direto (desenvolvimento)
   var _wlApiUrl = window.location.hostname === 'localhost' || window.location.protocol === 'file:'
     ? 'https://api.anthropic.com/v1/messages'
-    : '/.netlify/functions/claude-proxy';
+    : 'https://cena-proxy.marcos-afe.workers.dev';
   var _wlHeaders = {'Content-Type':'application/json'};
   if(_wlApiUrl.includes('anthropic.com')) _wlHeaders['anthropic-dangerous-direct-browser-access']='true';
 
@@ -21914,7 +21915,7 @@ async function sotAnalisarCroquiIA(){
     + 'Se um campo não estiver visível na imagem, retorne string vazia para ele.';
 
   try{
-    var resp = await fetch('/.netlify/functions/claude-proxy',{
+    var resp = await fetch('https://cena-proxy.marcos-afe.workers.dev',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -22007,7 +22008,7 @@ async function _sotAnalisarTextoColado(){
     + txt + '\n\nCatálogo de materiais (código: nome): '+matCodigos+'\nTipos de serviço (id: nome): '+srvCodigos+'\n\nSepare cada item em MATERIAL ou SERVIÇO. Para materiais use o código do catálogo.\nExtraia dados do cabeçalho: cliente, codigo_projeto, nome_projeto.\n\nRetorne SOMENTE JSON válido: {"info":{"cliente":"","codigo_projeto":"","nome_projeto":""},"materiais":[{"codigo":"","nome":"","qtd":0,"unidade":"","obs":""}],"servicos":[{"tipo_id":"","nome":"","qtd":0,"unidade":"","obs":""}]}';
 
   try{
-    var resp = await fetch('/.netlify/functions/claude-proxy',{
+    var resp = await fetch('https://cena-proxy.marcos-afe.workers.dev',{
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1500,
         messages:[{role:'user',content:prompt}]})
@@ -22131,7 +22132,7 @@ async function sotAnalisarListaIA(){
   });
 
   try{
-    var resp = await fetch('/.netlify/functions/claude-proxy',{
+    var resp = await fetch('https://cena-proxy.marcos-afe.workers.dev',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify({model:'claude-haiku-4-5-20251001', max_tokens:1500, messages:[{role:'user',content:contentBlocks}]})
@@ -24140,11 +24141,30 @@ function sotEditarMaterial(id){
       m.qtd_viabilizada = parseFloat(g('sot-mat-viab'))||0;
       m.observacao      = g('sot-mat-obs');
       var projId = m.projeto_id;
-      if(!DEMO) sbUpdate('sot_materiais',{
-        codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
-        qtd_projetada:m.qtd_projetada,qtd_viabilizada:m.qtd_viabilizada,
-        observacao:m.observacao
-      },'id=eq.'+id).catch(function(e){console.error('Edit mat:',e);});
+      if(!DEMO){
+        var _payload={codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
+          qtd_projetada:m.qtd_projetada,qtd_viabilizada:m.qtd_viabilizada,
+          observacao:m.observacao};
+        if(isUUID(id)){
+          // Normal update by UUID
+          sbUpdate('sot_materiais',_payload,'id=eq.'+id).catch(function(e){console.error('Edit mat:',e);});
+        } else {
+          // Temp ID — re-fetch real UUID from DB then update
+          sbFetch('sot_materiais',{filters:['projeto_id=eq.'+m.projeto_id,'codigo_sap=eq.'+m.codigo_sap,'deleted_at=is.null']})
+            .then(function(rows){
+              if(rows&&rows[0]&&rows[0].id){
+                m.id=rows[0].id; // fix local ID
+                sbUpdate('sot_materiais',_payload,'id=eq.'+rows[0].id);
+              } else {
+                // Record doesn't exist yet — insert it
+                var ins=Object.assign({projeto_id:m.projeto_id,
+                  qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,
+                  qtd_devolvida:0,qtd_processada_sap:0},_payload);
+                sbInsert('sot_materiais',ins).then(function(r){if(r&&r[0])m.id=r[0].id;});
+              }
+            }).catch(function(e){console.error('Edit mat lookup:',e);});
+        }
+      }
       closeModal();
       sotAtualizarAbaAtual(projId);
     };
@@ -24223,7 +24243,7 @@ function cenaAjudaEnviar(){
   if(btn) btn.disabled = true;
 
   // Chamar API Claude
-  fetch('/.netlify/functions/claude-proxy', {
+  fetch('https://cena-proxy.marcos-afe.workers.dev', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -24362,10 +24382,24 @@ function enviarWhatsAppTodos(){
 // ═══════════════════════════════════════════════════════════════
 
 // ── Controle de Versão ───────────────────────────────────────
+// ── Detecção de ambiente ─────────────────────────────────────
+var _isLocal = (window.location.protocol === 'file:'
+             || window.location.hostname === 'localhost'
+             || window.location.hostname === '127.0.0.1');
+
+if(_isLocal){
+  document.addEventListener('DOMContentLoaded', function(){
+    var b = document.getElementById('badge-local');
+    if(b) b.style.display = 'inline-block';
+    // Warn before any destructive action in local
+    console.log('%c🔧 MODO LOCAL — banco Supabase real conectado', 'background:#854F0B;color:#fff;padding:4px 8px;border-radius:4px;font-weight:bold');
+  });
+}
+
 var APP_VERSAO = {
-  numero: '7.7.3',
+  numero: '7.7.6',
   data:   '24/05/2026',
-  build:  '20260524-1600',
+  build:  '20260524-1900',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -37855,7 +37889,7 @@ function dbAbrirCameraOdometro(targetInputId, label){
       var mediaType = file.type || 'image/jpeg';
 
       // Chamar API Claude Vision
-      fetch('/.netlify/functions/claude-proxy', {
+      fetch('https://cena-proxy.marcos-afe.workers.dev', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -50294,7 +50328,7 @@ async function lcAnalisarContrato(){
         ? [{type:'image',source:{type:'base64',media_type:file.type,data:base64}},{type:'text',text:prompt}]
         : [{type:'text',text:prompt+'\n\nArquivo: '+file.name}];
 
-    var resp = await fetch('/.netlify/functions/claude-proxy',{
+    var resp = await fetch('https://cena-proxy.marcos-afe.workers.dev',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-5',max_tokens:2000,messages:[{role:'user',content:msgContent}]})
