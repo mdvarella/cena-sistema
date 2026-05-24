@@ -1044,6 +1044,12 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
   #topbar { padding-top: env(safe-area-inset-top, 0px); height: calc(48px + env(safe-area-inset-top, 0px)); }
   body { background: #1a1a18; }
 }
+
+/* AI pulse animation */
+@keyframes pulse {
+  0%,100% { opacity:.3; transform:scale(.8); }
+  50%      { opacity:1;  transform:scale(1.2); }
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -20138,6 +20144,232 @@ function sotAbrirProjeto(projetoId){
   });
 }
 
+
+// ── Analisador de Relatório de Campo com IA ─────────────────────────────────
+function sotAnalisarRelatorio(projetoId){
+  var proj = sot_projetos.find(function(x){ return x.id===projetoId; });
+  if(!proj){ progShowToast('⚠ Projeto não encontrado.','erro'); return; }
+
+  var contId   = proj.contrato_id||'';
+  var contNome = (contratos.find(function(c){return c.id===contId;})||{}).nome||'';
+  var isUPS    = (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+
+  // Build context: services for this contract
+  var svcList = servicos.filter(function(s){ return !contId||s.contrato_id===contId; });
+  var svcCtx  = svcList.length
+    ? svcList.map(function(s){
+        return s.codigo+'|'+s.descricao+'|'+(s.unidade||'UN')
+          +(isUPS ? '|qtd_ups:'+s.qtd_ups+'|valor_ups:R$'+s.valor_ups : '|valor:R$'+(s.valor_unitario||0));
+      }).join('\n')
+    : '(sem serviços cadastrados para este contrato — carregue a lista de serviços antes)';
+
+  // Build context: materials catalog
+  var matList = typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [];
+  var matContrato = matList.filter(function(m){
+    var cids=[]; try{cids=JSON.parse(m.contratos_ids||'[]');}catch(e){}
+    return cids.indexOf('todos')>=0 || cids.indexOf(contId)>=0 || cids.length===0;
+  });
+  var matCtx = matContrato.slice(0,200).map(function(m){
+    return (m.codigo_sap||m.codigo||'')+'|'+(m.descricao||m.nome||'')+'|'+(m.unidade||'UN');
+  }).join('\n') || '(sem materiais no catálogo)';
+
+  // Build context: current stock
+  var estoqueCtx = (alm_estoque||[]).filter(function(e){
+    return !contId || e.contrato_id===contId || e.contrato_id==='geral';
+  }).map(function(e){
+    return e.codigo_sap+'|'+e.material_desc+'|saldo:'+e.saldo+' '+e.unidade;
+  }).join('\n') || '(estoque não carregado)';
+
+  var systemPrompt = 'Você é um especialista em gestão de obras elétricas do sistema CENA ERP.\n'
+    + 'Contrato: '+contNome+' | Projeto: '+proj.codigo+' — '+proj.nome+'\n'
+    + 'Modalidade: '+(proj.modalidade||'N/A')+'\n\n'
+    + '=== SERVIÇOS DISPONÍVEIS PARA COBRANÇA ===\n'
+    + 'Formato: CÓDIGO | DESCRIÇÃO | UNIDADE'+(isUPS?' | QTD_UPS | VALOR_UPS':' | VALOR')+'\n'
+    + svcCtx + '\n\n'
+    + '=== CATÁLOGO DE MATERIAIS ===\n'
+    + 'Formato: CÓDIGO_SAP | DESCRIÇÃO | UNIDADE\n'
+    + matCtx + '\n\n'
+    + '=== ESTOQUE ATUAL (Almoxarifado) ===\n'
+    + estoqueCtx + '\n\n'
+    + 'INSTRUÇÕES:\n'
+    + '1. Ao receber um relatório de campo, identifique os serviços executados e materiais aplicados.\n'
+    + '2. Cruze com os SERVIÇOS DISPONÍVEIS acima e informe os CÓDIGOS EXATOS para lançamento.\n'
+    + '3. Calcule as quantidades'+(isUPS?' e o total UPS (Qtd Prev × Qtd UPS × Valor UPS)':' e valores')+' para cada item.\n'
+    + '4. Identifique materiais aplicados e confirme se estão no catálogo/estoque.\n'
+    + '5. Apresente o resultado em tabela organizada pronta para lançar no sistema.\n'
+    + '6. Se um serviço do relatório não tiver código correspondente, informe claramente.\n'
+    + 'Responda sempre em português, seja objetivo e preciso nos cálculos.';
+
+  // Render modal
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:780px;height:88vh;display:flex;flex-direction:column;padding:0;overflow:hidden">'
+    // Header
+    +'<div style="background:linear-gradient(135deg,#533AB7,#185FA5);color:#fff;padding:1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0">'
+    +'<div>'
+    +'<div style="font-size:16px;font-weight:700">🤖 Análise de Relatório com IA</div>'
+    +'<div style="font-size:11px;opacity:.85">'+proj.codigo+' — '+proj.nome+' · '+contNome+'</div>'
+    +'</div>'
+    +'<button onclick="closeModal()" style="background:rgba(255,255,255,.2);border:none;color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px">✕</button>'
+    +'</div>'
+    // Context info bar
+    +'<div style="background:#F0EEFF;padding:.5rem 1rem;font-size:11px;color:#533AB7;flex-shrink:0;border-bottom:.5px solid #e0dfd8">'
+    +'📚 Contexto carregado: <strong>'+svcList.length+' serviços</strong> · <strong>'+matContrato.length+' materiais</strong> · <strong>'+(alm_estoque||[]).length+' itens em estoque</strong>'
+    +'</div>'
+    // Chat messages
+    +'<div id="sar-msgs" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:.75rem">'
+    +'<div style="background:#f9f9f7;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#555;border-left:3px solid #533AB7">'
+    +'<strong>Como usar:</strong> Cole o texto do relatório de campo abaixo e clique em <strong>Analisar</strong>. '
+    +'O assistente irá identificar os serviços executados e cruzar com os códigos do seu contrato, '
+    +'calculando quantidades e valores prontos para lançar no projeto.'
+    +'</div>'
+    +'</div>'
+    // Input area
+    +'<div style="padding:.75rem 1rem;border-top:.5px solid #e0dfd8;flex-shrink:0;background:#fff">'
+    +'<textarea id="sar-input" placeholder="Cole aqui o texto do relatório de campo..." '
+    +'style="width:100%;height:110px;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem;font-size:12px;resize:none;box-sizing:border-box;font-family:inherit"></textarea>'
+    +'<div style="display:flex;gap:8px;margin-top:.5rem;align-items:center">'
+    +'<button onclick="sarLimpar()" class="btn" style="font-size:12px">🗑 Limpar</button>'
+    +'<button onclick="sarImportarAtividades(\''+projetoId+'\')" id="sar-importar" class="btn" style="font-size:12px;display:none;background:#3B6D11;color:#fff;border-color:#3B6D11">✅ Lançar no projeto</button>'
+    +'<button onclick="sarEnviar(\''+projetoId+'\')" id="sar-enviar" class="btn btn-pri" '
+    +'style="margin-left:auto;font-size:12px;background:linear-gradient(135deg,#533AB7,#185FA5);border:none;padding:.5rem 1.5rem;font-weight:600">🔍 Analisar</button>'
+    +'</div></div>'
+    +'</div></div>');
+
+  // Store system prompt and history for this session
+  window._sarSystemPrompt = systemPrompt;
+  window._sarHistorico    = [];
+  window._sarProjetoId    = projetoId;
+  window._sarResultado    = null;
+
+  setTimeout(function(){
+    var ta = document.getElementById('sar-input');
+    if(ta) ta.focus();
+  }, 100);
+}
+
+function sarLimpar(){
+  var ta = document.getElementById('sar-input');
+  if(ta) ta.value = '';
+  var msgs = document.getElementById('sar-msgs');
+  if(msgs) msgs.innerHTML = '<div style="background:#f9f9f7;border-radius:10px;padding:.75rem 1rem;font-size:12px;color:#555;border-left:3px solid #533AB7">'
+    +'Cole o texto do relatório de campo e clique em <strong>Analisar</strong>.</div>';
+  var imp = document.getElementById('sar-importar');
+  if(imp) imp.style.display='none';
+  window._sarHistorico = [];
+  window._sarResultado = null;
+}
+
+function sarAdicionarMsg(role, html, id){
+  var msgs = document.getElementById('sar-msgs');
+  if(!msgs) return;
+  var div = document.createElement('div');
+  if(id) div.id = id;
+  var isUser = role==='user';
+  div.style.cssText = 'padding:.75rem 1rem;border-radius:10px;font-size:12px;line-height:1.6;'
+    +(isUser
+      ? 'background:linear-gradient(135deg,#F0EEFF,#EBF4FD);border-left:3px solid #533AB7;'
+      : 'background:#fff;border:.5px solid #e0dfd8;border-left:3px solid #3B6D11;');
+  div.innerHTML = (isUser
+    ? '<div style="font-size:10px;color:#533AB7;font-weight:700;margin-bottom:4px">📋 RELATÓRIO</div>'
+    : '<div style="font-size:10px;color:#3B6D11;font-weight:700;margin-bottom:4px">🤖 ANÁLISE CENA IA</div>')
+    + html;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function sarEnviar(projetoId){
+  var input = document.getElementById('sar-input');
+  if(!input) return;
+  var texto = input.value.trim();
+  if(!texto){ progShowToast('⚠ Cole o texto do relatório antes de analisar.','erro'); return; }
+
+  var btn = document.getElementById('sar-enviar');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Analisando...'; }
+
+  // Show user message
+  sarAdicionarMsg('user', '<div style="white-space:pre-wrap;max-height:200px;overflow-y:auto">'+escHtml(texto.slice(0,2000))+(texto.length>2000?'\n[...'+Math.round((texto.length-2000)/1000,1)+'k chars restantes]':'')+'</div>');
+
+  // Build message with full report text
+  window._sarHistorico.push({role:'user', content:
+    'Analise o seguinte relatório de campo e forneça:\n'
+    +'1. Uma tabela com os SERVIÇOS a cobrar (código exato, descrição, qtd, valor calculado)\n'
+    +'2. Uma tabela com os MATERIAIS aplicados (código SAP, descrição, qtd, unidade)\n'
+    +'3. Itens sem código correspondente no sistema (para ação manual)\n\n'
+    +'RELATÓRIO:\n'+texto
+  });
+
+  // Add typing indicator
+  var typingId = 'sar-typing-'+Date.now();
+  sarAdicionarMsg('ai',
+    '<div id="'+typingId+'" style="display:flex;gap:4px;align-items:center">'
+    +'<span style="width:6px;height:6px;background:#533AB7;border-radius:50%;animation:pulse 1s infinite"></span>'
+    +'<span style="width:6px;height:6px;background:#533AB7;border-radius:50%;animation:pulse 1s infinite .2s"></span>'
+    +'<span style="width:6px;height:6px;background:#533AB7;border-radius:50%;animation:pulse 1s infinite .4s"></span>'
+    +'<span style="font-size:11px;color:#888;margin-left:4px">Analisando relatório...</span>'
+    +'</div>');
+
+  fetch('/.netlify/functions/claude-proxy', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 4000,
+      system:     window._sarSystemPrompt,
+      messages:   window._sarHistorico
+    })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    var typing = document.getElementById(typingId);
+    if(typing) typing.parentElement && typing.parentElement.remove
+      ? typing.parentElement.remove()
+      : typing.remove();
+
+    var resposta = (data.content&&data.content[0]&&data.content[0].text)||'Sem resposta.';
+    window._sarHistorico.push({role:'assistant', content:resposta});
+    window._sarResultado = resposta;
+
+    // Render markdown-like response
+    var html = resposta
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+      .replace(/\|([^\n]+)\|/g, function(m){
+        var cells = m.split('|').filter(function(x){return x.trim();});
+        return '<tr>'+cells.map(function(x){
+          return '<td style="padding:3px 8px;border:.5px solid #e0dfd8">'+x.trim()+'</td>';
+        }).join('')+'</tr>';
+      })
+      .replace(/(<tr>.*<\/tr>\n?)+/g, function(m){
+        return '<table style="border-collapse:collapse;width:100%;margin:.5rem 0;font-size:11px">'+m+'</table>';
+      })
+      .replace(/^#{1,3} (.+)$/gm,'<div style="font-weight:700;font-size:13px;color:#533AB7;margin:.5rem 0 .25rem">$1</div>')
+      .replace(/\n/g,'<br>');
+
+    sarAdicionarMsg('ai', html);
+
+    // Show import button
+    var imp = document.getElementById('sar-importar');
+    if(imp) imp.style.display='';
+
+    if(btn){ btn.disabled=false; btn.textContent='🔍 Analisar novamente'; }
+
+    // Enable follow-up question
+    var ta = document.getElementById('sar-input');
+    if(ta){ ta.value=''; ta.placeholder='Faça uma pergunta de acompanhamento ou cole outro relatório...'; }
+  })
+  .catch(function(e){
+    var typing = document.getElementById(typingId);
+    if(typing && typing.parentElement) typing.parentElement.remove();
+    sarAdicionarMsg('ai','<span style="color:#A32D2D">⚠ Erro ao contatar a IA: '+(e&&e.message||e)+'</span>');
+    if(btn){ btn.disabled=false; btn.textContent='🔍 Analisar'; }
+  });
+}
+
+function sarImportarAtividades(projetoId){
+  if(!window._sarResultado){ progShowToast('⚠ Analise um relatório primeiro.','erro'); return; }
+  progShowToast('💡 Use o resultado acima para lançar manualmente via "+ Atividade" ou "📥 Importar lista". Em breve: importação automática!');
+}
+
+
 function sotRenderDetalhe(p, docs){
   // Funciona tanto no SOT Obras quanto no painel co-* (PLPT etc.)
   var wrap = document.getElementById('co-proj-lista') || document.getElementById('sot-lista-projetos');
@@ -20273,7 +20505,9 @@ function sotRenderDetalhe(p, docs){
     +'<button class="btn btn-sm" onclick="sotAbrirNovoMaterial(\''+p.id+'\')" '
       +'style="font-size:11px;margin:.4rem .25rem">+ Material</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirAnexarDoc(\''+p.id+'\')" '
-      +'style="font-size:11px;margin:.4rem .75rem;color:#185FA5;border-color:#185FA5">📎 Doc</button>'
+      +'style="font-size:11px;margin:.4rem .25rem;color:#185FA5;border-color:#185FA5">📎 Doc</button>'
+    +'<button class="btn btn-sm" onclick="sotAnalisarRelatorio(\''+p.id+'\')" '
+      +'style="font-size:11px;margin:.4rem .75rem;background:linear-gradient(135deg,#533AB7,#185FA5);color:#fff;border:none;font-weight:600">🤖 Analisar relatório</button>'
     +'</div>'
 
     // Conteúdo da aba
@@ -20464,6 +20698,7 @@ function sotGerarDeParaSOT(projId){
 function sotRenderTabAtividades(projetoId){
   var proj = sot_projetos.find(function(x){ return x.id===projetoId; });
   var isListaPrecos = proj && (proj.modalidade||'').toLowerCase().indexOf('lista')>=0;
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
 
   var btnArea = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem">'
     +'<button class="btn btn-pri" onclick="sotAbrirNovaAtividade(\''+projetoId+'\')">+ Adicionar atividade</button>'
@@ -20475,13 +20710,19 @@ function sotRenderTabAtividades(projetoId){
       +'Nenhuma atividade cadastrada.</div>';
   }
   var valViab = sot_atividades.reduce(function(s,a){return s+(a.qtd_viabilizada||0)*(a.valor_unitario||0);},0);
-  var valTotal=sot_atividades.reduce(function(s,a){return s+(a.qtd_prevista||0)*(a.valor_unitario||0);},0);
+  var valTotal = isUPS
+    ? sot_atividades.reduce(function(s,a){return s+(a.qtd_prevista||0)*(a.qtd_ups||1)*(a.valor_ups||0);},0)
+    : sot_atividades.reduce(function(s,a){return s+(a.qtd_prevista||0)*(a.valor_unitario||0);},0);
   return btnArea+'<div style="overflow-x:auto">'
     +'<table class="tbl" style="min-width:820px">'
     +'<thead><tr style="background:#f9f9f7">'
     +'<th style="width:30px">#</th><th>Código</th><th>Descrição</th>'
     +'<th>Etapa</th><th style="text-align:right">Qtd Prev.</th><th>Un</th>'
-    +'<th style="text-align:right">V.Unit.</th><th style="text-align:right">V.Total</th>'
+    +(isUPS
+      ? '<th style="text-align:right;color:#533AB7" title="Qtd UPS do serviço">Qtd UPS</th>'
+        +'<th style="text-align:right;color:#533AB7" title="Valor UPS do serviço">Valor UPS</th>'
+      : '<th style="text-align:right">V.Unit.</th>')
+    +'<th style="text-align:right;font-weight:700">Total</th>'
     +'<th style="text-align:right;color:#185FA5" title="Quantidade Viabilizada">Qtd Viab.</th>'
     +'<th style="text-align:right;color:#3B6D11" title="Quantidade Executada">Qtd Exec.</th>'
     +'<th>Status</th><th></th>'
@@ -20504,8 +20745,16 @@ function sotRenderTabAtividades(projetoId){
         +'<td style="font-size:11px;color:#888">'+(a.etapa||'—')+'</td>'
         +'<td style="font-size:12px;text-align:right">'+(a.qtd_prevista||0)+'</td>'
         +'<td style="font-size:11px;color:#888">'+(a.unidade||'UN')+'</td>'
-        +'<td style="font-size:12px;text-align:right">'+fmtMoeda(a.valor_unitario||0)+'</td>'
-        +'<td style="font-size:12px;font-weight:600;text-align:right">'+fmtMoeda((a.qtd_prevista||0)*(a.valor_unitario||0))+'</td>'
+        +(isUPS
+          ? '<td style="font-size:12px;text-align:right;color:#533AB7">'+(a.qtd_ups||1)+'</td>'
+            +'<td style="font-size:12px;text-align:right;color:#533AB7">'+fmtMoeda(a.valor_ups||0)+'</td>'
+          : '<td style="font-size:12px;text-align:right">'+fmtMoeda(a.valor_unitario||0)+'</td>'
+        )
+        +'<td style="font-size:12px;font-weight:600;text-align:right">'
+        +(isUPS
+          ? fmtMoeda((a.qtd_prevista||0) * (a.qtd_ups||1) * (a.valor_ups||0))
+          : fmtMoeda((a.qtd_prevista||0) * (a.valor_unitario||0)))
+        +'</td>'
         // Qtd Viab
         +'<td style="text-align:right">'
         +(a.qtd_viabilizada>0
@@ -20533,7 +20782,9 @@ function sotRenderTabAtividades(projetoId){
         +'</tr>';
     }).join('')
     +'<tr style="background:#f9f9f7;font-weight:600">'
-    +'<td colspan="7" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>'
+    +(isUPS
+      ? '<td colspan="8" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>'
+      : '<td colspan="7" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>')
     +'<td style="font-size:12px;text-align:right">'+fmtMoeda(valTotal)+'</td>'
     +'<td style="font-size:12px;text-align:right;color:#185FA5">'+fmtMoeda(valViab)+'</td>'
     +'<td colspan="3"></td></tr>'
@@ -23280,12 +23531,15 @@ function sotConfirmarImportacao(projetoId){
       if(!DEMO)sbUpdate('sot_atividades',{qtd_prevista:ja.qtd_prevista},'id=eq.'+ja.id);
       som++;
     } else {
+      var _qups = serv?(serv.qtd_ups||1):1;
+      var _vups = serv?(serv.valor_ups||serv.valor_hora||0):0;
       var nova={id:'sa'+Date.now()+Math.random().toString(36).slice(2),
         projeto_id:projetoId,codigo:item.codigo,
         descricao:serv?serv.descricao:item.codigo,
         unidade:serv?(serv.unidade||'UN'):'UN',
         qtd_prevista:item.qtd,qtd_executada:0,
-        valor_unitario:serv?(serv.valor_ups||serv.valor_hora||0):0,
+        qtd_ups:_qups, valor_ups:_vups,
+        valor_unitario:_vups,
         status:'pendente',servico_id:serv?serv.id:null,
         ordem_exec:sot_atividades.length+1};
       sot_atividades.push(nova);
@@ -23998,9 +24252,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.5.4',
-  data:   '23/05/2026',
-  build:  '20260523-2359b',
+  numero: '7.6.0',
+  data:   '24/05/2026',
+  build:  '20260524-0300',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34426,9 +34680,126 @@ function renderProjetos(){
   });
 }
 
+
+// ── Novo Projeto: Preview da lista colada ─────────────────────────────
+function npPreviewLista(){
+  var txt = (document.getElementById('np-lista')||{}).value||'';
+  var prev = document.getElementById('np-lista-preview');
+  if(!prev) return;
+  var linhas = txt.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+  if(!linhas.length){ prev.textContent=''; return; }
+  prev.textContent = linhas.length + ' linha(s) — serão classificadas como serviço ou material ao salvar.';
+}
+
+// ── Novo Projeto: Processar lista colada (pós-criação do projeto) ──────
+function npProcessarLista(projetoId, contratoId, texto){
+  var linhas = texto.split('\n').map(function(l){return l.trim();}).filter(Boolean);
+  if(!linhas.length){ alert('✅ Projeto salvo!'); return; }
+
+  var sc    = servicos.filter(function(s){ return !contratoId || s.contrato_id===contratoId; });
+  var mats  = typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [];
+  var itens = typeof itens_catalogo!=='undefined'     ? itens_catalogo     : [];
+
+  var nServicos  = 0;
+  var nMateriais = 0;
+  var nNaoEncon  = 0;
+  var naoEncon   = [];
+
+  linhas.forEach(function(linha){
+    // Parse: codigo;qtd;un ou codigo TAB qtd
+    var sep   = linha.indexOf(';')>=0 ? ';' : '\t';
+    var cols  = linha.split(sep).map(function(x){return x.trim();});
+    var cod   = (cols[0]||'').toUpperCase();
+    var qtd   = parseFloat(cols[1])||1;
+    var un    = cols[2]||'';
+
+    if(!cod) return;
+
+    // 1. Check if it's a service code
+    var serv = sc.find(function(s){ return (s.codigo||'').toUpperCase()===cod; });
+    if(serv){
+      var _qups = serv.qtd_ups||1;
+      var _vups = serv.valor_ups||serv.valor_hora||0;
+      var nova = {
+        id:             'sa'+Date.now()+nServicos,
+        projeto_id:     projetoId,
+        codigo:         serv.codigo,
+        descricao:      serv.descricao||serv.nome||cod,
+        unidade:        un||serv.unidade||'UN',
+        qtd_prevista:   qtd,
+        qtd_viabilizada:0, qtd_executada:0, qtd_medida:0,
+        qtd_ups:        _qups,
+        valor_ups:      _vups,
+        valor_unitario: _vups,
+        tipo_servico_id: serv.id||null
+      };
+      nova.valor_total = nova.qtd_prevista * nova.valor_unitario;
+      sot_atividades.push(nova);
+      if(!DEMO){
+        var pS = Object.assign({},nova); delete pS.id;
+        sbInsert('sot_atividades', pS).then(function(r){if(r&&r[0])nova.id=r[0].id;}).catch(function(){});
+      }
+      nServicos++;
+      return;
+    }
+
+    // 2. Check if it's a material code
+    var mat = mats.find(function(m){ return (m.codigo_sap||m.codigo||'').toUpperCase()===cod; })
+           || itens.find(function(m){ return (m.codigo||'').toUpperCase()===cod; });
+    if(mat){
+      var novoMat = {
+        id:              'sm'+Date.now()+nMateriais,
+        projeto_id:      projetoId,
+        codigo_sap:      mat.codigo_sap||mat.codigo||cod,
+        descricao:       mat.descricao||mat.nome||cod,
+        unidade:         un||mat.unidade||mat.unidade_medida||'UN',
+        qtd_projetada:   qtd,
+        qtd_viabilizada: 0, qtd_requisitada:0, qtd_entregue:0,
+        qtd_aplicada:    0, qtd_devolvida:0, qtd_processada_sap:0
+      };
+      sot_materiais_proj.push(novoMat);
+      if(!DEMO){
+        var pM = Object.assign({},novoMat); delete pM.id;
+        sbInsert('sot_materiais', pM).then(function(r){if(r&&r[0])novoMat.id=r[0].id;}).catch(function(){});
+      }
+      nMateriais++;
+      return;
+    }
+
+    // 3. Not found — save as material with unknown description
+    naoEncon.push(cod);
+    nNaoEncon++;
+    var novoDesc = {
+      id:              'sm'+Date.now()+nMateriais,
+      projeto_id:      projetoId,
+      codigo_sap:      cod,
+      descricao:       cod + ' (código não encontrado no catálogo)',
+      unidade:         un||'UN',
+      qtd_projetada:   qtd,
+      qtd_viabilizada: 0, qtd_requisitada:0, qtd_entregue:0,
+      qtd_aplicada:    0, qtd_devolvida:0, qtd_processada_sap:0
+    };
+    sot_materiais_proj.push(novoDesc);
+    if(!DEMO){
+      var pD = Object.assign({},novoDesc); delete pD.id;
+      sbInsert('sot_materiais', pD).then(function(r){if(r&&r[0])novoDesc.id=r[0].id;}).catch(function(){});
+    }
+    nMateriais++;
+  });
+
+  var msg = '✅ Projeto salvo!\n\n';
+  if(nServicos)  msg += '⚡ ' + nServicos  + ' atividade(s) de serviço adicionada(s)\n';
+  if(nMateriais) msg += '📦 ' + nMateriais + ' material(is) adicionado(s)\n';
+  if(nNaoEncon)  msg += '⚠ ' + nNaoEncon  + ' código(s) não encontrado(s) no catálogo:\n   ' + naoEncon.slice(0,5).join(', ') + (naoEncon.length>5?'...':'') + '\n   (salvos como material — descrição pode ser editada depois)';
+
+  alert(msg);
+  renderProjetos();
+}
+
+
 function openNovoProjeto(){
   var contOpts=contratos.map(function(c){return '<option value="'+c.id+'">'+c.nome+'</option>';}).join('');
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:580px"><h3>Novo Projeto de Obra</h3>'    +'<div class="g2">'    +'<div class="fg"><label>Código</label><input id="np-cod" placeholder="OBR-001"/></div>'    +'<div class="fg"><label>Nome do projeto</label><input id="np-nome"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>Contrato</label><select id="np-cont">'+contOpts+'</select></div>'    +'<div class="fg"><label>Modalidade</label><select id="np-modal"><option value="">Selecione</option><option>UPS</option><option>Disponibilidade</option><option>Lista de preços</option></select></div>'    +'<div class="fg"><label>Status</label><select id="np-st"><option>A Viabilizar</option><option>Viabilizado</option><option>Devolvido</option><option>Falta Documentos</option><option>Falta Autorização</option><option>Aguardando Programação</option><option>Programado</option><option>Em execução</option><option>Execução Parcial</option><option>Executado</option><option>Em medição</option><option>Em Encerramento</option><option>Encerrado</option><option>Pago</option></select></div>'    +'<div class="fg"><label>Data início</label><input id="np-ini" type="date"/></div>'    +'<div class="fg"><label>Data prazo</label><input id="np-prazo" type="date"/></div>'    +'</div>'    +'<div class="fg"><label>Descrição</label><textarea id="np-desc"></textarea></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-proj">Salvar</button></div></div></div>');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:580px"><h3>Novo Projeto de Obra</h3>'    +'<div class="g2">'    +'<div class="fg"><label>Código</label><input id="np-cod" placeholder="OBR-001"/></div>'    +'<div class="fg"><label>Nome do projeto</label><input id="np-nome"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>Contrato</label><select id="np-cont">'+contOpts+'</select></div>'    +'<div class="fg"><label>Modalidade</label><select id="np-modal"><option value="">Selecione</option><option>UPS</option><option>Disponibilidade</option><option>Lista de preços</option></select></div>'    +'<div class="fg"><label>Status</label><select id="np-st"><option>A Viabilizar</option><option>Viabilizado</option><option>Devolvido</option><option>Falta Documentos</option><option>Falta Autorização</option><option>Aguardando Programação</option><option>Programado</option><option>Em execução</option><option>Execução Parcial</option><option>Executado</option><option>Em medição</option><option>Em Encerramento</option><option>Encerrado</option><option>Pago</option></select></div>'    +'<div class="fg"><label>Data início</label><input id="np-ini" type="date"/></div>'    +'<div class="fg"><label>Data prazo</label><input id="np-prazo" type="date"/></div>'    +'</div>'    +'<div class="fg"><label>Descrição</label><textarea id="np-desc"></textarea></div>'    +'<div class="fg" style="margin-top:.5rem">'    +'<label style="font-size:12px;font-weight:600">📋 Lista de materiais e serviços <span style=\'font-weight:400;color:#888;font-size:11px\'>(opcional — cole com Ctrl+V)</span></label>'    +'<textarea id="np-lista" style="width:100%;height:120px;font-size:11px;font-family:monospace;border:.5px solid #e0dfd8;border-radius:8px;padding:.5rem;resize:vertical;margin-top:4px" placeholder="Cole os códigos — um por linha ou separados por ;\n\n5020100055 ; 10\nABC-001 ; 5 ; UN" oninput="npPreviewLista()"></textarea>'    +'<div id="np-lista-preview" style="font-size:11px;color:#888;margin-top:2px"></div>'    +'</div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-proj">Salvar</button></div></div></div>');
   document.getElementById('btn-salvar-proj').onclick=function(){
     var cid=(document.getElementById('np-cont')||{}).value||'';
     var novo={
@@ -34449,7 +34820,13 @@ function openNovoProjeto(){
         projetos.push(inserido);
         renderProjetos();
         renderProjetosPorContrato('plpt','430df4d5-6d0a-459f-ae82-92546ff9e57f');
-        alert('✅ Projeto salvo!');
+        // Processar lista de materiais e serviços colada
+        var listaTexto = (document.getElementById('np-lista')||{}).value||'';
+        if(listaTexto.trim() && inserido.id){
+          npProcessarLista(inserido.id, novo.contrato_id, listaTexto);
+        } else {
+          alert('✅ Projeto salvo!');
+        }
       }).catch(function(e){
         alert('Erro ao salvar projeto: '+e);
       });
