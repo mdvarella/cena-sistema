@@ -22643,31 +22643,40 @@ function sotFiltrarMatCatalogo(busca){
 function sotAutoFillEditBySAP(cod){
   if(!cod) return;
   var codUpper = cod.toUpperCase().trim();
-  var mat = null;
 
-  if(!mat && typeof catalogo_materiais!=='undefined')
-    mat = catalogo_materiais.find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
-
-  if(!mat && typeof itens_catalogo!=='undefined'){
-    var it = itens_catalogo.find(function(m){ return (m.codigo||'').toUpperCase()===codUpper; });
-    if(it) mat = {descricao: it.nome||it.descricao||'', unidade: it.unidade_medida||it.unidade||'UN'};
+  function _fill(mat){
+    if(!mat||!mat.descricao) return;
+    var desc = document.getElementById('sot-mat-desc');
+    var un   = document.getElementById('sot-mat-un');
+    if(desc){ desc.value=mat.descricao; desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; },1500); }
+    if(un && mat.unidade) un.value = mat.unidade;
   }
 
-  if(!mat && typeof alm_movimentos!=='undefined'){
-    var mov = alm_movimentos.find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada'; });
-    if(mov) mat = {descricao: mov.material_desc||'', unidade: mov.unidade||'UN'};
-  }
+  var mat = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [])
+    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
+  if(mat){ _fill(mat); return; }
 
-  if(!mat && typeof alm_estoque!=='undefined'){
-    var est = alm_estoque.find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
-    if(est) mat = {descricao: est.material_desc||'', unidade: est.unidade||'UN'};
-  }
+  var it = (typeof itens_catalogo!=='undefined' ? itens_catalogo : [])
+    .find(function(m){ return (m.codigo||'').toUpperCase()===codUpper; });
+  if(it){ _fill({descricao:it.nome||it.descricao||'', unidade:it.unidade_medida||it.unidade||'UN'}); return; }
 
-  if(!mat || !mat.descricao) return;
-  var desc = document.getElementById('sot-mat-desc');
-  var un   = document.getElementById('sot-mat-un');
-  if(desc){ desc.value = mat.descricao; desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; }, 1500); }
-  if(un && mat.unidade) un.value = mat.unidade;
+  var mov = (typeof alm_movimentos!=='undefined' ? alm_movimentos : [])
+    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada'; });
+  if(mov){ _fill({descricao:mov.material_desc||'', unidade:mov.unidade||'UN'}); return; }
+
+  var est = (typeof alm_estoque!=='undefined' ? alm_estoque : [])
+    .find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
+  if(est){ _fill({descricao:est.material_desc||'', unidade:est.unidade||'UN'}); return; }
+
+  // Fetch from DB
+  Promise.all([
+    sbFetch('itens_catalogo', {filters:['codigo=eq.'+cod]}),
+    sbFetch('alm_movimentos', {filters:['codigo_sap=eq.'+cod,'tipo=eq.entrada'], order:'criado_em.desc'})
+  ]).then(function(res){
+    var itRow=res[0]&&res[0][0], movRow=res[1]&&res[1][0];
+    if(itRow) _fill({descricao:itRow.nome||itRow.descricao||'', unidade:itRow.unidade_medida||itRow.unidade||'UN'});
+    else if(movRow) _fill({descricao:movRow.material_desc||'', unidade:movRow.unidade||'UN'});
+  }).catch(function(){});
 }
 
 
@@ -22675,55 +22684,61 @@ function sotAutoFillBySAP(cod){
   if(!cod) return;
   var codUpper = cod.toUpperCase().trim();
 
-  // Search all sources in order
-  var mat = null;
-
-  // 1. catalogo_materiais
-  if(!mat && typeof catalogo_materiais!=='undefined')
-    mat = catalogo_materiais.find(function(m){
-      return (m.codigo_sap||'').toUpperCase()===codUpper;
-    });
-
-  // 2. itens_catalogo
-  if(!mat && typeof itens_catalogo!=='undefined'){
-    var it = itens_catalogo.find(function(m){
-      return (m.codigo||'').toUpperCase()===codUpper;
-    });
-    if(it) mat = {descricao: it.nome||it.descricao||'', unidade: it.unidade_medida||it.unidade||'UN'};
-  }
-
-  // 3. alm_movimentos (entries have material_desc)
-  if(!mat && typeof alm_movimentos!=='undefined'){
-    var mov = alm_movimentos.find(function(m){
-      return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada';
-    });
-    if(mov) mat = {descricao: mov.material_desc||'', unidade: mov.unidade||'UN'};
-  }
-
-  // 4. alm_estoque (computed saldo)
-  if(!mat && typeof alm_estoque!=='undefined'){
-    var est = alm_estoque.find(function(e){
-      return (e.codigo_sap||'').toUpperCase()===codUpper;
-    });
-    if(est) mat = {descricao: est.material_desc||'', unidade: est.unidade||'UN'};
-  }
-
-  if(!mat || !mat.descricao) return;
-
-  // Fill fields — always overwrite (user typed the code on purpose)
-  var desc = document.getElementById('sot-m-desc');
-  var un   = document.getElementById('sot-m-un');
-
-  if(desc) desc.value = mat.descricao;
-  if(un && mat.unidade){
-    for(var i=0; i<un.options.length; i++){
-      if(un.options[i].value.toUpperCase()===(mat.unidade||'UN').toUpperCase()){
-        un.selectedIndex=i; break;
+  function _aplicarFill(mat){
+    if(!mat || !mat.descricao) return;
+    var desc = document.getElementById('sot-m-desc');
+    var un   = document.getElementById('sot-m-un');
+    if(desc){ desc.value = mat.descricao; desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; },1500); }
+    if(un && mat.unidade){
+      for(var i=0;i<un.options.length;i++){
+        if(un.options[i].value.toUpperCase()===(mat.unidade||'UN').toUpperCase()){
+          un.selectedIndex=i; break;
+        }
       }
     }
   }
-  // Highlight to show it was auto-filled
-  if(desc){ desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; }, 1500); }
+
+  // 1. catalogo_materiais (local)
+  var mat = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [])
+    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
+  if(mat){ _aplicarFill(mat); return; }
+
+  // 2. itens_catalogo (local)
+  var it = (typeof itens_catalogo!=='undefined' ? itens_catalogo : [])
+    .find(function(m){ return (m.codigo||'').toUpperCase()===codUpper; });
+  if(it){ _aplicarFill({descricao: it.nome||it.descricao||'', unidade: it.unidade_medida||it.unidade||'UN'}); return; }
+
+  // 3. alm_movimentos (local)
+  var mov = (typeof alm_movimentos!=='undefined' ? alm_movimentos : [])
+    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada'; });
+  if(mov){ _aplicarFill({descricao: mov.material_desc||'', unidade: mov.unidade||'UN'}); return; }
+
+  // 4. alm_estoque (local)
+  var est = (typeof alm_estoque!=='undefined' ? alm_estoque : [])
+    .find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
+  if(est){ _aplicarFill({descricao: est.material_desc||'', unidade: est.unidade||'UN'}); return; }
+
+  // 5. Not found locally — fetch from DB (itens_catalogo and alm_movimentos)
+  var desc = document.getElementById('sot-m-desc');
+  if(desc) desc.placeholder = 'Buscando...';
+  Promise.all([
+    sbFetch('itens_catalogo', {filters:['codigo=eq.'+cod]}),
+    sbFetch('alm_movimentos', {filters:['codigo_sap=eq.'+cod,'tipo=eq.entrada'], order:'criado_em.desc'})
+  ]).then(function(res){
+    var itRow  = res[0]&&res[0][0];
+    var movRow = res[1]&&res[1][0];
+    if(itRow){
+      if(itens_catalogo) itens_catalogo.push(itRow);
+      _aplicarFill({descricao: itRow.nome||itRow.descricao||'', unidade: itRow.unidade_medida||itRow.unidade||'UN'});
+    } else if(movRow){
+      if(alm_movimentos) alm_movimentos.push(movRow);
+      _aplicarFill({descricao: movRow.material_desc||'', unidade: movRow.unidade||'UN'});
+    } else {
+      if(desc) desc.placeholder = 'Código não encontrado — preencha manualmente';
+    }
+  }).catch(function(){
+    if(desc) desc.placeholder = 'Erro ao buscar — preencha manualmente';
+  });
 }
 
 
@@ -24347,9 +24362,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.6.8',
+  numero: '7.6.9',
   data:   '24/05/2026',
-  build:  '20260524-1100',
+  build:  '20260524-1200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -34893,7 +34908,25 @@ function npProcessarLista(projetoId, contratoId, texto){
     sot_materiais_proj.push(novoDesc);
     if(!DEMO){
       var pD = Object.assign({},novoDesc); delete pD.id;
-      sbInsert('sot_materiais', pD).then(function(r){if(r&&r[0])novoDesc.id=r[0].id;}).catch(function(){});
+      sbInsert('sot_materiais', pD).then(function(r){
+        if(r&&r[0]) novoDesc.id=r[0].id;
+        // Try to fill description from DB after insert
+        if(novoDesc.descricao.indexOf('pendente')>=0){
+          Promise.all([
+            sbFetch('itens_catalogo',{filters:['codigo=eq.'+novoDesc.codigo_sap]}),
+            sbFetch('alm_movimentos',{filters:['codigo_sap=eq.'+novoDesc.codigo_sap,'tipo=eq.entrada'],order:'criado_em.desc'})
+          ]).then(function(res){
+            var itR=res[0]&&res[0][0], movR=res[1]&&res[1][0];
+            var descReal = (itR&&(itR.nome||itR.descricao)) || (movR&&movR.material_desc) || '';
+            var unReal   = (itR&&(itR.unidade_medida||itR.unidade)) || (movR&&movR.unidade) || '';
+            if(descReal && novoDesc.id){
+              novoDesc.descricao = descReal;
+              if(unReal) novoDesc.unidade = unReal;
+              sbUpdate('sot_materiais',{descricao:descReal,unidade:unReal||novoDesc.unidade},'id=eq.'+novoDesc.id);
+            }
+          }).catch(function(){});
+        }
+      }).catch(function(){});
     }
     nMateriais++;
   });
