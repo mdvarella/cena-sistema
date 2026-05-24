@@ -20156,11 +20156,13 @@ function sotAnalisarRelatorio(projetoId){
 
   // Build context: services for this contract
   var svcList = servicos.filter(function(s){ return !contId||s.contrato_id===contId; });
+  // Limit to 100 services max to avoid payload too large
   var svcCtx  = svcList.length
-    ? svcList.map(function(s){
+    ? svcList.slice(0,100).map(function(s){
         return s.codigo+'|'+s.descricao+'|'+(s.unidade||'UN')
           +(isUPS ? '|qtd_ups:'+s.qtd_ups+'|valor_ups:R$'+s.valor_ups : '|valor:R$'+(s.valor_unitario||0));
       }).join('\n')
+      +(svcList.length>100 ? '\n...e mais '+(svcList.length-100)+' serviços (total: '+svcList.length+')' : '')
     : '(sem serviços cadastrados para este contrato — carregue a lista de serviços antes)';
 
   // Build context: materials catalog
@@ -20169,7 +20171,7 @@ function sotAnalisarRelatorio(projetoId){
     var cids=[]; try{cids=JSON.parse(m.contratos_ids||'[]');}catch(e){}
     return cids.indexOf('todos')>=0 || cids.indexOf(contId)>=0 || cids.length===0;
   });
-  var matCtx = matContrato.slice(0,200).map(function(m){
+  var matCtx = matContrato.slice(0,80).map(function(m){
     return (m.codigo_sap||m.codigo||'')+'|'+(m.descricao||m.nome||'')+'|'+(m.unidade||'UN');
   }).join('\n') || '(sem materiais no catálogo)';
 
@@ -20189,8 +20191,7 @@ function sotAnalisarRelatorio(projetoId){
     + '=== CATÁLOGO DE MATERIAIS ===\n'
     + 'Formato: CÓDIGO_SAP | DESCRIÇÃO | UNIDADE\n'
     + matCtx + '\n\n'
-    + '=== ESTOQUE ATUAL (Almoxarifado) ===\n'
-    + estoqueCtx + '\n\n'
+
     + 'INSTRUÇÕES:\n'
     + '1. Ao receber um relatório de campo, identifique os serviços executados e materiais aplicados.\n'
     + '2. Cruze com os SERVIÇOS DISPONÍVEIS acima e informe os CÓDIGOS EXATOS para lançamento.\n'
@@ -20312,12 +20313,19 @@ function sarEnviar(projetoId){
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       model:      'claude-sonnet-4-20250514',
-      max_tokens: 4000,
+      max_tokens: 2000,
       system:     window._sarSystemPrompt,
       messages:   window._sarHistorico
     })
   })
-  .then(function(r){ return r.json(); })
+  .then(function(r){
+    if(!r.ok){
+      return r.text().then(function(txt){
+        throw new Error('HTTP '+r.status+': '+txt.slice(0,200));
+      });
+    }
+    return r.json();
+  })
   .then(function(data){
     var typing = document.getElementById(typingId);
     if(typing) typing.parentElement && typing.parentElement.remove
@@ -20359,7 +20367,8 @@ function sarEnviar(projetoId){
   .catch(function(e){
     var typing = document.getElementById(typingId);
     if(typing && typing.parentElement) typing.parentElement.remove();
-    sarAdicionarMsg('ai','<span style="color:#A32D2D">⚠ Erro ao contatar a IA: '+(e&&e.message||e)+'</span>');
+    console.error('[SAR] fetch error:', e);
+    sarAdicionarMsg('ai','<span style="color:#A32D2D">⚠ Erro: '+(e&&e.message||String(e))+'<br><small>Verifique o console para detalhes.</small></span>');
     if(btn){ btn.disabled=false; btn.textContent='🔍 Analisar'; }
   });
 }
@@ -24252,9 +24261,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.6.2',
+  numero: '7.6.3',
   data:   '24/05/2026',
-  build:  '20260524-0500',
+  build:  '20260524-0600',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
