@@ -4191,15 +4191,16 @@ async function sbDelete(table, filter){
   }catch(e2){ console.error('sbDelete exception', e2); }
 }
 async function sbUpdate(table,data,filter){
-  if(DEMO)return;
+  if(DEMO)return true;
   // Só bloquear se o filtro for EXATAMENTE id=eq.ALGO e ALGO não for UUID
   var mSimples=filter.match(/^id=eq\.(.+)$/);
-  if(mSimples&&!isUUID(mSimples[1])){console.warn('sbUpdate ignorado — ID não é UUID:',mSimples[1]);return;}
-  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
+  if(mSimples&&!isUUID(mSimples[1])){console.warn('sbUpdate ignorado — ID não é UUID:',mSimples[1]);return false;}
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json','Prefer':'return=minimal'};
   try{
     var r=await fetch(SB.url+'/rest/v1/'+table+'?'+filter,{method:'PATCH',headers:h,body:JSON.stringify(data)});
-    if(!r.ok){var err=await r.text();console.error('sbUpdate erro ['+table+']',r.status,err);}
-  }catch(e){console.error('sbUpdate exception',e);}
+    if(!r.ok){var err=await r.text();console.error('sbUpdate erro ['+table+']',r.status,err);return false;}
+    return true;
+  }catch(e){console.error('sbUpdate exception',e);return false;}
 }
 
 function todayStr(){return new Date().toLocaleDateString('pt-BR');}
@@ -24147,26 +24148,42 @@ function sotEditarMaterial(id){
           observacao:m.observacao};
         if(isUUID(id)){
           // Normal update by UUID
-          sbUpdate('sot_materiais',_payload,'id=eq.'+id).catch(function(e){console.error('Edit mat:',e);});
+          sbUpdate('sot_materiais',_payload,'id=eq.'+id).then(function(ok){
+            if(ok) progShowToast('✅ Material salvo.');
+            else progShowToast('⚠ Erro ao salvar no banco — verifique o console.','erro');
+          }).catch(function(e){
+            console.error('Edit mat:',e);
+            progShowToast('⚠ Erro: '+(e&&e.message||e),'erro');
+          });
         } else {
           // Temp ID — re-fetch real UUID from DB then update
           sbFetch('sot_materiais',{filters:['projeto_id=eq.'+m.projeto_id,'codigo_sap=eq.'+m.codigo_sap,'deleted_at=is.null']})
             .then(function(rows){
               if(rows&&rows[0]&&rows[0].id){
                 m.id=rows[0].id; // fix local ID
-                sbUpdate('sot_materiais',_payload,'id=eq.'+rows[0].id);
+                sbUpdate('sot_materiais',_payload,'id=eq.'+rows[0].id)
+                  .then(function(){ progShowToast('✅ Material salvo no banco.'); })
+                  .catch(function(e){ progShowToast('⚠ Erro ao salvar: '+(e&&e.message||e),'erro'); });
               } else {
                 // Record doesn't exist yet — insert it
                 var ins=Object.assign({projeto_id:m.projeto_id,
                   qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,
                   qtd_devolvida:0,qtd_processada_sap:0},_payload);
-                sbInsert('sot_materiais',ins).then(function(r){if(r&&r[0])m.id=r[0].id;});
+                sbInsert('sot_materiais',ins)
+                  .then(function(r){
+                    if(r&&r[0]) m.id=r[0].id;
+                    progShowToast('✅ Material inserido no banco.');
+                  }).catch(function(e){ progShowToast('⚠ Erro ao inserir: '+(e&&e.message||e),'erro'); });
               }
-            }).catch(function(e){console.error('Edit mat lookup:',e);});
+            }).catch(function(e){
+              console.error('Edit mat lookup:',e);
+              progShowToast('⚠ Erro ao buscar material: '+(e&&e.message||e),'erro');
+            });
         }
       }
       closeModal();
       sotAtualizarAbaAtual(projId);
+      progShowToast('✅ Material atualizado.');
     };
     var btnE = document.getElementById('sot-excluir-mat');
     if(btnE) btnE.onclick = function(){
@@ -24397,9 +24414,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.7.6',
+  numero: '7.7.7',
   data:   '24/05/2026',
-  build:  '20260524-1900',
+  build:  '20260524-2000',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
