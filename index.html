@@ -13540,7 +13540,7 @@ function _plptRenderProjetoDetalhe(projId){
     pj._loaded = true;
     Promise.all([
       sbFetch('sot_atividades', {filters:['projeto_id=eq.'+projId], order:'ordem_exec'}),
-      sbFetch('sot_materiais',  {filters:['projeto_id=eq.'+projId]}),
+      sbFetch('sot_materiais',  {filters:['projeto_id=eq.'+projId,'deleted_at=is.null']}),
       sbFetch('sot_documentos', {filters:['projeto_id=eq.'+projId], order:'criado_em.desc'}),
       sbFetch('sot_adicionais', {filters:['projeto_id=eq.'+projId], order:'criado_em.desc'}),
     ]).then(function(res){
@@ -13756,7 +13756,7 @@ function _plptRenderProjetoDetalhe(projId){
     if(!mats.length){
       // Tentar carregar do banco
       if(!DEMO){
-        sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId]})
+        sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId,'deleted_at=is.null']})
           .then(function(rows){
             if(rows&&rows.length){
               rows.forEach(function(r){
@@ -20066,7 +20066,7 @@ function sotAbrirProjeto(projetoId){
   // Carregar atividades e materiais do projeto
   Promise.all([
     DEMO?Promise.resolve([]):sbFetch('sot_atividades',{filters:['projeto_id=eq.'+projetoId],order:'ordem_exec'}),
-    DEMO?Promise.resolve([]):sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId]}),
+    DEMO?Promise.resolve([]):sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null']}),
     DEMO?Promise.resolve([]):sbFetch('sot_documentos',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.desc'}),
     DEMO?Promise.resolve([]):sbFetch('sot_projetos_historico',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.desc'}),
   ]).then(function(res){
@@ -20681,7 +20681,7 @@ function sotGerarDeParaSOT(projId){
   var _sotMats = (typeof sot_materiais!=='undefined') ? sot_materiais : [];
   var mats = _sotMats.filter(function(m){return m.projeto_id===projId;});
   if(!mats.length&&!DEMO){
-    sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId]}).then(function(rows){
+    sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId,'deleted_at=is.null']}).then(function(rows){
       if(rows&&rows.length && typeof sot_materiais!=='undefined'){
         rows.forEach(function(m){if(!sot_materiais.find(function(x){return x.id===m.id;}))sot_materiais.push(m);});
       }
@@ -22641,62 +22641,89 @@ function sotFiltrarMatCatalogo(busca){
 
 
 function sotAutoFillEditBySAP(cod){
-  if(!cod || cod.length < 3) return;
+  if(!cod) return;
   var codUpper = cod.toUpperCase().trim();
-  var mat = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [])
-    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
-  if(!mat){
-    var est = (typeof alm_estoque!=='undefined' ? alm_estoque : [])
-      .find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
-    if(est) mat = {descricao: est.material_desc, unidade: est.unidade||'UN'};
+  var mat = null;
+
+  if(!mat && typeof catalogo_materiais!=='undefined')
+    mat = catalogo_materiais.find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
+
+  if(!mat && typeof itens_catalogo!=='undefined'){
+    var it = itens_catalogo.find(function(m){ return (m.codigo||'').toUpperCase()===codUpper; });
+    if(it) mat = {descricao: it.nome||it.descricao||'', unidade: it.unidade_medida||it.unidade||'UN'};
   }
-  if(!mat) return;
+
+  if(!mat && typeof alm_movimentos!=='undefined'){
+    var mov = alm_movimentos.find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada'; });
+    if(mov) mat = {descricao: mov.material_desc||'', unidade: mov.unidade||'UN'};
+  }
+
+  if(!mat && typeof alm_estoque!=='undefined'){
+    var est = alm_estoque.find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
+    if(est) mat = {descricao: est.material_desc||'', unidade: est.unidade||'UN'};
+  }
+
+  if(!mat || !mat.descricao) return;
   var desc = document.getElementById('sot-mat-desc');
   var un   = document.getElementById('sot-mat-un');
-  if(desc && !desc.value.trim()) desc.value = mat.descricao||'';
+  if(desc){ desc.value = mat.descricao; desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; }, 1500); }
   if(un && mat.unidade) un.value = mat.unidade;
 }
 
 
 function sotAutoFillBySAP(cod){
-  if(!cod || cod.length < 3) return;
+  if(!cod) return;
   var codUpper = cod.toUpperCase().trim();
 
-  // Search catalogo_materiais
-  var mat = (typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [])
-    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
+  // Search all sources in order
+  var mat = null;
 
-  // Fallback: itens_catalogo
-  if(!mat){
-    mat = (typeof itens_catalogo!=='undefined' ? itens_catalogo : [])
-      .find(function(m){ return (m.codigo||'').toUpperCase()===codUpper; });
-    if(mat) mat = {descricao: mat.nome||mat.descricao, unidade: mat.unidade_medida||mat.unidade||'UN', codigo_sap: cod};
+  // 1. catalogo_materiais
+  if(!mat && typeof catalogo_materiais!=='undefined')
+    mat = catalogo_materiais.find(function(m){
+      return (m.codigo_sap||'').toUpperCase()===codUpper;
+    });
+
+  // 2. itens_catalogo
+  if(!mat && typeof itens_catalogo!=='undefined'){
+    var it = itens_catalogo.find(function(m){
+      return (m.codigo||'').toUpperCase()===codUpper;
+    });
+    if(it) mat = {descricao: it.nome||it.descricao||'', unidade: it.unidade_medida||it.unidade||'UN'};
   }
 
-  // Fallback: alm_estoque
-  if(!mat){
-    var est = (typeof alm_estoque!=='undefined' ? alm_estoque : [])
-      .find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
-    if(est) mat = {descricao: est.material_desc, unidade: est.unidade||'UN', codigo_sap: cod};
+  // 3. alm_movimentos (entries have material_desc)
+  if(!mat && typeof alm_movimentos!=='undefined'){
+    var mov = alm_movimentos.find(function(m){
+      return (m.codigo_sap||'').toUpperCase()===codUpper && m.tipo==='entrada';
+    });
+    if(mov) mat = {descricao: mov.material_desc||'', unidade: mov.unidade||'UN'};
   }
 
-  if(!mat) return;
+  // 4. alm_estoque (computed saldo)
+  if(!mat && typeof alm_estoque!=='undefined'){
+    var est = alm_estoque.find(function(e){
+      return (e.codigo_sap||'').toUpperCase()===codUpper;
+    });
+    if(est) mat = {descricao: est.material_desc||'', unidade: est.unidade||'UN'};
+  }
 
+  if(!mat || !mat.descricao) return;
+
+  // Fill fields — always overwrite (user typed the code on purpose)
   var desc = document.getElementById('sot-m-desc');
   var un   = document.getElementById('sot-m-un');
 
-  if(desc && !desc.value) desc.value = mat.descricao||'';
+  if(desc) desc.value = mat.descricao;
   if(un && mat.unidade){
-    // Select matching option
     for(var i=0; i<un.options.length; i++){
       if(un.options[i].value.toUpperCase()===(mat.unidade||'UN').toUpperCase()){
         un.selectedIndex=i; break;
       }
     }
   }
-  // Focus qty field next
-  var proj = document.getElementById('sot-m-proj');
-  if(proj && desc && desc.value) proj.focus();
+  // Highlight to show it was auto-filled
+  if(desc){ desc.style.background='#f0f7f0'; setTimeout(function(){ desc.style.background=''; }, 1500); }
 }
 
 
@@ -23693,7 +23720,7 @@ function sotRenderTabReserva(projetoId, container){
   if(!mats.length){
     if(!DEMO){
       if(container) container.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
-      sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId]})
+      sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null']})
         .then(function(rows){
           if(rows&&rows.length) rows.forEach(function(r){
             if(!sot_materiais_proj.find(function(x){return x.id===r.id;})) sot_materiais_proj.push(r);
@@ -24320,9 +24347,9 @@ function enviarWhatsAppTodos(){
 
 // ── Controle de Versão ───────────────────────────────────────
 var APP_VERSAO = {
-  numero: '7.6.7',
+  numero: '7.6.8',
   data:   '24/05/2026',
-  build:  '20260524-1000',
+  build:  '20260524-1100',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
