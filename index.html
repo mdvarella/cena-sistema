@@ -12186,7 +12186,7 @@ function _plptVerificarMateriaisSeparados(eqId){
   }
 
   sbFetch('plpt_requisicoes_materiais',{
-    filters:['status=in.(Separação,Aguardando confirmação almox,Em campo)'],
+    filters:['status=in.(Aguardando aprovação,Separação,Aguardando confirmação almox,Em campo)','deleted_at=is.null'],
     order:'criado_em.desc', limit:100
   }).then(function(rows){
     if(!document.getElementById('pg-diario')) return;
@@ -12197,21 +12197,111 @@ function _plptVerificarMateriaisSeparados(eqId){
       if(projIds.length && projIds.indexOf(r.projeto_id)>=0) return true;
       return false;
     });
-    // Separate: current prog requisitions vs historical
-    var dataCorte = progData || hoje;
-    var atuais    = minhas.filter(function(r){
-      return (r.data||r.criado_em||'').slice(0,10) >= dataCorte;
-    });
-    var historicos = minhas.filter(function(r){
-      return (r.data||r.criado_em||'').slice(0,10) < dataCorte;
-    });
-    // Show banner only for current requisitions
-    // Historical ones are still "Em campo" but from previous days
-    var paraExibir = atuais.length ? atuais : minhas;
-    if(!paraExibir.length) return;
-    _plptMostrarBannerMateriais(paraExibir);
+    // Show ALL pending reservations - no date filter
+    // Reservations persist until cancelled or completed
+    if(!minhas.length) return;
+    _plptMostrarBannerMateriais(minhas);
   }).catch(function(){});
 }
+
+
+// ── Cancelar Requisição ──────────────────────────────────────────────────────
+
+function plptAbrirDetalheReqs(reqs){
+  if(!reqs||!reqs.length) return;
+  // Store reqs globally for cancel access
+  window._pendReqs = reqs;
+  var html = reqs.map(function(r,ri){
+    var itens = [];
+    try{ itens = JSON.parse(r.itens||'[]'); }catch(e){}
+    return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem;margin-bottom:.5rem">'
+      +'<div style="font-size:12px;font-weight:600;margin-bottom:.25rem">'+escHtml(r.projeto_nome||r.projeto_id||'Projeto')+'</div>'
+      +'<div style="font-size:11px;color:#888;margin-bottom:.5rem">Status: '+r.status+'</div>'
+      +itens.map(function(it){
+        return '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0">'
+          +'<span>'+escHtml(it.descricao||it.material_desc||'')+'</span>'
+          +'<span>'+it.qtd+' '+(it.unidade||'UN')+'</span></div>';
+      }).join('')
+      +'<div style="margin-top:.5rem">'
+      +'<button onclick="closeModal();plptAbrirCancelarReq([window._pendReqs['+ri+']])" '
+      +'class="btn btn-sm" style="font-size:10px;color:#A32D2D;border-color:#A32D2D">🗑 Cancelar</button>'
+      +'</div></div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
+    +'<h3 style="margin-bottom:.75rem">⏳ Requisições Aguardando Almoxarife</h3>'
+    +html
+    +'<button class="btn" onclick="closeModal()" style="width:100%;margin-top:.5rem">Fechar</button>'
+    +'</div></div>');
+}
+
+
+function plptAbrirCancelarReq(reqs){
+  if(!reqs||!reqs.length) return;
+  var r = reqs[0]; // Show first one
+
+  var cargo   = (usuarioLogado&&usuarioLogado.cargo||'').toLowerCase();
+  var isAlmox = cargo.includes('almox') || cargo.includes('estoque');
+  var isSolic = r.solicitante_id === (usuarioLogado&&usuarioLogado.id);
+  var podeCanc = isSolic || !isAlmox; // requester can always cancel; non-almox too
+
+  var itens = [];
+  try{ itens = JSON.parse(r.itens||'[]'); }catch(e){}
+
+  var itensHtml = itens.map(function(it){
+    return '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:.5px solid #f0efe8;font-size:12px">'
+      +'<span>'+escHtml(it.descricao||it.material_desc||'')+'</span>'
+      +'<span style="color:#555">'+it.qtd+' '+(it.unidade||'UN')+'</span>'
+      +'</div>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
+    +'<h3 style="margin-bottom:.5rem">📋 Requisição — '+escHtml(r.projeto_nome||r.projeto_id||'')+'</h3>'
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:.6rem .75rem;margin-bottom:.75rem;font-size:11px;color:#555">'
+    +'<div>Status: <b>'+r.status+'</b></div>'
+    +'<div>Solicitante: <b>'+escHtml(r.solicitante||r.solicitante_nome||'—')+'</b></div>'
+    +'<div>Data: <b>'+fmtD(r.data||r.criado_em||'')+'</b></div>'
+    +'</div>'
+    +'<div style="margin-bottom:.75rem">'+itensHtml+'</div>'
+    +(reqs.length>1?'<div style="font-size:11px;color:#888;margin-bottom:.5rem">E mais '+(reqs.length-1)+' requisição(ões)...</div>':'')
+    +(podeCanc
+      ? '<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Motivo do cancelamento</label>'
+        +'<textarea class="inp" id="canc-motivo" rows="2" style="width:100%;resize:none" placeholder="Ex: Materiais não serão mais necessários nesta semana"></textarea></div>'
+        +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+        +'<button class="btn" onclick="closeModal()">Fechar</button>'
+        +'<button class="btn" onclick="plptConfirmarCancelamento(\''+r.id+'\',\''+r.projeto_id+'\')" '
+        +'style="flex:2;background:#A32D2D;color:#fff;border-color:#A32D2D;font-size:12px">🗑 Cancelar Requisição</button>'
+        +'</div>'
+      : '<div style="background:#FEF3E2;border-radius:8px;padding:.6rem .75rem;font-size:12px;color:#854F0B">'
+        +'⚠ Somente quem fez a requisição pode cancelá-la.<br>Entre em contato com <b>'+escHtml(r.solicitante||'—')+'</b>.'
+        +'</div>'
+        +'<div style="margin-top:.75rem"><button class="btn" onclick="closeModal()" style="width:100%">Fechar</button></div>')
+    +'</div></div>');
+}
+
+function plptConfirmarCancelamento(reqId, projetoId){
+  var motivo = ((document.getElementById('canc-motivo')||{}).value||'').trim();
+  if(!motivo){ progShowToast('⚠ Informe o motivo do cancelamento.','erro'); return; }
+
+  var r = (window.plpt_requisicoes||[]).find(function(x){ return x.id===reqId; });
+  if(r) r.status = 'Cancelada';
+
+  if(!DEMO){
+    sbUpdate('plpt_requisicoes_materiais',
+      {status:'Cancelada', motivo_cancelamento:motivo, cancelado_em:new Date().toISOString(),
+       cancelado_por:usuarioLogado?usuarioLogado.nome:''},
+      'id=eq.'+reqId
+    );
+  }
+  closeModal();
+  progShowToast('✅ Requisição cancelada.');
+  // Remove from Kanban banner
+  setTimeout(function(){
+    var banner = document.getElementById('plpt-mat-banner');
+    if(banner) banner.remove();
+  }, 500);
+}
+
 
 function _plptMostrarBannerMateriais(reqs){
   var pg = document.getElementById('pg-diario');
@@ -12235,6 +12325,7 @@ function _plptMostrarBannerMateriais(reqs){
   var paraRetirar = totalItens - emCampo;
 
   // Verificar se todas já foram confirmadas pela equipe ou ainda há pendentes
+  var emAprovacao = reqs.filter(function(r){ return r.status==='Aguardando aprovação'; });
   var pendentes   = reqs.filter(function(r){ return r.status==='Separação'; });
   var aguardando  = reqs.filter(function(r){ return r.status==='Aguardando confirmação almox'; });
 
@@ -12248,6 +12339,10 @@ function _plptMostrarBannerMateriais(reqs){
     bgColor   = '#854F0B';
     titulo    = '⏳ Aguardando liberação do almoxarifado';
     subtitulo = aguardando.length+' requisição(ões) confirmada(s) — almoxarife irá liberar em breve';
+  } else if(emAprovacao.length){
+    bgColor   = '#185FA5';
+    titulo    = '🔔 Requisição aguardando aprovação';
+    subtitulo = emAprovacao.length+' requisição(ões) enviada(s) — aguardando aprovação do almoxarife';
   } else {
     bgColor   = '#185FA5';
     titulo    = '🔧 Materiais em campo';
@@ -12268,6 +12363,10 @@ function _plptMostrarBannerMateriais(reqs){
     +'</div>';
   if(pendentes.length){
     banner.onclick = function(){ plptAbrirRetiradaMateriais(pendentes); };
+  } else if(aguardando.length){
+    banner.onclick = function(){ plptAbrirDetalheReqs(aguardando); };
+  } else if(emAprovacao.length){
+    banner.onclick = function(){ plptAbrirCancelarReq(emAprovacao); };
   }
   pg.insertBefore(banner, pg.firstChild);
 }
@@ -25224,9 +25323,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.4',
+  numero: '7.9.5',
   data:   '25/05/2026',
-  build:  '20260525-0600',
+  build:  '20260525-0700',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
