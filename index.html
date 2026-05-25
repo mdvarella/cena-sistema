@@ -2297,6 +2297,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11">💾 Salvar tudo</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B" title="Verificar colaboradores sem equipe nem status">⚠ Sem escala</button>
         <button class="btn" onclick="enviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366">📲 WhatsApp</button>
+        <button class="btn" onclick="progAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5" title="Recarregar dados do banco">🔄 Atualizar</button>
       </div>
     </div>
     <!-- Filtro por tipo -->
@@ -5756,13 +5757,20 @@ function relTmaStatus(){
   wrap.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">\u23f3 Calculando...</div>';
   Promise.all([
     sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
-    sbFetch('prog_status_diario',{filters:['data=eq.'+data]})
+    sbFetch('prog_status_diario',{filters:['data=eq.'+data]}),
+    sbFetch('prog_status_diario',{filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lte.'+data],order:'data.desc',limit:200})
   ]).then(function(res){
-    var comps=res[0]||[];var stRows=res[1]||[];
+    var comps=res[0]||[];var stRows=res[1]||[];var persistRows=res[2]||[];
     var escIds={};
     comps.forEach(function(c){parseColabIds(c.colaborador_ids).forEach(function(id){if(id)escIds[id]=true;});});
     var stMap={};
     stRows.forEach(function(r){stMap[r.colaborador_id]=r.status;});
+    // Apply persistent ferias/afastado spanning today
+    persistRows.forEach(function(r){
+      if(!stMap[r.colaborador_id]||stMap[r.colaborador_id]==='disponivel'){
+        stMap[r.colaborador_id]=r.status;
+      }
+    });
     Object.keys(_progStatus||{}).forEach(function(id){if(!stMap[id])stMap[id]=_progStatus[id];});
     var corDia=(_calDados&&_calDados[data])||CAL_CORES_2026[data]||'';
     var ST_LABEL={escalado:'Escalado',faltou:'Faltou',folga:'Folga',ferias:'Férias',afastado:'Afastado',treinamento:'Treinamento'};
@@ -12315,7 +12323,7 @@ function plptConfirmarCancelamento(reqId, projetoId){
 
 
 function _plptMostrarBannerMateriais(reqs){
-  console.log('[KANBAN BANNER] reqs recebidas:', reqs ? reqs.length : 0, reqs);
+  console.log('[KANBAN BANNER] reqs recebidas:', reqs ? reqs.length : 0, reqs ? reqs.map(function(r){return {id:r.id,status:r.status,eq:r.equipe_id};}) : []);
   var pg = document.getElementById('pg-diario');
   if(!pg){ console.log('[KANBAN BANNER] pg-diario não encontrado'); return; }
 
@@ -12365,7 +12373,7 @@ function _plptMostrarBannerMateriais(reqs){
   banner.id = 'plpt-mat-banner';
   banner.dataset.reqCount = reqs.length;
   banner.dataset.status   = pendentes.length ? 'pendente' : 'aguardando';
-  banner.style.cssText = 'position:sticky;top:0;z-index:100;background:'+bgColor+';color:#fff;padding:.75rem 1rem;border-radius:0 0 10px 10px;margin-bottom:.5rem;cursor:'+(pendentes.length?'pointer':'default')+';box-shadow:0 2px 8px rgba(0,0,0,.2)';
+  banner.style.cssText = 'position:sticky;top:0;z-index:100;background:'+bgColor+';color:#fff;padding:.75rem 1rem;border-radius:0 0 10px 10px;margin-bottom:.5rem;cursor:'+(pendentes.length||aguardando.length||emAprovacao.length?'pointer':'default')+';box-shadow:0 2px 8px rgba(0,0,0,.2)';
   banner.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between">'
     +'<div>'
     +'<div style="font-weight:700;font-size:14px">'+titulo+'</div>'
@@ -12380,7 +12388,11 @@ function _plptMostrarBannerMateriais(reqs){
   } else if(emAprovacao.length){
     banner.onclick = function(){ plptAbrirCancelarReq(emAprovacao); };
   }
+  // Try to insert into active page, fallback to body
+  var _oldB = document.getElementById('plpt-mat-banner');
+  if(_oldB) _oldB.remove();
   pg.insertBefore(banner, pg.firstChild);
+  console.log('[KANBAN BANNER] inserido em pg-diario');
 }
 
 function plptAbrirRetiradaMateriais(reqs){
@@ -12743,6 +12755,14 @@ function _plptRenderModalReserva(proj){
     +'<tbody id="rsv-tbody">'+linhas+'</tbody>'
     +'</table>'
     +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.5rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Equipe *</label>'
+    +'<select class="inp" id="rsv-equipe" style="width:100%"><option value="">Selecione a equipe...</option>'
+    +equipes_disp.map(function(e){return '<option value="'+e.id+'">'+escHtml(e.codigo||e.nome_equipe||e.nome||e.id)+'</option>';}).join('')
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data Retirada *</label>'
+    +'<input class="inp" id="rsv-data" type="date" value="'+dataHojeLocal()+'" style="width:100%"/></div>'
+    +'</div>'
     +'<div style="background:#f9f9f7;border-radius:8px;padding:.6rem .85rem;margin-bottom:.75rem;font-size:12px">'
     +'<b>Observações:</b><input class="inp" id="rsv-obs" placeholder="Opcional — informar necessidade especial, urgência, etc." style="width:100%;margin-top:4px"/>'
     +'</div>'
@@ -12806,10 +12826,12 @@ function plptEnviarReservaInline(){
   }
 
   var obs = (document.getElementById('rsv-obs-inline')||{}).value||'';
+  var rsvInlineEqId  = (document.getElementById('rsv-equipe-inline')||{}).value || (_dbEquipe ? _dbEquipe.id : null);
+  var rsvInlineData  = (document.getElementById('rsv-data-inline')||{}).value  || (dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10));
   var payload = {
     projeto_id:  projId,
-    equipe_id:   _dbEquipe ? _dbEquipe.id : null,
-    data:        dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10),
+    equipe_id:   rsvInlineEqId,
+    data:        rsvInlineData,
     status:      'Aguardando aprovação',
     solicitante: usuarioLogado ? usuarioLogado.nome : '',
     observacoes: obs,
@@ -12849,11 +12871,19 @@ function plptEnviarReserva(){
     progShowToast('⚠ Selecione ao menos um material com quantidade maior que zero.', 'erro');
     return;
   }
-  var obs = (document.getElementById('rsv-obs')||{}).value||'';
+  var obs         = (document.getElementById('rsv-obs')||{}).value||'';
+  var rsvEquipeId = (document.getElementById('rsv-equipe')||{}).value||d.equipe_id||'';
+  var rsvData     = (document.getElementById('rsv-data')||{}).value||d.data||dataHojeLocal();
+
+  if(!rsvEquipeId){
+    progShowToast('⚠ Selecione a equipe responsável pela retirada.','erro');
+    return;
+  }
+
   var payload = {
     projeto_id:  d.projeto_id,
-    equipe_id:   d.equipe_id,
-    data:        d.data,
+    equipe_id:   rsvEquipeId,
+    data:        rsvData,
     status:      'Aguardando aprovação',
     solicitante: usuarioLogado ? usuarioLogado.nome : '',
     observacoes: obs,
@@ -13940,6 +13970,14 @@ function _plptRenderProjetoDetalhe(projId){
       +'</tr></thead>'
       +'<tbody>'+linhas+'</tbody>'
       +'</table>'
+      +'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.5rem">'
+      +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Equipe</label>'
+      +'<select class="inp" id="rsv-equipe-inline" style="width:100%"><option value="">Selecione...</option>'
+      +equipes_disp.map(function(e){return '<option value="'+e.id+'">'+escHtml(e.codigo||e.nome_equipe||e.nome||e.id)+'</option>';}).join('')
+      +'</select></div>'
+      +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data Retirada</label>'
+      +'<input class="inp" id="rsv-data-inline" type="date" value="'+dataHojeLocal()+'" style="width:100%"/></div>'
       +'</div>'
       +'<div class="fg" style="margin-bottom:.75rem">'
       +'<label style="font-size:11px;font-weight:600">Observações</label>'
@@ -24785,9 +24823,23 @@ function sotRenderTabReserva(projetoId, container){
 
   html += '</tbody></table></div>';
 
+  // Equipe options
+  var _podeEditarEq = usuarioLogado && ['admin','gestor','coordenador'].indexOf(usuarioLogado.perfil)>=0;
+  var _eqsOpts = (equipes_disp.length ? equipes_disp : (typeof equipes!=='undefined'?equipes:[]));
+  var _eqOptsHtml = '<option value="">Selecione a equipe...</option>'
+    + _eqsOpts.map(function(e){ return '<option value="'+e.id+'">'+escHtml(e.codigo||(e.nome_equipe||'')+(e.nome?' — '+e.nome:''))+'</option>'; }).join('');
+  var _hoje = dataHojeLocal();
+
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.5rem">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Equipe responsável *</label>'
+    +'<select class="inp" id="sot-rsv-equipe" style="width:100%"'+(_podeEditarEq?'':' disabled')+'>'+_eqOptsHtml+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Data prevista de retirada</label>'
+    +'<input class="inp" id="sot-rsv-data" type="date" value="'+_hoje+'" style="width:100%"/></div>'
+    +'</div>';
+
   html += '<div style="display:grid;grid-template-columns:1fr auto;gap:.5rem;align-items:end">'
     +'<div class="fg"><label style="font-size:11px;font-weight:600">Observações</label>'
-    +'<input class="inp" id="sot-rsv-obs" placeholder="Data prevista de uso, urgência, local de entrega..." style="width:100%"/></div>'
+    +'<input class="inp" id="sot-rsv-obs" placeholder="Urgência, local de entrega..." style="width:100%"/></div>'
     +'<button class="btn btn-pri" onclick="sotEnviarRequisicao(\''+projetoId+'\')" '
     +'style="background:#533AB7;border-color:#533AB7;white-space:nowrap;height:38px">📤 Solicitar</button>'
     +'</div>';
@@ -24800,6 +24852,13 @@ function sotRenderTabReserva(projetoId, container){
   window._sotReservaItensMats = mats;
   window._sotReservaProjId    = projetoId;
   sotCarregarHistoricoRequisicoes(projetoId);
+  // Event delegation for mover-req buttons (avoids inline onclick quote issues)
+  if(container){
+    container.addEventListener('click', function(e){
+      var btn = e.target.closest('.sot-mover-req');
+      if(btn){ sotMoverReq(btn.dataset.id, btn.dataset.status); }
+    });
+  }
 }
 
 
@@ -24839,16 +24898,26 @@ function sotEnviarRequisicao(projetoId){
     progShowToast('⚠ Selecione ao menos um material com quantidade.','erro');
     return;
   }
-  var obs = (document.getElementById('sot-rsv-obs')||{}).value||'';
+  var obs         = (document.getElementById('sot-rsv-obs')||{}).value||'';
+  var equipeIdSel = (document.getElementById('sot-rsv-equipe')||{}).value||null;
+  var dataRetir   = (document.getElementById('sot-rsv-data')||{}).value||dataHojeLocal();
+
+  if(!equipeIdSel){
+    progShowToast('⚠ Selecione a equipe responsável pela retirada.','erro');
+    return;
+  }
+
   var payload = {
-    projeto_id:  projetoId,
-    equipe_id:   null,
-    data:        dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10),
-    status:      'Aguardando aprovação',
-    solicitante: usuarioLogado ? usuarioLogado.nome : '',
-    observacoes: obs,
-    itens:       JSON.stringify(itensSel),
-    criado_em:   new Date().toISOString(),
+    projeto_id:    projetoId,
+    equipe_id:     equipeIdSel,
+    data:          dataRetir,
+    data_retirada: dataRetir,
+    status:        'Aguardando aprovação',
+    solicitante:   usuarioLogado ? usuarioLogado.nome : '',
+    solicitante_id: usuarioLogado ? usuarioLogado.id : null,
+    observacoes:   obs,
+    itens:         JSON.stringify(itensSel),
+    criado_em:     new Date().toISOString(),
   };
   if(!DEMO){
     sbInsert('plpt_requisicoes_materiais', payload)
@@ -24862,6 +24931,27 @@ function sotEnviarRequisicao(projetoId){
     progShowToast('✅ Requisição enviada (demo)');
   }
 }
+
+
+// ── Mover status de requisição (almoxarife/gestor) ──────────────────────────
+function sotMoverReq(reqId, novoStatus){
+  var confirmar = novoStatus==='Reprovada' ? confirm('Reprovar esta requisição?') : true;
+  if(!confirmar) return;
+  if(!DEMO){
+    sbUpdate('plpt_requisicoes_materiais', {status:novoStatus, atualizado_em:new Date().toISOString()}, 'id=eq.'+reqId)
+      .then(function(ok){
+        if(ok){
+          progShowToast('✅ Status atualizado: '+novoStatus);
+          // Refresh the reservation tab
+          var p = sot_projetos.find(function(x){ return x.id===_sotProjetoAtual; });
+          if(p) sotCarregarHistoricoRequisicoes(p.id);
+        } else {
+          progShowToast('⚠ Erro ao atualizar status.','erro');
+        }
+      });
+  }
+}
+
 
 function sotCarregarHistoricoRequisicoes(projetoId){
   var el = document.getElementById('sot-rsv-historico');
@@ -24881,14 +24971,33 @@ function sotCarregarHistoricoRequisicoes(projetoId){
       +rows.map(function(r){
         var sc=STATUS_COR[r.status]||{bg:'#f5f5f3',c:'#555'};
         var itens=parseJsonField(r.itens,[]);
-        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .85rem;margin-bottom:.4rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem">'
+        var eqNome = '';
+        if(r.equipe_id){
+          var _eq = (equipes_disp.length?equipes_disp:(typeof equipes!=='undefined'?equipes:[])).find(function(e){return e.id===r.equipe_id;});
+          eqNome = _eq ? (_eq.codigo||_eq.nome_equipe||'') : r.equipe_id.slice(0,8);
+        }
+        var _isAlmox = usuarioLogado && (usuarioLogado.cargo||'').toLowerCase().indexOf('almox')>=0;
+        var _isGestor = usuarioLogado && ['admin','gestor','coordenador'].indexOf(usuarioLogado.perfil)>=0;
+        var _acoes = '';
+        if(_isAlmox || _isGestor){
+          if(r.status==='Aguardando aprovação')
+            _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Aprovada" style="font-size:10px;background:#3B6D11;color:#fff;border-color:#3B6D11">✅ Aprovar</button> ';
+          if(r.status==='Aprovada' && _isAlmox)
+            _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Separação" style="font-size:10px;background:#185FA5;color:#fff;border-color:#185FA5">📦 Separar</button> ';
+          _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Reprovada" style="font-size:10px;color:#A32D2D;border-color:#A32D2D">✕</button>';
+        }
+        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .85rem;margin-bottom:.4rem">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.2rem">'
           +'<div>'
-          +'<div style="font-size:12px;font-weight:600">'+fmtD(r.data)
+          +'<div style="font-size:12px;font-weight:600">'+fmtD(r.data_retirada||r.data)
           +(r.solicitante?' · '+escHtml(r.solicitante):'')+'</div>'
           +'<div style="font-size:11px;color:#888">'+itens.length+' item(ns)'
+          +(eqNome?' · 👥 '+escHtml(eqNome):' · <span style="color:#A32D2D">⚠ sem equipe</span>')
           +(r.observacoes?' · '+escHtml(r.observacoes.slice(0,50)):'')+'</div>'
           +'</div>'
           +'<span style="background:'+sc.bg+';color:'+sc.c+';border-radius:8px;padding:2px 10px;font-size:11px;font-weight:600">'+r.status+'</span>'
+          +'</div>'
+          +(_acoes?'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:.3rem">'+_acoes+'</div>':'')
           +'</div>';
       }).join('')
       +'</div>';
@@ -25335,9 +25444,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.8',
+  numero: '7.9.14',
   data:   '25/05/2026',
-  build:  '20260525-1000',
+  build:  '20260525-1600',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -25700,9 +25809,22 @@ function progCarregarStatus(data){
       });
       progAplicarPersistentes(data);
 
+      // Auto-retorno: se data_retorno <= hoje, limpar ferias do localStorage e banco
+      var hoje = dataHojeLocal();
+      persistRows.forEach(function(r){
+        if(r.data_retorno && r.data_retorno <= hoje){
+          // Data de retorno chegou — limpar automaticamente
+          progRemoverPersistente(r.colaborador_id);
+          if(!DEMO) sbDelete('prog_status_diario',
+            'colaborador_id=eq.'+r.colaborador_id+
+            '&status=in.(ferias,afastado,treinamento)');
+        }
+      });
+
       // Aplicar persistentes (afastado/férias) de dias anteriores ainda ativos
       var jaVisto={};
       persistRows.forEach(function(r){
+        if(r.data_retorno && r.data_retorno <= hoje) return; // auto-retornado, ignorar
         if(!jaVisto[r.colaborador_id] &&
            (!_progStatus[r.colaborador_id]||_progStatus[r.colaborador_id]==='disponivel')){
           jaVisto[r.colaborador_id]=true;
@@ -25829,6 +25951,72 @@ function progGetTipo(){
 }
 
 // ── Quadro principal ─────────────────────────────────────────
+
+
+function progAtualizarQuadro(){
+  // Force reload: clear date cache so progCarregarStatusDia fetches fresh data
+  _progStatusDateCache = null;
+  // Clear local status to avoid stale data
+  _progStatus = {};
+  _progStatusInfo = {};
+  // Show spinner on button
+  var btn = document.querySelector('[onclick="progAtualizarQuadro()"]');
+  if(btn){ btn.textContent = '⏳ Atualizando...'; btn.disabled = true; }
+  var data = progGetData();
+  // Reload from DB
+  if(!DEMO){
+    Promise.all([
+      sbFetch('prog_status_diario',{filters:['data=eq.'+data]}),
+      sbFetch('prog_status_diario',{
+        filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lte.'+data],
+        order:'data.desc', limit:500
+      }),
+      sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
+    ]).then(function(res){
+      var rowsDia     = res[0]||[];
+      var persistRows = res[1]||[];
+      var comps       = res[2]||[];
+
+      // Apply day status
+      rowsDia.forEach(function(r){
+        _progStatus[r.colaborador_id] = r.status==='faltou'?'falta':r.status;
+        if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+        if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+      });
+
+      // Apply persistent ferias
+      var hoje = dataHojeLocal();
+      var jaVisto={};
+      persistRows.forEach(function(r){
+        if(r.data_retorno && r.data_retorno <= hoje){ progRemoverPersistente(r.colaborador_id); return; }
+        if(!jaVisto[r.colaborador_id] && (!_progStatus[r.colaborador_id]||_progStatus[r.colaborador_id]==='disponivel')){
+          jaVisto[r.colaborador_id] = true;
+          _progStatus[r.colaborador_id] = r.status;
+          if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+          if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+          progSalvarPersistente(r.colaborador_id,r.status,r.data,r.data_retorno,r.obs||'');
+        }
+      });
+
+      // Reload composicao_dia
+      if(comps.length) composicao_dia = comps;
+
+      progRenderQuadro();
+      progShowToast('✅ Quadro atualizado!');
+    }).catch(function(){
+      progRenderQuadro();
+      progShowToast('⚠ Erro ao atualizar — verifique a conexão.','erro');
+    }).finally(function(){
+      var btn2 = document.querySelector('[onclick="progAtualizarQuadro()"]');
+      if(btn2){ btn2.textContent = '🔄 Atualizar'; btn2.disabled = false; }
+    });
+  } else {
+    progRenderQuadro();
+    var btn2 = document.querySelector('[onclick="progAtualizarQuadro()"]');
+    if(btn2){ btn2.textContent = '🔄 Atualizar'; btn2.disabled = false; }
+  }
+}
+
 
 function progRenderQuadro(){
   var data = progGetData();
@@ -27260,16 +27448,32 @@ function progSalvarMenuStatus(colabId){
   // Persistir no banco
   if(!DEMO){
     var data = progGetData();
-    sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
-      var payload={colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null};
-      if(rows&&rows.length){
-        sbUpdate('prog_status_diario',payload,'colaborador_id=eq.'+colabId+',data=eq.'+data);
-      } else {
-        sbInsert('prog_status_diario',payload);
-      }
-    }).catch(function(){
-      sbInsert('prog_status_diario',{colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null});
-    });
+    if(novoSt==='disponivel'){
+      // Remover TODOS os registros de férias/afastamento deste colaborador
+      // (podem ter sido criados em data diferente da data atual)
+      sbDelete('prog_status_diario',
+        'colaborador_id=eq.'+colabId+
+        '&status=in.(ferias,afastado,treinamento)');
+      // Também salvar disponivel para a data atual
+      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
+        if(rows&&rows.length){
+          sbUpdate('prog_status_diario',{status:'disponivel',data_retorno:null},
+            'colaborador_id=eq.'+colabId+'&data=eq.'+data);
+        }
+        // Don't insert disponivel — it's the default
+      });
+    } else {
+      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
+        var payload={colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null};
+        if(rows&&rows.length){
+          sbUpdate('prog_status_diario',payload,'colaborador_id=eq.'+colabId+'&data=eq.'+data);
+        } else {
+          sbInsert('prog_status_diario',payload);
+        }
+      }).catch(function(){
+        sbInsert('prog_status_diario',{colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null});
+      });
+    }
   }
   closeModal();
   progRenderQuadro();
@@ -43526,11 +43730,13 @@ window.addEventListener('load',async function(){
       document.dispatchEvent(new CustomEvent('cena:logged-in'));
   auditLog('login','sistema','Login no sistema — perfil: '+(usuarioLogado.perfil||''),{email:usuarioLogado.email||''});
       console.log('[INIT] carregarDados OK — perfil:', usuarioLogado.perfil, 'equipe_id:', usuarioLogado.equipe_id);
-      // Show Kanban banner for ALL profiles
-      setTimeout(function(){
-        var eqIdKanban = usuarioLogado.equipe_id || null;
-        _plptVerificarMateriaisSeparados(eqIdKanban);
-      }, 1500);
+      // Kanban banner: only for equipe profile in field diary
+      // For admin/gestor: Kanban is in Obras > Materiais tab
+      if(usuarioLogado.perfil==='equipe' && usuarioLogado.equipe_id){
+        setTimeout(function(){
+          _plptVerificarMateriaisSeparados(usuarioLogado.equipe_id);
+        }, 1500);
+      }
       if(usuarioLogado.perfil==='equipe'){
         // Re-buscar dados atualizados do usuário do banco (equipe_id pode ter mudado)
         if(!DEMO){
