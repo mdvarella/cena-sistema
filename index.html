@@ -20099,11 +20099,15 @@ function sotAbrirProjeto(projetoId){
     DEMO?Promise.resolve([]):sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null']}),
     DEMO?Promise.resolve([]):sbFetch('sot_documentos',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.desc'}),
     DEMO?Promise.resolve([]):sbFetch('sot_projetos_historico',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.desc'}),
+    DEMO?Promise.resolve([]):sbFetch('sot_medicoes',{filters:['projeto_id=eq.'+projetoId],order:'numero'}),
+    DEMO?Promise.resolve([]):sbFetch('sot_med_itens',{filters:['projeto_id=eq.'+projetoId]}),
   ]).then(function(res){
-    sot_atividades = res[0]||[];
+    sot_atividades     = res[0]||[];
     sot_materiais_proj = res[1]||[];
-    var docs = res[2]||[];
-    sot_historico = res[3]||[];
+    var docs           = res[2]||[];
+    sot_historico      = res[3]||[];
+    sot_medicoes       = (res[4]||[]).filter(function(m){return m.projeto_id===projetoId;});
+    sot_med_itens      = (res[5]||[]).filter(function(i){return i.projeto_id===projetoId;});
 
     // Enriquecer sot_materiais_proj com breakdown completo de plpt_requisicoes
     if(!DEMO && sot_materiais_proj.length){
@@ -20406,6 +20410,607 @@ function sarImportarAtividades(projetoId){
 }
 
 
+
+// ══════════════════════════════════════════════════════════════════════
+// MÓDULO MEDIÇÃO DE OBRAS
+// Status: rascunho → em_aprovacao → aprovado → emissao_liberada → nf_emitida
+// ══════════════════════════════════════════════════════════════════════
+
+var sot_medicoes     = []; // medições do projeto atual
+var sot_med_itens    = []; // itens de cada medição
+
+var MED_STATUS = {
+  rascunho:         { label:'Rascunho',          cor:'#555',    bg:'#f0efe8', ico:'✏️'  },
+  em_aprovacao:     { label:'Em Aprovação',       cor:'#854F0B', bg:'#FEF3E2', ico:'📤' },
+  aprovado:         { label:'Aprovado',           cor:'#185FA5', bg:'#EBF4FD', ico:'✅' },
+  emissao_liberada: { label:'Emissão Liberada',   cor:'#3B6D11', bg:'#EAF3DE', ico:'🔓' },
+  nf_emitida:       { label:'NF Emitida',         cor:'#085041', bg:'#E6F4F1', ico:'🧾' },
+};
+
+// ── Renderizar aba de medições ─────────────────────────────────────────
+function sotRenderTabMedicao(projetoId, container){
+  if(!container) container = document.getElementById('sot-tab-content');
+  if(!container) return;
+
+  var proj  = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+
+  var meds  = sot_medicoes.filter(function(m){ return m.projeto_id===projetoId; });
+
+  var html = '<div style="padding:.5rem 0">'
+
+  // Header
+  + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
+  + '<span style="font-size:13px;font-weight:700;color:#1a1a18">📐 Medições do Projeto</span>'
+  + '<button class="btn btn-pri" onclick="sotNovaMedicao(\''+projetoId+'\')" style="font-size:11px">+ Nova Medição</button>'
+  + '</div>';
+
+  if(!meds.length){
+    html += '<div style="text-align:center;padding:2rem;color:#aaa;font-size:13px">'
+    + '📐 Nenhuma medição cadastrada ainda.<br><br>'
+    + '<button class="btn btn-pri" onclick="sotNovaMedicao(\''+projetoId+'\')" style="font-size:12px">+ Criar Primeira Medição</button>'
+    + '</div>';
+  } else {
+    html += meds.sort(function(a,b){ return (a.numero||0)-(b.numero||0); }).map(function(med){
+      var st  = MED_STATUS[med.status] || MED_STATUS.rascunho;
+      var tot = (med.valor_total||0);
+      return '<div style="border:.5px solid #e0dfd8;border-radius:10px;margin-bottom:.75rem;overflow:hidden">'
+        // Card header
+        + '<div style="background:'+st.bg+';padding:.6rem 1rem;display:flex;align-items:center;justify-content:space-between;cursor:pointer" '
+        + 'onclick="sotToggleMedicao(\''+med.id+'\')">'
+        + '<div style="display:flex;align-items:center;gap:.5rem">'
+        + '<span style="font-weight:700;color:'+st.cor+'">'+st.ico+' Parcial '+med.numero+'</span>'
+        + '<span style="font-size:10px;background:'+st.bg+';color:'+st.cor+';border:.5px solid '+st.cor+';border-radius:4px;padding:2px 7px;font-weight:600">'+st.label+'</span>'
+        + (med.data_corte ? '<span style="font-size:10px;color:#888">Data corte: <b>'+fmtD(med.data_corte)+'</b></span>' : '')
+        + '</div>'
+        + '<div style="display:flex;align-items:center;gap:.5rem">'
+        + '<span style="font-size:13px;font-weight:700;color:#185FA5">R$ '+fmtMoeda(tot)+'</span>'
+        + '<span style="color:#aaa;font-size:14px">▾</span>'
+        + '</div>'
+        + '</div>'
+        // Timeline
+        + '<div style="display:flex;gap:0;border-bottom:.5px solid #f0efe8;padding:.4rem 1rem;background:#fafaf8;font-size:10px;color:#888;flex-wrap:wrap;gap:1rem">'
+        + (med.data_envio     ? '<span>📤 Enviado: <b>'+fmtD(med.data_envio)+'</b></span>'     : '')
+        + (med.data_aprovacao ? '<span>✅ Aprovado: <b>'+fmtD(med.data_aprovacao)+'</b></span>' : '')
+        + (med.data_emissao   ? '<span>🔓 Liberado: <b>'+fmtD(med.data_emissao)+'</b></span>'  : '')
+        + (med.data_nf        ? '<span>🧾 NF: <b>'+fmtD(med.data_nf)+'</b></span>'             : '')
+        + (med.nfs            ? '<span>NF(s): <b>'+escHtml(med.nfs)+'</b></span>'               : '')
+        + '</div>'
+        // Body (collapsed by default, toggled)
+        + '<div id="med-body-'+med.id+'" style="display:none">'
+        + sotRenderMedicaoBody(med, projetoId, isUPS)
+        + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function sotToggleMedicao(medId){
+  var body = document.getElementById('med-body-'+medId);
+  if(!body) return;
+  body.style.display = body.style.display==='none' ? '' : 'none';
+}
+
+function sotRenderMedicaoBody(med, projetoId, isUPS){
+  var itens = sot_med_itens.filter(function(i){ return i.medicao_id===med.id; });
+  var st    = MED_STATUS[med.status] || MED_STATUS.rascunho;
+  var podeEditar = med.status==='rascunho';
+
+  var html = '<div style="padding:.75rem 1rem">';
+
+  // Observations
+  if(med.observacao){
+    html += '<div style="background:#fff8e1;border-radius:6px;padding:.5rem .75rem;margin-bottom:.5rem;font-size:11px;color:#854F0B">📝 '+escHtml(med.observacao)+'</div>';
+  }
+
+  // Items table
+  html += '<div style="overflow-x:auto;margin-bottom:.75rem">'
+  + '<table style="width:100%;border-collapse:collapse;font-size:11px">'
+  + '<thead><tr style="background:#f9f9f7;font-size:10px">'
+  + '<th style="padding:5px 8px;text-align:left">Código</th>'
+  + '<th style="padding:5px 8px;text-align:left">Descrição / Serviço</th>'
+  + '<th style="padding:5px 8px;text-align:center">Un</th>'
+  + (isUPS ? '<th style="padding:5px 8px;text-align:right">Qtd UPS</th><th style="padding:5px 8px;text-align:right">Vlr UPS</th>' : '<th style="padding:5px 8px;text-align:right">Vlr Unit.</th>')
+  + '<th style="padding:5px 8px;text-align:right">Qtd Executada</th>'
+  + '<th style="padding:5px 8px;text-align:right;color:'+(med.status==='aprovado'||med.status==='emissao_liberada'||med.status==='nf_emitida'?'#3B6D11':'#185FA5')+'">Qtd Medida</th>'
+  + '<th style="padding:5px 8px;text-align:right;font-weight:700">Total</th>'
+  + (podeEditar ? '<th style="padding:5px 8px"></th>' : '')
+  + '</tr></thead><tbody>';
+
+  if(!itens.length){
+    html += '<tr><td colspan="8" style="padding:1rem;text-align:center;color:#aaa">Nenhum item ainda</td></tr>';
+  } else {
+    itens.forEach(function(item){
+      var total = isUPS
+        ? (item.qtd_medida||0) * (item.qtd_ups||1) * (item.valor_ups||0)
+        : (item.qtd_medida||0) * (item.valor_unitario||0);
+      html += '<tr style="border-bottom:.5px solid #f0efe8">'
+        + '<td style="padding:5px 8px;font-size:10px;font-family:monospace;color:#888">'+(item.codigo||'—')+'</td>'
+        + '<td style="padding:5px 8px;font-weight:500">'+escHtml(item.descricao||'')+'</td>'
+        + '<td style="padding:5px 8px;text-align:center;color:#888">'+(item.unidade||'UN')+'</td>'
+        + (isUPS
+          ? '<td style="padding:5px 8px;text-align:right;color:#533AB7">'+(item.qtd_ups||1)+'</td>'
+            +'<td style="padding:5px 8px;text-align:right;color:#533AB7">R$ '+fmtMoeda(item.valor_ups||0)+'</td>'
+          : '<td style="padding:5px 8px;text-align:right">R$ '+fmtMoeda(item.valor_unitario||0)+'</td>')
+        + '<td style="padding:5px 8px;text-align:right;color:#555">'+(item.qtd_executada||0)+'</td>'
+        + '<td style="padding:5px 8px;text-align:right;font-weight:600;color:#185FA5">'
+          + (podeEditar
+            ? '<input type="number" step="0.01" min="0" value="'+(item.qtd_medida||0)+'" '
+              + 'onchange="sotAtualizarQtdMedida(\''+item.id+'\',this.value,\''+med.id+'\',\''+projetoId+'\')" '
+              + 'style="width:70px;border:.5px solid #e0dfd8;border-radius:4px;padding:2px 5px;text-align:right;font-size:11px">'
+            : (item.qtd_medida||0))
+          + '</td>'
+        + '<td style="padding:5px 8px;text-align:right;font-weight:700;color:#3B6D11">R$ '+fmtMoeda(total)+'</td>'
+        + (podeEditar ? '<td><button onclick="sotRemoverItemMedicao(\''+item.id+'\',\''+med.id+'\',\''+projetoId+'\')" style="background:none;border:none;cursor:pointer;color:#A32D2D;font-size:13px" title="Remover">✕</button></td>' : '')
+        + '</tr>';
+    });
+  }
+
+  // Totals row
+  var totalGeral = itens.reduce(function(s,item){
+    return s + (isUPS
+      ? (item.qtd_medida||0)*(item.qtd_ups||1)*(item.valor_ups||0)
+      : (item.qtd_medida||0)*(item.valor_unitario||0));
+  }, 0);
+
+  html += '<tr style="background:#f9f9f7;font-weight:700">'
+    + '<td colspan="'+(isUPS?6:5)+'" style="padding:6px 8px;text-align:right;font-size:12px">Total da Parcial:</td>'
+    + '<td style="padding:6px 8px;text-align:right;font-size:14px;color:#185FA5">R$ '+fmtMoeda(totalGeral)+'</td>'
+    + (podeEditar ? '<td></td>' : '')
+    + '</tr>';
+
+  html += '</tbody></table></div>';
+
+  // Actions based on status
+  html += '<div style="display:flex;gap:.5rem;flex-wrap:wrap">';
+
+  if(med.status==='rascunho'){
+    html += '<button class="btn btn-sm" onclick="sotAdicionarItensMedicao(\''+med.id+'\',\''+projetoId+'\')" style="font-size:11px;color:#185FA5;border-color:#185FA5">➕ Adicionar itens</button>';
+    html += '<button class="btn btn-sm" onclick="sotSugerirItensMedicao(\''+med.id+'\',\''+projetoId+'\')" style="font-size:11px">🔄 Sugerir do diário</button>';
+    html += '<button class="btn btn-sm" onclick="sotAvancarMedicao(\''+med.id+'\',\'em_aprovacao\',\''+projetoId+'\')" style="font-size:11px;background:#854F0B;color:#fff;border-color:#854F0B">📤 Enviar p/ Aprovação</button>';
+    html += '<button class="btn btn-sm" onclick="sotExcluirMedicao(\''+med.id+'\',\''+projetoId+'\')" style="font-size:11px;color:#A32D2D;border-color:#A32D2D">🗑 Excluir</button>';
+  } else if(med.status==='em_aprovacao'){
+    html += '<button class="btn btn-sm" onclick="sotAjustarMedicao(\''+med.id+'\',\''+projetoId+'\')" style="font-size:11px;color:#854F0B;border-color:#854F0B">✏️ Registrar Ajuste</button>';
+    html += '<button class="btn btn-sm" onclick="sotAvancarMedicao(\''+med.id+'\',\'aprovado\',\''+projetoId+'\')" style="font-size:11px;background:#185FA5;color:#fff;border-color:#185FA5">✅ Registrar Aprovação</button>';
+  } else if(med.status==='aprovado'){
+    html += '<button class="btn btn-sm" onclick="sotAvancarMedicao(\''+med.id+'\',\'emissao_liberada\',\''+projetoId+'\')" style="font-size:11px;background:#3B6D11;color:#fff;border-color:#3B6D11">🔓 Liberar Emissão NF</button>';
+  } else if(med.status==='emissao_liberada'){
+    html += '<button class="btn btn-sm" onclick="sotRegistrarNF(\''+med.id+'\',\''+projetoId+'\')" style="font-size:11px;background:#085041;color:#fff;border-color:#085041">🧾 Registrar NF</button>';
+  }
+
+  html += '</div></div>';
+  return html;
+}
+
+// ── Nova Medição ────────────────────────────────────────────────────────
+function sotNovaMedicao(projetoId){
+  var proj   = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var numero = sot_medicoes.filter(function(m){ return m.projeto_id===projetoId; }).length + 1;
+  var hoje   = dataHojeLocal();
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin-bottom:1rem">📐 Nova Medição — Parcial '+numero+'</h3>'
+    +'<div style="display:grid;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Data de Corte *</label>'
+    +'<input class="inp" id="nm-corte" type="date" value="'+hoje+'" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observação</label>'
+    +'<textarea class="inp" id="nm-obs" rows="2" style="width:100%;resize:none" placeholder="Descrição da parcial..."></textarea></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="nm-salvar" style="flex:2">✅ Criar Medição</button>'
+    +'</div></div></div>');
+
+  setTimeout(function(){
+    var btn = document.getElementById('nm-salvar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var corte = (document.getElementById('nm-corte')||{}).value||'';
+      var obs   = (document.getElementById('nm-obs')||{}).value||'';
+      if(!corte){ progShowToast('⚠ Informe a data de corte.','erro'); return; }
+
+      var nova = {
+        id:          'med'+Date.now(),
+        projeto_id:  projetoId,
+        numero:      numero,
+        status:      'rascunho',
+        data_corte:  corte,
+        observacao:  obs,
+        valor_total: 0,
+        criado_em:   new Date().toISOString()
+      };
+      sot_medicoes.push(nova);
+      if(!DEMO){
+        var p = Object.assign({},nova); delete p.id;
+        sbInsert('sot_medicoes', p).then(function(r){ if(r&&r[0]) nova.id=r[0].id; });
+      }
+      closeModal();
+      sotRenderTabMedicao(projetoId);
+      // Auto-open and suggest items
+      setTimeout(function(){
+        sotToggleMedicao(nova.id);
+        sotSugerirItensMedicao(nova.id, projetoId);
+      }, 200);
+    };
+  }, 50);
+}
+
+// ── Sugerir itens do diário ────────────────────────────────────────────
+function sotSugerirItensMedicao(medId, projetoId){
+  var med   = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med || med.status!=='rascunho') return;
+  var proj  = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+
+  // Get executed quantities from sot_atividades
+  var ativs = sot_atividades.filter(function(a){
+    return a.projeto_id===projetoId && (a.qtd_executada||0)>0;
+  });
+
+  if(!ativs.length){
+    progShowToast('⚠ Nenhuma atividade com execução lançada.','erro'); return;
+  }
+
+  // Check existing items in this medicao
+  var existentes = sot_med_itens.filter(function(i){ return i.medicao_id===medId; });
+  var added = 0;
+
+  ativs.forEach(function(a){
+    // Don't add if already in this medicao
+    if(existentes.find(function(e){ return e.atividade_id===a.id; })) return;
+
+    // Calculate how much was already measured in other parciais
+    var jaMediado = sot_med_itens
+      .filter(function(i){ return i.atividade_id===a.id && i.medicao_id!==medId; })
+      .reduce(function(s,i){ return s+(i.qtd_medida||0); }, 0);
+
+    var dispMedir = (a.qtd_executada||0) - jaMediado;
+    if(dispMedir <= 0) return;
+
+    var novoItem = {
+      id:             'mi'+Date.now()+added,
+      medicao_id:     medId,
+      projeto_id:     projetoId,
+      atividade_id:   a.id,
+      codigo:         a.codigo||'',
+      descricao:      a.descricao||'',
+      unidade:        a.unidade||'UN',
+      qtd_executada:  a.qtd_executada||0,
+      qtd_medida:     dispMedir,
+      qtd_ups:        a.qtd_ups||1,
+      valor_ups:      a.valor_ups||0,
+      valor_unitario: a.valor_unitario||0
+    };
+    sot_med_itens.push(novoItem);
+    if(!DEMO){
+      var p = Object.assign({},novoItem); delete p.id;
+      sbInsert('sot_med_itens', p).then(function(r){ if(r&&r[0]) novoItem.id=r[0].id; });
+    }
+    added++;
+  });
+
+  // Recalculate total
+  sotRecalcTotalMedicao(medId, projetoId, isUPS);
+  progShowToast('✅ '+added+' item(s) sugerido(s) do diário.');
+  sotRenderTabMedicao(projetoId);
+  setTimeout(function(){ sotToggleMedicao(medId); }, 100);
+}
+
+// ── Adicionar itens manualmente ─────────────────────────────────────────
+function sotAdicionarItensMedicao(medId, projetoId){
+  var proj  = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+  var ativs = sot_atividades.filter(function(a){ return a.projeto_id===projetoId; });
+  var existentes = sot_med_itens.filter(function(i){ return i.medicao_id===medId; });
+
+  var opts = ativs.map(function(a){
+    var jaTem = existentes.find(function(e){ return e.atividade_id===a.id; });
+    return '<option value="'+a.id+'"'+(jaTem?' disabled style="color:#aaa"':'')+'>'+escHtml((a.codigo?a.codigo+' — ':'')+a.descricao)+(jaTem?' (já incluído)':'')+'</option>';
+  }).join('');
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin-bottom:.75rem">➕ Adicionar Item à Medição</h3>'
+    +'<div style="display:grid;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Atividade</label>'
+    +'<select class="inp" id="ai-atv" style="width:100%" onchange="sotPreencherItemMedicao()"><option value="">Selecione...</option>'+opts+'</select></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd Executada</label>'
+    +'<input class="inp" id="ai-exec" type="number" readonly style="width:100%;background:#f9f9f7"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd a Medir *</label>'
+    +'<input class="inp" id="ai-medir" type="number" step="0.01" min="0" style="width:100%"/></div>'
+    +'</div></div>'
+    +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="ai-salvar" style="flex:2">✅ Adicionar</button>'
+    +'</div></div></div>');
+
+  // Store medId for the handler
+  window._aiMedId     = medId;
+  window._aiProjetoId = projetoId;
+  window._aiIsUPS     = isUPS;
+
+  setTimeout(function(){
+    var btn = document.getElementById('ai-salvar');
+    if(btn) btn.onclick = function(){
+      var atvId = (document.getElementById('ai-atv')||{}).value;
+      var qtd   = parseFloat((document.getElementById('ai-medir')||{}).value)||0;
+      if(!atvId){ progShowToast('⚠ Selecione uma atividade.','erro'); return; }
+      if(qtd<=0){ progShowToast('⚠ Informe a quantidade.','erro'); return; }
+
+      var a = sot_atividades.find(function(x){ return x.id===atvId; });
+      if(!a) return;
+
+      var novoItem = {
+        id:             'mi'+Date.now(),
+        medicao_id:     window._aiMedId,
+        projeto_id:     window._aiProjetoId,
+        atividade_id:   a.id,
+        codigo:         a.codigo||'',
+        descricao:      a.descricao||'',
+        unidade:        a.unidade||'UN',
+        qtd_executada:  a.qtd_executada||0,
+        qtd_medida:     qtd,
+        qtd_ups:        a.qtd_ups||1,
+        valor_ups:      a.valor_ups||0,
+        valor_unitario: a.valor_unitario||0
+      };
+      sot_med_itens.push(novoItem);
+      if(!DEMO){
+        var p = Object.assign({},novoItem); delete p.id;
+        sbInsert('sot_med_itens', p).then(function(r){ if(r&&r[0]) novoItem.id=r[0].id; });
+      }
+      sotRecalcTotalMedicao(window._aiMedId, window._aiProjetoId, window._aiIsUPS);
+      closeModal();
+      sotRenderTabMedicao(window._aiProjetoId);
+      setTimeout(function(){ sotToggleMedicao(window._aiMedId); }, 100);
+    };
+  }, 50);
+}
+
+function sotPreencherItemMedicao(){
+  var sel  = document.getElementById('ai-atv');
+  var atvId= sel ? sel.value : '';
+  var a    = sot_atividades.find(function(x){ return x.id===atvId; });
+  var exec = document.getElementById('ai-exec');
+  var med  = document.getElementById('ai-medir');
+  if(exec) exec.value = a ? (a.qtd_executada||0) : '';
+  if(med)  med.value  = a ? (a.qtd_executada||0) : '';
+}
+
+// ── Atualizar qtd medida inline ────────────────────────────────────────
+function sotAtualizarQtdMedida(itemId, valor, medId, projetoId){
+  var item = sot_med_itens.find(function(i){ return i.id===itemId; });
+  if(!item) return;
+  item.qtd_medida = parseFloat(valor)||0;
+  if(!DEMO) sbUpdate('sot_med_itens',{qtd_medida:item.qtd_medida},'id=eq.'+itemId);
+  var proj  = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+  sotRecalcTotalMedicao(medId, projetoId, isUPS);
+}
+
+// ── Remover item ────────────────────────────────────────────────────────
+function sotRemoverItemMedicao(itemId, medId, projetoId){
+  if(!confirm('Remover este item da medição?')) return;
+  sot_med_itens = sot_med_itens.filter(function(i){ return i.id!==itemId; });
+  if(!DEMO) sbDelete('sot_med_itens','id=eq.'+itemId);
+  var proj  = sot_projetos.find(function(x){ return x.id===projetoId; });
+  var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
+  sotRecalcTotalMedicao(medId, projetoId, isUPS);
+  sotRenderTabMedicao(projetoId);
+  setTimeout(function(){ sotToggleMedicao(medId); }, 100);
+}
+
+// ── Recalcular total ────────────────────────────────────────────────────
+function sotRecalcTotalMedicao(medId, projetoId, isUPS){
+  var med   = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med) return;
+  var itens = sot_med_itens.filter(function(i){ return i.medicao_id===medId; });
+  med.valor_total = itens.reduce(function(s,item){
+    return s + (isUPS
+      ? (item.qtd_medida||0)*(item.qtd_ups||1)*(item.valor_ups||0)
+      : (item.qtd_medida||0)*(item.valor_unitario||0));
+  }, 0);
+  if(!DEMO && isUUID(med.id))
+    sbUpdate('sot_medicoes',{valor_total:med.valor_total},'id=eq.'+med.id);
+}
+
+// ── Avançar status ──────────────────────────────────────────────────────
+function sotAvancarMedicao(medId, novoStatus, projetoId){
+  var med = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med) return;
+
+  var campos = {
+    em_aprovacao:     {campo:'data_envio',     label:'Data de Envio ao Cliente', icon:'📤'},
+    aprovado:         {campo:'data_aprovacao', label:'Data de Aprovação',        icon:'✅'},
+    emissao_liberada: {campo:'data_emissao',   label:'Data de Liberação',        icon:'🔓'},
+  };
+
+  var cfg = campos[novoStatus];
+  if(!cfg){ progShowToast('⚠ Status inválido.','erro'); return; }
+
+  var hoje = dataHojeLocal();
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.75rem">'+cfg.icon+' '+MED_STATUS[novoStatus].label+'</h3>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">'+cfg.label+' *</label>'
+    +'<input class="inp" id="av-data" type="date" value="'+hoje+'" style="width:100%;margin-bottom:.6rem"/></div>'
+    +(novoStatus==='em_aprovacao'
+      ? '<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observação</label>'
+        +'<textarea class="inp" id="av-obs" rows="2" style="width:100%;resize:none" placeholder="Ex: Enviado por email para João em 24/05..."></textarea></div>'
+      : '')
+    +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="av-confirmar" style="flex:2">'+cfg.icon+' Confirmar</button>'
+    +'</div></div></div>');
+
+  window._avMedId     = medId;
+  window._avStatus    = novoStatus;
+  window._avProjId    = projetoId;
+  window._avCampo     = cfg.campo;
+
+  setTimeout(function(){
+    var btn = document.getElementById('av-confirmar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var data = (document.getElementById('av-data')||{}).value;
+      var obs  = (document.getElementById('av-obs')||{}).value||'';
+      if(!data){ progShowToast('⚠ Informe a data.','erro'); return; }
+
+      med.status = window._avStatus;
+      med[window._avCampo] = data;
+      if(obs) med.observacao = obs;
+
+      var upd = {status: med.status};
+      upd[window._avCampo] = data;
+      if(obs) upd.observacao = obs;
+
+      if(!DEMO && isUUID(med.id)) sbUpdate('sot_medicoes', upd, 'id=eq.'+med.id);
+      closeModal();
+      progShowToast('✅ Medição: '+MED_STATUS[med.status].label);
+      sotRenderTabMedicao(window._avProjId);
+      setTimeout(function(){ sotToggleMedicao(med.id); }, 100);
+    };
+  }, 50);
+}
+
+// ── Registrar ajuste do cliente ────────────────────────────────────────
+function sotAjustarMedicao(medId, projetoId){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin-bottom:.75rem">✏️ Registrar Ajuste do Cliente</h3>'
+    +'<p style="font-size:12px;color:#555;margin-bottom:.75rem">O cliente solicitou ajuste. Como deseja proceder?</p>'
+    +'<div style="display:flex;flex-direction:column;gap:.5rem">'
+    +'<button class="btn" onclick="sotAjusteApenasNaMedicao(\''+medId+'\',\''+projetoId+'\')" '
+    +'style="text-align:left;padding:.75rem;font-size:12px">'
+    +'<b>📐 Ajustar só na medição</b><br>'
+    +'<span style="color:#888;font-size:11px">Altera a qtd medida. O restante entra na próxima parcial. Não altera o executado real.</span>'
+    +'</button>'
+    +'<button class="btn" onclick="sotAjusteNoExecutado(\''+medId+'\',\''+projetoId+'\')" '
+    +'style="text-align:left;padding:.75rem;font-size:12px;border-color:#854F0B;color:#854F0B">'
+    +'<b>⚠️ Ajustar o executado</b><br>'
+    +'<span style="color:#888;font-size:11px">Altera o executado real. Requer justificativa. Use quando o serviço não foi realmente executado.</span>'
+    +'</button>'
+    +'</div>'
+    +'<div style="margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'</div></div></div>');
+}
+
+function sotAjusteApenasNaMedicao(medId, projetoId){
+  closeModal();
+  // Re-open the medicao in edit mode (already editable in rascunho)
+  // Just move back to rascunho so items can be edited
+  var med = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med) return;
+  if(!confirm('Voltar para Rascunho para editar as quantidades?')) return;
+  med.status = 'rascunho';
+  if(!DEMO && isUUID(med.id)) sbUpdate('sot_medicoes',{status:'rascunho'},'id=eq.'+med.id);
+  progShowToast('✅ Medição voltou para Rascunho. Edite as quantidades e reenvie.');
+  sotRenderTabMedicao(projetoId);
+  setTimeout(function(){ sotToggleMedicao(med.id); }, 100);
+}
+
+function sotAjusteNoExecutado(medId, projetoId){
+  closeModal();
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin-bottom:.75rem">⚠️ Ajuste no Executado Real</h3>'
+    +'<p style="font-size:12px;color:#854F0B;margin-bottom:.75rem">Esta ação altera o executado real no diário. Use apenas se o serviço <b>não foi realmente executado</b>.</p>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Justificativa *</label>'
+    +'<textarea class="inp" id="ajex-just" rows="3" style="width:100%;resize:none" placeholder="Ex: Serviço não executado — cabo não chegou ao local. Corte reduzido de 150m para 80m."></textarea></div>'
+    +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn" onclick="sotConfirmarAjusteExecutado(\''+medId+'\',\''+projetoId+'\')" '
+    +'style="flex:2;background:#854F0B;color:#fff;border-color:#854F0B;font-size:12px">⚠️ Confirmar Ajuste</button>'
+    +'</div></div></div>');
+}
+
+function sotConfirmarAjusteExecutado(medId, projetoId){
+  var just = ((document.getElementById('ajex-just')||{}).value||'').trim();
+  if(!just){ progShowToast('⚠ Justificativa obrigatória.','erro'); return; }
+  var med = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med) return;
+  med.status = 'rascunho';
+  med.observacao = (med.observacao||'') + ' | AJUSTE: '+just;
+  if(!DEMO && isUUID(med.id))
+    sbUpdate('sot_medicoes',{status:'rascunho',observacao:med.observacao},'id=eq.'+med.id);
+  closeModal();
+  progShowToast('✅ Registrado. Edite as atividades e reenvie a medição.');
+  sotRenderTabMedicao(projetoId);
+  setTimeout(function(){ sotToggleMedicao(med.id); }, 100);
+}
+
+// ── Registrar NF ────────────────────────────────────────────────────────
+function sotRegistrarNF(medId, projetoId){
+  var med = sot_medicoes.find(function(m){ return m.id===medId; });
+  if(!med) return;
+  var hoje = dataHojeLocal();
+
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:.75rem">🧾 Registrar Nota Fiscal</h3>'
+    +'<div style="background:#EAF3DE;border-radius:8px;padding:.6rem .75rem;margin-bottom:.75rem;text-align:center">'
+    +'<div style="font-size:11px;color:#888">Valor da Parcial</div>'
+    +'<div style="font-size:20px;font-weight:700;color:#3B6D11">R$ '+fmtMoeda(med.valor_total||0)+'</div>'
+    +'</div>'
+    +'<div style="display:grid;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Número(s) da NF * <span style="font-weight:400;color:#888">(separe por vírgula se mais de uma)</span></label>'
+    +'<input class="inp" id="nf-num" style="width:100%" placeholder="Ex: 12345 ou 12345, 12346"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Data de Emissão *</label>'
+    +'<input class="inp" id="nf-data" type="date" value="'+hoje+'" style="width:100%"/></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Tipo</label>'
+    +'<select class="inp" id="nf-tipo" style="width:100%"><option value="unico">Única NF</option><option value="opex_capex">Opex + Capex</option><option value="multipla">Múltiplas</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Valor Total NF(s) R$</label>'
+    +'<input class="inp" id="nf-valor" type="number" step="0.01" value="'+(med.valor_total||0)+'" style="width:100%"/></div>'
+    +'</div></div>'
+    +'<div style="display:flex;gap:.5rem;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="nf-salvar" style="flex:2;background:#085041;border-color:#085041">🧾 Registrar</button>'
+    +'</div></div></div>');
+
+  window._nfMedId  = medId;
+  window._nfProjId = projetoId;
+
+  setTimeout(function(){
+    var btn = document.getElementById('nf-salvar');
+    if(!btn) return;
+    btn.onclick = function(){
+      var num   = ((document.getElementById('nf-num')||{}).value||'').trim();
+      var data  = (document.getElementById('nf-data')||{}).value;
+      var valor = parseFloat((document.getElementById('nf-valor')||{}).value)||0;
+      if(!num)  { progShowToast('⚠ Informe o número da NF.','erro'); return; }
+      if(!data) { progShowToast('⚠ Informe a data.','erro'); return; }
+
+      med.status   = 'nf_emitida';
+      med.nfs      = num;
+      med.data_nf  = data;
+      med.valor_nf = valor;
+
+      if(!DEMO && isUUID(med.id))
+        sbUpdate('sot_medicoes',{status:'nf_emitida',nfs:num,data_nf:data,valor_nf:valor},'id=eq.'+med.id);
+
+      closeModal();
+      progShowToast('🧾 NF registrada! Medição finalizada.');
+      sotRenderTabMedicao(window._nfProjId);
+    };
+  }, 50);
+}
+
+// ── Excluir medição ─────────────────────────────────────────────────────
+function sotExcluirMedicao(medId, projetoId){
+  if(!confirm('Excluir esta medição? Os itens também serão removidos.')) return;
+  sot_med_itens  = sot_med_itens.filter(function(i){ return i.medicao_id!==medId; });
+  sot_medicoes   = sot_medicoes.filter(function(m){ return m.id!==medId; });
+  if(!DEMO){
+    sbDelete('sot_med_itens','medicao_id=eq.'+medId);
+    sbDelete('sot_medicoes', 'id=eq.'+medId);
+  }
+  progShowToast('✅ Medição excluída.');
+  sotRenderTabMedicao(projetoId);
+}
+
+
 function sotRenderDetalhe(p, docs){
   // Funciona tanto no SOT Obras quanto no painel co-* (PLPT etc.)
   var wrap = document.getElementById('co-proj-lista') || document.getElementById('sot-lista-projetos');
@@ -20521,7 +21126,7 @@ function sotRenderDetalhe(p, docs){
     // Abas de detalhe
     +'<div class="card">'
     +'<div style="display:flex;border-bottom:.5px solid #e0dfd8;overflow-x:auto">'
-    +['atividades','materiais','reserva','documentos','adicional'].map(function(t,i){
+    +['atividades','materiais','reserva','documentos','adicional','medicao'].map(function(t,i){
       var labels={atividades:'📋 Atividades ('+sot_atividades.length+')',
         materiais:'📦 Materiais ('+sot_materiais_proj.length+')',
         reserva:'🧰 Reservar Materiais',
@@ -20568,7 +21173,7 @@ function sotAtualizarAbaAtual(projetoId){
   // Verificar qual aba está ativa — usar variável global ou border-bottom
   var tabAtiva = window._sotTabAtiva || 'atividades';
   if(!window._sotTabAtiva){
-    ['atividades','materiais','reserva','documentos','adicional'].forEach(function(t){
+    ['atividades','materiais','reserva','documentos','adicional','medicao'].forEach(function(t){
       var btn = document.getElementById('sot-tab-'+t);
       if(btn && (btn.style.fontWeight==='700' || btn.style.borderBottomColor==='rgb(26, 26, 24)' || btn.classList.contains('active')))
         tabAtiva = t;
@@ -20584,6 +21189,8 @@ function sotAtualizarAbaAtual(projetoId){
     sotRenderTabReserva(projetoId, content);
   } else if(tabAtiva==='adicional'){
     sotRenderTabAdicional && sotRenderTabAdicional(projetoId, content);
+  } else if(tabAtiva==='medicao'){
+    sotRenderTabMedicao(projetoId, content);
   } else {
     content.innerHTML = sotRenderTabDocumentos(projetoId);
   }
@@ -24597,9 +25204,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.8.2',
+  numero: '7.9.0',
   data:   '25/05/2026',
-  build:  '20260525-0100',
+  build:  '20260525-0200',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
