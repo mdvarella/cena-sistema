@@ -10876,8 +10876,8 @@ function renderDiario(){
       Promise.all([
         sbFetch('sessoes_disponibilidade',{filters:['data=eq.'+hoje,'equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc'}),
         sbFetch('plpt_sessoes',{filters:['data=eq.'+hoje,'equipe_id=eq.'+_dbEquipe.id],order:'login_ts.desc'}),
-        sbFetch('turnos_abertos',{filters:['data=eq.'+hoje]}),
-        sbFetch('ordens_diario',{filters:['data=eq.'+hoje]}),
+        sbFetch('turnos_abertos',{filters:['data=eq.'+hoje,'equipe_id=eq.'+_dbEquipe.id]}),
+        sbFetch('ordens_diario',{filters:['data=eq.'+hoje,'equipe_id=eq.'+_dbEquipe.id]}),
         sbFetch('composicao_dia',{filters:['equipe_id=eq.'+_dbEquipe.id,'data=eq.'+hoje]}),
         sbFetch('colaboradores',{filters:['equipe_id=eq.'+_dbEquipe.id,'ativo=eq.true'],order:'nome'}),
       ]).then(function(res){
@@ -12170,21 +12170,21 @@ function plptDiarioConfirmarComposicao(){
 function _plptVerificarMateriaisSeparados(eqId){
   if(DEMO) return;
   var hoje = dataHojeLocal();
-  // Get today's prog_dia to know which projects are scheduled today
-  var progHoje = _plptDiario.prog;
-  var progData = progHoje ? (progHoje.data||'').slice(0,10) : hoje;
 
-  // Get today's composicao for this equipe
-  var comp = composicao_dia.find(function(x){
-    return x.equipe_id===eqId && (x.data||'').slice(0,10)===hoje;
-  });
-  var projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
-  // Also include projects from prog_dia
-  if(_plptDiario.projetos && _plptDiario.projetos.length){
-    _plptDiario.projetos.forEach(function(p){
-      if(p.projeto_id && projIds.indexOf(p.projeto_id) < 0)
-        projIds.push(p.projeto_id);
+  // For admin/gestor: eqId may be null — show all pending
+  // For equipe: only show their own
+  var projIds = [];
+  if(eqId){
+    var progHoje = _plptDiario.prog;
+    var comp = composicao_dia.find(function(x){
+      return x.equipe_id===eqId && (x.data||'').slice(0,10)===hoje;
     });
+    projIds = comp ? parseColabIds(comp.projeto_ids||'[]') : [];
+    if(_plptDiario.projetos && _plptDiario.projetos.length){
+      _plptDiario.projetos.forEach(function(p){
+        if(p.projeto_id && projIds.indexOf(p.projeto_id)<0) projIds.push(p.projeto_id);
+      });
+    }
   }
 
   console.log('[KANBAN MAT] eqId:', eqId, 'projIds:', projIds);
@@ -12202,12 +12202,12 @@ function _plptVerificarMateriaisSeparados(eqId){
       return;
     }
 
-    var minhas = rows.filter(function(r){
+    var minhas = !eqId ? rows : rows.filter(function(r){
       if(r.equipe_id===eqId) return true;
       if(projIds.length && projIds.indexOf(r.projeto_id)>=0) return true;
       return false;
     });
-    console.log('[KANBAN MAT] minhas (desta equipe):', minhas.length, 'de', rows.length);
+    console.log('[KANBAN MAT] minhas:', minhas.length, 'de', rows.length, 'eqId:', eqId);
     // Show ALL pending reservations - no date filter
     // Reservations persist until cancelled or completed
     if(!minhas.length) return;
@@ -25335,9 +25335,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.7',
+  numero: '7.9.8',
   data:   '25/05/2026',
-  build:  '20260525-0900',
+  build:  '20260525-1000',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -29463,6 +29463,17 @@ function _ckRenderLista(){
   var lista = document.getElementById('lista-checklists-templates');
   if(!lista) return;
 
+  // Para perfil equipe: pré-seleciona própria equipe e data de hoje
+  var _perfilEq = usuarioLogado && usuarioLogado.perfil==='equipe';
+  if(_perfilEq && _dbEquipe && _dbEquipe.id){
+    var _ckEqSel = document.getElementById('ck-fil-eq');
+    if(_ckEqSel && !_ckEqSel.value) _ckEqSel.value = _dbEquipe.id;
+    var _ckDeSel = document.getElementById('ck-fil-de');
+    if(_ckDeSel && !_ckDeSel.value) _ckDeSel.value = dataHojeLocal();
+    var _ckAteSel = document.getElementById('ck-fil-ate');
+    if(_ckAteSel && !_ckAteSel.value) _ckAteSel.value = dataHojeLocal();
+  }
+
   var cid   = (document.getElementById('ck-fil-cont')||{}).value||'';
   var eqId  = (document.getElementById('ck-fil-eq')||{}).value||'';
   var de    = (document.getElementById('ck-fil-de')||{}).value||'';
@@ -30029,6 +30040,15 @@ function renderAPRs(){
       +'</select></div>'
       +'</div>';
     if(card) card.insertBefore(fDiv, card.querySelector('.ch').nextSibling);
+  }
+
+  // For equipe profile: default to their own equipe and today
+  var _perfilEq = usuarioLogado && usuarioLogado.perfil==='equipe';
+  if(_perfilEq && _dbEquipe && _dbEquipe.id){
+    var _eqSel = document.getElementById('apr-fil-eq');
+    if(_eqSel && !_eqSel.value) _eqSel.value = _dbEquipe.id;
+    var _deSel = document.getElementById('apr-fil-de');
+    if(_deSel && !_deSel.value) _deSel.value = dataHojeLocal();
   }
 
   var cid  = (document.getElementById('apr-fil-cont')||{}).value||'';
@@ -43506,6 +43526,11 @@ window.addEventListener('load',async function(){
       document.dispatchEvent(new CustomEvent('cena:logged-in'));
   auditLog('login','sistema','Login no sistema — perfil: '+(usuarioLogado.perfil||''),{email:usuarioLogado.email||''});
       console.log('[INIT] carregarDados OK — perfil:', usuarioLogado.perfil, 'equipe_id:', usuarioLogado.equipe_id);
+      // Show Kanban banner for ALL profiles
+      setTimeout(function(){
+        var eqIdKanban = usuarioLogado.equipe_id || null;
+        _plptVerificarMateriaisSeparados(eqIdKanban);
+      }, 1500);
       if(usuarioLogado.perfil==='equipe'){
         // Re-buscar dados atualizados do usuário do banco (equipe_id pode ter mudado)
         if(!DEMO){
