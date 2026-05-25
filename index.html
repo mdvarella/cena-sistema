@@ -3508,6 +3508,9 @@ function plrVerDetalhe(colId,mes){
     +'</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Fechar</button>'
     +'<button class="btn btn-pri" onclick="closeModal();plrAbrirAvaliar(\''+colId+'\',\''+mes+'\')">✎ Avaliar</button>'
+    +'</div>'
+    +'<div style="text-align:center;margin-top:.4rem">'
+    +'<a href="javascript:void(0)" onclick="progLimparHistoricoFerias(\''+colabId+'\')" style="color:#A32D2D;font-size:11px">🗑 Limpar histórico de férias/afastamento</a>'
     +'</div></div></div>';
   setModal(html);
   setTimeout(function(){
@@ -25444,9 +25447,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.14',
+  numero: '7.9.16',
   data:   '25/05/2026',
-  build:  '20260525-1600',
+  build:  '20260525-1800',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
@@ -25954,28 +25957,41 @@ function progGetTipo(){
 
 
 function progAtualizarQuadro(){
-  // Force reload: clear date cache so progCarregarStatusDia fetches fresh data
   _progStatusDateCache = null;
-  // Clear local status to avoid stale data
   _progStatus = {};
   _progStatusInfo = {};
-  // Show spinner on button
   var btn = document.querySelector('[onclick="progAtualizarQuadro()"]');
   if(btn){ btn.textContent = '⏳ Atualizando...'; btn.disabled = true; }
   var data = progGetData();
-  // Reload from DB
+  var cid  = (document.getElementById('prog-fil-cont')||{}).value||'';
+  var cidFilter = cid ? 'contrato_id=eq.'+cid : 'ativo=eq.true';
+
   if(!DEMO){
     Promise.all([
+      // Status do dia e persistentes
       sbFetch('prog_status_diario',{filters:['data=eq.'+data]}),
       sbFetch('prog_status_diario',{
         filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lte.'+data],
         order:'data.desc', limit:500
       }),
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
+      // Dados base — recarregar colaboradores e equipes para pegar folgas atualizadas
+      sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome',limit:2000}),
+      sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
     ]).then(function(res){
       var rowsDia     = res[0]||[];
       var persistRows = res[1]||[];
       var comps       = res[2]||[];
+      var colabs      = res[3]||[];
+      var equipes     = res[4]||[];
+
+      // Update base data
+      if(colabs.length){
+        colaboradores = colabs;
+        colaboradores.sort(function(a,b){return (a.nome||'').localeCompare(b.nome||'');});
+      }
+      if(equipes.length) equipes_disp = equipes;
+      if(comps.length)   composicao_dia = comps;
 
       // Apply day status
       rowsDia.forEach(function(r){
@@ -25984,7 +26000,7 @@ function progAtualizarQuadro(){
         if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
       });
 
-      // Apply persistent ferias
+      // Apply persistent ferias / auto-retorno
       var hoje = dataHojeLocal();
       var jaVisto={};
       persistRows.forEach(function(r){
@@ -25998,12 +26014,10 @@ function progAtualizarQuadro(){
         }
       });
 
-      // Reload composicao_dia
-      if(comps.length) composicao_dia = comps;
-
       progRenderQuadro();
       progShowToast('✅ Quadro atualizado!');
-    }).catch(function(){
+    }).catch(function(e){
+      console.error('progAtualizarQuadro erro:',e);
       progRenderQuadro();
       progShowToast('⚠ Erro ao atualizar — verifique a conexão.','erro');
     }).finally(function(){
@@ -27439,39 +27453,70 @@ function progSetStatusMenu(colabId, status){
   });
 }
 
+
+function progLimparHistoricoFerias(colabId){
+  if(!confirm('Limpar TODO o histórico de férias/afastamento deste colaborador?\n\nEle voltará a aparecer como Disponível.')) return;
+  // Clear localStorage
+  progRemoverPersistente(colabId);
+  // Clear _progStatus
+  if(_progStatus[colabId] && ['ferias','afastado','treinamento'].indexOf(_progStatus[colabId])>=0){
+    delete _progStatus[colabId];
+  }
+  // Delete ALL ferias/afastado/treinamento records from DB
+  if(!DEMO){
+    sbDelete('prog_status_diario',
+      'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento)')
+    .then(function(){
+      progShowToast('✅ Histórico limpo — colaborador disponível.');
+    });
+  }
+  closeModal();
+  progRenderQuadro();
+}
+
+
 function progSalvarMenuStatus(colabId){
-  var novoSt = _progStatus[colabId]||'disponivel';
+  var novoSt  = _progStatus[colabId]||'disponivel';
   var retorno = (document.getElementById('retorno-data')||{}).value||'';
   var justif  = (document.getElementById('retorno-justif')||{}).value||'';
   if(!window._progStatusInfo) window._progStatusInfo={};
   if(retorno||justif) _progStatusInfo[colabId]={retorno:retorno, justificativa:justif};
-  // Persistir no banco
-  if(!DEMO){
-    var data = progGetData();
-    if(novoSt==='disponivel'){
-      // Remover TODOS os registros de férias/afastamento deste colaborador
-      // (podem ter sido criados em data diferente da data atual)
+
+  var data = progGetData();
+
+  if(novoSt==='disponivel'){
+    // Limpar localStorage
+    progRemoverPersistente(colabId);
+    // Limpar banco — todos os registros de férias/afastamento
+    if(!DEMO){
       sbDelete('prog_status_diario',
-        'colaborador_id=eq.'+colabId+
-        '&status=in.(ferias,afastado,treinamento)');
-      // Também salvar disponivel para a data atual
+        'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento)');
       sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
         if(rows&&rows.length){
           sbUpdate('prog_status_diario',{status:'disponivel',data_retorno:null},
             'colaborador_id=eq.'+colabId+'&data=eq.'+data);
         }
-        // Don't insert disponivel — it's the default
       });
-    } else {
-      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
-        var payload={colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null};
-        if(rows&&rows.length){
-          sbUpdate('prog_status_diario',payload,'colaborador_id=eq.'+colabId+'&data=eq.'+data);
-        } else {
-          sbInsert('prog_status_diario',payload);
-        }
+    }
+  } else {
+    // Salvar persistente no localStorage com a nova data (SOBRESCREVE a anterior)
+    if(retorno) progSalvarPersistente(colabId, novoSt, data, retorno, justif||'');
+
+    if(!DEMO){
+      // Primeiro: excluir registros antigos desse colaborador com mesmo status
+      // para evitar duplicidade de histórico
+      sbDelete('prog_status_diario',
+        'colaborador_id=eq.'+colabId+'&status=eq.'+novoSt).then(function(){
+        // Depois: inserir registro novo com data_retorno correta
+        sbInsert('prog_status_diario',{
+          colaborador_id:colabId, data:data, status:novoSt,
+          data_retorno:retorno||null
+        });
       }).catch(function(){
-        sbInsert('prog_status_diario',{colaborador_id:colabId,data:data,status:novoSt,data_retorno:retorno||null});
+        sbInsert('prog_status_diario',{
+          colaborador_id:colabId, data:data, status:novoSt,
+          data_retorno:retorno||null
+        });
       });
     }
   }
