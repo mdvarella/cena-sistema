@@ -320,9 +320,9 @@ div[id^="pg-"] [style*="grid-template-columns:1fr 1fr 1fr"]{grid-template-column
   .topbar-mod-btn .mod-icon{font-size:12px!important}
   #topbar-actions .btn{font-size:10px!important;padding:3px 6px!important}
   #topbar-user{display:none!important}
-  /* Sidebar como drawer horizontal compacto */
-  #app-body{flex-direction:column!important}
-  #sidebar{width:100%!important;height:auto!important;max-height:48px!important;flex-direction:row!important;border-right:none!important;border-bottom:1px solid #e0dfd8!important;overflow-x:auto!important;overflow-y:hidden!important;flex-shrink:0!important;}
+  /* Sidebar oculta no mobile — usa bottom nav */
+  #app-body{flex-direction:column!important;overflow:hidden!important;}
+
   #sidebar-inner{display:flex!important;flex-direction:row!important;padding:.25rem!important;gap:2px!important;white-space:nowrap!important;min-width:max-content!important;overflow:visible!important;}
   .sb-section{display:none!important}
   .sb-item{width:auto!important;white-space:nowrap!important;padding:4px 10px!important;margin:0!important;font-size:11px!important;border-radius:20px!important;border:.5px solid #e0dfd8!important;flex-shrink:0!important;}
@@ -751,12 +751,24 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
 @media (max-width: 767px) {
   :root { --device: 'mobile'; --bottom-nav-h: 60px; }
 
-  /* Layout shell */
+  /* Layout shell — portrait fix */
+  #pg-app { height: 100dvh !important; overflow: hidden !important; }
   #sidebar { display: none !important; }
-  #topbar { height: 44px; padding: 0 .75rem; }
+  #topbar { height: 44px; padding: 0 .75rem; overflow-x: auto; overflow-y: hidden; flex-shrink: 0; }
   #topbar-logo-nome { font-size: 13px; }
+  #app-body { flex: 1; overflow: hidden; min-height: 0; }
   #app-content-area {
+    flex: 1;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    height: 100% !important;
     padding: .75rem .75rem calc(var(--bottom-nav-h) + var(--safe-bottom) + .75rem) !important;
+    box-sizing: border-box;
+  }
+  /* Prevent any page from forcing wider than viewport */
+  .pg-main, [id^="pg-"] {
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
   }
 
   /* Topbar mobile: apenas essenciais */
@@ -20623,17 +20635,22 @@ function sotNovaMedicao(projetoId){
         criado_em:   new Date().toISOString()
       };
       sot_medicoes.push(nova);
+      closeModal();
       if(!DEMO){
         var p = Object.assign({},nova); delete p.id;
-        sbInsert('sot_medicoes', p).then(function(r){ if(r&&r[0]) nova.id=r[0].id; });
+        sbInsert('sot_medicoes', p).then(function(r){
+          if(r&&r[0]) nova.id=r[0].id;
+          // Re-render after UUID is assigned so buttons have correct ID
+          sotRenderTabMedicao(projetoId);
+          setTimeout(function(){ sotToggleMedicao(nova.id); }, 100);
+        }).catch(function(){
+          sotRenderTabMedicao(projetoId);
+          setTimeout(function(){ sotToggleMedicao(nova.id); }, 100);
+        });
+      } else {
+        sotRenderTabMedicao(projetoId);
+        setTimeout(function(){ sotToggleMedicao(nova.id); }, 100);
       }
-      closeModal();
-      sotRenderTabMedicao(projetoId);
-      // Auto-open and suggest items
-      setTimeout(function(){
-        sotToggleMedicao(nova.id);
-        sotSugerirItensMedicao(nova.id, projetoId);
-      }, 200);
     };
   }, 50);
 }
@@ -20646,12 +20663,13 @@ function sotSugerirItensMedicao(medId, projetoId){
   var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
 
   // Get executed quantities from sot_atividades
+  // Include all activities — prioritize executed, fallback to previewed
   var ativs = sot_atividades.filter(function(a){
-    return a.projeto_id===projetoId && (a.qtd_executada||0)>0;
+    return a.projeto_id===projetoId && ((a.qtd_executada||0)>0 || (a.qtd_prevista||0)>0);
   });
 
   if(!ativs.length){
-    progShowToast('⚠ Nenhuma atividade com execução lançada.','erro'); return;
+    progShowToast('⚠ Nenhuma atividade cadastrada neste projeto.','erro'); return;
   }
 
   // Check existing items in this medicao
@@ -20667,7 +20685,8 @@ function sotSugerirItensMedicao(medId, projetoId){
       .filter(function(i){ return i.atividade_id===a.id && i.medicao_id!==medId; })
       .reduce(function(s,i){ return s+(i.qtd_medida||0); }, 0);
 
-    var dispMedir = (a.qtd_executada||0) - jaMediado;
+    var qtdBase   = (a.qtd_executada||0) > 0 ? (a.qtd_executada||0) : (a.qtd_prevista||0);
+    var dispMedir = qtdBase - jaMediado;
     if(dispMedir <= 0) return;
 
     var novoItem = {
@@ -25205,9 +25224,9 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.1',
+  numero: '7.9.3',
   data:   '25/05/2026',
-  build:  '20260525-0300',
+  build:  '20260525-0500',
   log: [
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
