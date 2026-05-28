@@ -26147,7 +26147,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.75',
+  numero: '7.9.76',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26697,6 +26697,77 @@ function notifGetSources(){
   return sources;
 }
 
+// ═══════════════════════════════════════════════════
+// USUÁRIOS ONLINE — heartbeat a cada 2 minutos
+// ═══════════════════════════════════════════════════
+var _onlineInterval = null;
+
+function onlineHeartbeat(){
+  if(DEMO || !usuarioLogado) return;
+  var modulo = (typeof _mainAtual !== 'undefined' ? _mainAtual : '') || 'sistema';
+  sbFetch('usuarios_online',{filters:['usuario_id=eq.'+usuarioLogado.id],limit:1}).then(function(rows){
+    var payload = {
+      usuario_id:   usuarioLogado.id,
+      nome:         usuarioLogado.nome,
+      perfil:       usuarioLogado.perfil||'',
+      sessao_id:    window._sessaoId||'',
+      ultimo_ping:  new Date().toISOString(),
+      modulo_atual: modulo
+    };
+    if(rows && rows.length){
+      sbUpdate('usuarios_online', payload, 'usuario_id=eq.'+usuarioLogado.id);
+    } else {
+      sbInsert('usuarios_online', payload);
+    }
+  }).catch(function(){});
+}
+
+function onlineInit(){
+  if(DEMO || !usuarioLogado) return;
+  onlineHeartbeat();
+  if(_onlineInterval) clearInterval(_onlineInterval);
+  _onlineInterval = setInterval(onlineHeartbeat, 2*60*1000);
+  // Remover ao fechar aba
+  window.addEventListener('beforeunload', function(){
+    if(usuarioLogado && !DEMO){
+      navigator.sendBeacon(
+        SB.url+'/rest/v1/usuarios_online?usuario_id=eq.'+usuarioLogado.id,
+        new Blob([JSON.stringify({ultimo_ping:'1970-01-01T00:00:00Z'})],{type:'application/json'})
+      );
+    }
+  });
+}
+
+async function onlineGetAtivos(){
+  if(DEMO) return [];
+  try{
+    var cincoMin = new Date(Date.now()-5*60*1000).toISOString();
+    var rows = await sbFetch('usuarios_online',{
+      filters:['ultimo_ping=gte.'+cincoMin],
+      order:'nome'
+    });
+    return rows||[];
+  }catch(e){ return []; }
+}
+
+function onlineBadgeHtml(perfil){
+  var cores = {
+    admin:'#A32D2D', gestor:'#185FA5', coordenador:'#534AB7',
+    supervisor:'#3B6D11', almoxarife:'#854F0B', portaria:'#555',
+    equipe:'#0A6B7C', encarregado:'#B45C0A'
+  };
+  var cor = cores[perfil]||'#888';
+  return '<span style="font-size:9px;background:'+cor+'22;color:'+cor
+    +';border-radius:4px;padding:1px 5px;font-weight:700;border:.5px solid '+cor+'44">'
+    +escHtml(perfil)+'</span>';
+}
+
+function onlineModuloIcon(mod){
+  var icons={frotas:'🚗',operacional:'🏗',movimentacao:'💰',programacao:'📋',
+    aprovacao:'✅',cadastros:'👥',sesmt:'🦺',almoxarifado:'📦',sistema:'🔐'};
+  return icons[mod]||'💻';
+}
+
 function notifNavegar(linkId){
   var p=document.getElementById('notif-painel');if(p)p.remove();
   var rotas={
@@ -26823,12 +26894,38 @@ function notifAbrirPainel(){
   }
 
   html += '<div style="padding:.5rem 1rem;border-top:.5px solid #f0efe8;display:flex;justify-content:flex-end">'
+  html += '<div id="notif-online-wrap" style="padding:.5rem .75rem;border-top:.5px solid #f0efe8"><div style="font-size:10px;color:#aaa;text-align:center;padding:.25rem">⏳ Carregando...</div></div>';
     +'<button onclick="notifVerificar();document.getElementById(\'notif-painel\').remove();" '
     +'style="background:none;border:none;color:#185FA5;font-size:11px;cursor:pointer">🔄 Atualizar</button>'
     +'</div>';
 
   painel.innerHTML = html;
   document.body.appendChild(painel);
+
+  // Buscar usuários online e popular a seção async
+  onlineGetAtivos().then(function(online){
+    var onlineEl = document.getElementById('notif-online-wrap');
+    if(!onlineEl) return;
+    var eu = usuarioLogado ? usuarioLogado.id : '';
+    var todos = online || [];
+    var secHtml = '<div style="font-size:10px;font-weight:700;color:#555;margin-bottom:.4rem">'
+      +'🟢 Online agora <span style="background:#3B6D1122;color:#3B6D11;border-radius:8px;padding:0 6px">'+todos.length+'</span></div>'
+      +todos.map(function(u){
+        var isEu = u.usuario_id === eu;
+        return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0">'
+          +'<div style="width:7px;height:7px;border-radius:50%;background:#3B6D11;flex-shrink:0;margin-top:1px"></div>'
+          +'<span style="font-size:11px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+          +escHtml(u.nome)+(isEu?' <span style="color:#aaa;font-weight:400;font-size:10px">(você)</span>':'')+'</span>'
+          +onlineBadgeHtml(u.perfil)
+          +'<span title="'+escHtml(u.modulo_atual||'')+'">'+onlineModuloIcon(u.modulo_atual)+'</span>'
+          +'</div>';
+      }).join('')
+      +(todos.length===0?'<div style="color:#aaa;font-size:11px;text-align:center;padding:.25rem">Nenhum usuário ativo</div>':'');
+    onlineEl.innerHTML = '<div style="padding:.25rem 0">'+secHtml+'</div>';
+  }).catch(function(){
+    var onlineEl=document.getElementById('notif-online-wrap');
+    if(onlineEl) onlineEl.innerHTML='';
+  });
 
   // Bind dos botões de ação
   setTimeout(function(){
@@ -45808,6 +45905,8 @@ window.addEventListener('load',async function(){
       document.dispatchEvent(new CustomEvent('cena:logged-in'));
   auditLog('login','sistema','Login no sistema — perfil: '+(usuarioLogado.perfil||''),{email:usuarioLogado.email||''});
       console.log('[INIT] carregarDados OK — perfil:', usuarioLogado.perfil, 'equipe_id:', usuarioLogado.equipe_id);
+      // Iniciar heartbeat de presença online
+      setTimeout(onlineInit, 1500);
       // Start notification check for approvers
       if(['admin','gestor','coordenador','almoxarife'].includes(usuarioLogado.perfil)){
         setTimeout(notifVerificar, 2000);
