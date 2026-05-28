@@ -6399,15 +6399,35 @@ async function salvarNovoUsuario(){
   var contCbs=document.querySelectorAll('#modal-area .nu-cont-cb:checked');
   var contId=Array.from(contCbs).map(function(cb){return cb.value;}).join(',');
   var hash=md5js(senha);
-  var novo={id:'u'+Date.now(),nome:nome,email:email,senha_hash:hash,
+  var novo={id:gerarUUID(),nome:nome,email:email,senha_hash:hash,
     perfil:perfil,equipe_id:eqId||'',equipe_codigo:eq?eq.codigo:'',
     contrato_id:contId,filial_id:filialId||null,ativo:true};
+
+  if(!DEMO){
+    // Verificar no banco antes de inserir — usuários_lista pode estar desatualizado
+    var existeNoBanco = await sbFetch('usuarios_sistema',{
+      filters:['email=eq.'+encodeURIComponent(email),'deleted_at=is.null'],
+      select:'id', limit:1
+    });
+    if(existeNoBanco && existeNoBanco.length){
+      if(erroEl){erroEl.textContent='Este e-mail já está cadastrado no sistema.';erroEl.style.display='block';}
+      return;
+    }
+    var resultado = await sbInsert('usuarios_sistema', novo);
+    if(!resultado){
+      if(erroEl){erroEl.textContent='Erro ao salvar. Verifique se o e-mail já existe ou tente novamente.';erroEl.style.display='block';}
+      return;
+    }
+    // Atualizar id local com o UUID do banco
+    if(resultado[0] && resultado[0].id) novo.id = resultado[0].id;
+  }
+
   usuarios_lista.push(novo);
-  if(!DEMO)await sbInsert('usuarios_sistema',_semId(novo));
   closeModal();renderUsuarios();
+  progShowToast('✅ Usuário '+nome+' cadastrado com sucesso.');
 }
 
-function openEditarUsuario(uid){
+async function openEditarUsuario(uid){
   var u=usuarios_lista.find(function(x){return x.id===uid;});if(!u)return;
   // Load filiais if not yet loaded
   if(!filiais.length && !DEMO){
@@ -6428,8 +6448,8 @@ function openEditarUsuario(uid){
   setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Editar Usuário</h3>'    +'<div class="g2">'    +'<div class="fg" style="grid-column:1/-1"><label>Nome completo</label><input id="eu-nome" value="'+u.nome+'" style="width:100%"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>E-mail</label><input id="eu-email" value="'+u.email+'" style="width:100%"/></div>'    +'<div class="fg"><label>Perfil</label>'    +'<select id="eu-perfil" style="width:100%" onchange="toggleEquipeFieldEdit()">'    +_todosPerfis().map(function(p){return '<option value="'+p.codigo+'"'+(u.perfil===p.codigo?' selected':'')+'>'+p.label+'</option>';}).join('')    +'</select></div>'    +'<div class="fg"><label>Status</label>'    +'<select id="eu-ativo" style="width:100%">'    +'<option value="true"'+(u.ativo?' selected':'')+'>Ativo</option>'    +'<option value="false"'+(!u.ativo?' selected':'')+'>Inativo</option>'    +'</select></div>'    +'<div class="fg" id="eu-equipe-wrap" style="'+((u.perfil==='equipe'||u.perfil==='encarregado')?'':'display:none')+'"><label>Equipe vinculada</label><select id="eu-equipe" style="width:100%">'+eqOpts+'</select></div>'+'<div class="fg" id="eu-contrato-wrap" style="'+(['gestor','coordenador','supervisor','administrativo','encarregado'].indexOf(u.perfil)>=0?'grid-column:1/-1':'display:none')+';margin-top:4px"><label>Contratos vinculados</label>'
     +'<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px;max-height:150px;overflow-y:auto;margin-top:4px">'
     +(contratos.map(function(c){var sel=(u.contrato_id||'').split(',').indexOf(c.id)>=0;return '<label style="display:flex;align-items:center;gap:8px;padding:5px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f5f5f3"><input type="checkbox" value="'+c.id+'" class="eu-cont-cb" '+(sel?'checked':'')+' style="width:15px;height:15px"/><span><b>'+c.codigo+'</b> — '+c.nome+'</span></label>';}).join(''))
-    +'</div></div>'    +'<div class="fg" id="eu-filial-wrap" style="'+(u.perfil==='portaria'?'grid-column:1/-1':'display:none')+'"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="eu-filial" style="width:100%"><option value="">Selecione a filial...</option>'    +filiais.map(function(f){return '<option value="'+f.id+'"'+(u.filial_id===f.id?' selected':'')+'>'+( f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')    +'</select></div>'    +'</div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-eu">Salvar</button></div></div></div>');
-  document.getElementById('btn-salvar-eu').onclick=function(){
+    +'</div></div>'    +'<div class="fg" id="eu-filial-wrap" style="'+(u.perfil==='portaria'?'grid-column:1/-1':'display:none')+'"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="eu-filial" style="width:100%"><option value="">Selecione a filial...</option>'    +filiais.map(function(f){return '<option value="'+f.id+'"'+(u.filial_id===f.id?' selected':'')+'>'+( f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')    +'</select></div>'    +'</div>'    +'<div id="eu-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-eu">Salvar</button></div></div></div>');
+  document.getElementById('btn-salvar-eu').onclick=async function(){
     u.nome=(document.getElementById('eu-nome')||{}).value.trim()||u.nome;
     u.email=(document.getElementById('eu-email')||{}).value.trim()||u.email;
     u.perfil=(document.getElementById('eu-perfil')||{}).value||u.perfil;
@@ -6441,7 +6461,26 @@ function openEditarUsuario(uid){
     u.contrato_id=Array.from(euCbs).map(function(cb){return cb.value;}).join(',');
     var euFilialId=(document.getElementById('eu-filial')||{}).value||'';
     u.filial_id=euFilialId||null;
-    if(!DEMO)sbUpdate('usuarios_sistema',{nome:u.nome,email:u.email,perfil:u.perfil,ativo:u.ativo,equipe_id:u.equipe_id,equipe_codigo:u.equipe_codigo,filial_id:u.filial_id,contrato_id:u.contrato_id},'id=eq.'+uid);
+    if(!DEMO){
+      // Garantir que o uid é UUID — se não for, buscar o real no banco pelo email
+      var _saveUid = uid;
+      if(!isUUID(uid)){
+        var _rows = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(u.email)],select:'id',limit:1});
+        if(_rows&&_rows[0]&&_rows[0].id){ _saveUid=_rows[0].id; u.id=_rows[0].id; }
+      }
+      var ok = await sbUpdate('usuarios_sistema',{
+        nome:u.nome,email:u.email,perfil:u.perfil,ativo:u.ativo,
+        equipe_id:u.equipe_id,equipe_codigo:u.equipe_codigo,
+        filial_id:u.filial_id,contrato_id:u.contrato_id
+      },'id=eq.'+_saveUid);
+      if(!ok){
+        var erroEdEl=document.getElementById('eu-erro');
+        if(erroEdEl){erroEdEl.textContent='Erro ao salvar no banco. Verifique permissões (RLS) da tabela usuarios_sistema.';erroEdEl.style.display='block';}
+        progShowToast('❌ Erro ao salvar usuário no banco.','erro');
+        return;
+      }
+      progShowToast('✅ Usuário '+u.nome+' atualizado.');
+    }
     closeModal();renderUsuarios();
   };
 }
@@ -26097,7 +26136,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.54',
+  numero: '7.9.61',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26329,10 +26368,11 @@ var PROG_STATUS = {
   patio:        {label:'Pátio',           cor:'#0A6B7C', bg:'#E2F4F7', bdg:'info'},
   verificar:    {label:'Verificar',       cor:'#8B1A6B', bg:'#F7E2F2', bdg:'purple'},
   fraude:       {label:'Fraudou Ponto',   cor:'#6B0A0A', bg:'#FDE8E8', bdg:'danger'},
+  demitido:     {label:'Demitido',        cor:'#4A1010', bg:'#F0E0E0', bdg:'danger'},
 };
 
 // Statuses que propagam automaticamente para dias seguintes (até data_retorno)
-var PROG_STATUS_PERSISTENTES = ['ferias','afastado','treinamento'];
+var PROG_STATUS_PERSISTENTES = ['ferias','afastado','treinamento','demitido'];
 
 // Aplicar status persistentes ao carregar um dia
 function progAplicarPersistentes(data){
@@ -26622,42 +26662,36 @@ function notifGetSources(){
 
   var sources = [];
 
-  // Reservas de materiais
   if(isAlmox || isGestor){
-    sources.push({
-      label:   '📦 Reservas de Materiais',
-      table:   'plpt_requisicoes_materiais',
-      filters: ['status=eq.Aguardando aprovação'],
-      link:    function(){ showMain('operacional'); setTimeout(function(){ showSub('obras-requisicao'); },200); },
-      linkLabel: 'Ver Reservas'
-    });
+    sources.push({label:'📦 Reservas de Materiais',table:'plpt_requisicoes_materiais',
+      filters:['status=eq.Aguardando aprovação'],linkId:'reservas-mat',linkLabel:'Ver Reservas'});
   }
-
-  // Medições em aprovação
   if(isGestor){
-    sources.push({
-      label:   '📐 Medições Aguardando Aprovação',
-      table:   'sot_medicoes',
-      filters: ['status=eq.em_aprovacao'],
-      link:    function(){ showMain('operacional'); setTimeout(function(){ showSub('obras-projetos'); },200); },
-      linkLabel: 'Ver Medições'
-    });
+    sources.push({label:'📐 Medições Aguardando Aprovação',table:'sot_medicoes',
+      filters:['status=eq.em_aprovacao'],linkId:'medicoes',linkLabel:'Ver Medições'});
   }
-
-  // Adicionais pendentes (sot_adicionais se existir)
   if(isGestor){
-    sources.push({
-      label:   '➕ Adicionais Pendentes',
-      table:   'sot_adicionais',
-      filters: ['status=eq.pendente'],
-      link:    function(){ showMain('operacional'); setTimeout(function(){ showSub('obras-projetos'); },200); },
-      linkLabel: 'Ver Adicionais'
-    });
+    sources.push({label:'➕ Adicionais Pendentes',table:'sot_adicionais',
+      filters:['status=eq.pendente'],linkId:'adicionais',linkLabel:'Ver Adicionais'});
   }
-
-  // frotas_ocorrencias removido — tabela não existe no banco
+  if(isGestor){
+    sources.push({label:'💰 Lançamentos Financeiros',table:'lancamentos',
+      filters:['status=eq.Aguardando aprovação','deleted_at=is.null'],linkId:'lancamentos',linkLabel:'Ver Aprovações'});
+  }
 
   return sources;
+}
+
+function notifNavegar(linkId){
+  var p=document.getElementById('notif-painel');if(p)p.remove();
+  var rotas={
+    'reservas-mat': function(){showMain('operacional');setTimeout(function(){showSub('obras-requisicao');},250);},
+    'medicoes':     function(){showMain('operacional');setTimeout(function(){showSub('obras-medicao');},250);},
+    'adicionais':   function(){showMain('operacional');setTimeout(function(){showSub('obras-projetos');},250);},
+    'lancamentos':  function(){showMain('aprovacao');}
+  };
+  var fn=rotas[linkId];
+  if(fn) fn(); else console.warn('notifNavegar: rota desconhecida:',linkId);
 }
 
 async function notifVerificar(){
@@ -26731,7 +26765,7 @@ function notifAbrirPainel(){
         +'<div style="font-size:12px;font-weight:600">'+item.label+'</div>'
         +'<div style="font-size:11px;color:#A32D2D;font-weight:700">'+item.count+' pendente'+(item.count>1?'s':'')+'</div>'
         +'</div>'
-        +'<button onclick="document.getElementById(\'notif-painel\').remove();('+item.link.toString()+')()" '
+        +'<button onclick="notifNavegar(\'+item.linkId+\')" '
         +'style="background:#185FA5;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap">'+item.linkLabel+'</button>'
         +'</div>';
     });
@@ -26950,6 +26984,7 @@ function progRenderQuadro(){
   var nFolgaReal = colsContrato.filter(function(c){
     var st = _progStatus[c.id]||'disponivel';
     var folgaManual = st==='folga'||st==='ferias'||st==='afastado';
+    if(st==='demitido') return false; // demitidos não contam como folga nem disponível
     var folgaCal = corDiaResume && c.cor_escala && c.cor_escala===corDiaResume && st==='disponivel';
     if(!folgaManual && !folgaCal) return false;
     return !escNodia[c.id]; // só conta se NÃO escalado no dia
@@ -27951,6 +27986,7 @@ function progRenderPainelDisp(eqs, data, cid){
     if(cid && c.contrato_id !== cid) return false;
     // Apenas colaboradores de campo aparecem na programação TMA
     if((c.vinculo||'campo') !== 'campo') return false;
+    if((_progStatus[c.id]||'')  ==='demitido') return false; // não exibir demitidos
     return true;
   });
 
@@ -41521,6 +41557,12 @@ function portCarregarReqMateriais(){
 
 
 
+function _portRetornoMudarData(novaData){
+  if(!window._portRetornoBuscado) window._portRetornoBuscado={};
+  delete window._portRetornoBuscado[novaData];
+  portRenderRetorno();
+}
+
 function portRenderRetorno(){
   var el = document.getElementById('port-aba-retorno');
   if(!el) return;
@@ -41537,8 +41579,10 @@ function portRenderRetorno(){
     +(filiais||[]).map(function(f){return '<option value="'+f.id+'"'+(filId===f.id?' selected':'')+'>'+escHtml((f.codigo?f.codigo+' — ':'')+f.nome)+'</option>';}).join('');
 
   // Verificar se precisa buscar do banco
+  if(!window._portRetornoBuscado) window._portRetornoBuscado = {};
   var _temDia = frt_portaria.some(function(r){return (r.data_saida||'T').split('T')[0]===data;});
-  if(!DEMO && !_temDia){
+  if(!DEMO && !_temDia && !window._portRetornoBuscado[data]){
+    window._portRetornoBuscado[data] = true;
     el.innerHTML = '<div style="padding:.5rem">'
       +'<div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem">'
       +'<input type="date" class="inp" id="ret-data" value="'+data+'" style="width:140px;font-size:12px" onchange="portRenderRetorno()"/>'
@@ -45425,9 +45469,9 @@ window.addEventListener('load',async function(){
     <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">🚦 Saída</button>
     <!-- port-tab-saida hidden: merged into equipes tab -->
     <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Visitantes</button>
-    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
+    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
-    <button class="port-tab-btn" id="port-tab-retorno" onclick="portMostrarAba('retorno')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
+    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
 
@@ -45608,8 +45652,10 @@ window.addEventListener('load',async function(){
 
   <!-- ABA: CONFIGURAÇÃO -->
   <div id="port-aba-config" style="display:none">
+  </div>
+
+  <!-- ABA: RETORNO -->
   <div id="port-aba-retorno" style="display:none"></div>
-</div>
 
 </div>
 
@@ -56323,7 +56369,8 @@ function comgasRemoverFoto(ncId, idx) {
     <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">🚦 Saída</button>
     <!-- port-tab-saida hidden: merged into equipes tab -->
     <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Visitantes</button>
-    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
+    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
+    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
@@ -56505,8 +56552,10 @@ function comgasRemoverFoto(ncId, idx) {
 
   <!-- ABA: CONFIGURAÇÃO -->
   <div id="port-aba-config" style="display:none">
+  </div>
+
+  <!-- ABA: RETORNO -->
   <div id="port-aba-retorno" style="display:none"></div>
-</div>
 
 </div>
 
