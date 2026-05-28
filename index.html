@@ -451,7 +451,9 @@ body.perfil-portaria #frotas-tab-relatorios { display:none !important; }
 body.perfil-portaria .port-btn-editar-veic,
 body.perfil-portaria .port-btn-nova-reserva,
 body.perfil-portaria .port-btn-nova-programacao,
-body.perfil-portaria #port-tab-config { display:none !important; }
+body.perfil-portaria #port-tab-config    { display:none !important; }
+body.perfil-portaria #port-tab-registros { display:none !important; }
+body.perfil-portaria #port-tab-reservas  { display:none !important; }
 /* ═══ PERMISSÕES POR PERFIL ═══════════════════════════════ */
 
 /* EQUIPE — só vê Diário de Bordo */
@@ -17058,29 +17060,38 @@ function renderDbOrdemAtual(){
     var aprOk=aprs_registradas.some(function(a){
       return a.ordem_id===_dbOrdemAtual.numero_ordem&&a.equipe_id===(_dbEquipe?_dbEquipe.id:'');
     });
-    var temTemplateApr=checklists_templates.some(function(c){return c.tipo==='APR';});
-    // Botão APR sempre visível
-    if(temTemplateApr){
-      var bApr=document.createElement('button');
-      bApr.className='btn';
-      bApr.style.cssText='width:100%;padding:9px;margin-bottom:6px;'
-        +(aprOk?'border-color:#3B6D11;color:#3B6D11;':'border-color:#854F0B;color:#854F0B;font-weight:600');
-      bApr.textContent=aprOk?'✅ APR preenchida — refazer':'⚠️ Preencher APR (obrigatório)';
-      bApr.onclick=function(){dbAbrirAPR();};
-      acoes.appendChild(bApr);
-    }
-    // Início de atividades: bloqueado se APR não preenchida e há template
+    // APR: confirmação simples (equipe confirma que preencheu — sem formulário aqui)
+    var bApr=document.createElement('button');
+    bApr.className='btn';
+    bApr.style.cssText='width:100%;padding:9px;margin-bottom:6px;'
+      +(aprOk?'border-color:#3B6D11;color:#3B6D11;background:#EAF3DE;':'border-color:#854F0B;color:#854F0B;font-weight:600');
+    bApr.textContent=aprOk?'✅ APR preenchida':'📋 Confirmar: APR foi preenchida';
+    bApr.onclick=(function(ok){
+      return function(){
+        if(ok){
+          if(!confirm('Desmarcar confirmação da APR?')) return;
+          aprs_registradas=aprs_registradas.filter(function(a){
+            return !(a.ordem_id===_dbOrdemAtual.numero_ordem&&a.equipe_id===(_dbEquipe?_dbEquipe.id:''));
+          });
+        } else {
+          var na={id:gerarUUID(),ordem_id:_dbOrdemAtual.numero_ordem,equipe_id:_dbEquipe?_dbEquipe.id:'',
+            data:new Date().toISOString(),confirmado_em:new Date().toISOString(),
+            confirmado_por:usuarioLogado?usuarioLogado.nome:'',tipo:'confirmacao'};
+          aprs_registradas.push(na);
+          if(!DEMO) sbInsert('aprs',na).catch(function(){});
+          progShowToast('✅ APR confirmada como preenchida.');
+        }
+        dbRenderBotoesPosLogin();
+      };
+    })(aprOk);
+    acoes.appendChild(bApr);
+
+    // Início de atividades — sem bloqueio por APR
     var btnIni=document.createElement('button');
     btnIni.className='btn btn-pri';
-    btnIni.style.cssText='width:100%;padding:10px;margin-bottom:6px;'+(temTemplateApr&&!aprOk?'opacity:.4;cursor:not-allowed':'');
+    btnIni.style.cssText='width:100%;padding:10px;margin-bottom:6px;';
     btnIni.textContent='▶ Início das atividades';
-    btnIni.onclick=function(){
-      if(temTemplateApr&&!aprOk){
-        alert('⚠️ Preencha a APR antes de iniciar as atividades.');
-        return;
-      }
-      dbAdicionarEvento('Inicio_ativ');
-    };
+    btnIni.onclick=function(){ dbAdicionarEvento('Inicio_ativ'); };
     acoes.appendChild(btnIni);
   } else if(_dbOrdemAtual.status==='em_andamento'){
     addBtn('⏹ Encerramento das atividades','btn-pri',function(){dbAdicionarEvento('Encerramento_ativ');});
@@ -26136,7 +26147,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.61',
+  numero: '7.9.75',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26666,6 +26677,10 @@ function notifGetSources(){
     sources.push({label:'📦 Reservas de Materiais',table:'plpt_requisicoes_materiais',
       filters:['status=eq.Aguardando aprovação'],linkId:'reservas-mat',linkLabel:'Ver Reservas'});
   }
+  // Solicitações de manutenção aguardando avaliação da equipe frotas
+  sources.push({label:'🔧 Solicitações de Manutenção',table:'frotas_manutencoes',
+    filters:['status=eq.Solicitada'],linkId:'manutencoes',linkLabel:'Ver Chamados'});
+
   if(isGestor){
     sources.push({label:'📐 Medições Aguardando Aprovação',table:'sot_medicoes',
       filters:['status=eq.em_aprovacao'],linkId:'medicoes',linkLabel:'Ver Medições'});
@@ -26685,11 +26700,45 @@ function notifGetSources(){
 function notifNavegar(linkId){
   var p=document.getElementById('notif-painel');if(p)p.remove();
   var rotas={
-    'reservas-mat': function(){showMain('operacional');setTimeout(function(){showSub('obras-requisicao');},250);},
-    'medicoes':     function(){showMain('operacional');setTimeout(function(){showSub('obras-medicao');},250);},
-    'adicionais':   function(){showMain('operacional');setTimeout(function(){showSub('obras-projetos');},250);},
-    'lancamentos':  function(){showMain('aprovacao');}
+    'reservas-mat': function(){if(typeof _subAtual!=='undefined')_subAtual['operacional']='obras-requisicao'; showMain('operacional');},
+    'medicoes':     function(){if(typeof _subAtual!=='undefined')_subAtual['operacional']='obras-medicao';    showMain('operacional');},
+    'adicionais':   function(){
+      // Buscar adicional pendente → contrato → abrir obras com aba materiais
+      sbFetch('sot_adicionais',{filters:['status=eq.pendente'],select:'id,projeto_id',limit:1}).then(function(rows){
+        var projId = rows&&rows[0] ? rows[0].projeto_id : null;
+        if(!projId){
+          // Sem adicional: ir para obras-projetos genérico
+          if(typeof _subAtual!=='undefined') _subAtual['operacional']='obras-projetos';
+          showMain('operacional'); return;
+        }
+        // Buscar contrato via sot_projetos
+        var proj = (typeof sot_projetos!=='undefined') ? sot_projetos.find(function(p){return p.id===projId;}) : null;
+        var cid  = proj ? proj.contrato_id : null;
+        if(!cid){
+          sbFetch('sot_projetos',{filters:['id=eq.'+projId],select:'id,contrato_id',limit:1}).then(function(pr){
+            cid = pr&&pr[0] ? pr[0].contrato_id : null;
+            if(cid) _navParaAdicionaisContrato(cid);
+            else { if(typeof _subAtual!=='undefined')_subAtual['operacional']='obras-projetos'; showMain('operacional'); }
+          }).catch(function(){ if(typeof _subAtual!=='undefined')_subAtual['operacional']='obras-projetos'; showMain('operacional'); });
+        } else {
+          _navParaAdicionaisContrato(cid);
+        }
+      }).catch(function(){
+        if(typeof _subAtual!=='undefined') _subAtual['operacional']='obras-projetos';
+        showMain('operacional');
+      });
+    },
+    'lancamentos':  function(){showMain('movimentacao');},
+    'manutencoes':  function(){if(typeof _subAtual!=='undefined')_subAtual['frotas']='frotas-manutencoes';    showMain('frotas');}
   };
+
+  function _navParaAdicionaisContrato(cid){
+    // Verificar se o módulo obras está carregado, então abrir contrato → aba materiais
+    _precisaModulo('obras', function(){
+      coAbrirContrato(cid);
+      setTimeout(function(){ coMostrarTab('materiais'); }, 150);
+    });
+  }
   var fn=rotas[linkId];
   if(fn) fn(); else console.warn('notifNavegar: rota desconhecida:',linkId);
 }
@@ -26711,6 +26760,7 @@ async function notifVerificar(){
           label:     src.label,
           count:     rows.length,
           link:      src.link,
+          linkId:    src.linkId,
           linkLabel: src.linkLabel
         });
       }
@@ -26765,7 +26815,7 @@ function notifAbrirPainel(){
         +'<div style="font-size:12px;font-weight:600">'+item.label+'</div>'
         +'<div style="font-size:11px;color:#A32D2D;font-weight:700">'+item.count+' pendente'+(item.count>1?'s':'')+'</div>'
         +'</div>'
-        +'<button onclick="notifNavegar(\'+item.linkId+\')" '
+        +'<button class="notif-acao-btn" data-nid="'+item.linkId+'" '
         +'style="background:#185FA5;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap">'+item.linkLabel+'</button>'
         +'</div>';
     });
@@ -26779,6 +26829,16 @@ function notifAbrirPainel(){
 
   painel.innerHTML = html;
   document.body.appendChild(painel);
+
+  // Bind dos botões de ação
+  setTimeout(function(){
+    painel.querySelectorAll('.notif-acao-btn').forEach(function(btn){
+      btn.onclick=function(e){
+        e.stopPropagation();
+        notifNavegar(this.getAttribute('data-nid'));
+      };
+    });
+  },50);
 
   // Close on outside click
   setTimeout(function(){
@@ -27043,8 +27103,22 @@ function progRenderQuadro(){
 
   // Painel de disponíveis
   var dispHtml = progRenderPainelDisp(ativas, data, cid);
+  var veicHtml  = progVeicPainel(cid, data);
 
-  wrap.innerHTML = resumoHtml + quadroHtml + folgaHtml + dispHtml;
+  wrap.innerHTML = resumoHtml + quadroHtml + folgaHtml + dispHtml + veicHtml;
+  // Bindar botões de status e filtro dos veículos
+  setTimeout(function(){
+    wrap.querySelectorAll('[data-pvid]').forEach(function(btn){
+      btn.onclick=function(){progAbrirStatusVeic(this.getAttribute('data-pvid'));};
+    });
+    wrap.querySelectorAll('[data-pvfiltro]').forEach(function(btn){
+      btn.onclick=function(){
+        var f=this.getAttribute('data-pvfiltro');
+        window._progVeicFiltro=(window._progVeicFiltro===f)?'':f;
+        progRenderQuadro();
+      };
+    });
+  },80);
 
   // Botões de celular já têm onclick inline — nada a delegar
 
@@ -27058,6 +27132,209 @@ function progRenderQuadro(){
 }
 
 // ── Resumo executivo ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// PAINEL DE VEÍCULOS POR CONTRATO — Disponibilidade e Projetos
+// ═══════════════════════════════════════════════════════════════
+
+var PROG_VEIC_STATUS = {
+  'Disponível':    {cor:'#3B6D11', bg:'#EAF3DE'},
+  'Em Uso':        {cor:'#185FA5', bg:'#E6F1FB'},
+  'Quebrado':      {cor:'#A32D2D', bg:'#FCEBEB'},
+  'Em Manutenção': {cor:'#854F0B', bg:'#FEF3E2'},
+  'Emprestado':    {cor:'#534AB7', bg:'#EEEDFE'},
+  'Substituído':   {cor:'#888',    bg:'#f5f5f3'},
+};
+
+// Calcula status real de um veículo para uma data
+function progGetVeicStatusReal(veic, data){
+  // Verificar escalado na Disponibilidade TMA (_progVeiculos)
+  var placasEscaladas = {};
+  Object.keys(_progVeiculos||{}).forEach(function(k){
+    if(k.indexOf('_'+data)>=0){
+      var pv=_progVeiculos[k];
+      if(pv&&pv.placa) placasEscaladas[pv.placa]=true;
+    }
+  });
+  if(placasEscaladas[veic.placa]) return 'Em Uso';
+  // Verificar escalado no PLPT (_plptProgDados)
+  if(typeof _plptProgDados!=='undefined'){
+    var plptData = (typeof _plptProgData!=='undefined' ? _plptProgData : null) || data;
+    var emUsoPLPT = Object.keys(_plptProgDados||{}).some(function(eqId){
+      var d=_plptProgDados[eqId];
+      if(!d||!d.prog) return false;
+      return d.prog.veiculo_id===veic.id;
+    });
+    if(emUsoPLPT) return 'Em Uso';
+  }
+  // Status do banco (frotas_veiculos.status)
+  var st = veic.status||'Disponível';
+  if(st==='Disponível'||st==='Disponível após manutenção') return 'Disponível';
+  if(st==='Em manutenção'||st==='Aguardando peça'||st==='Aguardando oficina'||st==='Em execução'||st==='Solicitação de manutenção') return 'Em Manutenção';
+  if(st==='Bloqueado'||st==='Em quarentena') return 'Quebrado';
+  if(st==='Baixado') return 'Substituído';
+  if(st==='Em uso') return 'Em Uso';
+  return 'Disponível';
+}
+
+// Detectar veículos em conflito (escalados em 2+ equipes no mesmo dia)
+function progVeicConflitos(data){
+  var placaCount={};
+  Object.keys(_progVeiculos||{}).forEach(function(k){
+    if(k.indexOf('_'+data)>=0&&!k.endsWith('_b')&&!k.includes('_b_')){
+      var pv=_progVeiculos[k];
+      if(pv&&pv.placa) placaCount[pv.placa]=(placaCount[pv.placa]||0)+1;
+    }
+  });
+  var conf={};
+  Object.keys(placaCount).forEach(function(p){if(placaCount[p]>1) conf[p]=placaCount[p];});
+  return conf;
+}
+
+function progVeicPainel(cid, data){
+  if(!cid) return '';
+  // Usar mesma lógica de matching do PLPT: id exato OU vazio OU match por código/nome
+  var contRef = contratos.find(function(x){return x.id===cid;});
+  var veics = frt_veiculos.filter(function(v){
+    if(v.ativo===false) return false;
+    var vcid=(v.contrato_id||'').trim();
+    if(!vcid) return false; // só trazer veículos com contrato definido
+    if(vcid===cid) return true;
+    if(contRef){
+      if(contRef.codigo && vcid.toUpperCase().indexOf(contRef.codigo.toUpperCase())>=0) return true;
+      if(contRef.nome){
+        var nome1=contRef.nome.split(' ')[0].toUpperCase();
+        if(nome1.length>2 && vcid.toUpperCase().indexOf(nome1)>=0) return true;
+      }
+    }
+    return false;
+  });
+  if(!veics.length) return '';
+
+  var conflitos = progVeicConflitos(data);
+  var _filtroVeicSt = window._progVeicFiltro||'';
+
+  // Contagem por status
+  var contagem={};
+  veics.forEach(function(v){
+    var st=progGetVeicStatusReal(v,data);
+    contagem[st]=(contagem[st]||0)+1;
+  });
+
+  // Chips de resumo
+  var chipsHtml = Object.keys(PROG_VEIC_STATUS).map(function(k){
+    var n=contagem[k]||0;
+    if(!n) return '';
+    var s=PROG_VEIC_STATUS[k];
+    var ativo=_filtroVeicSt===k;
+    return '<button data-pvfiltro="'+k+'" '
+      +'style="border:none;cursor:pointer;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;'
+      +'background:'+(ativo?s.cor:s.bg)+';color:'+(ativo?'#fff':s.cor)+'">'
+      +k+' '+n+'</button>';
+  }).join(' ');
+
+  // Lista de veículos
+  var lista = veics.filter(function(v){
+    if(!_filtroVeicSt) return true;
+    return progGetVeicStatusReal(v,data)===_filtroVeicSt;
+  });
+
+  var linhas = lista.map(function(v){
+    var st=progGetVeicStatusReal(v,data);
+    var s=PROG_VEIC_STATUS[st]||{cor:'#555',bg:'#f9f9f7'};
+    var conf=conflitos[v.placa];
+    var brdConflito=conf?';box-shadow:0 0 0 1.5px #A32D2D':'';
+    return '<tr style="border-left:3px solid '+s.cor+brdConflito+';background:'+s.bg+'22">'
+      +'<td style="font-family:monospace;font-weight:700;font-size:12px;padding:5px 8px">'+escHtml(v.placa)
+      +(conf?'<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;margin-left:4px">⚠×'+conf+'</span>':'')
+      +'</td>'
+      +'<td style="font-size:11px;padding:5px 8px;color:#888">'+escHtml(v.modelo||v.tipo||'—')+'</td>'
+      +'<td style="font-size:11px;padding:5px 8px">'
+        +'<span style="background:'+s.bg+';color:'+s.cor+';border-radius:4px;padding:1px 8px;font-weight:600;font-size:10px">'+st+'</span>'
+      +'</td>'
+      +'<td style="padding:5px 8px;text-align:right">'
+        +'<button class="btn btn-sm" data-pvid="'+v.id+'" style="font-size:10px;padding:1px 7px">⚙</button>'
+      +'</td>'
+      +'</tr>';
+  }).join('');
+
+  var html = '<div style="margin-top:1.5rem;border:.5px solid #e0dfd8;border-radius:10px;overflow:hidden">'
+    +'<div style="background:#f5f5f3;padding:.6rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">'
+    +'<span style="font-size:12px;font-weight:700;color:#444">🚗 Veículos do Contrato ('+veics.length+')</span>'
+    +'<div style="display:flex;gap:5px;flex-wrap:wrap">'+chipsHtml+'</div>'
+    +'</div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
+    +'<thead><tr style="background:#fafaf8;font-size:10px;color:#888">'
+    +'<th style="padding:4px 8px;text-align:left">Placa</th><th style="padding:4px 8px;text-align:left">Modelo/Tipo</th>'
+    +'<th style="padding:4px 8px;text-align:left">Status</th><th style="padding:4px 8px"></th>'
+    +'</tr></thead>'
+    +'<tbody>'+linhas+'</tbody></table></div></div>';
+
+  return html;
+}
+
+// Modal de status do veículo (espelha o padrão de colaboradores)
+function progAbrirStatusVeic(veicId){
+  var v=frt_veiculos.find(function(x){return x.id===veicId;}); if(!v)return;
+  var stAtual=progGetVeicStatusReal(v, progGetData());
+
+  var html='<div class="modal-bg"><div class="modal" style="max-width:320px">'
+    +'<div style="font-weight:700;font-size:13px;margin-bottom:.2rem">'+escHtml(v.placa)+' — '+escHtml(v.modelo||v.tipo||'')+'</div>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">'+escHtml(v.status||'Disponível')+'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:5px">';
+
+  Object.keys(PROG_VEIC_STATUS).filter(function(k){return k!=='Em Uso';}).forEach(function(k){
+    var s=PROG_VEIC_STATUS[k];
+    var ativo=stAtual===k;
+    html+='<button data-pvst="'+k+'" data-pvid="'+veicId+'" '
+      +'style="background:'+(ativo?s.cor:s.bg)+';color:'+(ativo?'#fff':s.cor)+';border:.5px solid '+s.cor+'44;'
+      +'border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;display:flex;justify-content:space-between">'
+      +'<span>'+k+'</span>'+(ativo?'<span style="font-weight:700">✓</span>':'')
+      +'</button>';
+  });
+
+  html+='</div>'
+    +'<div style="display:flex;gap:6px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +'</div></div></div>';
+
+  setModal(html);
+  setTimeout(function(){
+    document.querySelectorAll('[data-pvst]').forEach(function(btn){
+      btn.onclick=function(){
+        var st=this.getAttribute('data-pvst');
+        var vid=this.getAttribute('data-pvid');
+        var vx=frt_veiculos.find(function(x){return x.id===vid;});
+        if(!vx) return;
+
+        if(st==='Quebrado'){
+          // Abrir chamado de manutenção
+          closeModal();
+          frtAbrirNovaManutencao(vid);
+          return;
+        }
+
+        // Mapear para status do frotas_veiculos
+        var statusFrotas={
+          'Disponível':'Disponível','Em Manutenção':'Em manutenção',
+          'Emprestado':'Bloqueado','Substituído':'Baixado'
+        };
+        var novoStatus = statusFrotas[st]||st;
+        // Atualizar em memória
+        var idx=frt_veiculos.findIndex(function(x){return x.id===vid;});
+        if(idx>=0) frt_veiculos[idx].status=novoStatus;
+        // Salvar no banco
+        if(!DEMO) sbUpdate('frotas_veiculos',{status:novoStatus},'id=eq.'+vid)
+          .then(function(ok){
+            if(!ok) progShowToast('⚠️ Erro ao salvar status do veículo.','erro');
+            else progShowToast('✅ '+vx.placa+' → '+st);
+          });
+        closeModal();
+        progRenderQuadro();
+      };
+    });
+  },50);
+}
+
 function progRenderResumo(eqs, data, nFolga){
   var total=0, programadas=0, completas=0, incompletas=0, paradas=0;
   eqs.forEach(function(eq){
@@ -29980,8 +30257,9 @@ function renderCampoEquipes(){
       lista._carregando = true;
       if(!lista.innerHTML) lista.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Carregando...</div>';
       Promise.all([
-        sbFetch('sessoes_disponibilidade',{filters:['data=eq.'+hoje],order:'login_ts.desc',limit:200}),
-        sbFetch('ordens_diario',{filters:['data=eq.'+hoje],order:'criado_em.desc',limit:500})
+        // Buscar hoje E dias anteriores sem logout (equipes ainda em campo)
+        sbFetch('sessoes_disponibilidade',{filters:['login_ts=not.is.null','logout_ts=is.null'],order:'login_ts.desc',limit:300}),
+        sbFetch('ordens_diario',{filters:['data=gte.'+(function(){var d=new Date();d.setDate(d.getDate()-7);return d.toISOString().split('T')[0];})()],order:'criado_em.desc',limit:500})
       ]).then(function(res){
         lista._carregando = false;
         if(res[0]&&res[0].length){
@@ -30021,10 +30299,16 @@ function _renderCampoEquipesLista(hoje, cidFil, eqFil){
     });
   }
 
-  // Sessões abertas hoje (login sem logout = em campo)
+  // Sessões em campo: login sem logout (qualquer data — equipes ainda ativas)
   var sessHoje = sessoes_disp.filter(function(s){
-    return (s.data||'').split('T')[0]===hoje && s.login_ts;
+    return s.login_ts && !s.logout_ts;
   });
+  // Fallback: se não houver sessões sem logout, mostrar apenas hoje
+  if(!sessHoje.length){
+    sessHoje = sessoes_disp.filter(function(s){
+      return (s.data||'').split('T')[0]===hoje && s.login_ts;
+    });
+  }
 
   // Enriquecer com dados da equipe e contrato
   var emCampo = sessHoje.map(function(s){
@@ -38540,6 +38824,37 @@ function progProjSalvarStatus(){
 }
 
 // ── Render quadro ─────────────────────────────────────────────
+function plptAtualizarQuadro(){
+  var btn = document.querySelector('[onclick="plptAtualizarQuadro()"]');
+  if(btn){ btn.textContent='⏳ Atualizando...'; btn.disabled=true; }
+  var cid  = (document.getElementById('plpt-prog-contrato')||{}).value||'';
+  var data = (document.getElementById('plpt-prog-data')||{}).value||dataHojeLocal();
+  if(!cid){ progShowToast('Selecione um contrato.','erro'); if(btn){btn.textContent='🔄 Atualizar';btn.disabled=false;} return; }
+  if(DEMO){ plptProgRender(); if(btn){btn.textContent='🔄 Atualizar';btn.disabled=false;} return; }
+  Promise.all([
+    sbFetch('equipes',{filters:['contrato_id=eq.'+cid,'status=eq.Ativo'],order:'nome_equipe'}),
+    sbFetch('colaboradores',{filters:['contrato_id=eq.'+cid,'ativo=eq.true'],order:'nome'}),
+    sbFetch('plpt_prog_dia',{filters:['contrato_id=eq.'+cid,'data=eq.'+data]}),
+    sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
+  ]).then(function(res){
+    if(res[0]&&res[0].length) res[0].forEach(function(e){
+      var i=equipes.findIndex(function(x){return x.id===e.id;}); if(i>=0) equipes[i]=e; else equipes.push(e);
+    });
+    if(res[1]&&res[1].length) res[1].forEach(function(c){
+      var i=colaboradores.findIndex(function(x){return x.id===c.id;}); if(i>=0) colaboradores[i]=c; else colaboradores.push(c);
+    });
+    plptProgInit();
+    progShowToast('✅ Programação PLPT atualizada!');
+  }).catch(function(e){
+    console.error('plptAtualizarQuadro erro:',e);
+    plptProgRender();
+    progShowToast('⚠ Erro ao atualizar.','erro');
+  }).finally(function(){
+    var btn2=document.querySelector('[onclick="plptAtualizarQuadro()"]');
+    if(btn2){btn2.textContent='🔄 Atualizar';btn2.disabled=false;}
+  });
+}
+
 function progProjRenderQuadro(){
   var data = progProjGetData();
   var cid  = progProjGetCid();
@@ -38771,9 +39086,23 @@ function _progProjRenderQuadroInterno(data, cid){
 
   // ── Painel de disponíveis ────────────────────────
   var dispHtml=ppRenderPainelDisp(ativas,data,cid);
+  var veicHtmlP=progVeicPainel(cid,data);
 
-  wrap.innerHTML=resumoHtml+filtrosHtml+projBanner+quadroHtml+folgaHtml+dispHtml;
+  wrap.innerHTML=resumoHtml+filtrosHtml+projBanner+quadroHtml+folgaHtml+dispHtml+veicHtmlP;
   ppBindDrag();
+  // Bindar botões de status e filtro dos veículos
+  setTimeout(function(){
+    wrap.querySelectorAll('[data-pvid]').forEach(function(btn){
+      btn.onclick=function(){progAbrirStatusVeic(this.getAttribute('data-pvid'));};
+    });
+    wrap.querySelectorAll('[data-pvfiltro]').forEach(function(btn){
+      btn.onclick=function(){
+        var f=this.getAttribute('data-pvfiltro');
+        window._progVeicFiltro=(window._progVeicFiltro===f)?'':f;
+        progRenderQuadro();
+      };
+    });
+  },80);
 }
 
 function _ppSetFiltroTurno(t){
@@ -39057,6 +39386,9 @@ function ppRenderPainelDisp(eqs, data, cid){
           +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;font-size:11px;cursor:grab;margin:2px">'
           +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
           +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||c.re||'')+'</span>'
+          +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
+          +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
+          +'ondragstart="event.stopPropagation()">⋮</span>'
           +'</div>';
       }).join('')
     : '<div style="color:#aaa;font-size:12px">Todos escalados</div>';
@@ -39752,6 +40084,15 @@ function isMotoDupla(eq){
 }
 
 function progSetVeiculo(eqId, data, veiculoObj){
+  // Checar conflito — mesmo veículo em outra equipe no mesmo dia
+  if(veiculoObj&&veiculoObj.placa){
+    var _conf=Object.keys(_progVeiculos).filter(function(k){
+      return k!==progVeiculoKey(eqId,data)&&k.indexOf('_'+data)>=0&&!k.endsWith('_b');
+    }).filter(function(k){
+      return (_progVeiculos[k]||{}).placa===veiculoObj.placa;
+    });
+    if(_conf.length) progShowToast('⚠️ Veículo '+veiculoObj.placa+' já está escalado em outra equipe neste dia! Verifique o painel de veículos.');
+  }
   _progVeiculos[progVeiculoKey(eqId, data)] = veiculoObj;
   try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
 
@@ -43218,32 +43559,45 @@ function frtManutRender(){
     }).join('');
   }
 
-  if(!rows.length){tb.innerHTML='<tr><td colspan="11" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma manutenção encontrada.</td></tr>';return;}
+  var hoje=new Date(); hoje.setHours(0,0,0,0);
+  if(!rows.length){tb.innerHTML='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma manutenção encontrada.</td></tr>';return;}
   tb.innerHTML=rows.map(function(m){
-    var stCor={Solicitada:'#854F0B',Aprovada:'#185FA5','Em execução':'#534AB7',
-      Concluída:'#3B6D11','Aguardando peça':'#854F0B'}[m.status]||'#555';
-    return '<tr>'
-      +'<td style="font-family:monospace;font-weight:600">'+m.placa+'</td>'
-      +'<td style="font-size:12px">'+m.modelo+'</td>'
-      +'<td style="font-size:12px">'+m.tipo+'</td>'
-      +'<td style="font-size:12px">'+m.descricao+'</td>'
-      +'<td style="font-size:12px">'+(m.fornecedor||'—')+'</td>'
-      +'<td style="font-size:12px">'+fmtD(m.data)+'</td>'
-      +'<td style="font-size:12px;text-align:right">'+(m.km||0).toLocaleString('pt-BR')+'</td>'
-      +'<td style="font-size:12px;text-align:right;font-weight:600">R$ '+fmtMoeda(m.valor||0)+'</td>'
-      +'<td style="text-align:center">'+(m.garantia?'<span style="color:#3B6D11;font-size:11px">✅ Sim</span>':'<span style="color:#aaa;font-size:11px">—</span>')+'</td>'
-      +'<td><span style="background:'+stCor+'22;color:'+stCor+';border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+m.status+'</span></td>'
-      +'<td><button class="btn btn-sm" data-mid="'+m.id+'" style="font-size:10px">Ver</button></td>'
+    var stCor=(FRT_MANUT_COR&&FRT_MANUT_COR[m.status])||'#555';
+    // Calcular dias em reparo e atraso
+    var diasReparo=0,diasAtraso=0,bgRow='',alertLabel='';
+    if(m.data_inicio_reparo && ['Em Execução','Aguardando Peça','Requisição','Aprovada'].indexOf(m.status)>=0){
+      diasReparo=Math.floor((hoje-new Date(m.data_inicio_reparo))/(86400000));
+      if(diasReparo>=15)      {bgRow='background:#FDE8E8'; alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">🔴 '+diasReparo+'d</span> ';}
+      else if(diasReparo>=10) {bgRow='background:#FEF0E2'; alertLabel='<span style="font-size:9px;background:#C97A1F;color:#fff;border-radius:3px;padding:0 4px">🟠 '+diasReparo+'d</span> ';}
+      else if(diasReparo>=5)  {bgRow='background:#FEF9EE'; alertLabel='<span style="font-size:9px;background:#854F0B;color:#fff;border-radius:3px;padding:0 4px">🟡 '+diasReparo+'d</span> ';}
+    }
+    if(m.previsao_retorno && m.status!=='Concluída' && m.status!=='Disponível'){
+      var prevDate=new Date(m.previsao_retorno); prevDate.setHours(0,0,0,0);
+      diasAtraso=Math.floor((hoje-prevDate)/86400000);
+      if(diasAtraso>0&&!alertLabel) alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">⏰ +'+diasAtraso+'d</span> ';
+    }
+    var isAtivo = ['Concluída','Disponível','Negada'].indexOf(m.status)<0;
+    return '<tr data-mid="'+m.id+'" style="'+bgRow+';cursor:pointer">'  
+      +'<td style="font-family:monospace;font-weight:600;font-size:12px">'+escHtml(m.placa)+'</td>'
+      +'<td style="font-size:11px;color:#888">'+escHtml(m.modelo)+'</td>'
+      +'<td style="font-size:11px">'+escHtml(m.tipo)+'</td>'
+      +'<td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+alertLabel+escHtml(m.descricao)+'</td>'
+      +'<td style="font-size:11px">'+fmtD(m.data_solicitacao||m.data)+'</td>'
+      +(m.previsao_retorno?'<td style="font-size:11px;color:'+(diasAtraso>0?'#A32D2D':'#555')+'">'+fmtD(m.previsao_retorno)+(diasAtraso>0?' ⚠':'')+'</td>':'<td style="font-size:11px;color:#aaa">—</td>')
+      +'<td><span style="background:'+stCor+'22;color:'+stCor+';border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">'+escHtml(m.status)+'</span></td>'
+      +'<td style="text-align:right">'+(isAtivo?'<button class="btn btn-pri btn-sm" data-bmid="'+m.id+'" style="font-size:10px">'+(['Solicitada','Em Análise'].indexOf(m.status)>=0?'⚖️ Avaliar':'📋 Controle')+'</button>':'<span style="font-size:10px;color:#aaa">Encerrado</span>')+'</td>'
       +'</tr>';
   }).join('');
   setTimeout(function(){
-    rows.forEach(function(m){
-      var b=tb.querySelector('[data-mid="'+m.id+'"]');
-      if(b)b.onclick=function(){frtAbrirFichaManutencao(m.id);};
+    tb.querySelectorAll("[data-mid]").forEach(function(tr){
+      tr.onclick=function(){frtAbrirFichaManutencao(this.getAttribute("data-mid"));};
+    });
+    tb.querySelectorAll("[data-bmid]").forEach(function(btn){
+      btn.onclick=function(e){e.stopPropagation();frtAbrirFichaManutencao(this.getAttribute("data-bmid"));};
     });
   },50);
-}
 
+}
 // ── COMBUSTÍVEL ───────────────────────────────────────────────
 function frtCombRender(){
   var tb=document.getElementById('frt-comb-tbody');if(!tb)return;
@@ -44828,65 +45182,276 @@ function frtPortariaVerDetalhe(id){
   alert('Portaria: '+p.placa+' | '+p.motorista+'\nSaída: '+fmtDT(p.data_saida)+'\nBase: '+p.base_saida+'\nStatus: '+p.status);
 }
 
-function frtAbrirNovaManutencao(){
-  var html='<div class="modal-bg"><div class="modal" style="max-width:500px">'
-    +'<h3>🔧 Nova Manutenção / Solicitação</h3>'
+// Constantes do fluxo de manutenção
+var FRT_MANUT_STATUS = ['Solicitada','Em Análise','Aprovada','Requisição','Aguardando Peça','Em Execução','Concluída','Disponível'];
+var FRT_MANUT_COR = {
+  'Solicitada':'#854F0B','Em Análise':'#185FA5','Aprovada':'#3B6D11',
+  'Requisição':'#534AB7','Aguardando Peça':'#854F0B','Em Execução':'#0A6B7C',
+  'Concluída':'#3B6D11','Disponível':'#888'
+};
+
+function frtAbrirNovaManutencao(veicId){
+  var html='<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3>🔧 Abrir Chamado de Manutenção</h3>'
+    +'<p style="font-size:12px;color:#888;margin-bottom:1rem">Descreva o problema. A equipe de frotas será notificada e avaliará a solicitação.</p>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Veículo *</label>'
-    +'<select class="inp" id="fman-veic" style="width:100%"><option value="">Selecione...</option>'
-    +frt_veiculos.map(function(v){return '<option value="'+v.id+'" data-placa="'+v.placa+'">'+v.placa+' — '+v.modelo+'</option>';}).join('')+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Tipo *</label>'
-    +'<select class="inp" id="fman-tipo" style="width:100%">'
-    +['Preventiva','Corretiva','Pneus','Elétrica','Freios','Motor','Suspensão','Hidráulico','Outros'].map(function(t){return '<option>'+t+'</option>';}).join('')
-    +'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Data</label>'
-    +'<input class="inp" id="fman-data" type="date" style="width:100%" value="'+dataHojeLocal()+'"/></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Descrição *</label>'
-    +'<textarea class="inp" id="fman-desc" style="width:100%;height:55px"></textarea></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Fornecedor/Oficina</label>'
-    +'<input class="inp" id="fman-forn" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Valor (R$)</label>'
-    +'<input class="inp" id="fman-valor" type="number" min="0" style="width:100%" value="0"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">KM</label>'
-    +'<input class="inp" id="fman-km" type="number" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Possui garantia?</label>'
-    +'<select class="inp" id="fman-garantia" style="width:100%"><option value="">Não</option><option value="sim">Sim</option></select></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Status</label>'
-    +'<select class="inp" id="fman-status" style="width:100%">'
-    +['Solicitada','Em análise','Aprovada','Em execução','Aguardando peça','Concluída'].map(function(s){return '<option>'+s+'</option>';}).join('')
-    +'</select></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Veículo * (placa)</label>'
+    +'<input class="inp" id="fman-placa-busca" placeholder="Digite a placa..." autocomplete="off" style="width:100%;margin-bottom:4px"/>'
+    +'<div id="fman-placa-lista" style="border:.5px solid #e0dfd8;border-radius:6px;background:#fff;max-height:150px;overflow-y:auto;display:none"></div>'
+    +'<div id="fman-veic-info" style="font-size:11px;color:#3B6D11;font-weight:600;margin-top:3px;display:none"></div>'
+    +'<input type="hidden" id="fman-veic"/>'
     +'</div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Tipo do problema *</label>'
+    +'<select class="inp" id="fman-tipo" style="width:100%">'
+    +['Preventiva','Corretiva','Pneus','Elétrica','Freios','Motor','Suspensão','Hidráulico','Funilaria','Vidros','Outros'].map(function(t){return '<option>'+t+'</option>';}).join('')
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">KM atual</label>'
+    +'<input class="inp" id="fman-km" type="number" style="width:100%" placeholder="Odômetro"/></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Sintoma / Descrição do problema *</label>'
+    +'<textarea class="inp" id="fman-desc" style="width:100%;height:70px" placeholder="Descreva o que está ocorrendo com o veículo..."></textarea></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Solicitante</label>'
+    +'<input class="inp" id="fman-solicit" style="width:100%" value="'+(usuarioLogado?usuarioLogado.nome:'')+'"/></div>'
+    +'</div>'
+    +'<div id="fman-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" id="fman-salvar" style="flex:1">Salvar</button>'
+    +'<button class="btn btn-pri" id="fman-salvar" style="flex:1.5">📤 Enviar Chamado</button>'
     +'</div></div></div>';
   setModal(html);
   setTimeout(function(){
+    // ── Busca de placa ──────────────────────────────────────
+    var _veicSelecionado = veicId ? frt_veiculos.find(function(v){return v.id===veicId;}) : null;
+    var inpPlaca = document.getElementById('fman-placa-busca');
+    var listaEl  = document.getElementById('fman-placa-lista');
+    var infoEl   = document.getElementById('fman-veic-info');
+    var hiddenEl = document.getElementById('fman-veic');
+    var kmEl     = document.getElementById('fman-km');
+
+    function selecionarVeic(v){
+      _veicSelecionado = v;
+      if(hiddenEl) hiddenEl.value = v.id;
+      if(inpPlaca) inpPlaca.value = v.placa + ' — ' + v.modelo;
+      if(infoEl){infoEl.textContent = '✅ '+v.placa+' — '+v.modelo+(v.status?' ('+v.status+')':''); infoEl.style.display='block';}
+      if(listaEl) listaEl.style.display='none';
+      if(kmEl&&!kmEl.value) kmEl.value = v.km_atual||'';
+    }
+
+    function renderLista(busca){
+      var lista = frt_veiculos.filter(function(v){
+        if(v.ativo===false) return false;
+        var b = busca.toLowerCase();
+        return (v.placa||'').toLowerCase().includes(b)
+            || (v.modelo||'').toLowerCase().includes(b)
+            || (v.marca||'').toLowerCase().includes(b);
+      }).slice(0,10);
+      if(!lista.length){listaEl.innerHTML='<div style="padding:8px;font-size:12px;color:#aaa">Nenhum veículo encontrado</div>';listaEl.style.display='block';return;}
+      listaEl.innerHTML = lista.map(function(v){
+        var stCor = FRT_STATUS_COR&&FRT_STATUS_COR[v.status] ? FRT_STATUS_COR[v.status] : '#555';
+        return '<div data-vid="'+v.id+'" style="padding:8px 12px;cursor:pointer;border-bottom:.5px solid #f5f5f3;font-size:12px;display:flex;justify-content:space-between;align-items:center">'
+          +'<span><b style="font-family:monospace">'+v.placa+'</b> — '+escHtml(v.modelo)+'</span>'
+          +'<span style="font-size:10px;color:'+stCor+'">'+escHtml(v.status||'')+'</span>'
+          +'</div>';
+      }).join('');
+      listaEl.style.display='block';
+      listaEl.querySelectorAll('[data-vid]').forEach(function(el){
+        el.onmousedown=function(e){
+          e.preventDefault();
+          var v=frt_veiculos.find(function(x){return x.id===el.getAttribute('data-vid');});
+          if(v) selecionarVeic(v);
+        };
+        el.onmouseover=function(){this.style.background='#f0f5ff';};
+        el.onmouseout=function(){this.style.background='';};
+      });
+    }
+
+    if(inpPlaca){
+      if(_veicSelecionado) selecionarVeic(_veicSelecionado);
+      inpPlaca.oninput=function(){
+        var b=this.value.trim();
+        if(b.length>=1) renderLista(b);
+        else {listaEl.style.display='none';}
+        // Limpar seleção ao editar o campo
+        if(hiddenEl) hiddenEl.value='';
+        _veicSelecionado=null;
+        if(infoEl) infoEl.style.display='none';
+      };
+      inpPlaca.onfocus=function(){if(this.value.trim().length>=1) renderLista(this.value.trim());};
+      inpPlaca.onblur=function(){setTimeout(function(){if(listaEl)listaEl.style.display='none';},200);};
+      inpPlaca.focus();
+    }
+
     var btn=document.getElementById('fman-salvar');if(!btn)return;
     btn.onclick=function(){
       var g=function(id){return (document.getElementById(id)||{}).value||'';};
-      var veicSel=document.getElementById('fman-veic');
-      var veic=frt_veiculos.find(function(v){return v.id===veicSel.value;});
+      var veic=_veicSelecionado || frt_veiculos.find(function(v){return v.id===g('fman-veic');});
       var desc=g('fman-desc').trim();
-      if(!veic||!desc){alert('Veículo e descrição são obrigatórios.');return;}
-      var manut={id:'man'+Date.now(),placa:veic.placa,modelo:veic.modelo,
-        tipo:g('fman-tipo'),descricao:desc,fornecedor:g('fman-forn'),
-        data:g('fman-data'),km:parseInt(g('fman-km'))||veic.km_atual||0,
-        valor:parseFloat(g('fman-valor'))||0,
-        garantia:g('fman-garantia')==='sim',status:g('fman-status')||'Solicitada'};
+      var erEl=document.getElementById('fman-erro');
+      if(!veic){if(erEl){erEl.textContent='Selecione um veículo.';erEl.style.display='block';}return;}
+      if(!desc){if(erEl){erEl.textContent='Descreva o problema.';erEl.style.display='block';}return;}
+      var manut={
+        id:gerarUUID(),placa:veic.placa,modelo:veic.modelo,veiculo_id:veic.id,
+        tipo:g('fman-tipo'),descricao:desc,
+        km:parseInt(g('fman-km'))||veic.km_atual||0,
+        solicitante:g('fman-solicit'),
+        data:dataHojeLocal(),data_solicitacao:new Date().toISOString(),
+        status:'Solicitada',
+        // Campos de controle (preenchidos depois pela equipe frotas)
+        fornecedor:'',defeito_real:'',valor:0,garantia:false,
+        data_inicio_reparo:null,previsao_retorno:null,
+        justificativa_negativa:''
+      };
       frt_manutencoes.unshift(manut);
-      if(g('fman-status')==='Solicitada'||g('fman-status')==='Em análise'){
-        veic.status='Solicitação de manutenção';
+      // Mudar status do veículo
+      var idx=frt_veiculos.findIndex(function(v){return v.id===veic.id;});
+      if(idx>=0){
+        frt_veiculos[idx].status='Solicitação de manutenção';
+        if(!DEMO) sbUpdate('frotas_veiculos',{status:'Solicitação de manutenção'},'id=eq.'+veic.id);
       }
-      if(!DEMO)sbInsert('frotas_manutencoes',_semId(manut));
+      if(!DEMO) sbInsert('frotas_manutencoes',manut).then(function(r){
+        if(r&&r[0]&&r[0].id) manut.id=r[0].id;
+      });
+      // Marcar sino para re-verificar notificações
+      if(typeof notifVerificar==='function') setTimeout(notifVerificar,1000);
       closeModal();frtManutRender();
+      progShowToast('✅ Chamado aberto! A equipe de frotas foi notificada.');
     };
   },50);
 }
 
 function frtAbrirFichaManutencao(id){
-  var m=frt_manutencoes.find(function(x){return x.id===id;});if(!m)return;
-  alert('Manutenção: '+m.placa+'\nTipo: '+m.tipo+'\nDescrição: '+m.descricao+'\nValor: R$'+fmtMoeda(m.valor||0)+'\nStatus: '+m.status);
+  var m=frt_manutencoes.find(function(x){return x.id===id;}); if(!m)return;
+  var stCor=FRT_MANUT_COR[m.status]||'#555';
+  var podeCon = ['Solicitada','Em Análise'].indexOf(m.status)>=0;
+  var jaControle = ['Aprovada','Requisição','Aguardando Peça','Em Execução','Concluída','Disponível'].indexOf(m.status)>=0;
+  var html='<div class="modal-bg"><div class="modal" style="max-width:460px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
+    +'<h3 style="margin:0">🔧 Chamado #'+escHtml(m.id.substring(0,8).toUpperCase())+'</h3>'
+    +'<span style="background:'+stCor+'22;color:'+stCor+';border-radius:6px;padding:3px 10px;font-size:12px;font-weight:700">'+m.status+'</span>'
+    +'</div>'
+    // Info do chamado
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:.75rem;margin-bottom:.75rem;font-size:12px">'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem">'
+    +'<div><b>Veículo:</b> '+escHtml(m.placa)+' — '+escHtml(m.modelo)+'</div>'
+    +'<div><b>Tipo:</b> '+escHtml(m.tipo)+'</div>'
+    +'<div><b>Data:</b> '+fmtD(m.data_solicitacao||m.data)+'</div>'
+    +'<div><b>KM:</b> '+(m.km||0).toLocaleString('pt-BR')+'</div>'
+    +(m.solicitante?'<div style="grid-column:span 2"><b>Solicitante:</b> '+escHtml(m.solicitante)+'</div>':'')
+    +'<div style="grid-column:span 2"><b>Sintoma:</b> '+escHtml(m.descricao)+'</div>'
+    +(m.justificativa_negativa?'<div style="grid-column:span 2;color:#A32D2D"><b>Negativa:</b> '+escHtml(m.justificativa_negativa)+'</div>':'')
+    +'</div></div>'
+    // Se já tem controle, mostrar resumo
+    +(jaControle && (m.fornecedor||m.defeito_real) ? '<div style="background:#EBF4FD;border-radius:8px;padding:.75rem;margin-bottom:.75rem;font-size:12px">'
+    +'<b style="color:#185FA5">📋 Controle de Manutenção</b><div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin-top:.4rem">'
+    +(m.fornecedor?'<div style="grid-column:span 2"><b>Oficina:</b> '+escHtml(m.fornecedor)+'</div>':'')
+    +(m.defeito_real?'<div style="grid-column:span 2"><b>Defeito real:</b> '+escHtml(m.defeito_real)+'</div>':'')
+    +(m.valor?'<div><b>Valor:</b> R$ '+fmtMoeda(m.valor)+'</div>':'')
+    +'<div><b>Garantia:</b> '+(m.garantia?'✅ Sim':'❌ Não')+'</div>'
+    +(m.data_inicio_reparo?'<div><b>Início:</b> '+fmtD(m.data_inicio_reparo)+'</div>':'')
+    +(m.previsao_retorno?'<div><b>Previsão:</b> '+fmtD(m.previsao_retorno)+'</div>':'')
+    +'</div></div>' : '')
+    // Botões de ação
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +(jaControle ? '<button class="btn btn-pri" data-ctrl-id="'+id+'" style="flex:2">📋 Editar Controle</button>' : '')
+    +(podeCon ? '<button class="btn" data-neg-id="'+id+'" style="flex:1;color:#A32D2D;border-color:#A32D2D">❌ Negar</button>' : '')
+    +(podeCon ? '<button class="btn btn-pri" data-ctrl-id="'+id+'" style="flex:2;background:#3B6D11">✅ Aprovar e Controlar</button>' : '')
+    +'</div></div></div>';
+  setModal(html);
+  setTimeout(function(){
+    document.querySelectorAll("[data-ctrl-id]").forEach(function(btn){
+      btn.onclick=function(){var cid=this.getAttribute("data-ctrl-id");closeModal();frtAbrirControleManutencao(cid);};
+    });
+    document.querySelectorAll("[data-neg-id]").forEach(function(btn){
+      btn.onclick=function(){frtNegarManutencao(this.getAttribute("data-neg-id"));};
+    });
+  },50);
+}
+
+function frtNegarManutencao(id){
+  var m=frt_manutencoes.find(function(x){return x.id===id;}); if(!m)return;
+  var just=prompt('Informe a justificativa para negar esta solicitação:','');
+  if(just===null) return; // cancelou
+  if(!just.trim()){alert('Justificativa obrigatória para negar.');return;}
+  m.status='Negada'; m.justificativa_negativa=just.trim();
+  // Reverter status do veículo
+  var v=frt_veiculos.find(function(x){return x.placa===m.placa;});
+  if(v&&v.status==='Solicitação de manutenção'){
+    v.status='Disponível';
+    if(!DEMO) sbUpdate('frotas_veiculos',{status:'Disponível'},'id=eq.'+v.id);
+  }
+  if(!DEMO) sbUpdate('frotas_manutencoes',{status:'Negada',justificativa_negativa:just.trim()},'id=eq.'+id);
+  closeModal(); frtManutRender();
+  progShowToast('Solicitação negada. Justificativa registrada.');
+}
+
+function frtAbrirControleManutencao(id){
+  var m=frt_manutencoes.find(function(x){return x.id===id;}); if(!m)return;
+  // Aprovar automaticamente ao abrir controle
+  if(m.status==='Solicitada'||m.status==='Em Análise'){m.status='Aprovada';}
+  var dias=0;
+  if(m.data_inicio_reparo){
+    dias=Math.floor((Date.now()-new Date(m.data_inicio_reparo).getTime())/(1000*60*60*24));
+  }
+  var html='<div class="modal-bg"><div class="modal" style="max-width:500px">'
+    +'<h3>📋 Controle de Manutenção — '+escHtml(m.placa)+'</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Oficina / Fornecedor</label>'
+    +'<input class="inp" id="fc-forn" style="width:100%" value="'+escHtml(m.fornecedor||'')+'"/></div>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Defeito real identificado</label>'
+    +'<textarea class="inp" id="fc-defeito" style="width:100%;height:55px">'+escHtml(m.defeito_real||m.descricao||'')+'</textarea></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Valor estimado (R$)</label>'
+    +'<input class="inp" id="fc-valor" type="number" min="0" step="0.01" style="width:100%" value="'+(m.valor||0)+'"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">KM na entrada</label>'
+    +'<input class="inp" id="fc-km" type="number" style="width:100%" value="'+(m.km||'')+'"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Garantia</label>'
+    +'<select class="inp" id="fc-garantia" data-nosort style="width:100%">'
+    +'<option value="">Não</option><option value="sim"'+(m.garantia?' selected':'')+'>Sim</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Status</label>'
+    +'<select class="inp" id="fc-status" data-nosort style="width:100%">'
+    +FRT_MANUT_STATUS.filter(function(s){return s!=='Solicitada';}).map(function(s){return '<option'+(m.status===s?' selected':'')+'>'+s+'</option>';}).join('')
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data início dos reparos</label>'
+    +'<input class="inp" id="fc-inicio" type="date" style="width:100%" value="'+(m.data_inicio_reparo||'')+'"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Previsão de retorno</label>'
+    +'<input class="inp" id="fc-prev" type="date" style="width:100%" value="'+(m.previsao_retorno||'')+'"/></div>'
+    +(dias>0?'<div style="grid-column:span 2"><div style="border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;text-align:center;background:'+(dias>=15?'#FCEBEB':dias>=10?'#FEF0E2':'#FEF9EE')+';color:'+(dias>=15?'#A32D2D':dias>=10?'#C97A1F':'#854F0B')+'">⏱ '+dias+' dias em reparo'+(dias>=15?' — CRÍTICO':dias>=10?' — ALERTA':' — ATENÇÃO')+'</div></div>':'')
+    +'</div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="fc-salvar" style="flex:1.5">💾 Salvar Controle</button>'
+    +'</div></div></div>';
+  setModal(html);
+  setTimeout(function(){
+    var btn=document.getElementById('fc-salvar');if(!btn)return;
+    btn.onclick=function(){
+      var g=function(id){return (document.getElementById(id)||{}).value||'';};
+      m.fornecedor=g('fc-forn');
+      m.defeito_real=g('fc-defeito');
+      m.valor=parseFloat(g('fc-valor'))||0;
+      m.km=parseInt(g('fc-km'))||m.km;
+      m.garantia=g('fc-garantia')==='sim';
+      m.status=g('fc-status')||m.status;
+      m.data_inicio_reparo=g('fc-inicio')||null;
+      m.previsao_retorno=g('fc-prev')||null;
+      // Se Disponível: voltar veículo ao status disponível
+      if(m.status==='Disponível'){
+        var v=frt_veiculos.find(function(x){return x.placa===m.placa;});
+        if(v){
+          v.status='Disponível';
+          if(!DEMO) sbUpdate('frotas_veiculos',{status:'Disponível'},'id=eq.'+v.id);
+        }
+      }
+      if(!DEMO) sbUpdate('frotas_manutencoes',{
+        fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
+        km:m.km,garantia:m.garantia,status:m.status,
+        data_inicio_reparo:m.data_inicio_reparo||null,
+        previsao_retorno:m.previsao_retorno||null
+      },'id=eq.'+id);
+      closeModal();frtManutRender();
+      progShowToast('✅ Controle de manutenção atualizado — '+m.placa);
+      if(typeof notifVerificar==='function') setTimeout(notifVerificar,1000);
+    };
+  },50);
 }
 
 function frtAbrirNovoAbastecimento(){
@@ -45468,10 +46033,10 @@ window.addEventListener('load',async function(){
   <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
     <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">🚦 Saída</button>
     <!-- port-tab-saida hidden: merged into equipes tab -->
+    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Visitantes</button>
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
-    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
 
@@ -45724,8 +46289,8 @@ window.addEventListener('load',async function(){
   </div>
   <div style="overflow-x:auto"><table class="tbl tbl-responsive">
     <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Descrição</th>
-      <th>Fornecedor</th><th>Data</th><th>KM</th><th>Valor</th><th>Garantia</th><th>Status</th><th></th>
+      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Descrição / Sintoma</th>
+      <th>Data Solicit.</th><th>Prev. Retorno</th><th>Status</th><th style="text-align:right">Ação</th>
     </tr></thead>
     <tbody id="frt-man-tbody"></tbody>
   </table></div>
@@ -46397,9 +46962,15 @@ function plptProgRender(){
       +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">'
       +'Membros fixos <button onclick="plptProgEditarMembros(\''+eq.id+'\')" style="background:none;border:none;cursor:pointer;font-size:10px;color:#185FA5">✎ editar</button></label>'
       +(membrosHtml||'<span style="font-size:11px;color:#ccc">Nenhum membro cadastrado</span>')+'</div>'
-      +'<div><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">📱 Celular</label>'
-      +'<select style="width:100%;font-size:11px;border:.5px solid #e0dfd8;border-radius:4px;padding:3px 5px" class="plpt-cel-sel" data-eq="'+eq.id+'" data-dt="'+data+'">'
-      +plptCelOpts+'</select></div>'
+      +(function(){
+        var _cel=plptCelId?(_celulares||[]).find(function(x){return x.id===plptCelId;}):null;
+        var _lbl=_cel?escHtml(_cel.numero):'📱 Cel...';
+        var _bg=_cel?'#E6F1FB':'#f5f5f3';var _cor=_cel?'#185FA5':'#888';var _brd=_cel?'#185FA5':'#ccc';
+        return '<div><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">📱 Celular</label>'
+          +'<button class="plpt-cel-btn" data-eq="'+eq.id+'" data-dt="'+data+'" '
+          +'style="font-size:10px;background:'+_bg+';color:'+_cor+';border:.5px solid '+_brd+';border-radius:4px;padding:3px 8px;cursor:pointer;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+          +_lbl+'</button></div>';
+      })()
       +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">Obs. do dia</label>'
       +'<input class="inp" id="plpt-obs-'+eq.id+'" value="'+(prog.obs||'')+'" style="width:100%;font-size:12px" placeholder="Opcional..."/></div>'
       +'<div style="grid-column:span 2"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
@@ -46412,10 +46983,10 @@ function plptProgRender(){
       +'</div>'
       +'</div></div>';
   }).join('');
-  // Event delegation for PLPT celular selects
-  if(lista) lista.querySelectorAll('.plpt-cel-sel').forEach(function(sel){
-    sel.addEventListener('change', function(){
-      plptSalvarCelularProg(this.dataset.eq, this.dataset.dt, this.value);
+  // Bind dos botões de celular PLPT (modal com busca)
+  if(lista) lista.querySelectorAll('.plpt-cel-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      progAbrirSelecionarCelular(this.dataset.eq, this.dataset.dt);
     });
   });
 }
@@ -47157,6 +47728,7 @@ function plptProgRender(){
   lista.innerHTML=eqs.map(function(eq){
     var dado=_plptProgDados[eq.id]||{prog:null,projetos:[],membros:[]};
     var prog=dado.prog||{}, projs=dado.projetos||[], membros=dado.membros||[];
+    var plptCelId = (dado.prog||{}).celular_id||'';
     var tipo=eq.nome_equipe.indexOf('LV')>=0?'LV':eq.nome_equipe.indexOf('VIA')>=0?'VIA':'LM';
     var tipoCor={LM:'#185FA5',LV:'#3B6D11',VIA:'#854F0B'}[tipo]||'#555';
     var isProgr=!!(prog.encarregado_id);
@@ -47251,9 +47823,15 @@ function plptProgRender(){
       +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">'
       +'Membros fixos <button onclick="plptProgEditarMembros(\''+eq.id+'\')" style="background:none;border:none;cursor:pointer;font-size:10px;color:#185FA5">✎ editar</button></label>'
       +(membrosHtml||'<span style="font-size:11px;color:#ccc">Nenhum membro cadastrado</span>')+'</div>'
-      +'<div><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">📱 Celular</label>'
-      +'<select style="width:100%;font-size:11px;border:.5px solid #e0dfd8;border-radius:4px;padding:3px 5px" class="plpt-cel-sel" data-eq="'+eq.id+'" data-dt="'+data+'">'
-      +plptCelOpts+'</select></div>'
+      +(function(){
+        var _celB=plptCelId?(_celulares||[]).find(function(x){return x.id===plptCelId;}):null;
+        var _lblB=_celB?escHtml(_celB.numero):'📱 Cel...';
+        var _bgB=_celB?'#E6F1FB':'#f5f5f3';var _corB=_celB?'#185FA5':'#888';var _brdB=_celB?'#185FA5':'#ccc';
+        return '<div><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">📱 Celular</label>'
+          +'<button class="plpt-cel-btn" data-eq="'+eq.id+'" data-dt="'+data+'" '
+          +'style="font-size:10px;background:'+_bgB+';color:'+_corB+';border:.5px solid '+_brdB+';border-radius:4px;padding:3px 8px;cursor:pointer;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+          +_lblB+'</button></div>';
+      })()
       +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#555;display:block;margin-bottom:3px">Obs. do dia</label>'
       +'<input class="inp" id="plpt-obs-'+eq.id+'" value="'+(prog.obs||'')+'" style="width:100%;font-size:12px" placeholder="Opcional..."/></div>'
       +'<div style="grid-column:span 2"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
@@ -47266,6 +47844,12 @@ function plptProgRender(){
       +'</div>'
       +'</div></div>';
   }).join('');
+  // Bind dos botões de celular PLPT
+  if(lista) lista.querySelectorAll('.plpt-cel-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      progAbrirSelecionarCelular(this.dataset.eq, this.dataset.dt);
+    });
+  });
 }
 
 function plptProgOnChange(eqId){
@@ -53155,6 +53739,7 @@ async function lcAnalisarContrato(){
           <option value="LV">Linha Viva</option>
           <option value="VIA">Viabilidade</option>
         </select>
+        <button class="btn" onclick="plptAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5;font-size:12px" title="Recarregar dados do banco">🔄 Atualizar</button>
         <button class="btn btn-pri" onclick="plptProgSalvarTudo()" style="font-size:12px">💾 Salvar programação</button>
       </div>
     </div>
@@ -56368,9 +56953,9 @@ function comgasRemoverFoto(ncId, idx) {
   <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
     <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">🚦 Saída</button>
     <!-- port-tab-saida hidden: merged into equipes tab -->
+    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Visitantes</button>
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
-    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
   </div>
@@ -56624,8 +57209,8 @@ function comgasRemoverFoto(ncId, idx) {
   </div>
   <div style="overflow-x:auto"><table class="tbl tbl-responsive">
     <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Descrição</th>
-      <th>Fornecedor</th><th>Data</th><th>KM</th><th>Valor</th><th>Garantia</th><th>Status</th><th></th>
+      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Descrição / Sintoma</th>
+      <th>Data Solicit.</th><th>Prev. Retorno</th><th>Status</th><th style="text-align:right">Ação</th>
     </tr></thead>
     <tbody id="frt-man-tbody"></tbody>
   </table></div>
@@ -57037,6 +57622,7 @@ function comgasRemoverFoto(ncId, idx) {
           <option value="LV">Linha Viva</option>
           <option value="VIA">Viabilidade</option>
         </select>
+        <button class="btn" onclick="plptAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5;font-size:12px" title="Recarregar dados do banco">🔄 Atualizar</button>
         <button class="btn btn-pri" onclick="plptProgSalvarTudo()" style="font-size:12px">💾 Salvar programação</button>
       </div>
     </div>
