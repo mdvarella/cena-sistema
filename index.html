@@ -3548,6 +3548,10 @@ function plrVerDetalhe(colId,mes){
     +'</div></div></div>';
   setModal(html);
   setTimeout(function(){
+    var btnLimpar=document.querySelector('[data-limpar-colab]');
+    if(btnLimpar) btnLimpar.onclick=function(){
+      progLimparHistoricoFerias(this.getAttribute('data-limpar-colab'));
+    };
     document.querySelectorAll('.mn-full-btn').forEach(function(btn){
       btn.onclick=function(){
         closeModal();
@@ -26147,7 +26151,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.80',
+  numero: '7.9.82',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26365,7 +26369,7 @@ var _progLS = {
 };
 
 // Debounce para evitar re-renders em cascata
-function progRenderQuadroDebounced(){ clearTimeout(_progRenderTimer); _progRenderTimer=setTimeout(progRenderQuadro,80); }
+function progRenderQuadroDebounced(){ clearTimeout(_progRenderTimer); _progRenderTimer=setTimeout(progRenderQuadro,200); }
 
 // Status com cores e labels
 var PROG_STATUS = {
@@ -26733,7 +26737,7 @@ function onlineInit(){
   if(DEMO || !usuarioLogado) return;
   onlineHeartbeat();
   if(_onlineInterval) clearInterval(_onlineInterval);
-  _onlineInterval = setInterval(onlineHeartbeat, 2*60*1000);
+  _onlineInterval = setInterval(onlineHeartbeat, 3*60*1000);
   // Remover ao fechar aba
   window.addEventListener('beforeunload', function(){
     if(usuarioLogado && !DEMO){
@@ -27255,14 +27259,20 @@ var PROG_VEIC_STATUS = {
 // Calcula status real de um veículo para uma data
 function progGetVeicStatusReal(veic, data){
   // Verificar escalado na Disponibilidade TMA (_progVeiculos)
-  var placasEscaladas = {};
-  Object.keys(_progVeiculos||{}).forEach(function(k){
-    if(k.indexOf('_'+data)>=0){
-      var pv=_progVeiculos[k];
-      if(pv&&pv.placa) placasEscaladas[pv.placa]=true;
-    }
-  });
-  if(placasEscaladas[veic.placa]) return 'Em Uso';
+  // Usar cache por data para evitar O(n) a cada veículo
+  if(!window._veicEscCache) window._veicEscCache={};
+  if(!window._veicEscCache[data]){
+    var _cache={};
+    Object.keys(_progVeiculos||{}).forEach(function(k){
+      if(k.indexOf('_'+data)>=0){var pv=_progVeiculos[k];if(pv&&pv.placa)_cache[pv.placa]=true;}
+    });
+    window._veicEscCache[data]=_cache;
+    // Limpar caches de outros dias
+    Object.keys(window._veicEscCache).forEach(function(d){
+      if(d!==data) delete window._veicEscCache[d];
+    });
+  }
+  if(window._veicEscCache[data][veic.placa]) return 'Em Uso';
   // Verificar escalado no PLPT (_plptProgDados)
   if(typeof _plptProgDados!=='undefined'){
     var plptData = (typeof _plptProgData!=='undefined' ? _plptProgData : null) || data;
@@ -27347,13 +27357,14 @@ function progVeicPainel(cid, data){
 
   // ── Helpers de manutenção ──────────────────────────────────
   var hoje0=new Date();hoje0.setHours(0,0,0,0);
-  var _STATUS_BLOQUEIA=['Solicitada','Em Análise','Aprovada','Requisição','Aguardando Peça','Em Execução'];
-  function getManutAtiva(veic){
-    if(!frt_manutencoes||!frt_manutencoes.length)return null;
-    return frt_manutencoes.find(function(m){
-      return (m.placa===veic.placa||m.veiculo_id===veic.id)&&_STATUS_BLOQUEIA.indexOf(m.status)>=0;
-    })||null;
-  }
+  // Pre-build mapa de manutenções ativas (O(1) lookup)
+  var _manutPorPlaca={}, _manutPorVeicId={};
+  (frt_manutencoes||[]).forEach(function(m){
+    if(['Solicitada','Em Análise','Aprovada','Requisição','Aguardando Peça','Em Execução'].indexOf(m.status)<0) return;
+    if(m.placa && !_manutPorPlaca[m.placa]) _manutPorPlaca[m.placa]=m;
+    if(m.veiculo_id && !_manutPorVeicId[m.veiculo_id]) _manutPorVeicId[m.veiculo_id]=m;
+  });
+  function getManutAtiva(veic){ return _manutPorVeicId[veic.id]||_manutPorPlaca[veic.placa]||null; }
   function flagReparo(manut){
     if(!manut||!manut.data_inicio_reparo)return '';
     var ini=new Date(manut.data_inicio_reparo);ini.setHours(0,0,0,0);
@@ -29019,7 +29030,13 @@ function progMenuSlot(colabId, eqId, pos){
     +'<div style="display:flex;gap:6px;margin-top:.75rem">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
     +'<button class="btn btn-pri" onclick="progSalvarMenuStatus(\''+colabId+'\')" style="flex:1">💾 Salvar</button>'
-    +'</div></div></div>';
+    +'</div>'
+    +'<div style="text-align:center;margin-top:.6rem">'
+    +'<button data-limpar-colab="'+colabId+'" '
+    +'style="background:none;border:none;color:#A32D2D;font-size:11px;cursor:pointer;text-decoration:underline">'
+    +'🗑 Limpar status / férias / afastamento</button>'
+    +'</div>';
+    +'</div></div>';
   setModal(html);
   setTimeout(function(){
     document.querySelectorAll('.mn-full-btn').forEach(function(btn){
@@ -29057,21 +29074,46 @@ function progSetStatusMenu(colabId, status){
 
 
 function progLimparHistoricoFerias(colabId){
-  if(!confirm('Limpar TODO o histórico de férias/afastamento deste colaborador?\n\nEle voltará a aparecer como Disponível.')) return;
-  // Clear localStorage
+  var c = colaboradores.find(function(x){return x.id===colabId;})||equipes_disp.find(function(x){return x.id===colabId;})||{};
+  var nome = c.nome||c.colaborador||colabId;
+  if(!confirm('Limpar TODO o histórico de férias/afastamento de\n'+nome+'?\n\nEle voltará a aparecer como Disponível.')) return;
+
+  // 1. Limpar localStorage prog_persistentes
   progRemoverPersistente(colabId);
-  // Clear _progStatus
-  if(_progStatus[colabId] && ['ferias','afastado','treinamento'].indexOf(_progStatus[colabId])>=0){
-    delete _progStatus[colabId];
-  }
-  // Delete ALL ferias/afastado/treinamento records from DB
+
+  // 2. Limpar prog_status_<data> de todos os dias no localStorage
+  try{
+    Object.keys(localStorage).forEach(function(k){
+      if(k.startsWith('prog_status_')){
+        try{
+          var d=JSON.parse(localStorage.getItem(k));
+          var changed=false;
+          if(d&&d.status&&d.status[colabId]){delete d.status[colabId];changed=true;}
+          if(d&&d.info&&d.info[colabId]){delete d.info[colabId];changed=true;}
+          if(changed) localStorage.setItem(k,JSON.stringify(d));
+        }catch(e){}
+      }
+    });
+  }catch(e){}
+
+  // 3. Limpar memória
+  delete _progStatus[colabId];
+  delete _progStatusInfo[colabId];
+  _progStatusDateCache = null;
+
+  // 4. Deletar do banco
   if(!DEMO){
     sbDelete('prog_status_diario',
-      'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento)')
+      'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento,demitido)')
     .then(function(){
-      progShowToast('✅ Histórico limpo — colaborador disponível.');
+      progShowToast('✅ '+nome.split(' ')[0]+' voltou para Disponível.');
+    }).catch(function(){
+      progShowToast('⚠️ Erro ao limpar no banco — verifique permissões.','erro');
     });
+  } else {
+    progShowToast('✅ Histórico limpo (modo demo).');
   }
+
   closeModal();
   progRenderQuadro();
 }
@@ -29133,8 +29175,11 @@ function progSalvarMenuStatus(colabId){
       });
     }
 
-    // Resetar cache para forçar re-busca do banco na próxima renderização
-    _progStatusDateCache = null;
+    // Cache resetado apenas para forçar re-busca na próxima visita ao dia
+    // (não reseta se apenas mudou folga/falta — só para persistentes)
+    if(['ferias','afastado','treinamento','demitido'].indexOf(novoSt)>=0){
+      _progStatusDateCache = null;
+    }
   }
   closeModal();
   progRenderQuadro();
@@ -37021,7 +37066,7 @@ function _auditFlush(){
 }
 
 // Flush periódico a cada 30s
-setInterval(_auditFlush, 30000);
+setInterval(_auditFlush, 60000);
 
 // ── Consulta de log para a tela de Auditoria ─────────────────
 var _auditLogs = []; // cache local para visualização
@@ -40326,6 +40371,8 @@ function isMotoDupla(eq){
 }
 
 function progSetVeiculo(eqId, data, veiculoObj){
+  // Invalidar cache de veículos escalados
+  if(window._veicEscCache && window._veicEscCache[data]) delete window._veicEscCache[data];
   // Checar conflito — mesmo veículo em outra equipe no mesmo dia
   if(veiculoObj&&veiculoObj.placa){
     var _conf=Object.keys(_progVeiculos).filter(function(k){
@@ -46098,7 +46145,7 @@ window.addEventListener('load',async function(){
       if(['admin','gestor','coordenador','almoxarife'].includes(usuarioLogado.perfil)){
         setTimeout(notifVerificar, 2000);
         // Re-check every 5 minutes
-        setInterval(notifVerificar, 5*60*1000);
+        setInterval(notifVerificar, 10*60*1000);
       }
       // Show PWA install banner on tablet/mobile
       if(typeof pwaMostrarSeDisponivel === 'function') pwaMostrarSeDisponivel();
