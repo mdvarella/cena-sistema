@@ -26147,7 +26147,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.76',
+  numero: '7.9.77',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -43690,7 +43690,14 @@ function frtManutRender(){
       tr.onclick=function(){frtAbrirFichaManutencao(this.getAttribute("data-mid"));};
     });
     tb.querySelectorAll("[data-bmid]").forEach(function(btn){
-      btn.onclick=function(e){e.stopPropagation();frtAbrirFichaManutencao(this.getAttribute("data-bmid"));};
+      btn.onclick=function(e){
+        e.stopPropagation();
+        var mid=this.getAttribute("data-bmid");
+        var mv=frt_manutencoes.find(function(x){return x.id===mid;});
+        // Avaliar → ficha; Controle → direto para edição
+        if(mv&&['Solicitada','Em Análise'].indexOf(mv.status)>=0) frtAbrirFichaManutencao(mid);
+        else frtAbrirControleManutencao(mid);
+      };
     });
   },50);
 
@@ -45513,6 +45520,7 @@ function frtAbrirControleManutencao(id){
     +'<input class="inp" id="fc-prev" type="date" style="width:100%" value="'+(m.previsao_retorno||'')+'"/></div>'
     +(dias>0?'<div style="grid-column:span 2"><div style="border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;text-align:center;background:'+(dias>=15?'#FCEBEB':dias>=10?'#FEF0E2':'#FEF9EE')+';color:'+(dias>=15?'#A32D2D':dias>=10?'#C97A1F':'#854F0B')+'">⏱ '+dias+' dias em reparo'+(dias>=15?' — CRÍTICO':dias>=10?' — ALERTA':' — ATENÇÃO')+'</div></div>':'')
     +'</div>'
+    +'<div id="fc-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;padding:6px 10px;background:#FCEBEB;border-radius:6px;display:none"></div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
     +'<button class="btn btn-pri" id="fc-salvar" style="flex:1.5">💾 Salvar Controle</button>'
@@ -45538,14 +45546,48 @@ function frtAbrirControleManutencao(id){
           if(!DEMO) sbUpdate('frotas_veiculos',{status:'Disponível'},'id=eq.'+v.id);
         }
       }
-      if(!DEMO) sbUpdate('frotas_manutencoes',{
-        fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
-        km:m.km,garantia:m.garantia,status:m.status,
-        data_inicio_reparo:m.data_inicio_reparo||null,
-        previsao_retorno:m.previsao_retorno||null
-      },'id=eq.'+id);
-      closeModal();frtManutRender();
-      progShowToast('✅ Controle de manutenção atualizado — '+m.placa);
+      var fcErrEl=document.getElementById('fc-erro');
+      if(fcErrEl){fcErrEl.textContent='';fcErrEl.style.display='none';}
+      var btnSav=document.getElementById('fc-salvar');
+      if(btnSav){btnSav.textContent='⏳ Salvando...';btnSav.disabled=true;}
+
+      var doSave = function(_id){
+        if(!DEMO){
+          sbUpdate('frotas_manutencoes',{
+            fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
+            km:m.km,garantia:m.garantia,status:m.status,
+            data_inicio_reparo:m.data_inicio_reparo||null,
+            previsao_retorno:m.previsao_retorno||null,
+            justificativa_negativa:m.justificativa_negativa||null
+          },'id=eq.'+_id).then(function(ok){
+            if(ok===false){
+              if(fcErrEl){fcErrEl.textContent='⚠ Erro ao salvar no banco. Verifique as colunas (rode o SQL de migração).';fcErrEl.style.display='block';}
+              if(btnSav){btnSav.textContent='💾 Salvar Controle';btnSav.disabled=false;}
+              progShowToast('❌ Erro ao salvar manutenção.','erro');
+              return;
+            }
+            closeModal();frtManutRender();
+            progShowToast('✅ Controle de manutenção atualizado — '+m.placa);
+            if(typeof notifVerificar==='function') setTimeout(notifVerificar,1000);
+          }).catch(function(e){
+            if(fcErrEl){fcErrEl.textContent='⚠ Erro: '+(e&&e.message||'falha ao salvar');fcErrEl.style.display='block';}
+            if(btnSav){btnSav.textContent='💾 Salvar Controle';btnSav.disabled=false;}
+          });
+        } else {
+          closeModal();frtManutRender();
+          progShowToast('✅ Controle atualizado — '+m.placa);
+        }
+      };
+
+      // Guard: se id não é UUID, buscar o real no banco pela placa+data
+      if(!DEMO && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)){
+        sbFetch('frotas_manutencoes',{filters:['placa=eq.'+m.placa,'data=eq.'+m.data],select:'id',limit:1}).then(function(rows){
+          if(rows&&rows[0]){m.id=rows[0].id; doSave(rows[0].id);}
+          else doSave(id);
+        }).catch(function(){ doSave(id); });
+      } else {
+        doSave(id);
+      }
       if(typeof notifVerificar==='function') setTimeout(notifVerificar,1000);
     };
   },50);
