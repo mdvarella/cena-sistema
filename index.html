@@ -26151,7 +26151,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.90',
+  numero: '7.9.93',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -29213,16 +29213,12 @@ function progSalvarMenuStatus(colabId){
   if(novoSt==='disponivel'){
     // Limpar localStorage
     progRemoverPersistente(colabId);
-    // Limpar banco — todos os registros de férias/afastamento
+    delete _progStatus[colabId];
+    delete _progStatusInfo[colabId];
+    // Limpar banco — TODOS os registros do colaborador (qualquer status) para evitar duplicatas
     if(!DEMO){
       sbDelete('prog_status_diario',
-        'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento)');
-      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'colaborador_id=eq.'+colabId]}).then(function(rows){
-        if(rows&&rows.length){
-          sbUpdate('prog_status_diario',{status:'disponivel',data_retorno:null},
-            'colaborador_id=eq.'+colabId+'&data=eq.'+data);
-        }
-      });
+        'colaborador_id=eq.'+colabId);
     }
   } else {
     // Salvar persistente no localStorage SEMPRE (com ou sem data retorno)
@@ -29239,17 +29235,12 @@ function progSalvarMenuStatus(colabId){
 
     if(!DEMO){
       // DELETE todos os registros persistentes antigos deste colaborador
-      // (evita duplicatas e garante que a correção prevalece)
-      sbDelete('prog_status_diario',
-        'colaborador_id=eq.'+colabId+'&status=in.(ferias,afastado,treinamento,demitido)'
-      ).then(function(){
-        // INSERT limpo com dados corretos
-        return sbInsert('prog_status_diario',{
-          colaborador_id:colabId, data:data, status:novoSt,
-          data_retorno:retorno||null,
-          registrado_por:usuarioLogado?usuarioLogado.nome:''
-        });
-      }).then(function(){
+      // UPSERT — evita race condition entre DELETE e INSERT
+      sbUpsert('prog_status_diario',{
+        colaborador_id:colabId, data:data, status:novoSt,
+        data_retorno:retorno||null,
+        registrado_por:usuarioLogado?usuarioLogado.nome:''
+      },'colaborador_id,data').then(function(){
         progShowToast('✅ Status salvo com sucesso.');
       }).catch(function(e){
         console.error('progSalvarMenuStatus erro:', e);
@@ -55410,6 +55401,30 @@ window.addEventListener('resize', function(){
 
 // Chamar após carregarDados
 var _origCarregarDados = typeof carregarDados !== 'undefined' ? carregarDados : null;
+// Limpeza de emergência via URL: index.html#limpar-colab-UUID
+(function(){
+  var hash = window.location.hash||'';
+  var m = hash.match(/^#limpar-colab-([0-9a-f-]{36})$/i);
+  if(!m) return;
+  var cid = m[1];
+  // Limpar localStorage
+  try{
+    var lsp=JSON.parse(localStorage.getItem('prog_persistentes')||'{}');
+    delete lsp[cid]; localStorage.setItem('prog_persistentes',JSON.stringify(lsp));
+    Object.keys(localStorage).forEach(function(k){
+      if(!k.startsWith('prog_status_')) return;
+      try{
+        var d=JSON.parse(localStorage.getItem(k)||'{}');
+        if(d.status) delete d.status[cid];
+        if(d.info) delete d.info[cid];
+        localStorage.setItem(k,JSON.stringify(d));
+      }catch(e){}
+    });
+    alert('✅ Colaborador '+cid.substring(0,8)+'... limpo do localStorage.\nAgora recarregue sem o #hash na URL.');
+    window.location.hash='';
+  }catch(e){ alert('Erro: '+e); }
+})();
+
 document.addEventListener('cena:logged-in', function(){
   _carregarFila();
   _initBottomNav();
