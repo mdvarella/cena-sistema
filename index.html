@@ -26151,7 +26151,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.82',
+  numero: '7.9.89',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26393,11 +26393,16 @@ var PROG_STATUS_PERSISTENTES = ['ferias','afastado','treinamento','demitido'];
 function progAplicarPersistentes(data){
   var ls;
   try{ ls=JSON.parse(localStorage.getItem('prog_persistentes')||'{}'); }catch(e){ ls={}; }
+  // Carregar status explícito de HOJE do localStorage
+  var statusHoje={};
+  try{ var sh=JSON.parse(localStorage.getItem('prog_status_'+data)||'{}'); if(sh&&sh.status)statusHoje=sh.status; }catch(e){}
   Object.keys(ls).forEach(function(colabId){
     var entry=ls[colabId];
     if(!entry||!entry.status||!entry.data_inicio||!entry.data_retorno) return;
     if(data>=entry.data_inicio && data<entry.data_retorno){
-      if(!_progStatus[colabId]||_progStatus[colabId]==='disponivel'||_progStatus[colabId]===entry.status){
+      // Se há status explícito para hoje (inclusive 'disponivel'), não sobrescrever
+      if(statusHoje[colabId]!==undefined) return;
+      if(!_progStatus[colabId]||_progStatus[colabId]===entry.status){
         _progStatus[colabId]=entry.status;
         _progStatusInfo[colabId]=_progStatusInfo[colabId]||{};
         _progStatusInfo[colabId].retorno=entry.data_retorno;
@@ -26530,17 +26535,22 @@ function progCarregarStatus(data){
       });
 
       // Aplicar persistentes (afastado/férias) de dias anteriores ainda ativos
-      // Já ordenado por data.desc — o mais recente prevalece
+      // REGRA DE PRIORIDADE: rowsDia > persistRows
+      // Se o colaborador tem qualquer registro em rowsDia (inclusive 'disponivel'),
+      // o persistRows NÃO pode sobrescrever — o usuário alterou manualmente para hoje
+      var jaSetNoDia = {};
+      (rowsDia||[]).forEach(function(r){ jaSetNoDia[r.colaborador_id]=true; });
+
       var jaVisto={};
       persistRows.forEach(function(r){
-        if(r.data_retorno && r.data_retorno <= hoje) return; // auto-retornado, ignorar
-        if(!jaVisto[r.colaborador_id] &&
-           (!_progStatus[r.colaborador_id]||_progStatus[r.colaborador_id]==='disponivel')){
+        if(r.data_retorno && r.data_retorno <= hoje) return; // auto-retornado
+        // Se já foi definido pelo registro de HOJE → ignorar persistente
+        if(jaSetNoDia[r.colaborador_id]) return;
+        if(!jaVisto[r.colaborador_id] && !_progStatus[r.colaborador_id]){
           jaVisto[r.colaborador_id]=true;
           _progStatus[r.colaborador_id]=r.status==='faltou'?'falta':r.status;
           if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
           if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno=r.data_retorno;
-          // SEMPRE atualizar localStorage com valor do banco (não deixar stale)
           progSalvarPersistente(r.colaborador_id,r.status,r.data,r.data_retorno,r.obs||'');
         }
       });
@@ -26548,6 +26558,33 @@ function progCarregarStatus(data){
       try{
         localStorage.setItem('prog_status_'+data,
           JSON.stringify({status:_progStatus, info:_progStatusInfo}));
+      }catch(e){}
+
+      // Sincronizar prog_persistentes com o banco:
+      // Se o banco não tem mais o registro persistente para um colaborador,
+      // remover do localStorage também (evita "fantasmas" como RE 496)
+      try{
+        var lsPers=JSON.parse(localStorage.getItem('prog_persistentes')||'{}');
+        var alterado=false;
+        Object.keys(lsPers).forEach(function(colabId){
+          var noBanco=persistRows.some(function(r){return r.colaborador_id===colabId;});
+          var noDia=rowsDia.some(function(r){
+            return r.colaborador_id===colabId &&
+              ['ferias','afastado','treinamento','demitido'].indexOf(r.status)>=0;
+          });
+          if(!noBanco && !noDia){
+            delete lsPers[colabId]; alterado=true;
+            // Também limpar da memória
+            if(_progStatus[colabId]&&['ferias','afastado','treinamento','demitido'].indexOf(_progStatus[colabId])>=0){
+              delete _progStatus[colabId];
+              delete _progStatusInfo[colabId];
+            }
+          }
+        });
+        if(alterado){
+          localStorage.setItem('prog_persistentes',JSON.stringify(lsPers));
+          progRenderQuadro(); // re-render com dados limpos
+        }
       }catch(e){}
 
       _progStatusDateCache = data; // marcar como carregado
@@ -26628,20 +26665,19 @@ function progInit(){
       return (c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
     }).map(function(c){return c.id;});
     if(cids.length){
-      var jaTemColabs = colaboradores.some(function(c){return cids.indexOf(c.contrato_id)>=0;});
+      var cidsSet={}; cids.forEach(function(id){cidsSet[id]=true;});
+      var jaTemColabs = colaboradores.some(function(c){return cidsSet[c.contrato_id];});
       if(!jaTemColabs){
         var filtro = cids.length===1 ? 'contrato_id=eq.'+cids[0] : 'contrato_id=in.('+cids.join(',')+')';
-        sbFetch('colaboradores',{filters:[filtro,'ativo=eq.true'],order:'nome'})
+        sbFetch('colaboradores',{filters:[filtro,'ativo=eq.true'],order:'nome',limit:500})
           .then(function(rows){
             if(rows&&rows.length){
-              rows.forEach(function(c){
-                var i=colaboradores.findIndex(function(x){return x.id===c.id;});
-                if(i>=0) colaboradores[i]=c; else colaboradores.push(c);
-              });
+              var existMap={}; colaboradores.forEach(function(c){existMap[c.id]=true;});
+              rows.forEach(function(c){if(!existMap[c.id]) colaboradores.push(c); else { var i=colaboradores.findIndex(function(x){return x.id===c.id;}); if(i>=0) colaboradores[i]=c; }});
             }
             progRenderQuadro();
           }).catch(function(){progRenderQuadro();});
-        return; // aguardar carregamento
+        return;
       }
     }
   }
@@ -26982,7 +27018,7 @@ function progAtualizarQuadro(){
       }),
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
       // Dados base — recarregar colaboradores e equipes para pegar folgas atualizadas
-      sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome',limit:2000}),
+      sbFetch('colaboradores',{filters:[cidFilter,'ativo=eq.true'],order:'nome',limit:500}),
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
     ]).then(function(res){
       var rowsDia     = res[0]||[];
@@ -27005,13 +27041,14 @@ function progAtualizarQuadro(){
         if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
         if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
       });
+      var jaSetNoDia2={}; rowsDia.forEach(function(r){jaSetNoDia2[r.colaborador_id]=true;});
 
       // Apply persistent ferias / auto-retorno
       var hoje = dataHojeLocal();
       var jaVisto={};
       persistRows.forEach(function(r){
         if(r.data_retorno && r.data_retorno <= hoje){ progRemoverPersistente(r.colaborador_id); return; }
-        if(!jaVisto[r.colaborador_id] && (!_progStatus[r.colaborador_id]||_progStatus[r.colaborador_id]==='disponivel')){
+        if(!jaVisto[r.colaborador_id] && !jaSetNoDia2[r.colaborador_id] && !_progStatus[r.colaborador_id]){
           jaVisto[r.colaborador_id] = true;
           _progStatus[r.colaborador_id] = r.status;
           if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
@@ -27229,6 +27266,11 @@ function progRenderQuadro(){
         progRenderQuadro();
       };
     });
+    var selMod=wrap.querySelector('[data-pvmodelo]');
+    if(selMod) selMod.onchange=function(){
+      window._progVeicModelo=this.value;
+      progRenderQuadro();
+    };
   },80);
 
   // Botões de celular já têm onclick inline — nada a delegar
@@ -27330,6 +27372,15 @@ function progVeicPainel(cid, data){
   var conflitos = progVeicConflitos(data);
   var _filtroVeicSt = window._progVeicFiltro||'';
 
+  // Filtro por modelo
+  var _filtroVeicModelo = window._progVeicModelo||'';
+  var modelos=[];
+  veics.forEach(function(v){var m=(v.modelo||v.tipo||'').trim();if(m&&modelos.indexOf(m)<0)modelos.push(m);});
+  modelos.sort();
+  var modeloOpts='<option value="">Todos modelos</option>'
+    +modelos.map(function(m){return '<option value="'+escHtml(m)+'"'+(_filtroVeicModelo===m?' selected':'')+'>'+escHtml(m)+'</option>';}).join('');
+
+
   // Contagem por status
   var contagem={};
   veics.forEach(function(v){
@@ -27351,8 +27402,12 @@ function progVeicPainel(cid, data){
 
   // Lista de veículos
   var lista = veics.filter(function(v){
-    if(!_filtroVeicSt) return true;
-    return progGetVeicStatusReal(v,data)===_filtroVeicSt;
+    if(_filtroVeicSt && progGetVeicStatusReal(v,data)!==_filtroVeicSt) return false;
+    if(_filtroVeicModelo){
+      var _mod=(v.modelo||v.tipo||'').trim();
+      if(_mod!==_filtroVeicModelo) return false;
+    }
+    return true;
   });
 
   // ── Helpers de manutenção ──────────────────────────────────
@@ -27406,20 +27461,25 @@ function progVeicPainel(cid, data){
       +'</td>'
       +'<td style="font-size:11px;padding:5px 8px;color:#888">'+escHtml(v.modelo||v.tipo||'—')+'</td>'
       +'<td style="font-size:11px;padding:5px 8px">'
-        +'<span style="background:'+s.bg+';color:'+s.cor+';border-radius:4px;padding:1px 8px;font-weight:600;font-size:10px">'+st+'</span>'
-        +(manut?'<br><span style="font-size:9px;color:#534AB7">'+escHtml(manut.status)+'</span>':'')
+        +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:nowrap">'
+        +'<span style="background:'+s.bg+';color:'+s.cor+';border-radius:4px;padding:1px 8px;font-weight:600;font-size:10px;white-space:nowrap">'+st+'</span>'
+        +(manut?'<span style="background:#EEEDFE;color:#534AB7;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:600;white-space:nowrap">'+escHtml(manut.status)+'</span>':'')
+        +'</div>'
       +'</td>'
-      +'<td style="font-size:11px;padding:5px 8px">'+prevRetornoHtml(manut)+'</td>'
+      +'<td style="font-size:11px;padding:5px 8px">'
+        +(manut?(flagReparo(manut)?(flagReparo(manut)+'<br>'):'')+prevRetornoHtml(manut):'<span style="color:#aaa;font-size:10px">—</span>')
+      +'</td>'
       +'<td style="padding:5px 8px;text-align:right;white-space:nowrap">'
         +'<button class="btn btn-sm" data-pvid="'+v.id+'" style="font-size:10px;padding:1px 7px" title="Alterar status">⚙</button>'
-        +(manut?'<button class="btn btn-sm" data-ctrl-manut="'+manut.id+'" style="font-size:9px;padding:1px 5px;margin-left:3px;color:#534AB7;border-color:#534AB7" title="Abrir controle de manutenção">📋</button>':'')
+        +(manut?'<button class="btn btn-sm" data-ctrl-manut="'+manut.id+'" style="font-size:9px;padding:1px 5px;margin-left:3px;color:#534AB7;border-color:#534AB7" title="Controle manutenção">📋</button>':'')
       +'</td>'
       +'</tr>';
   }).join('');
 
   var html = '<div style="margin-top:1.5rem;border:.5px solid #e0dfd8;border-radius:10px;overflow:hidden">'
     +'<div style="background:#f5f5f3;padding:.6rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">'
-    +'<span style="font-size:12px;font-weight:700;color:#444">🚗 Veículos do Contrato ('+veics.length+')</span>'
+    +'<span style="font-size:12px;font-weight:700;color:#444">🚗 Veículos do Contrato ('+lista.length+'/'+veics.length+')</span>'
+    +'<select data-pvmodelo style="font-size:11px;border:.5px solid #e0dfd8;border-radius:6px;padding:2px 6px;background:#fff;cursor:pointer">'+modeloOpts+'</select>'
     +'<div style="display:flex;gap:5px;flex-wrap:wrap">'+chipsHtml+'</div>'
     +'</div>'
     +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
@@ -28305,49 +28365,51 @@ function progBuscarParaSlot(eqId, pos){
           || {codigo:eqId};
   var slotLabel = pos===0?'Titular 1':pos===1?'Titular 2':'Folguista';
 
-  // Colaboradores já escalados hoje
-  var jaEscalado = {};
+  var STATUS_BLOQ = ['ferias','afastado','treinamento','falta','integracao','patio','verificar','fraude','demitido'];
+
+  // ── PRÉ-COMPUTAR tudo uma vez (evita O(n²)) ──────────────────
+  // 1. Mapa de escalados com equipe (uma passagem)
+  var jaEscalado = {};    // colabId → eqId escalado
+  var eqPorComp  = {};    // equipe_id → equipe obj
+  equipes_disp.forEach(function(e){ eqPorComp[e.id]=e; });
   composicao_dia.forEach(function(comp){
     if(comp.data!==data)return;
-    var ids=parseColabIds(comp.colaborador_ids)
-    ids.forEach(function(id){if(id)jaEscalado[id]=true;});
+    var ids=parseColabIds(comp.colaborador_ids);
+    ids.forEach(function(id){ if(id) jaEscalado[id]=comp.equipe_id; });
   });
 
-  var STATUS_BLOQ = ['ferias','afastado','treinamento','falta','integracao','patio','verificar','fraude'];
+  // 2. Ler prog_persistentes UMA vez do localStorage (não por colaborador)
+  var lsPersist = {};
+  try{ lsPersist=JSON.parse(localStorage.getItem('prog_persistentes')||'{}'); }catch(e){}
 
-  // Verificar status efetivo do colaborador (inclui persistentes carregados)
+  // 3. Cache de status efetivo — calcular uma vez por colaborador
+  var _stCache = {};
   function stEfetivo(c){
+    if(_stCache[c.id]!==undefined) return _stCache[c.id];
     var st = _progStatus[c.id] || 'disponivel';
-    if(st !== 'disponivel') return st;
-    // Verificar persistente: afastado/férias com data de retorno futura
-    var info = _progStatusInfo && _progStatusInfo[c.id];
-    if(info && info.retorno && info.retorno >= data){
-      // Colaborador está afastado/férias — verificar se foi salvo persistente
-      var persistKey = 'prog_persistente_'+c.id;
-      try{
-        var p = JSON.parse(localStorage.getItem(persistKey)||'null');
-        if(p && p.status && STATUS_BLOQ.indexOf(p.status)>=0 && p.retorno >= data) return p.status;
-      }catch(e){}
+    if(st==='disponivel'){
+      var p=lsPersist[c.id];
+      if(p&&p.status&&STATUS_BLOQ.indexOf(p.status)>=0&&p.data_retorno>=data) st=p.status;
     }
+    _stCache[c.id]=st;
     return st;
   }
 
-  // Colaboradores disponíveis — bloqueados ficam completamente fora da lista
-  var disponiveis = colaboradores.filter(function(c){
-    if(c.ativo===false||c.dispensado)return false;
-    if(cid&&c.contrato_id!==cid)return false;
-    if((c.vinculo||'campo')!=='campo')return false;
-    var st = stEfetivo(c);
-    if(STATUS_BLOQ.indexOf(st)>=0) return false; // bloqueados = invisíveis
+  // 4. Filtrar colaboradores do contrato em UMA passagem
+  var candidatos = colaboradores.filter(function(c){
+    if(c.ativo===false||c.dispensado) return false;
+    if(cid&&c.contrato_id!==cid) return false;
+    if((c.vinculo||'campo')!=='campo') return false;
     return true;
   });
 
-  var nBloqueados = colaboradores.filter(function(c){
-    if(c.ativo===false||c.dispensado)return false;
-    if(cid&&c.contrato_id!==cid)return false;
-    if((c.vinculo||'campo')!=='campo')return false;
-    return STATUS_BLOQ.indexOf(stEfetivo(c))>=0;
-  }).length;
+  var disponiveis = [];
+  var nBloqueados = 0;
+  candidatos.forEach(function(c){
+    var st=stEfetivo(c);
+    if(STATUS_BLOQ.indexOf(st)>=0) nBloqueados++;
+    else disponiveis.push(c);
+  });
 
   // Data do calendário para detectar folga por cor
   var calDiaModal = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
@@ -28363,26 +28425,25 @@ function progBuscarParaSlot(eqId, pos){
   });
 
   function renderLista(filtro){
+    var filtroLow = filtro ? filtro.toLowerCase() : '';
     var lista = filtro
       ? disponiveis.filter(function(c){
-          return c.nome.toLowerCase().indexOf(filtro.toLowerCase())>=0
-            || (c.re||'').indexOf(filtro)>=0;
+          return c.nome.toLowerCase().indexOf(filtroLow)>=0
+            || (c.re||'').indexOf(filtro)>=0
+            || (c.matricula||'').indexOf(filtro)>=0;
         })
       : disponiveis;
 
     if(!lista.length) return '<div style="padding:1rem;text-align:center;color:#aaa;font-size:13px">Nenhum colaborador encontrado</div>';
 
+    // Limitar a 80 resultados para renderizar rápido
+    var total = lista.length;
+    if(lista.length > 80) lista = lista.slice(0, 80);
+
     var temFolguista = false;
     var html = lista.map(function(c){
       var jaEsc = jaEscalado[c.id];
-      var eqAtual = jaEsc ? equipes_disp.find(function(e){
-        var comp=composicao_dia.find(function(x){
-          if(x.data!==data)return false;
-          var ids=[];try{ids=JSON.parse(x.colaborador_ids||'[]');}catch(e){}
-          return ids.indexOf(c.id)>=0;
-        });
-        return comp&&comp.equipe_id===e.id;
-      }) : null;
+      var eqAtual = jaEsc ? (eqPorComp[jaEsc]||null) : null;
       var propria = c.equipe_id===eqId;
       var cnh     = (c.cnh_categoria||'').trim();
       var isFolga = (_progStatus[c.id]==='folga') || (calDiaModal&&c.cor_escala&&c.cor_escala===calDiaModal);
@@ -28411,6 +28472,7 @@ function progBuscarParaSlot(eqId, pos){
     }).join('');
 
     if(temFolguista) html += '<div style="padding:5px 12px 8px;font-size:10px;color:#854F0B;background:#FFFAEB;border-top:.5px solid #f0e0c0">* Folguista escalado = hora extra no período de folga</div>';
+    if(total>80) html += '<div style="padding:6px 12px;font-size:11px;color:#888;text-align:center;background:#f9f9f7;border-top:.5px solid #f0efe8">Mostrando 80 de '+total+' — refine a busca para ver mais</div>';
     return html;
   }
 
@@ -39389,6 +39451,11 @@ function _progProjRenderQuadroInterno(data, cid){
         progRenderQuadro();
       };
     });
+    var selMod=wrap.querySelector('[data-pvmodelo]');
+    if(selMod) selMod.onchange=function(){
+      window._progVeicModelo=this.value;
+      progRenderQuadro();
+    };
   },80);
 }
 
