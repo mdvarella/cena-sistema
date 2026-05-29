@@ -26151,7 +26151,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.93',
+  numero: '7.9.94',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26391,25 +26391,10 @@ var PROG_STATUS_PERSISTENTES = ['ferias','afastado','treinamento','demitido'];
 
 // Aplicar status persistentes ao carregar um dia
 function progAplicarPersistentes(data){
-  var ls;
-  try{ ls=JSON.parse(localStorage.getItem('prog_persistentes')||'{}'); }catch(e){ ls={}; }
-  // Carregar status explícito de HOJE do localStorage
-  var statusHoje={};
-  try{ var sh=JSON.parse(localStorage.getItem('prog_status_'+data)||'{}'); if(sh&&sh.status)statusHoje=sh.status; }catch(e){}
-  Object.keys(ls).forEach(function(colabId){
-    var entry=ls[colabId];
-    if(!entry||!entry.status||!entry.data_inicio||!entry.data_retorno) return;
-    if(data>=entry.data_inicio && data<entry.data_retorno){
-      // Se há status explícito para hoje (inclusive 'disponivel'), não sobrescrever
-      if(statusHoje[colabId]!==undefined) return;
-      if(!_progStatus[colabId]||_progStatus[colabId]===entry.status){
-        _progStatus[colabId]=entry.status;
-        _progStatusInfo[colabId]=_progStatusInfo[colabId]||{};
-        _progStatusInfo[colabId].retorno=entry.data_retorno;
-        _progStatusInfo[colabId].obs=entry.obs||'';
-      }
-    }
-  });
+  // localStorage de persistentes não é mais aplicado automaticamente —
+  // o banco é a única fonte de verdade para status persistentes.
+  // Esta função existe apenas para compatibilidade com chamadas existentes.
+  // A sincronização real acontece em progCarregarStatus via banco.
 }
 
 function progSalvarPersistente(colabId,status,dataInicio,dataRetorno,obs){
@@ -26572,30 +26557,30 @@ function progCarregarStatus(data){
           JSON.stringify({status:_progStatus, info:_progStatusInfo}));
       }catch(e){}
 
-      // Sincronizar prog_persistentes com o banco:
-      // Se o banco não tem mais o registro persistente para um colaborador,
-      // remover do localStorage também (evita "fantasmas" como RE 496)
+      // Sincronizar prog_persistentes com o banco — sempre limpar localStorage
+      // para refletir o estado real do banco (elimina "fantasmas" de status antigos)
       try{
         var lsPers=JSON.parse(localStorage.getItem('prog_persistentes')||'{}');
         var alterado=false;
+        // Construir set de colaboradores que o banco considera ainda em status persistente
+        var colabsComStatusBanco={};
+        persistRows.forEach(function(r){colabsComStatusBanco[r.colaborador_id]=r.status;});
+        rowsDia.forEach(function(r){
+          if(['ferias','afastado','treinamento','demitido'].indexOf(r.status)>=0)
+            colabsComStatusBanco[r.colaborador_id]=r.status;
+        });
+        // Remover do localStorage qualquer colab que o banco não tem mais como persistente
         Object.keys(lsPers).forEach(function(colabId){
-          var noBanco=persistRows.some(function(r){return r.colaborador_id===colabId;});
-          var noDia=rowsDia.some(function(r){
-            return r.colaborador_id===colabId &&
-              ['ferias','afastado','treinamento','demitido'].indexOf(r.status)>=0;
-          });
-          if(!noBanco && !noDia){
+          if(!colabsComStatusBanco[colabId]){
             delete lsPers[colabId]; alterado=true;
-            // Também limpar da memória
-            if(_progStatus[colabId]&&['ferias','afastado','treinamento','demitido'].indexOf(_progStatus[colabId])>=0){
-              delete _progStatus[colabId];
-              delete _progStatusInfo[colabId];
-            }
+            delete _progStatus[colabId];
+            delete _progStatusInfo[colabId];
           }
         });
+        // Atualizar localStorage para refletir o banco
         if(alterado){
           localStorage.setItem('prog_persistentes',JSON.stringify(lsPers));
-          progRenderQuadro(); // re-render com dados limpos
+          progRenderQuadro();
         }
       }catch(e){}
 
