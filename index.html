@@ -26198,7 +26198,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.101',
+  numero: '7.9.104',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -28834,14 +28834,15 @@ function progAlterarStatusPool(colabId){
     }
     html+='<div style="display:flex;gap:8px">'
       +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-      +'<button class="btn btn-pri" onclick="window._progStConfId&&progConfirmarStatus(window._progStConfId)" style="flex:2">Confirmar</button>'
+      +'<button class="btn btn-pri" onclick="progConfirmarStatus(window._progStConfId)" style="flex:2">Confirmar</button>'
       +'</div></div></div>';
     return html;
   }
 
+  window._progStConfId = colabId;
   setModal(buildHtml());
 
-  window.progStSelecionar=function(cId,k){_stSel=k;setModal(buildHtml());};
+  window.progStSelecionar=function(cId,k){_stSel=k;window._progStConfId=cId;setModal(buildHtml());};
 
   window.progConfirmarStatus=function(cId){
     var info={};
@@ -28853,10 +28854,29 @@ function progAlterarStatusPool(colabId){
     if(obEl)info.obs=obEl.value.trim();
     _progStatus[cId]=_stSel;
     _progStatusInfo[cId]=info;
-    if(PRECISA_RETORNO[_stSel]&&info.retorno){
-      progSalvarPersistente(cId,_stSel,_progData||dataHojeLocal(),info.retorno,info.obs||'');
-    } else if(_stSel==='disponivel'){
+    if(_stSel==='disponivel'){
       progRemoverPersistente(cId);
+      delete _progStatus[cId];
+      delete _progStatusInfo[cId];
+      if(!DEMO) sbDelete('prog_status_diario','colaborador_id=eq.'+cId+'&data=eq.'+(_progData||dataHojeLocal()));
+    } else {
+      if(PRECISA_RETORNO[_stSel]&&info.retorno){
+        progSalvarPersistente(cId,_stSel,_progData||dataHojeLocal(),info.retorno,info.obs||'');
+      }
+      if(!DEMO){
+        sbUpsert('prog_status_diario',{
+          colaborador_id:cId, data:_progData||dataHojeLocal(), status:_stSel,
+          data_retorno:info.retorno||null,
+          obs:info.obs||null,
+          registrado_por:usuarioLogado?usuarioLogado.nome:''
+        },'colaborador_id,data').then(function(){
+          progShowToast('✅ Status salvo.');
+          _progStatusDateCache=null;
+          progRenderQuadro();
+        }).catch(function(){
+          progShowToast('⚠️ Erro ao salvar no banco.','erro');
+        });
+      }
     }
     closeModal();
     progSalvarStatus();
@@ -29250,6 +29270,10 @@ function progMenuSlot(colabId, eqId, pos){
       }).join('')
     +'</div>'
     +retornoHtml
+    +'<div id="obs-status-wrap" style="display:none;margin-top:8px">'
+    +'<label style="font-size:11px;font-weight:600;color:#555;display:block;margin-bottom:4px">📝 Observação</label>'
+    +'<textarea id="obs-status-input" class="inp" style="width:100%;height:60px;font-size:12px" placeholder="O que precisa ser verificado...">'+(info.obs||'')+'</textarea>'
+    +'</div>'
     +'<div style="display:flex;gap:6px;margin-top:.75rem">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
     +'<button class="btn btn-pri" onclick="progSalvarMenuStatus(\''+colabId+'\')" style="flex:1">💾 Salvar</button>'
@@ -29281,9 +29305,21 @@ function progMenuSlot(colabId, eqId, pos){
 function progSetStatusMenu(colabId, status){
   _progStatus[colabId] = status;
   var stRetorno = ['ferias','afastado','treinamento'];
+  var PEDE_OBS_MENU = ['patio','verificar','integracao','fraude'];
   // Mostrar/ocultar campo de retorno e justificativa
   var rw = document.getElementById('retorno-wrap');
   if(rw) rw.style.display = stRetorno.indexOf(status)>=0 ? 'block' : 'none';
+  // Mostrar/ocultar campo de observação
+  var ow = document.getElementById('obs-status-wrap');
+  if(ow) ow.style.display = PEDE_OBS_MENU.indexOf(status)>=0 ? 'block' : 'none';
+  // Atualizar placeholder conforme status
+  var oi = document.getElementById('obs-status-input');
+  if(oi){
+    var ph = status==='verificar'?'O que precisa ser verificado...'
+           : status==='fraude'?'Descreva a ocorrência...'
+           : 'Motivo / observação...';
+    oi.placeholder = ph;
+  }
   // Atualizar visual de todos os botões de status no modal
   document.querySelectorAll('button[data-st]').forEach(function(b){
     var k = b.getAttribute('data-st');
@@ -29352,6 +29388,9 @@ function progSalvarMenuStatus(colabId){
   var novoSt  = _progStatus[colabId]||'disponivel';
   var retorno = ((document.getElementById('retorno-data')||{}).value||'').trim();
   var justif  = (document.getElementById('retorno-justif')||{}).value||'';
+  var obsInput = (document.getElementById('obs-status-input')||{}).value||'';
+  if(obsInput && !window._progStatusInfo) window._progStatusInfo={};
+  if(obsInput){ if(!_progStatusInfo[colabId])_progStatusInfo[colabId]={}; _progStatusInfo[colabId].obs=obsInput; }
   if(!window._progStatusInfo) window._progStatusInfo={};
   if(retorno||justif) _progStatusInfo[colabId]={retorno:retorno, justificativa:justif};
 
@@ -29397,9 +29436,11 @@ function progSalvarMenuStatus(colabId){
     }
 
     if(!DEMO){
+      var _obsParaSalvar = (_progStatusInfo[colabId]||{}).obs||justif||'';
       sbUpsert('prog_status_diario',{
         colaborador_id:colabId, data:data, status:novoSt,
         data_retorno:retorno||null,
+        obs:_obsParaSalvar||null,
         registrado_por:usuarioLogado?usuarioLogado.nome:''
       },'colaborador_id,data').then(function(){
         // Propagar nova data para todos os dias futuros do mesmo status
