@@ -1085,6 +1085,24 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
   0%,100% { opacity:.3; transform:scale(.8); }
   50%      { opacity:1;  transform:scale(1.2); }
 }
+
+/* ── Aba Verificar piscando ── */
+@keyframes vt-piscar-vermelho {
+  0%,100% { color:#C0392B; background:#FFF0EE; border-bottom-color:#C0392B; opacity:1; }
+  50%      { color:#C0392B; background:#FFD5D0; border-bottom-color:#C0392B; opacity:.5; }
+}
+@keyframes vt-piscar-amarelo {
+  0%,100% { color:#B7770D; background:#FFFBEE; border-bottom-color:#B7770D; opacity:1; }
+  50%      { color:#B7770D; background:#FFF3CC; border-bottom-color:#B7770D; opacity:.5; }
+}
+#tab-prog-verificar.vt-alerta-vermelho {
+  animation: vt-piscar-vermelho 1.2s ease-in-out infinite;
+  border-radius:6px 6px 0 0;
+}
+#tab-prog-verificar.vt-alerta-amarelo {
+  animation: vt-piscar-amarelo 1.8s ease-in-out infinite;
+  border-radius:6px 6px 0 0;
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
@@ -2319,6 +2337,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
   <div style="display:flex;gap:0;border-bottom:1.5px solid #e0dfd8;margin-bottom:1rem">
     <button id="tab-prog-escala" onclick="progAbaSelecionar('escala')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18">📅 Programação</button>
     <button id="tab-prog-calendario" onclick="progAbaSelecionar('calendario')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">🗓 Calendário de Folgas</button>
+    <button id="tab-prog-verificar" onclick="progAbaSelecionar('verificar')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">🔍 Tratamento Verificar</button>
   </div>
 
   <div id="prog-aba-escala">
@@ -2375,6 +2394,32 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
   </div>
 
   </div><!-- /prog-aba-escala -->
+
+  <!-- Aba Verificar — Tratamento de Ocorrências -->
+  <div id="prog-aba-verificar" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px">
+        <span class="ct">🔍 Tratamento de Ocorrências — Verificar</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input class="inp" type="date" id="vt-fil-ini" style="width:135px"/>
+          <span style="font-size:12px;color:#888">até</span>
+          <input class="inp" type="date" id="vt-fil-fim" style="width:135px"/>
+          <input class="inp" id="vt-fil-colab" placeholder="Colaborador..." style="width:150px"/>
+          <select class="inp" id="vt-fil-status" style="width:130px">
+            <option value="">Todos status</option>
+            <option value="pendente">Pendente</option>
+            <option value="em_andamento">Em andamento</option>
+            <option value="concluido">Concluído</option>
+          </select>
+          <button class="btn btn-pri" onclick="vtCarregar()">🔍 Buscar</button>
+          <button class="btn" onclick="vtGerarLista()" style="background:#3B6D11;color:#fff">+ Gerar da programação</button>
+        </div>
+      </div>
+      <div id="vt-lista" style="padding:1rem">
+        <div style="color:#888;font-size:12px">Selecione o período e clique em Buscar, ou use "Gerar da programação" para importar os colaboradores em Verificar do dia atual.</div>
+      </div>
+    </div>
+  </div>
 
   <!-- Aba Calendário de Folgas -->
   <div id="prog-aba-calendario" style="display:none">
@@ -5773,6 +5818,305 @@ function exportarXLS(nomeArquivo, cabecalho, linhas, titulo){
 }
 
 // ── Relatório: Não Escalados ───────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+// MÓDULO: TRATAMENTO DE VERIFICAR
+// ══════════════════════════════════════════════════════════════════
+var _vtDados = []; // cache local dos tratamentos
+
+var VT_ETAPAS = [
+  {id:'supervisao',  label:'Supervisão'},
+  {id:'coordenacao', label:'Coordenação'},
+  {id:'gerencia',    label:'Gerência'},
+  {id:'dp',          label:'Depto. Pessoal'}
+];
+var VT_DECISOES = [
+  {id:'ajustado',        label:'Ajustado'},
+  {id:'advertencia',     label:'Advertência'},
+  {id:'demissao',        label:'Demissão'},
+  {id:'desconto_folha',  label:'Desconto em Folha'}
+];
+var VT_STATUS_LABEL = {pendente:'🔴 Pendente', em_andamento:'🟡 Em andamento', concluido:'🟢 Concluído'};
+
+function vtInicializar(){
+  var ini = document.getElementById('vt-fil-ini');
+  var fim = document.getElementById('vt-fil-fim');
+  if(ini && !ini.value){ ini.value = dataHojeLocal(); }
+  if(fim && !fim.value){ fim.value = dataHojeLocal(); }
+}
+
+function vtCarregar(){
+  var ini   = (document.getElementById('vt-fil-ini')||{}).value||'';
+  var fim   = (document.getElementById('vt-fil-fim')||{}).value||'';
+  var busca = ((document.getElementById('vt-fil-colab')||{}).value||'').toLowerCase().trim();
+  var stFil = (document.getElementById('vt-fil-status')||{}).value||'';
+  var wrap  = document.getElementById('vt-lista');
+  if(!wrap) return;
+  if(!ini||!fim){ progShowToast('⚠ Informe o período.'); return; }
+  wrap.innerHTML = '<div style="padding:1rem;color:#888">⏳ Carregando...</div>';
+  var filters = ['data_ocorrencia=gte.'+ini,'data_ocorrencia=lte.'+fim];
+  sbFetch('verificar_tratamentos',{filters:filters,order:'data_ocorrencia.desc,status.asc',limit:500})
+    .then(function(rows){
+      _vtDados = rows||[];
+      vtRenderLista(busca, stFil);
+    }).catch(function(e){
+      console.error('vtCarregar erro:',e);
+      wrap.innerHTML='<div style="padding:1rem;color:#A32D2D">Erro ao carregar tratamentos.</div>';
+    });
+}
+
+function vtRenderLista(busca, stFil){
+  var wrap = document.getElementById('vt-lista');
+  if(!wrap) return;
+  var lista = _vtDados.filter(function(t){
+    var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
+    var nome = col?col.nome:'';
+    var re   = col?(col.re||''):'';
+    if(busca && nome.toLowerCase().indexOf(busca)<0 && String(re).toLowerCase().indexOf(busca)<0) return false;
+    if(stFil && t.status!==stFil) return false;
+    return true;
+  });
+  if(!lista.length){
+    wrap.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Nenhuma ocorrência encontrada. Use "Gerar da programação" para importar os colaboradores em Verificar.</div>';
+    return;
+  }
+  var html='<div style="padding:.5rem 1rem;font-size:11px;color:#888;margin-bottom:.5rem">'+lista.length+' ocorrência(s)</div>';
+  html+='<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  html+='<thead><tr style="background:#F9F4FA;color:#555">'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Data</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">RE</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Colaborador</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Obs. Original</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Status</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Decisão</th>'
+    +'<th style="padding:8px 10px;text-align:center;border-bottom:.5px solid #e0dfd8"></th>'
+    +'</tr></thead><tbody>';
+  lista.forEach(function(t,i){
+    var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
+    var nome = col?col.nome:'('+t.colaborador_id+')';
+    var re   = col?(col.re||'—'):'—';
+    var bg   = i%2===0?'#fff':'#fdf9ff';
+    var decisoes = t.decisoes ? t.decisoes.split(',').map(function(d){
+      var dec = VT_DECISOES.find(function(x){return x.id===d.trim();});
+      return dec?dec.label:d;
+    }).join(', ') : '—';
+    html+='<tr style="background:'+bg+'" id="vt-row-'+t.id+'">'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+fmtD(t.data_ocorrencia)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(re)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-weight:500">'+escHtml(nome)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;color:#8B1A6B;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escHtml(t.obs_verificar||'')+'">'+escHtml(t.obs_verificar||'—')+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+( VT_STATUS_LABEL[t.status]||t.status)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-size:11px;color:#3B6D11">'+escHtml(decisoes)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;text-align:center">'
+            +'<button class="btn btn-pri" style="font-size:11px;padding:3px 10px" data-vtid="'+t.id+'" onclick="vtAbrirTratamento(this.dataset.vtid)">✏️ Tratar</button>'+'</td>'
+      +'</tr>';
+  });
+  html+='</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function vtGerarLista(){
+  var ini  = (document.getElementById('vt-fil-ini')||{}).value||'';
+  var fim  = (document.getElementById('vt-fil-fim')||{}).value||'';
+  if(!ini||!fim){ progShowToast('⚠ Informe o período De/Até antes de gerar.'); return; }
+  var wrap = document.getElementById('vt-lista');
+  var label = ini===fim ? fmtD(ini) : fmtD(ini)+' a '+fmtD(fim);
+  if(wrap) wrap.innerHTML='<div style="padding:1rem;color:#888">⏳ Importando colaboradores em Verificar de '+label+'...</div>';
+  sbFetch('prog_status_diario',{filters:['status=eq.verificar','data=gte.'+ini,'data=lte.'+fim]})
+    .then(function(rows){
+      if(!rows||!rows.length){
+        progShowToast('Nenhum colaborador em Verificar no período.');
+        if(wrap) wrap.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Nenhum colaborador em Verificar no período selecionado.</div>';
+        return;
+      }
+      var inseridos=0, existentes=0;
+      var promises = rows.map(function(r){
+        var dataOcorr = (r.data||'').split('T')[0];
+        return sbFetch('verificar_tratamentos',{filters:['colaborador_id=eq.'+r.colaborador_id,'data_ocorrencia=eq.'+dataOcorr],limit:1})
+          .then(function(ex){
+            if(ex&&ex.length){ existentes++; return; }
+            inseridos++;
+            return sbInsert('verificar_tratamentos',{
+              colaborador_id: r.colaborador_id,
+              data_ocorrencia: dataOcorr,
+              obs_verificar: r.obs||'',
+              status:'pendente'
+            });
+          });
+      });
+      return Promise.all(promises).then(function(){
+        progShowToast('✅ '+inseridos+' ocorrência(s) importada(s). '+(existentes?' ('+existentes+' já existia(m))':''));
+        vtCarregar();
+      });
+    }).catch(function(e){
+      console.error('vtGerarLista erro:',e);
+      progShowToast('⚠ Erro ao gerar lista.','erro');
+    });
+}
+
+function vtAbrirTratamento(id){
+  var t = _vtDados.find(function(x){return x.id===id;});
+  if(!t){ vtCarregarETratar(id); return; }
+  var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
+  var nome = col?col.nome:'Colaborador';
+  var re   = col?(col.re||'—'):'—';
+  var resp = usuarioLogado?usuarioLogado.nome:'';
+  var decisoesArr = t.decisoes?t.decisoes.split(',').map(function(d){return d.trim();}):[]; 
+
+  var etapasHtml = VT_ETAPAS.map(function(e){
+    var campoResp = 'resp_'+e.id;
+    var campoPor  = 'resp_'+e.id+'_por';
+    var campoEm   = 'resp_'+e.id+'_em';
+    var val  = t[campoResp]||'';
+    var por  = t[campoPor]||'';
+    var em   = t[campoEm]?(' — '+new Date(t[campoEm]).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})):'';
+    var temResp = !!val;
+    return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:12px;margin-bottom:10px;background:'+(temResp?'#f9fff5':'#fff')+'">'
+      +'<div style="font-weight:700;font-size:12px;color:'+(temResp?'#3B6D11':'#555')+';margin-bottom:6px">'+(temResp?'✅ ':'⭕ ')+e.label+(por?' <span style="font-weight:400;color:#888">por '+escHtml(por)+em+'</span>':'')+'</div>'
+      +'<textarea id="vt-resp-'+e.id+'" style="width:100%;min-height:60px;border:.5px solid #e0dfd8;border-radius:6px;padding:8px;font-size:12px;resize:vertical;box-sizing:border-box" placeholder="Resposta da '+e.label+'...">'
+      +escHtml(val)+'</textarea>'
+      +'</div>';
+  }).join('');
+
+  var decHtml = VT_DECISOES.map(function(d){
+    var checked = decisoesArr.indexOf(d.id)>=0 ? 'checked' : '';
+    return '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:6px 10px;border:.5px solid #e0dfd8;border-radius:6px;background:'+(checked?'#f9fff5':'#fff')+'" id="vt-dec-label-'+d.id+'">'
+      +'<input type="checkbox" id="vt-dec-'+d.id+'" '+checked+' onchange="vtDecChange()" style="cursor:pointer"> '+d.label+'</label>';
+  }).join('');
+
+
+  var html = '<div style="padding:1rem">'
+    +'<div style="display:flex;gap:10px;margin-bottom:1rem;flex-wrap:wrap">'
+    +'<div style="flex:1;min-width:200px;background:#F9F4FA;border-radius:8px;padding:10px">'
+    +'<div style="font-size:11px;color:#888">Colaborador</div>'
+    +'<div style="font-weight:700;font-size:14px">'+escHtml(nome)+'</div>'
+    +'<div style="font-size:12px;color:#555;font-family:monospace">RE: '+escHtml(re)+'</div>'
+    +'</div>'
+    +'<div style="flex:1;min-width:140px;background:#F9F4FA;border-radius:8px;padding:10px">'
+    +'<div style="font-size:11px;color:#888">Data da ocorrência</div>'
+    +'<div style="font-weight:700;font-size:14px">'+fmtD(t.data_ocorrencia)+'</div>'
+    +'</div>'
+    +'<div style="flex:2;min-width:200px;background:#FFF5F9;border-radius:8px;padding:10px">'
+    +'<div style="font-size:11px;color:#888">Observação original</div>'
+    +'<div style="font-size:12px;color:#8B1A6B;font-style:italic">'+escHtml(t.obs_verificar||'Sem observação')+'</div>'
+    +'</div>'
+    +'</div>'
+
+    +'<div style="margin-bottom:1rem">'
+    +'<div style="font-weight:700;font-size:13px;color:#333;margin-bottom:8px;border-bottom:.5px solid #e0dfd8;padding-bottom:4px">📋 Etapas de Resposta</div>'
+    +etapasHtml
+    +'</div>'
+
+    +'<div style="margin-bottom:1rem">'
+    +'<div style="font-weight:700;font-size:13px;color:#333;margin-bottom:8px;border-bottom:.5px solid #e0dfd8;padding-bottom:4px">⚖️ Decisão Final <span style="font-size:11px;font-weight:400;color:#888">(pode selecionar mais de uma)</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+    +decHtml
+    +'</div>'
+    +'<textarea id="vt-decisao-obs" style="width:100%;min-height:50px;border:.5px solid #e0dfd8;border-radius:6px;padding:8px;font-size:12px;resize:vertical;box-sizing:border-box" placeholder="Observação sobre a decisão...">'
+    +escHtml(t.decisao_obs||'')+'</textarea>'
+    +'</div>'
+
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+    +'<div style="font-size:11px;color:#888">Status definido automaticamente ao salvar.</div>'
+    +'</div>';
+
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:700px;width:95vw;margin:auto">'
+    +'<div class="mh" style="display:flex;justify-content:space-between;align-items:center">'
+    +'<span style="font-weight:700;font-size:15px">✏️ Tratamento de Verificar</span>'
+    +'<button class="btn" onclick="closeModal()" style="padding:2px 10px;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    + html
+    +'</div></div>');
+}
+
+function vtDecChange(){
+  VT_DECISOES.forEach(function(d){
+    var cb  = document.getElementById('vt-dec-'+d.id);
+    var lbl = document.getElementById('vt-dec-label-'+d.id);
+    if(cb && lbl) lbl.style.background = cb.checked ? '#f9fff5' : '#fff';
+  });
+}
+
+function vtSalvarTratamento(id, resp){
+  var t = _vtDados.find(function(x){return x.id===id;});
+  if(!t) return;
+  var payload = {};
+  VT_ETAPAS.forEach(function(e){
+    var ta = document.getElementById('vt-resp-'+e.id);
+    var val = ta?ta.value.trim():'';
+    payload['resp_'+e.id] = val;
+    if(val && val !== (t['resp_'+e.id]||'')){
+      payload['resp_'+e.id+'_por'] = resp;
+      payload['resp_'+e.id+'_em']  = new Date().toISOString();
+    } else {
+      payload['resp_'+e.id+'_por'] = t['resp_'+e.id+'_por']||'';
+      payload['resp_'+e.id+'_em']  = t['resp_'+e.id+'_em']||null;
+    }
+  });
+  var decisoes = VT_DECISOES.filter(function(d){
+    var cb = document.getElementById('vt-dec-'+d.id);
+    return cb && cb.checked;
+  }).map(function(d){return d.id;}).join(',');
+  payload.decisoes    = decisoes;
+  payload.decisao_obs = (document.getElementById('vt-decisao-obs')||{}).value||'';
+  payload.alterado_em = new Date().toISOString();
+
+  // Status automático:
+  // tem decisão final → concluido
+  // tem pelo menos uma resposta de etapa → em_andamento
+  // nenhuma resposta → pendente
+  var temDecisao  = decisoes.length > 0;
+  var temResposta = VT_ETAPAS.some(function(e){ return !!(payload['resp_'+e.id]); });
+  payload.status = temDecisao ? 'concluido' : temResposta ? 'em_andamento' : 'pendente';
+
+  if(DEMO){ progShowToast('DEMO — não salvou.'); closeModal(); return; }
+  sbUpdate('verificar_tratamentos', payload, 'id=eq.'+id)
+    .then(function(){
+      Object.assign(t, payload);
+      progShowToast('✅ Tratamento salvo.');
+      vtAtualizarAbaAlerta();
+      closeModal();
+      var ini = (document.getElementById('vt-fil-ini')||{}).value||'';
+      var fim = (document.getElementById('vt-fil-fim')||{}).value||'';
+      var busca = ((document.getElementById('vt-fil-colab')||{}).value||'').toLowerCase().trim();
+      var stFil = (document.getElementById('vt-fil-status')||{}).value||'';
+      vtRenderLista(busca, stFil);
+    }).catch(function(e){
+      console.error('vtSalvarTratamento erro:',e);
+      progShowToast('⚠ Erro ao salvar tratamento.','erro');
+    });
+}
+
+function vtCarregarETratar(id){
+  sbFetch('verificar_tratamentos',{filters:['id=eq.'+id],limit:1}).then(function(rows){
+    if(rows&&rows.length){ _vtDados.push(rows[0]); vtAbrirTratamento(id); }
+  });
+}
+
+// Atualiza o estado de piscar da aba com base nos tratamentos pendentes/em andamento
+function vtAtualizarAbaAlerta(){
+  var btn = document.getElementById('tab-prog-verificar');
+  if(!btn) return;
+  // Buscar contagem do banco (status pendente ou em_andamento)
+  if(DEMO) return;
+  sbFetch('verificar_tratamentos',{
+    filters:['status=in.(pendente,em_andamento)'],
+    select:'id,status',
+    limit:500
+  }).then(function(rows){
+    btn.classList.remove('vt-alerta-vermelho','vt-alerta-amarelo');
+    if(!rows||!rows.length) return;
+    var temPendente    = rows.some(function(r){return r.status==='pendente';});
+    var temAndamento   = rows.some(function(r){return r.status==='em_andamento';});
+    // Vermelho tem prioridade (pendente não tratado)
+    if(temPendente){
+      btn.classList.add('vt-alerta-vermelho');
+    } else if(temAndamento){
+      btn.classList.add('vt-alerta-amarelo');
+    }
+  }).catch(function(){});
+}
+
 // ── Relatório: Colaboradores em Verificar ──────────────────────────────────
 function relTmaVerificar(){
   var ini   = (document.getElementById('tma-vf-ini')||{}).value||'';
@@ -26339,7 +26683,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.144',
+  numero: '7.9.151',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -26821,6 +27165,7 @@ function progInit(){
   _progData = dataHojeLocal();
   var _dataInit = _progData;
   progCarregarVeiculos(_dataInit);
+  vtAtualizarAbaAlerta(); // Verificar se há pendências de tratamento
 
   // Carregar calendário de escala se ainda não carregado
   if(!Object.keys(_calDados||{}).length){
@@ -30552,19 +30897,32 @@ var DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 function progAbaSelecionar(aba){
   var escala = document.getElementById('prog-aba-escala');
   var cal    = document.getElementById('prog-aba-calendario');
+  var vt     = document.getElementById('prog-aba-verificar');
   var btnE   = document.getElementById('tab-prog-escala');
   var btnC   = document.getElementById('tab-prog-calendario');
+  var btnV   = document.getElementById('tab-prog-verificar');
+  // Ocultar tudo
+  if(escala) escala.style.display='none';
+  if(cal)    cal.style.display='none';
+  if(vt)     vt.style.display='none';
+  [btnE,btnC,btnV].forEach(function(b){ if(b){b.style.borderBottomColor='transparent';b.style.color='#888';b.style.fontWeight='500';} });
   if(aba==='escala'){
     if(escala) escala.style.display='';
-    if(cal)    cal.style.display='none';
-    if(btnE){btnE.style.borderBottomColor='#1a1a18';btnE.style.color='#1a1a18';}
-    if(btnC){btnC.style.borderBottomColor='transparent';btnC.style.color='#888';}
-  } else {
-    if(escala) escala.style.display='none';
-    if(cal)    cal.style.display='';
-    if(btnE){btnE.style.borderBottomColor='transparent';btnE.style.color='#888';}
-    if(btnC){btnC.style.borderBottomColor='#1a1a18';btnC.style.color='#1a1a18';}
+    if(btnE){btnE.style.borderBottomColor='#1a1a18';btnE.style.color='#1a1a18';btnE.style.fontWeight='600';}
+  } else if(aba==='calendario'){
+    if(cal) cal.style.display='';
+    if(btnC){btnC.style.borderBottomColor='#1a1a18';btnC.style.color='#1a1a18';btnC.style.fontWeight='600';}
     calRender();
+    setTimeout(function(){
+      if(cal) cal.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 80);
+  } else if(aba==='verificar'){
+    if(vt) vt.style.display='';
+    if(btnV){btnV.style.borderBottomColor='#8B1A6B';btnV.style.color='#8B1A6B';btnV.style.fontWeight='600';}
+    vtInicializar();
+    setTimeout(function(){
+      if(vt) vt.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 80);
   }
 }
 
