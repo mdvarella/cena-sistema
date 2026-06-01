@@ -4227,37 +4227,7 @@ function gerarUUID(){
 
 // ── SOFT DELETE — nunca apaga dados, apenas marca deleted_at ──────────
 // Tabelas sem coluna deleted_at fazem DELETE real (fallback de segurança)
-var _SOFT_DELETE_TABLES = [
-  'usuarios_sistema','servicos_contrato','tipos_equipe','equipes_disp',
-  'causas_codx','fornecedores','sot_atividades','sot_documentos',
-  'sot_materiais','medicoes_obra','medicoes_obra_itens',
-  'colaboradores','equipes','contratos','composicao_dia',
-  'sessoes_disponibilidade','ordens_diario','turnos_abertos',
-  'lancamentos','adiantamentos','aprovacoes','prod_diaria',
-  'prog_veiculos_dia','clientes','servicos',
-  'tipos_servico_cad','tipos_servico_contrato','veiculos','frotas_veiculos',
-  'filiais','depositos','categorias_despesa','subcategorias_despesa',
-  'unidades_medida','itens_catalogo','catalogo_materiais','materiais_sap',
-  'uniformes_catalogo','epis','ferramentas','locacoes',
-  'projetos_obra','execucoes_obra','exec_servicos','sot_projetos',
-  'sot_lancamentos_campo','requisicoes_compra','aditivos_contrato',
-  'verbas_contrato','plpt_sessoes','plpt_sessoes_dia','plpt_prog_dia',
-  'plpt_prog_projetos','plpt_lancamentos','plpt_equipe_membros',
-  'ocorrencias','treinamentos','sesmt_cursos','sesmt_documentos_colab',
-  'sesmt_normas','aprs_registradas','checklists_templates',
-  'frotas_manutencoes','frotas_avarias','frotas_combustivel','frotas_multas',
-  'frotas_documentos','frotas_portaria_saidas','frotas_portaria_bloqueios',
-  'frotas_reservas_veiculos','pneus','pneus_movimentos',
-  'comgas_inspecoes','comgas_ncs','comgas_pa','comgas_cdis','comgas_rems',
-  'enel_inspecoes','enel_ncs','enel_pa','enel_cdis','enel_rems',
-  'vales','sol_composicao','sol_materiais','estoque','movimentacoes_itens',
-  'uniformes_colaborador','uniformes_movimentacoes','alm_movimentos',
-  'plr_avaliacoes','plr_adiantamentos','sugestoes_melhorias',
-  'historico_dispensas','parcelas_adiantamento','calendario_escala',
-  'cod_x_lancamentos','financeiro_faturamentos','portaria_visitas',
-  'funcionarios','produtividade','proj_encarregados','user_permissoes',
-  'perfis_sistema'
-];
+var _SOFT_DELETE_TABLES = []; // Soft delete desabilitado — todos os deletes são hard delete
 
 async function sbDelete(table, filter){
   if(DEMO) return;
@@ -26206,7 +26176,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.124',
+  numero: '7.9.142',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -28369,14 +28339,13 @@ function progSalvarEquipe(eqId){
     return;
   }
   var idsRaw = parseJsonField(comp.colaborador_ids,[]).filter(Boolean);
-  // Remover do composicao quem está com status bloqueante (faltou/falta/fraude/demitido)
-  // para não contar como membro ativo da equipe no dia
-  var STATUS_BLOQ_SAVE = BLOQ_STATUS;
+  // Remover apenas quem genuinamente faltou — NÃO remover folguistas escalados
+  var STATUS_AUSENTES = ['falta','faltou','fraude','demitido'];
   var ids = idsRaw.filter(function(id){
     var st = _progStatus[id]||'disponivel';
-    return STATUS_BLOQ_SAVE.indexOf(st) < 0;
+    return STATUS_AUSENTES.indexOf(st) < 0;
   });
-  // Atualizar composicao_dia em memória sem os bloqueados
+  // Atualizar composicao_dia em memória sem os ausentes
   if(ids.length !== idsRaw.length){
     comp.colaborador_ids = JSON.stringify(ids);
   }
@@ -28415,6 +28384,13 @@ function progSalvarEquipe(eqId){
       tem_folga:temFolga,
       motorista_id:comp.motorista_id||null
     };
+    // Incluir veiculo no payload antes de salvar composicao_dia
+    var _veicSave = progGetVeiculo(eqId, data);
+    if(_veicSave){
+      payload.veiculo_id = _veicSave.id||null;
+      payload.placa      = _veicSave.placa||'';
+      payload.modelo     = _veicSave.modelo||'';
+    }
     if(isLocal){
       sbInsert('composicao_dia', payload)
         .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
@@ -28423,9 +28399,23 @@ function progSalvarEquipe(eqId){
       sbUpdate('composicao_dia', payload, 'id=eq.'+comp.id);
     }
   }
-  if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
-  else progShowToast('✅ Equipe programada com sucesso');
-  progRenderQuadro();
+  var _veicSave = progGetVeiculo(eqId, data);
+  var _veicPromise = (_veicSave && !DEMO)
+    ? progSalvarVeiculoNoBanco(eqId, data, _veicSave, 1)
+    : Promise.resolve(true);
+  _veicPromise.then(function(veicOk){
+    if(!veicOk) progShowToast('⚠ Erro ao confirmar veículo no banco.','erro');
+    var _veicSaveB = progGetVeiculoB(eqId, data);
+    if(_veicSaveB && !DEMO) progSalvarVeiculoNoBanco(eqId, data, _veicSaveB, 2);
+    if(_veicSave){
+      comp.veiculo_id = _veicSave.id||null;
+      comp.placa = _veicSave.placa||'';
+      comp.modelo = _veicSave.modelo||'';
+    }
+    if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
+    else progShowToast('✅ Equipe programada com sucesso');
+    progRenderQuadro();
+  });
 }
 
 
@@ -35025,6 +35015,20 @@ function criarCalendario(input){
 
     cal.innerHTML = html;
 
+    // ── Navegação do mês — rebind após cada renderMes ────────────
+    var _prevBtn = document.getElementById('cal-prev');
+    var _nextBtn = document.getElementById('cal-next');
+    if(_prevBtn) _prevBtn.onclick = function(e){
+      e.stopPropagation();
+      mes--; if(mes<0){mes=11;ano--;}
+      renderMes(ano,mes);
+    };
+    if(_nextBtn) _nextBtn.onclick = function(e){
+      e.stopPropagation();
+      mes++; if(mes>11){mes=0;ano++;}
+      renderMes(ano,mes);
+    };
+
     // Eventos dias
     cal.querySelectorAll('[data-date]').forEach(function(el){
       el.onmouseenter = function(){ if(this.style.background==='transparent') this.style.background='#f5f5f3'; };
@@ -35039,22 +35043,10 @@ function criarCalendario(input){
       };
     });
 
-    var prevBtn = document.getElementById('cal-prev');
-    var nextBtn = document.getElementById('cal-next');
     var hojeBtn = document.getElementById('cal-hoje');
     var limparBtn = document.getElementById('cal-limpar');
 
-    if(prevBtn) prevBtn.onclick = function(e){
-      e.stopPropagation();
-      mes--; if(mes<0){mes=11;ano--;}
-      renderMes(ano,mes);
-    };
-    if(nextBtn) nextBtn.onclick = function(e){
-      e.stopPropagation();
-      mes++; if(mes>11){mes=0;ano++;}
-      renderMes(ano,mes);
-    };
-    if(hojeBtn) hojeBtn.onclick = function(e){
+        if(hojeBtn) hojeBtn.onclick = function(e){
       e.stopPropagation();
       var hoje2 = dataHojeLocal();
       input.value = hoje2;
@@ -39921,16 +39913,36 @@ function ppSalvarEquipe(eqId){
   comp.confirmada=true;
   if(!DEMO){
     var isLocal=comp._local||!comp.id||comp.id.startsWith('local_');
+    var _veicPPBase = progGetVeiculo(eqId, data);
+    var _payloadPP = {equipe_id:eqId,data:data,
+      colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true,
+      veiculo_id:_veicPPBase?(_veicPPBase.id||null):null,
+      placa:_veicPPBase?(_veicPPBase.placa||''):'',
+      modelo:_veicPPBase?(_veicPPBase.modelo||''):''};
     if(isLocal){
-      sbInsert('composicao_dia',{equipe_id:eqId,data:data,
-        colaborador_ids:JSON.stringify(ids),turno:'Manha',confirmada:true})
+      sbInsert('composicao_dia',_payloadPP)
         .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
     } else {
-      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
+      sbUpdate('composicao_dia',{confirmada:true,colaborador_ids:JSON.stringify(ids),
+        veiculo_id:_payloadPP.veiculo_id,placa:_payloadPP.placa,modelo:_payloadPP.modelo},'id=eq.'+comp.id);
     }
   }
-  progProjRenderQuadro();
-  progShowToast('✅ Equipe programada com sucesso');
+  var _veicPP = progGetVeiculo(eqId, data);
+  var _veicPPPromise = (_veicPP && !DEMO)
+    ? progSalvarVeiculoNoBanco(eqId, data, _veicPP, 1)
+    : Promise.resolve(true);
+  _veicPPPromise.then(function(veicOk2){
+    if(!veicOk2) progShowToast('⚠ Erro ao confirmar veículo no banco.','erro');
+    var _veicPPB = progGetVeiculoB(eqId, data);
+    if(_veicPPB && !DEMO) progSalvarVeiculoNoBanco(eqId, data, _veicPPB, 2);
+    if(_veicPP){
+      comp.veiculo_id = _veicPP.id||null;
+      comp.placa = _veicPP.placa||'';
+      comp.modelo = _veicPP.modelo||'';
+    }
+    progProjRenderQuadro();
+    progShowToast('✅ Equipe programada com sucesso');
+  });
 }
 
 function ppRenderEquipeRow(eq, data, cid, maxSlots){
@@ -40891,6 +40903,81 @@ function isMotoDupla(eq){
   return nomeT.indexOf('moto dupla')>=0 || nomeE.indexOf('moto dupla')>=0;
 }
 
+
+// ── Salvar veículo no banco de forma confiável (PATCH + INSERT fallback) ──────
+// Retorna Promise que resolve true/false
+function progSalvarVeiculoNoBanco(eqId, data, veiculoObj, slot){
+  if(DEMO||!veiculoObj||!veiculoObj.placa) return Promise.resolve(true);
+  var slotNum   = slot===2||slot==='2' ? 2 : 1;
+  var dataStr   = (data||'').split('T')[0]; // garantir YYYY-MM-DD
+  var placa     = (veiculoObj.placa||'').trim().toUpperCase();
+  var logCtx    = {eqId:eqId,data:dataStr,slot:slotNum,placa:placa};
+
+  var updatePayload = {
+    veiculo_id  : veiculoObj.id||null,
+    placa       : placa,
+    modelo      : veiculoObj.modelo||'',
+    slot        : slotNum,
+    alterado_por: veiculoObj.alterado_por||(usuarioLogado?usuarioLogado.nome:'')
+  };
+  var insertPayload = Object.assign({
+    equipe_id:eqId, data:dataStr,
+    justificativa:veiculoObj.justificativa||''
+  }, updatePayload);
+
+  // ── Passo 1: buscar registro existente (slot exato) ───────────
+  return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=eq.'+slotNum]})
+  .then(function(rows){
+    if(rows&&rows.length) return rows[0];
+    // Legado: slot=null também é slot 1
+    if(slotNum===1){
+      return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=is.null']})
+        .then(function(r2){ return (r2&&r2.length)?r2[0]:null; });
+    }
+    return null;
+  })
+  // ── Passo 2: UPDATE ou INSERT ─────────────────────────────────
+  .then(function(existing){
+    if(existing&&existing.id){
+      return sbUpdate('prog_veiculos_dia',updatePayload,'id=eq.'+existing.id)
+        .then(function(){ return 'updated'; })
+        .catch(function(e){ return 'update-error:'+e; });
+    }
+    return sbInsert('prog_veiculos_dia',insertPayload)
+      .then(function(r){ return (r&&r.length)?'inserted':'insert-empty'; })
+      .catch(function(e){ return 'insert-error:'+e; });
+  })
+  // ── Passo 3: read-after-write — confirmar que a placa está no banco ──
+  .then(function(op){
+    return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=eq.'+slotNum]})
+    .then(function(verify){
+      var found = verify && verify.find(function(r){
+        return (r.placa||'').toUpperCase()===(placa||'').toUpperCase();
+      });
+      var result = Object.assign({},logCtx,{op:op,verifyRows:(verify&&verify.length)||0,found:!!found});
+      if(found){
+        console.log('[veic save OK]',result);
+        return true;
+      }
+      // Última tentativa: salvar sem slot se still missing
+      if(op==='insert-empty'||op.indexOf('error')>=0){
+        return sbInsert('prog_veiculos_dia',insertPayload)
+          .then(function(r2){
+            var ok2 = !!(r2&&r2.length);
+            console.warn('[veic save retry]',Object.assign({},result,{retry:ok2}));
+            return ok2;
+          });
+      }
+      console.error('[veic save FALHOU]',result);
+      return false;
+    });
+  })
+  .catch(function(e){
+    console.error('[progSalvarVeiculoNoBanco] exception:',logCtx,e);
+    return false;
+  });
+}
+
 function progSetVeiculo(eqId, data, veiculoObj){
   // Invalidar cache de veículos escalados
   if(window._veicEscCache && window._veicEscCache[data]) delete window._veicEscCache[data];
@@ -40919,59 +41006,33 @@ function progSetVeiculo(eqId, data, veiculoObj){
     }
   }
 
-  if(!DEMO && veiculoObj){
-    var payload = {
-      equipe_id: eqId,
-      data: data,
-      slot: 1,
-      veiculo_id: veiculoObj.id||null,
-      placa: veiculoObj.placa||'',
-      modelo: veiculoObj.modelo||'',
-      justificativa: veiculoObj.justificativa||'',
-      alterado_por: veiculoObj.alterado_por||''
-    };
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data]})
-      .then(function(res){
-        // Encontrar o registro slot 1 (ou sem slot) para atualizar
-        var existing = res && res.find(function(r){ return !r.slot||r.slot===1||r.slot==='1'; });
-        if(existing){
-          sbUpdate('prog_veiculos_dia', payload, 'id=eq.'+existing.id);
-        } else {
-          sbInsert('prog_veiculos_dia', payload);
-        }
-      }).catch(function(){
-        // Se falhou a busca, tentar inserir diretamente
-        sbInsert('prog_veiculos_dia', payload).catch(function(){});
-      });
+  // Salvar também em composicao_dia imediatamente (fallback garantido)
+  if(!DEMO){
+    var _compVeic = composicao_dia.find(function(c){
+      var cd=(c.data||'').split('T')[0];
+      return c.equipe_id===eqId&&(cd===data||c.data===data);
+    });
+    if(_compVeic){
+      _compVeic.veiculo_id = veiculoObj.id||null;
+      _compVeic.placa      = veiculoObj.placa||'';
+      _compVeic.modelo     = veiculoObj.modelo||'';
+      if(_compVeic.id && !_compVeic._local){
+        sbUpdate('composicao_dia',{
+          veiculo_id:_compVeic.veiculo_id,
+          placa:_compVeic.placa,
+          modelo:_compVeic.modelo
+        },'id=eq.'+_compVeic.id);
+      }
+    }
   }
+  return progSalvarVeiculoNoBanco(eqId, data, veiculoObj, 1);
 }
 
 // ── Salvar veículo no slot B (2ª moto da Moto Dupla) ──────────
 function progSetVeiculoB(eqId, data, veiculoObj){
   _progVeiculos[progVeiculoKeyB(eqId, data)] = veiculoObj;
   try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
-  if(!DEMO && veiculoObj){
-    var payload = {
-      equipe_id: eqId,
-      data: data,
-      slot: 2,
-      veiculo_id: veiculoObj.id||null,
-      placa: veiculoObj.placa||'',
-      modelo: veiculoObj.modelo||'',
-      justificativa: veiculoObj.justificativa||'',
-      alterado_por: veiculoObj.alterado_por||''
-    };
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'slot=eq.2']})
-      .then(function(res){
-        if(res&&res.length>0){
-          sbUpdate('prog_veiculos_dia', payload, 'id=eq.'+res[0].id);
-        } else {
-          sbInsert('prog_veiculos_dia', payload);
-        }
-      }).catch(function(){
-        sbInsert('prog_veiculos_dia', payload).catch(function(){});
-      });
-  }
+  return progSalvarVeiculoNoBanco(eqId, data, veiculoObj, 2);
 }
 
 function progRemoverVeiculoB(eqId, data){
@@ -40979,7 +41040,7 @@ function progRemoverVeiculoB(eqId, data){
   delete _progVeiculos[progVeiculoKeyB(eqId, data)];
   try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
   if(!DEMO){
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'slot=eq.2']})
+    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'slot=eq.2','deleted_at=is.null']})
       .then(function(res){
         if(res&&res.length){
           var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
@@ -41005,32 +41066,51 @@ function progRemoverVeiculoB(eqId, data){
 var _progVeiculosDateCache = null;
 
 function progCarregarVeiculos(data){
-  // Carregar do localStorage
+  // localStorage como render inicial rápido (merge, não substitui)
   try{
     var saved = localStorage.getItem('prog_veic_'+data);
-    if(saved) _progVeiculos = JSON.parse(saved);
+    if(saved){
+      var lsVeic = JSON.parse(saved);
+      Object.assign(_progVeiculos, lsVeic);
+    }
   }catch(e){}
 
-  // Se já carregou para este dia do banco, não buscar de novo
-  if(_progVeiculosDateCache === data) return;
-
-  // Carregar do banco
-  if(!DEMO){
-    sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data]})
-      .then(function(rows){
-        _progVeiculosDateCache = data;
-        if(!rows||!rows.length) return;
+  // Sempre buscar do banco — banco é a fonte de verdade
+  if(DEMO) return;
+  sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data]})
+    .then(function(rows){
+      _progVeiculosDateCache = data;
+      // NÃO limpar chaves — DB atualiza por cima, localStorage preenche o que a replica ainda não tem
+      var loaded = 0;
+      if(rows&&rows.length){
         rows.forEach(function(r){
           if(!r.equipe_id||!r.placa) return;
-          var key = r.slot===2 ? progVeiculoKeyB(r.equipe_id, r.data||data) : progVeiculoKey(r.equipe_id, r.data||data);
-          _progVeiculos[key] = {
-            id: r.veiculo_id, placa: r.placa, modelo: r.modelo,
-            justificativa: r.justificativa, alterado_por: r.alterado_por
-          };
+          var key = String(r.slot||'1')==='2' ? progVeiculoKeyB(r.equipe_id,r.data||data) : progVeiculoKey(r.equipe_id,r.data||data);
+          _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
+            justificativa:r.justificativa,alterado_por:r.alterado_por};
+          loaded++;
         });
-        progRenderQuadro();
-      }).catch(function(){});
-  }
+      }
+      // Fallback: composicao_dia como fonte secundária
+      var comps = composicao_dia.filter(function(c){
+        var cd=(c.data||'').split('T')[0];
+        return (cd===data||c.data===data) && c.placa && !c.deleted_at;
+      });
+      comps.forEach(function(c){
+        var key = progVeiculoKey(c.equipe_id, data);
+        if(!_progVeiculos[key]){
+          _progVeiculos[key]={id:c.veiculo_id,placa:c.placa,modelo:c.modelo||''};
+          loaded++;
+        }
+      });
+      console.log('[veic load]',{data:data,prog_veiculos_dia:(rows&&rows.length)||0,composicao_fallback:comps.length,total:loaded});
+      try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+      progRenderQuadro();
+    }).catch(function(e){
+      console.error('[veic load] ERRO:',e);
+      // Não limpar cache em caso de erro — manter o que tinha
+      progRenderQuadro();
+    });
 }
 
 // ── Renderiza mini-card de um slot de veículo (a=moto1, b=moto2) ─
@@ -41401,17 +41481,29 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
         justificativa: (document.getElementById('pv-just')||{}).value||'',
         alterado_por: usuarioLogado?usuarioLogado.nome:''
       };
-      if(_slotAtual==='b') progSetVeiculoB(eqId, data, _veicPayload);
-      else progSetVeiculo(eqId, data, _veicPayload);
-      closeModal();
-      var _eqObj = equipes_disp.find(function(e){return e.id===eqId;})||{id:eqId};
-      var cell = document.getElementById('prog-veic-cell-'+eqId);
-      if(cell) cell.innerHTML = progRenderVeiculoCell(_eqObj, data);
-      // Rebind botões
-      var _btn1 = document.getElementById('prog-veic-btn-'+eqId);
-      if(_btn1) _btn1.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'a');};
-      var _btn2b = document.getElementById('prog-veic-btn2-'+eqId);
-      if(_btn2b) _btn2b.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'b');};
+      // Bloquear modal até banco confirmar
+      var _btnSalvarEl = document.getElementById('pv-salvar');
+      if(_btnSalvarEl){ _btnSalvarEl.disabled=true; _btnSalvarEl.textContent='Salvando...'; }
+
+      var _savePromise = _slotAtual==='b'
+        ? progSetVeiculoB(eqId, data, _veicPayload)
+        : progSetVeiculo(eqId, data, _veicPayload);
+
+      _savePromise.then(function(ok){
+        if(!ok){
+          if(_btnSalvarEl){ _btnSalvarEl.disabled=false; _btnSalvarEl.textContent='Confirmar'; }
+          progShowToast('⚠ Erro ao salvar veículo no banco. Tente novamente.','erro');
+          return;
+        }
+        closeModal();
+        var _eqObj = equipes_disp.find(function(e){return e.id===eqId;})||{id:eqId};
+        var cell = document.getElementById('prog-veic-cell-'+eqId);
+        if(cell) cell.innerHTML = progRenderVeiculoCell(_eqObj, data);
+        var _btn1 = document.getElementById('prog-veic-btn-'+eqId);
+        if(_btn1) _btn1.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'a');};
+        var _btn2b = document.getElementById('prog-veic-btn2-'+eqId);
+        if(_btn2b) _btn2b.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'b');};
+      });
     };
 
     // Remover
@@ -41453,7 +41545,7 @@ function progRemoverVeiculo(eqId, data){
   if(!DEMO){
     // Buscar sem filtro de slot para compatibilidade com registros antigos
     var _h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data]})
+    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'deleted_at=is.null']})
       .then(function(res){
         if(res&&res.length){
           res.forEach(function(row){
@@ -42270,7 +42362,7 @@ function frtInit(subpage){
         // Carregar veículos programados para hoje
         var hoje=dataHojeLocal();
         if(!DEMO && Object.keys(_progVeiculos).filter(function(k){return k.endsWith('_'+hoje);}).length===0){
-          sbFetch('prog_veiculos_dia',{filters:['data=eq.'+hoje]}).then(function(rows){
+          sbFetch('prog_veiculos_dia',{filters:['data=eq.'+hoje,'deleted_at=is.null']}).then(function(rows){
             if(rows&&rows.length) rows.forEach(function(r){
               _progVeiculos[r.equipe_id+'_'+hoje]={placa:r.placa,modelo:r.modelo||'',id:r.veiculo_id};
             });
