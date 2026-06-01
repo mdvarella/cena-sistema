@@ -2534,6 +2534,31 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     </div>
     <div id="tma-rel-resultado"></div>
 
+    <!-- Relatório Verificar -->
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch"><span class="ct">🔍 Colaboradores em Verificar</span></div>
+      <div style="padding:1rem;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:3px">De</div>
+          <input class="inp" type="date" id="tma-vf-ini" style="width:135px"/>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:3px">Até</div>
+          <input class="inp" type="date" id="tma-vf-fim" style="width:135px"/>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:3px">Colaborador (Nome ou RE)</div>
+          <input class="inp" id="tma-vf-colab" placeholder="Buscar..." style="width:160px"/>
+        </div>
+        <div style="display:flex;gap:6px;align-items:flex-end">
+          <button class="btn btn-pri" onclick="relTmaVerificar()">🔍 Gerar</button>
+          <button class="btn" onclick="relTmaVerificarPDF()" id="btn-vf-pdf" style="display:none">📄 PDF</button>
+          <button class="btn" onclick="relTmaVerificarExcel()" id="btn-vf-excel" style="display:none">📊 Excel</button>
+        </div>
+      </div>
+      <div id="tma-vf-resultado"></div>
+    </div>
+
     <!-- Relatório Colaboradores Não Escalados -->
     <div class="card" style="margin-bottom:1rem">
       <div class="ch"><span class="ct">👤 Colaboradores Não Escalados</span></div>
@@ -5748,6 +5773,144 @@ function exportarXLS(nomeArquivo, cabecalho, linhas, titulo){
 }
 
 // ── Relatório: Não Escalados ───────────────────────────────
+// ── Relatório: Colaboradores em Verificar ──────────────────────────────────
+function relTmaVerificar(){
+  var ini   = (document.getElementById('tma-vf-ini')||{}).value||'';
+  var fim   = (document.getElementById('tma-vf-fim')||{}).value||'';
+  var busca = ((document.getElementById('tma-vf-colab')||{}).value||'').toLowerCase().trim();
+  var wrap  = document.getElementById('tma-vf-resultado');
+  if(!wrap) return;
+  if(!ini||!fim){ progShowToast('⚠ Informe o período.');return; }
+
+  wrap.innerHTML = '<div style="padding:1rem;color:#888">⏳ Carregando...</div>';
+
+  var filters = [
+    'status=eq.verificar',
+    'data=gte.'+ini,
+    'data=lte.'+fim
+  ];
+
+  sbFetch('prog_status_diario',{filters:filters,order:'data.asc'}).then(function(rows){
+    if(!rows||!rows.length){
+      wrap.innerHTML='<div style="padding:1rem;color:#888">Nenhum colaborador em Verificar no período.</div>';
+      document.getElementById('btn-vf-pdf').style.display='none';
+      document.getElementById('btn-vf-excel').style.display='none';
+      return;
+    }
+
+    // Montar lista com dados dos colaboradores
+    var registros = rows.map(function(r){
+      var col = colaboradores.find(function(c){return String(c.id)===String(r.colaborador_id);});
+      return {
+        data: r.data,
+        nome: col?col.nome:'(ID: '+r.colaborador_id+')',
+        re:   col?(col.re||'—'):'—',
+        obs:  r.obs||''
+      };
+    }).filter(function(r){
+      if(!busca) return true;
+      return r.nome.toLowerCase().indexOf(busca)>=0 || String(r.re).toLowerCase().indexOf(busca)>=0;
+    });
+
+    if(!registros.length){
+      wrap.innerHTML='<div style="padding:1rem;color:#888">Nenhum resultado para o filtro informado.</div>';
+      return;
+    }
+
+    // Agrupar por data
+    var porData = {};
+    registros.forEach(function(r){
+      if(!porData[r.data]) porData[r.data]=[];
+      porData[r.data].push(r);
+    });
+
+    // Ordenar datas e dentro de cada data ordenar por nome
+    var datas = Object.keys(porData).sort();
+    datas.forEach(function(d){
+      porData[d].sort(function(a,b){return a.nome.localeCompare(b.nome,'pt-BR');});
+    });
+
+    // Total
+    var total = registros.length;
+
+    // Renderizar
+    var html = '<div style="padding:1rem">';
+    html += '<div style="font-size:12px;color:#888;margin-bottom:1rem">'+total+' ocorrência(s) no período — '+fmtD(ini)+' a '+fmtD(fim)+'</div>';
+
+    datas.forEach(function(d){
+      var lista = porData[d];
+      var dLabel = fmtD(d);
+      html += '<div style="margin-bottom:1.25rem">';
+      html += '<div style="font-weight:700;font-size:13px;color:#8B1A6B;border-bottom:2px solid #8B1A6B22;padding-bottom:4px;margin-bottom:8px">📅 '+dLabel+'</div>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+      html += '<thead><tr style="background:#F9F4FA;color:#555">'
+           +'<th style="text-align:left;padding:6px 10px;border-bottom:.5px solid #e0dfd8">Nome</th>'
+           +'<th style="text-align:left;padding:6px 10px;border-bottom:.5px solid #e0dfd8;width:70px">RE</th>'
+           +'<th style="text-align:left;padding:6px 10px;border-bottom:.5px solid #e0dfd8">Observação</th>'
+           +'</tr></thead><tbody>';
+      lista.forEach(function(r,i){
+        var bg = i%2===0?'#fff':'#fdf9ff';
+        html += '<tr style="background:'+bg+'">'
+             +'<td style="padding:6px 10px;border-bottom:.5px solid #f0efe8;font-weight:500">'+escHtml(r.nome)+'</td>'
+             +'<td style="padding:6px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(r.re)+'</td>'
+             +'<td style="padding:6px 10px;border-bottom:.5px solid #f0efe8;color:'+(r.obs?'#8B1A6B':'#aaa')+';font-style:'+(r.obs?'normal':'italic')+'">'+escHtml(r.obs||'Sem observação')+'</td>'
+             +'</tr>';
+      });
+      html += '</tbody></table></div>';
+    });
+
+    html += '</div>';
+    wrap.innerHTML = html;
+    document.getElementById('btn-vf-pdf').style.display='inline-flex';
+    document.getElementById('btn-vf-excel').style.display='inline-flex';
+    // Guardar dados para exportação
+    window._tmaVfDados = {datas:datas, porData:porData, ini:ini, fim:fim, total:total};
+  }).catch(function(e){
+    console.error('relTmaVerificar erro:',e);
+    wrap.innerHTML='<div style="padding:1rem;color:#A32D2D">Erro ao carregar dados.</div>';
+  });
+}
+
+function relTmaVerificarPDF(){
+  if(!window._tmaVfDados) return;
+  var d=window._tmaVfDados;
+  var linhas=[];
+  d.datas.forEach(function(dt){
+    linhas.push(['','','📅 '+fmtD(dt),'','']);
+    d.porData[dt].forEach(function(r){
+      linhas.push([fmtD(dt),r.re,r.nome,r.obs||'—']);
+    });
+  });
+  var html='<html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;font-size:11px}'
+    +'table{width:100%;border-collapse:collapse}th,td{padding:5px 8px;border:.5px solid #ccc;text-align:left}'
+    +'th{background:#F9F4FA;font-weight:700}h2{color:#8B1A6B}</style></head><body>'
+    +'<h2>🔍 Relatório de Verificar — '+fmtD(d.ini)+' a '+fmtD(d.fim)+'</h2>'
+    +'<p style="color:#888;font-size:11px">Total: '+d.total+' ocorrência(s)</p>'
+    +'<table><thead><tr><th>Data</th><th>RE</th><th>Colaborador</th><th>Observação</th></tr></thead><tbody>';
+  d.datas.forEach(function(dt){
+    d.porData[dt].forEach(function(r){
+      html+='<tr><td>'+fmtD(dt)+'</td><td>'+escHtml(r.re)+'</td><td>'+escHtml(r.nome)+'</td><td>'+escHtml(r.obs||'—')+'</td></tr>';
+    });
+  });
+  html+='</tbody></table></body></html>';
+  var w=window.open('','_blank');
+  if(w){w.document.write(html);w.document.close();setTimeout(function(){w.print();},400);}
+}
+
+function relTmaVerificarExcel(){
+  if(!window._tmaVfDados) return;
+  var d=window._tmaVfDados;
+  var linhas=['Data,RE,Nome,Observacao'];
+  d.datas.forEach(function(dt){
+    d.porData[dt].forEach(function(r){
+      linhas.push([fmtD(dt),r.re,r.nome,(r.obs||'')].map(function(v){return '"'+String(v).replace(/"/g,'""')+'"';}).join(','));
+    });
+  });
+  var a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,%EF%BB%BF'+encodeURIComponent(linhas.join('%0D%0A'));
+  a.download='verificar_'+d.ini+'_'+d.fim+'.csv';
+  a.click();
+}
 function relTmaNaoEscalados(){
   var TMA_CID='04277076-baa5-4ea4-85dc-bddf55541e68';
   var data=(document.getElementById('tma-ne-data')||{}).value||dataHojeLocal();
@@ -26176,7 +26339,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.142',
+  numero: '7.9.144',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -34918,183 +35081,9 @@ function getDatasAtivas(){
   return datas;
 }
 
-var _calAtivo = null; // input atualmente com calendário aberto
-
-function criarCalendario(input){
-  // Remover calendário anterior
-  fecharCalendario();
-
-  var val = input.value || dataHojeLocal();
-  var partes = val.split('-');
-  var anoAtual = parseInt(partes[0]) || new Date().getFullYear();
-  var mesAtual = parseInt(partes[1])-1 || new Date().getMonth();
-  var diaAtual = parseInt(partes[2]) || new Date().getDate();
-
-  _calAtivo = input;
-  input.setAttribute('data-cal-open','1');
-
-  var overlay = document.createElement('div');
-  overlay.id = 'cal-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;z-index:8000;background:transparent';
-  overlay.onclick = function(e){
-    if(e.target === overlay) fecharCalendario();
-  };
-
-  var cal = document.createElement('div');
-  cal.id = 'cal-popup';
-  cal.style.cssText = [
-    'position:fixed','z-index:8001','background:#fff','border:.5px solid #e0dfd8',
-    'border-radius:12px','box-shadow:0 8px 24px rgba(0,0,0,.12)',
-    'padding:0','width:280px','overflow:hidden','font-family:var(--font-sans)'
-  ].join(';');
-
-  // Posicionar próximo ao input
-  var rect = input.getBoundingClientRect();
-  var top = rect.bottom + 6;
-  var left = rect.left;
-  if(left + 280 > window.innerWidth) left = window.innerWidth - 290;
-  if(top + 310 > window.innerHeight) top = rect.top - 316;
-  cal.style.top = top + 'px';
-  cal.style.left = left + 'px';
-
-  function renderMes(ano, mes){
-    var datas = getDatasAtivas();
-    var hoje = dataHoje();
-    var nomeMes = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
-      'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'][mes];
-    var primeiroDia = new Date(ano, mes, 1).getDay();
-    var diasNoMes = new Date(ano, mes+1, 0).getDate();
-    var semanas = [];
-    var dia = 1 - primeiroDia;
-    for(var s=0; s<6; s++){
-      var sem = [];
-      for(var d=0; d<7; d++){
-        sem.push(dia);
-        dia++;
-      }
-      semanas.push(sem);
-      if(dia > diasNoMes) break;
-    }
-
-    var html = '<div style="background:#1a1a18;padding:12px 14px;display:flex;justify-content:space-between;align-items:center">'
-      + '<button id="cal-prev" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:2px 8px;border-radius:6px">‹</button>'
-      + '<span style="color:#fff;font-size:13px;font-weight:500">'+nomeMes+' '+ano+'</span>'
-      + '<button id="cal-next" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;padding:2px 8px;border-radius:6px">›</button>'
-      + '</div>'
-      + '<div style="padding:8px">'
-      + '<div style="display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:4px">'
-      + ['D','S','T','Q','Q','S','S'].map(function(n){
-          return '<div style="text-align:center;font-size:10px;font-weight:500;color:#aaa;padding:4px 0">'+n+'</div>';
-        }).join('')
-      + '</div>'
-      + semanas.map(function(sem){
-          return '<div style="display:grid;grid-template-columns:repeat(7,1fr)">'
-            + sem.map(function(d){
-                if(d < 1 || d > diasNoMes) return '<div></div>';
-                var dataStr = ano+'-'+String(mes+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
-                var selecionado = dataStr === input.value;
-                var ehHoje = dataStr === hoje;
-                var temAtiv = datas.has(dataStr);
-                var bg = selecionado ? '#1a1a18' : 'transparent';
-                var cor = selecionado ? '#fff' : ehHoje ? '#185FA5' : 'var(--color-text-primary)';
-                var fontW = selecionado || ehHoje ? '600' : '400';
-                return '<div data-date="'+dataStr+'" style="text-align:center;padding:5px 2px;border-radius:6px;cursor:pointer;background:'+bg+';position:relative">'
-                  + '<span style="font-size:12px;color:'+cor+';font-weight:'+fontW+'">'+d+'</span>'
-                  + (temAtiv && !selecionado
-                    ? '<div style="width:5px;height:5px;border-radius:50%;background:#185FA5;margin:1px auto 0;opacity:0.8"></div>'
-                    : '<div style="width:5px;height:5px;margin:1px auto 0"></div>')
-                  + '</div>';
-              }).join('')
-            + '</div>';
-        }).join('')
-      + '</div>'
-      + '<div style="padding:4px 8px 8px;display:flex;gap:6px;justify-content:flex-end;border-top:.5px solid #f0efe8">'
-      + '<button id="cal-hoje" style="background:none;border:.5px solid #e0dfd8;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;color:#185FA5">Hoje</button>'
-      + '<button id="cal-limpar" style="background:none;border:.5px solid #e0dfd8;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;color:#888">Limpar</button>'
-      + '</div>';
-
-    cal.innerHTML = html;
-
-    // ── Navegação do mês — rebind após cada renderMes ────────────
-    var _prevBtn = document.getElementById('cal-prev');
-    var _nextBtn = document.getElementById('cal-next');
-    if(_prevBtn) _prevBtn.onclick = function(e){
-      e.stopPropagation();
-      mes--; if(mes<0){mes=11;ano--;}
-      renderMes(ano,mes);
-    };
-    if(_nextBtn) _nextBtn.onclick = function(e){
-      e.stopPropagation();
-      mes++; if(mes>11){mes=0;ano++;}
-      renderMes(ano,mes);
-    };
-
-    // Eventos dias
-    cal.querySelectorAll('[data-date]').forEach(function(el){
-      el.onmouseenter = function(){ if(this.style.background==='transparent') this.style.background='#f5f5f3'; };
-      el.onmouseleave = function(){ if(this.style.background==='#f5f5f3') this.style.background='transparent'; };
-      el.onclick = function(e){
-        e.stopPropagation();
-        var d = this.getAttribute('data-date');
-        input.value = d;
-        input.dispatchEvent(new Event('change',{bubbles:true}));
-        input.dispatchEvent(new Event('input',{bubbles:true}));
-        fecharCalendario();
-      };
-    });
-
-    var hojeBtn = document.getElementById('cal-hoje');
-    var limparBtn = document.getElementById('cal-limpar');
-
-        if(hojeBtn) hojeBtn.onclick = function(e){
-      e.stopPropagation();
-      var hoje2 = dataHojeLocal();
-      input.value = hoje2;
-      input.dispatchEvent(new Event('change',{bubbles:true}));
-      input.dispatchEvent(new Event('input',{bubbles:true}));
-      fecharCalendario();
-    };
-    if(limparBtn) limparBtn.onclick = function(e){
-      e.stopPropagation();
-      input.value = '';
-      input.dispatchEvent(new Event('change',{bubbles:true}));
-      fecharCalendario();
-    };
-  }
-
-  renderMes(anoAtual, mesAtual);
-  overlay.appendChild(cal);
-  document.body.appendChild(overlay);
-}
-
-function fecharCalendario(){
-  var o = document.getElementById('cal-overlay');
-  if(o) o.remove();
-  if(_calAtivo) _calAtivo.removeAttribute('data-cal-open');
-  _calAtivo = null;
-}
-
-// Interceptar cliques em inputs de data FORA de modais
-document.addEventListener('mousedown', function(e){
-  var inp = e.target.closest('input[type="date"]');
-  if(!inp) return;
-  // Não interceptar inputs dentro de modal-area ou modal-bg
-  if(inp.closest('#modal-area') || inp.closest('.modal-bg') || inp.closest('.modal')) return;
-  e.preventDefault();
-  if(_calAtivo === inp){
-    fecharCalendario();
-  } else {
-    criarCalendario(inp);
-  }
-}, true);
-
-// Fechar com ESC
-document.addEventListener('keydown', function(e){
-  if(e.key === 'Escape') fecharCalendario();
-});
-
-// Expor para uso externo (ex: após carregar dados)
-window.atualizarCalendario = function(){ /* dados são sempre frescos via getDatasAtivas */ };
+// Calendário customizado removido — inputs usam o picker nativo do browser
+function fecharCalendario(){}
+function criarCalendario(){}
 
 })();
 
