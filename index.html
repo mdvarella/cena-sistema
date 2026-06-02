@@ -1086,6 +1086,13 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
   50%      { opacity:1;  transform:scale(1.2); }
 }
 
+/* ── Auto-refresh indicator ── */
+@keyframes arPulse {
+  0%,100%{ opacity:1; transform:scale(1.1); }
+  50%{ opacity:.3; transform:scale(.7); }
+}
+#ar-dot { animation: arPulse 1.5s ease-in-out infinite; }
+
 /* ── Aba Verificar piscando ── */
 @keyframes vt-piscar-vermelho {
   0%,100% { color:#C0392B; background:#FFF0EE; border-bottom-color:#C0392B; opacity:1; }
@@ -4432,6 +4439,7 @@ async function carregarDadosBase(){
       sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome'}),
       sbFetch('veiculos',{order:'placa'}),
       sbFetch('checklists_templates',{order:'nome'}),
+      sbFetch('escalas',{order:'tipo'}),
     ]);
     _usuariosCarregadosDB=true;
     if(resB[0]&&resB[0].length)usuarios_lista=resB[0];
@@ -4441,6 +4449,7 @@ async function carregarDadosBase(){
     if(resB[3]&&resB[3].length)colaboradores=resB[3];
     if(resB[4]&&resB[4].length)veiculos=resB[4].map(function(v){v.contratos_ids=parseJsonField(v.contratos_ids,[]);return v;});
     if(resB[5]&&resB[5].length)checklists_templates=resB[5].map(function(c){c.itens=parseJsonField(c.itens,[]);return c;});
+    if(resB[6]&&resB[6].length)escalas_cad=resB[6];
     // Ordenações
     colaboradores.sort(function(a,b){return(a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'});});
     equipes.sort(function(a,b){return(a.nome_equipe||'').localeCompare(b.nome_equipe||'','pt-BR',{sensitivity:'base'});});
@@ -6119,6 +6128,114 @@ function vtAtualizarAbaAlerta(){
   }).catch(function(){});
 }
 
+// Helper: nome abreviado até max caracteres (preserva palavras completas)
+function nomeAbrev(nome, max){
+  max = max||40;
+  if(!nome) return '';
+  if(nome.length <= max) return nome;
+  var palavras = nome.trim().split(/\s+/);
+  var result = '';
+  for(var i=0; i<palavras.length; i++){
+    var test = result ? result+' '+palavras[i] : palavras[i];
+    if(test.length > max) break;
+    result = test;
+  }
+  return result || nome.slice(0, max);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// MÓDULO: CADASTRO DE ESCALAS
+// ══════════════════════════════════════════════════════════════════
+function escalasCadAbrir(){
+  escalasCadRender();
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:600px;width:95vw">'
+    +'<div class="mh" style="display:flex;justify-content:space-between;align-items:center">'
+    +'<span style="font-weight:700;font-size:15px">⏰ Cadastro de Escalas</span>'
+    +'<button class="btn" onclick="closeModal()" style="padding:2px 10px;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    +'<div style="padding:1rem">'
+    // Formulário nova escala
+    +'<div style="background:#F9F4FA;border-radius:8px;padding:12px;margin-bottom:1rem">'
+    +'<div style="font-weight:700;font-size:12px;color:#555;margin-bottom:8px">+ Nova Escala</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Tipo</div>'
+    +'<input class="inp" id="esc-novo-tipo" placeholder="Ex: Matutino, Vespertino..." style="width:160px"/></div>'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Início</div>'
+    +'<input class="inp" id="esc-novo-ini" type="time" style="width:100px"/></div>'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Fim</div>'
+    +'<input class="inp" id="esc-novo-fim" type="time" style="width:100px"/></div>'
+    +'<button class="btn btn-pri" onclick="escalasCadSalvar()">+ Adicionar</button>'
+    +'</div></div>'
+    // Lista
+    +'<div id="escala-cad-lista"></div>'
+    +'</div></div></div>');
+  setTimeout(escalasCadRenderLista, 50);
+}
+
+function escalasCadRenderLista(){
+  var el = document.getElementById('escala-cad-lista');
+  if(!el) return;
+  if(!escalas_cad.length){
+    el.innerHTML='<div style="color:#888;font-size:12px;padding:.5rem">Nenhuma escala cadastrada.</div>';
+    return;
+  }
+  el.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+    +'<thead><tr style="background:#F9F4FA">'
+    +'<th style="padding:7px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Tipo</th>'
+    +'<th style="padding:7px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Início</th>'
+    +'<th style="padding:7px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Fim</th>'
+    +'<th style="padding:7px 10px;text-align:center;border-bottom:.5px solid #e0dfd8"></th>'
+    +'</tr></thead><tbody>'
+    + escalas_cad.map(function(e,i){
+      var bg = i%2===0?'#fff':'#fdf9ff';
+      return '<tr style="background:'+bg+'">'
+        +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-weight:600">'+escHtml(e.tipo)+'</td>'
+        +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(e.inicio||'—')+'</td>'
+        +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(e.fim||'—')+'</td>'
+        +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;text-align:center">'
+        +'<button class="btn" style="color:#A32D2D;border-color:#A32D2D;font-size:11px;padding:2px 8px" data-escid="'+e.id+'" onclick="escalasCadExcluir(this.dataset.escid)">Excluir</button>'
+        +'</td></tr>';
+    }).join('')
+    +'</tbody></table>';
+}
+
+function escalasCadRender(){ /* chamado pelo setModal */ }
+
+function escalasCadSalvar(){
+  var tipo = (document.getElementById('esc-novo-tipo')||{}).value.trim();
+  var ini  = (document.getElementById('esc-novo-ini')||{}).value||'';
+  var fim  = (document.getElementById('esc-novo-fim')||{}).value||'';
+  if(!tipo||!ini||!fim){ progShowToast('⚠ Preencha todos os campos.'); return; }
+  if(DEMO){ progShowToast('DEMO'); return; }
+  sbInsert('escalas',{tipo:tipo,inicio:ini,fim:fim}).then(function(res){
+    if(res&&res[0]){ escalas_cad.push(res[0]); }
+    else { escalas_cad.push({id:'loc'+Date.now(),tipo:tipo,inicio:ini,fim:fim}); }
+    // Limpar campos
+    var t=document.getElementById('esc-novo-tipo');
+    var i=document.getElementById('esc-novo-ini');
+    var f=document.getElementById('esc-novo-fim');
+    if(t)t.value=''; if(i)i.value=''; if(f)f.value='';
+    escalasCadRenderLista();
+    progShowToast('✅ Escala "'+tipo+'" cadastrada.');
+  }).catch(function(e){ console.error(e); progShowToast('⚠ Erro ao salvar.','erro'); });
+}
+
+function escalasCadExcluir(id){
+  if(!confirm('Excluir esta escala?')) return;
+  if(!DEMO) sbDelete('escalas','id=eq.'+id);
+  escalas_cad = escalas_cad.filter(function(e){return e.id!==id;});
+  // Remover de colaboradores vinculados
+  colaboradores.forEach(function(c){ if(c.escala_id===id){ c.escala_id=null; if(!DEMO) sbUpdate('colaboradores',{escala_id:null},'id=eq.'+c.id); } });
+  escalasCadRenderLista();
+}
+
+// Helper: retorna objeto da escala pelo id
+function getEscala(id){ return escalas_cad.find(function(e){return e.id===id;})||null; }
+function getEscalaLabel(id){
+  var e = getEscala(id);
+  return e ? e.tipo+' '+e.inicio+'-'+e.fim : '';
+}
+
 // ── Relatório: Colaboradores em Verificar ──────────────────────────────────
 function relTmaVerificar(){
   var ini   = (document.getElementById('tma-vf-ini')||{}).value||'';
@@ -7405,6 +7522,7 @@ function renderConteudoCadastro(id){
     'checklists':'<div class="card"><div class="ch"><span class="ct">📋 Checklists de Campo</span><button class="btn btn-pri" onclick="openNovoChecklist()">+ Novo checklist</button></div><div style="padding:.75rem 0"><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem"><button class="btn btn-sm" onclick="filtrarChecklistsCad(\'EPI\')">🦺 EPI</button><button class="btn btn-sm" onclick="filtrarChecklistsCad(\'Veicular\')">🚗 Veicular</button><button class="btn btn-sm" onclick="filtrarChecklistsCad(\'APR\')">⚠️ APR</button><button class="btn btn-sm" onclick="abrirPreviewAPREquatorial()" style="background:#185FA5;color:#fff;border-color:#185FA5">⚡ APR Equatorial</button><button class="btn btn-sm" onclick="filtrarChecklistsCad(\'\')" style="background:#1a1a18;color:#fff">Todos</button></div><div id="lista-checklists-cad"></div></div></div>',
     'veiculos':'<div class="card"><div class="ch"><span class="ct">🚗 Veículos / Frota</span><div style="display:flex;gap:6px"><button class="btn" onclick="showMain(\'frotas\');setTimeout(function(){showSub(\'frotas-veiculos\');},100)">Ir para Frotas →</button><button class="btn btn-pri" onclick="frtAbrirNovoVeiculo()">+ Novo</button></div></div><div style="background:#FFF8E1;border:.5px solid #F9A825;border-radius:8px;padding:.6rem 1rem;margin:.5rem 1rem;font-size:12px;color:#7B4F00;display:flex;align-items:center;gap:8px"><span style="font-size:16px">ℹ️</span><span>Espelho do módulo <strong>Frotas → Veículos</strong>. Cadastros e edições devem ser feitos lá.</span></div><div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>Placa</th><th>Modelo</th><th>Marca</th><th>Ano</th><th>Tipo</th><th>Combustível</th><th>Posse</th><th>KM atual</th><th>Contrato</th><th>Status</th><th></th></tr></thead><tbody id="tbody-veiculos-vis"></tbody></table></div></div>',
     'clientes':'<div class="card"><div class="ch"><span class="ct">🏭 Clientes</span><button class="btn btn-pri" onclick="openNovoCliente()">+ Novo cliente</button></div><div style="padding:.5rem 1rem;border-bottom:.5px solid #f0efe8"><input class="inp" id="cli-busca" placeholder="Buscar cliente..." style="width:100%;max-width:300px" oninput="renderClientesVis()"/></div><div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>Razão Social</th><th>Nome Fantasia</th><th>CNPJ/CPF</th><th>Cidade</th><th>Contato</th><th>Status</th><th></th></tr></thead><tbody id="tbody-clientes-vis"></tbody></table></div></div>',
+    'escalas-cad':'<div class="card"><div class="ch"><span class="ct">⏰ Escalas de Trabalho</span><button class="btn btn-pri" onclick="escalasCadAbrir()">+ Gerenciar Escalas</button></div><div id="escalas-cad-preview" style="padding:1rem;color:#888;font-size:12px">Clique em Gerenciar Escalas para cadastrar ou editar turnos.</div></div>',
     'tipos-servico':'<div class="card"><div class="ch"><span class="ct">🔧 Tipos de Serviço</span><button class="btn btn-pri" onclick="openNovoTipoServico()">+ Novo tipo</button></div><div style="padding:.5rem 1rem;border-bottom:.5px solid #f0efe8;display:flex;gap:8px"><select class="inp" id="tsv-fil-cont" style="width:220px" onchange="renderTiposServicoVis()"><option value="">Todos contratos</option></select><input class="inp" id="tsv-busca" placeholder="Buscar..." style="width:180px" oninput="renderTiposServicoVis()"/></div><div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>Contrato</th><th>Código</th><th>Nome</th><th>Un</th><th>APR</th><th>Fotos</th><th>Material</th><th>Status</th><th></th></tr></thead><tbody id="tbody-tsv-vis"></tbody></table></div></div>',
     'unidades-medida':'<div class="card"><div class="ch"><span class="ct">📐 Unidades de Medida</span><button class="btn btn-pri" onclick="openNovaUnidade()">+ Nova unidade</button></div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Sigla</th><th>Nome</th><th>Descrição</th><th>Status</th><th></th></tr></thead><tbody id="tbody-unidades-vis"></tbody></table></div></div>',
     'materiais-cat':'<div class="card"><div class="ch"><span class="ct">📦 Catálogo de Materiais</span><div style="display:flex;gap:6px"><select class="inp" id="mat-fil-cont" style="width:200px" onchange="renderMateriaisVis()"><option value="">Todos os contratos</option></select><input class="inp" id="mat-fil-busca" placeholder="Buscar por nome ou código SAP..." style="width:220px" oninput="renderMateriaisVis()"/><button class="btn btn-pri" onclick="openNovoMaterial()">+ Novo material</button></div></div><div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>Código SAP</th><th>Descrição</th><th>Categoria</th><th>Unidade</th><th>Contratos</th><th>Status</th><th></th></tr></thead><tbody id="tbody-materiais-vis"></tbody></table></div></div>',
@@ -8566,6 +8684,14 @@ function openNovoColaborador(){
     +'<input type="hidden" id="nc-cor-escala" value=""/>'
     +'<div style="font-size:11px;color:#888;margin-top:4px">A cor define quando o colaborador está de folga com base no calendário de escala</div>'
     +'</div>'
+    // Campo Escala
+    +'<div class="fg"><label>Escala de trabalho</label>'
+    +'<select id="nc-escala-id" class="inp" style="width:100%">'
+    +'<option value="">Sem escala definida</option>'
+    +escalas_cad.map(function(e){return '<option value="'+e.id+'">'+escHtml(e.tipo)+' ('+e.inicio+' – '+e.fim+')</option>';}).join('')
+    +'</select>'
+    +'<div style="font-size:11px;color:#888;margin-top:3px">Tipo de turno ao qual o colaborador pertence</div>'
+    +'</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" id="btn-salvar-col">Salvar</button></div>'
     +'</div></div>';
@@ -8597,6 +8723,7 @@ function openNovoColaborador(){
       var eqObj=(equipes_disp||[]).find(function(e){return e.id===eqId;})
               ||(equipes||[]).find(function(e){return e.id===eqId;});
       var corEscala=(document.getElementById('nc-cor-escala')||{}).value||'';
+      var escalaId=(document.getElementById('nc-escala-id')||{}).value||null;
       var novo={
         id:'col'+Date.now(),contrato_id:contrato,
         re:(document.getElementById('nc-re')||{}).value.trim()||'',
@@ -8609,6 +8736,7 @@ function openNovoColaborador(){
         equipe_id:eqId||null,
         equipe_codigo:eqObj?(eqObj.codigo||eqObj.nome_equipe||''):'',
         cor_escala:corEscala||null,
+        escala_id:escalaId||null,
         ativo:true
       };
       colaboradores.push(novo);
@@ -8621,6 +8749,7 @@ function openNovoColaborador(){
           equipe_id:novo.equipe_id||null,
           equipe_codigo:novo.equipe_codigo||'',
           cor_escala:novo.cor_escala||null,
+          escala_id:novo.escala_id||null,
           ativo:novo.ativo
         }).then(function(res){
           if(res&&res[0]&&res[0].id){
@@ -9246,7 +9375,7 @@ function renderCadastros(){
     {id:'almoxarifado', label:'📦 Almoxarifado', cor:'#085041',
      items:[{id:'materiais-cat',icon:'📦',titulo:'Catálogo de Materiais'},{id:'unidades-medida',icon:'📐',titulo:'Unidades de Medida'},{id:'estoque',icon:'🗄️',titulo:'Estoque'}]},
     {id:'operacional',  label:'⚙️ Operacional',  cor:'#533AB7',
-     items:[{id:'causas-codx',icon:'⚠️',titulo:'Causas COD X'},{id:'celulares',icon:'📱',titulo:'Celulares da Empresa'},{id:'equipes-disp',icon:'⚡',titulo:'Equipes de Disponibilidade'},{id:'equipes-obs',icon:'👷',titulo:'Equipes e Supervisores'},{id:'servicos',icon:'📋',titulo:'Tabela de Serviços'},{id:'status-projetos',icon:'📊',titulo:'Status de Projetos'},{id:'tipos-eq',icon:'🔧',titulo:'Tipos de Equipe'},{id:'tipos-servico',icon:'🔨',titulo:'Tipos de Serviço'}]},
+     items:[{id:'causas-codx',icon:'⚠️',titulo:'Causas COD X'},{id:'celulares',icon:'📱',titulo:'Celulares da Empresa'},{id:'equipes-disp',icon:'⚡',titulo:'Equipes de Disponibilidade'},{id:'equipes-obs',icon:'👷',titulo:'Equipes e Supervisores'},{id:'servicos',icon:'📋',titulo:'Tabela de Serviços'},{id:'status-projetos',icon:'📊',titulo:'Status de Projetos'},{id:'tipos-eq',icon:'🔧',titulo:'Tipos de Equipe'},{id:'tipos-servico',icon:'🔨',titulo:'Tipos de Serviço'},{id:'escalas-cad',icon:'⏰',titulo:'Escalas de Trabalho'}]},
     {id:'sistema',      label:'🖥️ Sistema',       cor:'#555',
      items:[{id:'colaboradores',icon:'👥',titulo:'Colaboradores'},{id:'usuarios',icon:'👤',titulo:'Usuários do sistema'},{id:'perfis-usuario',icon:'🎭',titulo:'Perfis de Usuário'},{id:'permissoes',icon:'🔐',titulo:'Permissões de Acesso'},{id:'veiculos',icon:'🚗',titulo:'Veículos / Frota'}]},
   ];
@@ -20033,7 +20162,7 @@ function coConfirmarEntregaAlmox(id){
   // Quem retirou: da confirmação da equipe (retirado_por)
   var retiradoPor = m.retirado_por || (comp ? (function(){
     var ids = parseColabIds(comp.colaborador_ids||'[]');
-    var nomes = ids.map(function(id){var f=colaboradores.find(function(x){return x.id===id;});return f?f.nome.split(' ').slice(0,2).join(' '):'';}).filter(Boolean);
+    var nomes = ids.map(function(id){var f=colaboradores.find(function(x){return x.id===id;});return f?nomeAbrev(f.nome):'';}).filter(Boolean);
     return nomes.join(', ');
   })() : '');
 
@@ -20545,7 +20674,7 @@ function coRenderMateriais(){
             var cids=parseColabIds(comp.colaborador_ids||'[]').filter(Boolean);
             colabStr=cids.map(function(id){
               var f=colaboradores.find(function(x){return x.id===id;});
-              return f ? f.nome.split(' ').slice(0,2).join(' ') : '';
+              return f ? nomeAbrev(f.nome) : '';
             }).filter(Boolean).join(' · ');
           }
 
@@ -26736,7 +26865,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.157',
+  numero: '7.9.161',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -29312,12 +29441,20 @@ function progRenderPainelDisp(eqs, data, cid){
     return false;
   });
 
+  // Filtro de escala (definido pelo usuário via dropdown)
+  var _filtroEscalaAtivo = window._progFiltroEscalaId || '';
   var livres = disp.filter(function(c){
     if(escalados[c.id]) return false;
-    // Excluir folga por calendário
     if(corDia && c.cor_escala && c.cor_escala === corDia) return false;
+    if(_filtroEscalaAtivo && (c.escala_id||'') !== _filtroEscalaAtivo) return false;
     return true;
   });
+
+  // Dropdown filtro de escala
+  var filtroEscHtml = '<select id="prog-filtro-escala" class="inp" style="font-size:11px;padding:3px 6px;border-radius:6px" onchange="window._progFiltroEscalaId=this.value;progRenderQuadro()">'
+    +'<option value="">Todas as escalas</option>'
+    +escalas_cad.map(function(e){return '<option value="'+e.id+'"'+(window._progFiltroEscalaId===e.id?' selected':'')+'>'+escHtml(e.tipo)+' ('+e.inicio+'-'+e.fim+')</option>';}).join('')
+    +'</select>';
 
   var countHtml = Object.keys(PROG_STATUS).map(function(k){
     var n = grupos_st[k] ? grupos_st[k].filter(function(c){
@@ -29369,7 +29506,7 @@ function progRenderPainelDisp(eqs, data, cid){
         return '<div style="display:inline-flex;flex-direction:column;background:'+BG_CHIP
           +';border:.5px solid '+BRD_CHIP+';border-radius:6px;padding:4px 8px;font-size:11px;margin:1px;max-width:220px">'
           +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
-          +'<span style="color:'+COR_CHIP+';font-weight:'+(foiEscalado?'700':'500')+'">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
+          +'<span style="color:'+COR_CHIP+';font-weight:'+(foiEscalado?'700':'500')+'">'+nomeAbrev(c.nome)+'</span>'
           +'<span style="font-size:9px;color:'+COR_CHIP+'">'+label+labelExtra+retornoTexto+'</span>'
           +'<span style="font-size:9px;color:'+stInfo.cor+'">'+label+retornoTexto+'</span>'
           +(podeManual && !isCal
@@ -29383,6 +29520,12 @@ function progRenderPainelDisp(eqs, data, cid){
       +'</div></div>';
   }
 
+  var _escalaFiltroHtml = escalas_cad.length
+    ? '<select id="prog-filtro-escala" class="inp" style="font-size:11px;padding:3px 8px;border-radius:6px;min-width:140px" onchange="window._progFiltroEscalaId=this.value;progRenderQuadro()">'
+      +'<option value="">Todas as escalas</option>'
+      +escalas_cad.map(function(e){return '<option value="'+e.id+'"'+(window._progFiltroEscalaId===e.id?' selected':'')+'>⏰ '+escHtml(e.tipo)+' ('+e.inicio+'-'+e.fim+')</option>';}).join('')
+      +'</select>'
+    : '';
   var livresHtml = livres.length
     ? livres.map(function(c){
         var isMot = c.motorista || c.cnh_categoria;
@@ -29394,9 +29537,10 @@ function progRenderPainelDisp(eqs, data, cid){
           +'style="display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;'
           +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 6px;'
           +'font-size:11px;cursor:grab;margin:2px">'
-          +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+cnhLabel+'</span>'
+          +'<span style="color:#3B6D11;font-weight:500">'+nomeAbrev(c.nome)+cnhLabel+'</span>'
           +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||'')+'</span>'
-          +(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')
+          
+          +(c.escala_id&&getEscala(c.escala_id)?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+getEscala(c.escala_id).tipo+'</span>':'')+(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')
           +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
           +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
           +'ondragstart="event.stopPropagation()">⋮</span>'
@@ -29409,6 +29553,10 @@ function progRenderPainelDisp(eqs, data, cid){
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
     +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados (<b>'+livres.length+'</b>)</span>'
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
+    +'</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
+    +'<span style="font-size:11px;font-weight:600;color:#3B6D11">⚡ Disponíveis ('+livres.length+')</span>'
+    +_escalaFiltroHtml
     +'</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
     +'background:#f9f9f7;border-radius:6px;border:.5px solid #e0dfd8" '
@@ -29613,7 +29761,7 @@ function progDrop(event, toEqId, toPos){
   if(jaNaEscala){
     var eqOrig=equipes_disp.find(function(e){return e.id===jaNaEscala;});
     var eqDest=equipes_disp.find(function(e){return e.id===toEqId;});
-    var nomeCurto=col.nome.split(' ').slice(0,2).join(' ');
+    var nomeCurto=nomeAbrev(col.nome);
     var _dp={colabId:_dragColabId,fromEqId:jaNaEscala,toEqId:toEqId,toPos:toPos};
     var html='<div class="modal-bg"><div class="modal" style="max-width:380px">'
       +'<h3>Mover ou Duplicar?</h3>'
@@ -31118,6 +31266,7 @@ function _mostrarProgEquipes(){
 }
 
 function showTMA(aba){
+  _autoRefresh.iniciar('tma');
   _tmaAba = aba || _tmaAba || 'dashboard';
 
   if(_tmaAba === 'programacao'){
@@ -31747,7 +31896,7 @@ function _renderCampoEquipesLista(hoje, cidFil, eqFil){
       var colabsHtml = x.colabs.map(function(c){
         var cnh = c.cnh_categoria && c.cnh_categoria!=='Não'
           ? '<span style="background:#185FA5;color:#fff;border-radius:3px;padding:0 3px;font-size:8px;font-weight:700">'+c.cnh_categoria+'</span> ' : '';
-        return '<span style="background:#f5f5f3;border-radius:4px;padding:1px 5px;margin:1px;display:inline-block;font-size:10px">'+cnh+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>';
+        return '<span style="background:#f5f5f3;border-radius:4px;padding:1px 5px;margin:1px;display:inline-block;font-size:10px">'+cnh+escHtml(nomeAbrev(c.nome))+'</span>';
       }).join('');
       return '<tr style="background:'+bg+';border-bottom:.5px solid #f0efe8" '
         +'onmouseenter="this.style.background=\'#F0F4FF\'" onmouseleave="this.style.background=\''+bg+'\'">'
@@ -35185,6 +35334,11 @@ function openEditarColaborador(cid){
       return '<button type="button" id="nc-cor-'+(cor||'none')+'" onclick="ncSelCor(\''+cor+'\')" style="padding:7px;border:2px '+(ativo?'solid':'dashed')+' '+borders[cor]+';border-radius:8px;background:'+(ativo?bgs[cor]:'#fff'+(cor?'':';background:#f5f5f3'))+';cursor:pointer;font-size:12px;font-weight:600;color:'+(ativo?colors[cor]:colors[cor]||'#888')+'">'+labels[cor]+'</button>';
     }).join('')
     +'</div>'
+    +'<div class="fg"><label>Escala de trabalho</label>'
+    +'<select id="nc-escala-id" class="inp" style="width:100%">'
+    +'<option value="">Sem escala definida</option>'
+    +escalas_cad.map(function(e){return '<option value="'+e.id+'"'+(c.escala_id===e.id?' selected':'')+'>'+escHtml(e.tipo)+' ('+e.inicio+' – '+e.fim+')</option>';}).join('')
+    +'</select></div>'
     +'<input type="hidden" id="nc-cor-escala" value="'+(c.cor_escala||'')+'"/>'
     +'<div style="font-size:11px;color:#888;margin-top:4px">Define quando o colaborador está de folga com base no calendário</div>'
     +'</div>'
@@ -35250,6 +35404,7 @@ function openEditarColaborador(cid){
       c.equipe_id=eqIdNovo||null;
       c.equipe_codigo=eqNova?eqNova.codigo:'';
       c.cor_escala=(document.getElementById('nc-cor-escala')||{}).value||null;
+      c.escala_id=(document.getElementById('nc-escala-id')||{}).value||null;
 
       if(!DEMO) sbUpdate('colaboradores',{
         nome:c.nome, re:c.re, cargo:c.cargo, bro:c.bro||null, ativo:c.ativo,
@@ -35259,7 +35414,8 @@ function openEditarColaborador(cid){
         equipe_id:c.equipe_id||null,
         equipe_codigo:c.equipe_codigo||'',
         contrato_id:c.contrato_id||null,
-        cor_escala:c.cor_escala||null
+        cor_escala:c.cor_escala||null,
+        escala_id:c.escala_id||null
       },'id=eq.'+cid).then(function(ok){
         if(!ok) progShowToast('⚠️ Erro ao salvar colaborador no banco — verifique a conexão e as colunas da tabela.','erro');
         else progShowToast('✅ Colaborador '+c.nome+' salvo com sucesso.');
@@ -38189,6 +38345,66 @@ function _ensureInACA(pgId){
     aca.appendChild(pg);
   }
 }
+// ══════════════════════════════════════════════════════════════════
+// AUTO-REFRESH — Atualização automática por tela
+// ══════════════════════════════════════════════════════════════════
+var _autoRefresh = {
+  _timer: null,
+  _paginaAtual: null,
+  _intervaloMs: 60000, // 1 minuto
+
+  // Mapa: pageId → função de refresh
+  _handlers: {
+    'tma':                  function(){ if(typeof progAtualizarQuadro==='function') progAtualizarQuadro(); },
+    'programacao-equipes':  function(){ if(typeof progAtualizarQuadro==='function') progAtualizarQuadro(); },
+    'programacao-projetos': function(){ if(typeof progProjAtualizarQuadro==='function') progProjAtualizarQuadro();
+                                        else if(typeof progProjRenderQuadro==='function') progProjRenderQuadro(); },
+    'diario':               function(){ if(typeof dbAtualizarBotoes==='function') dbAtualizarBotoes(); },
+    'campo':                function(){ if(typeof campoAtualizarLista==='function') campoAtualizarLista(); },
+    'alm-dashboard':        function(){ if(typeof almRenderDashboard==='function') almRenderDashboard(); },
+  },
+
+  iniciar: function(pageId){
+    this.parar();
+    this._paginaAtual = pageId;
+    var fn = this._handlers[pageId];
+    if(!fn) return; // Tela sem refresh automático
+    var self = this;
+    this._timer = setInterval(function(){
+      if(document.hidden) return; // Não atualizar se aba não estiver visível
+      console.log('[auto-refresh] '+pageId+' — '+new Date().toLocaleTimeString('pt-BR'));
+      fn();
+      self._atualizarIndicador();
+    }, self._intervaloMs);
+    this._atualizarIndicador(true);
+  },
+
+  parar: function(){
+    if(this._timer){ clearInterval(this._timer); this._timer = null; }
+    this._atualizarIndicador(false);
+  },
+
+  _atualizarIndicador: function(ativo){
+    var el = document.getElementById('auto-refresh-indicator');
+    if(!el) return;
+    if(ativo === false || !this._timer){
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'flex';
+    el.title = 'Atualização automática a cada 1 min — última: '+new Date().toLocaleTimeString('pt-BR');
+  }
+};
+
+// Parar refresh quando aba do browser perde foco (evita chamadas desnecessárias)
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && _autoRefresh._paginaAtual && _autoRefresh._handlers[_autoRefresh._paginaAtual]){
+    // Ao voltar, atualizar imediatamente
+    var fn = _autoRefresh._handlers[_autoRefresh._paginaAtual];
+    if(fn) fn();
+  }
+});
+
 function showPage(pageId){
   // Reset scroll position on every page change
   var aca=document.getElementById('app-content-area');
@@ -38400,6 +38616,8 @@ function showPage(pageId){
   }
   else if(pageId==='obras-requisicao'){_precisaModulo('obras',function(){renderRequisicaoObras();});}
   else if(pageId==='obras-medicao'){_precisaModulo('obras',function(){popularFiltrosMedicao();renderMedicoes();});}
+  // Auto-refresh — iniciar/parar conforme a tela
+  _autoRefresh.iniciar(pageId);
 }
 
 
@@ -40592,7 +40810,7 @@ function ppRenderPainelDisp(eqs, data, cid){
           +'ondragstart="ppDragStart(event,\''+c.id+'\',null)" '
           +'style="display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;'
           +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;font-size:11px;cursor:grab;margin:2px">'
-          +'<span style="color:#3B6D11;font-weight:500">'+c.nome.split(' ').slice(0,2).join(' ')+'</span>'
+          +'<span style="color:#3B6D11;font-weight:500">'+nomeAbrev(c.nome)+'</span>'
           +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||c.re||'')+'</span>'
           +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
           +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
@@ -40697,7 +40915,7 @@ function ppDrop(event, toEqId, toPos){
     var dp={cid:_ppDragColabId,from:jaNaEscala,to:toEqId,pos:toPos};
     setModal('<div class="modal-bg"><div class="modal" style="max-width:380px">'
       +'<h3>Mover ou Duplicar?</h3>'
-      +'<p style="font-size:13px;color:#555"><b>'+col.nome.split(' ').slice(0,2).join(' ')+'</b> já está em <b>'+(eqOrig?eqOrig.nome_equipe:'outra equipe')+'</b>.</p>'
+      +'<p style="font-size:13px;color:#555"><b>'+nomeAbrev(col.nome)+'</b> já está em <b>'+(eqOrig?eqOrig.nome_equipe:'outra equipe')+'</b>.</p>'
       +'<div style="display:flex;flex-direction:column;gap:8px">'
       +'<button class="btn btn-pri" id="pp-drop-mv">Mover — remover da origem</button>'
       +'<button class="btn" id="pp-drop-dp">Duplicar — manter nas duas</button>'
@@ -41090,7 +41308,7 @@ function ppMenuSlot(colabId, eqId, pos){
   var st  = _ppStatus[colabId]||'disponivel';
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:300px">'
-    +'<div style="font-weight:700;font-size:13px;margin-bottom:.25rem">'+(col.nome.split(' ').slice(0,2).join(' '))+'</div>'
+    +'<div style="font-weight:700;font-size:13px;margin-bottom:.25rem">'+nomeAbrev(col.nome)+'</div>'
     +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">RE '+(col.re||'—')+' · '+(col.cargo||'')+'</div>'
     +'<div style="display:flex;flex-direction:column;gap:6px">'
     +'<button onclick="ppRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" '
@@ -42722,6 +42940,7 @@ var frt_documentos = [];
 var frt_riscos = [];
 var frt_custos = [];
 var frt_programacoes = [];
+var escalas_cad = []; // Cadastro de escalas (tipo, inicio, fim)
 
 // ── Constantes ───────────────────────────────────────────────
 var FRT_STATUS = ['Disponível','Em uso','Reservado','Solicitação de manutenção',
@@ -43713,7 +43932,7 @@ function portVerificarPlaca(){
       +'<div style="font-size:12px;font-weight:600;color:#3B6D11;margin-bottom:6px">✅ Equipe programada encontrada: '+escHtml(eq.codigo||'—')+'</div>'
       +'<div style="font-size:11px;color:#555;margin-bottom:4px">Turno: <b>'+escHtml(comp.turno||'—')+'</b> · Saída prevista: <b>'+(TURNO_HR[comp.turno]||'—')+'</b></div>'
       +'<div style="font-size:11px;margin-bottom:6px"><b>Integrantes esperados:</b> '
-      +cols.map(function(c){return '<span style="background:#fff;border-radius:4px;padding:1px 7px;margin:1px;display:inline-block">'+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>';}).join('')
+      +cols.map(function(c){return '<span style="background:#fff;border-radius:4px;padding:1px 7px;margin:1px;display:inline-block">'+escHtml(nomeAbrev(c.nome))+'</span>';}).join('')
       +'</div>'
       +'<div style="font-size:11px;margin-bottom:8px"><b>Destino / atividade:</b></div>'
       +'<textarea id="port-chk-destino" style="width:100%;height:56px;font-size:12px;padding:6px 8px;border:.5px solid #92D050;border-radius:6px;resize:vertical" placeholder="Descreva o destino e a atividade a realizar... (obrigatório)"></textarea>'
@@ -43783,7 +44002,11 @@ function portLiberar(tipo, id, placa){
   }
 
   // Enrich with equipe, contrato, modelo, motorista
-  var _eq       = (equipes_disp||[]).find(function(e){return e.id===id||e.codigo===id;})||{};
+  // Normalizar id: se não for UUID (contém letras iniciais tipo EBN/EIN), buscar por código
+  var _isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(id||'');
+  var _eq = _isUUID
+    ? (equipes_disp||[]).find(function(e){return e.id===id;})||{}
+    : (equipes_disp||[]).find(function(e){return e.codigo===id||e.id===id;})||{};
   var _eqCodigo = _eq.codigo||id||'—';
   var _contId   = _eq.contrato_id||'';
   var _cont     = _contId ? (contratos||[]).find(function(ct){return ct.id===_contId;})||{} : {};
@@ -43814,7 +44037,7 @@ function portLiberar(tipo, id, placa){
     data_saida:    new Date().toISOString(),
     status:        'Em campo',
     equipe:        _eqCodigo,      // código legível (EBN141)
-    equipe_id:     _eq.id||id,     // UUID para match
+    equipe_id:     _eq.id||null,   // UUID — nunca usar código textual
     motorista:     _motorista,
     contrato_id:   _contId||null,
     contrato_nome: _contNome,
@@ -43997,8 +44220,8 @@ function portAbrirLiberacaoEquipe(eqId, data){
         km_saida:              km,
         data_saida:            new Date().toISOString(),
         status:                'Em campo',
-        equipe:                eq.codigo||eqId,
-        equipe_id:             eq.id||eqId,
+        equipe:                eq.codigo||(eq.id?null:eqId)||'—',
+        equipe_id:             eq.id||null,  // nunca usar código textual
         quem_saiu:             quem,
         liberado_por:          usuarioLogado ? usuarioLogado.nome : 'Portaria',
         foto_carga_saida_b64:  fotoB64||null,
@@ -44046,7 +44269,7 @@ function portRenderAguardando(){
   });
   if(!aguard.length){wrap.innerHTML='<div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">Nenhuma equipe aguardando saída.</div>';return;}
   wrap.innerHTML='<div style="display:grid;gap:.5rem">'+aguard.slice(0,10).map(function(c){
-    var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;})||{codigo:'—'};
+    var eq=equipes_disp.find(function(e){return e.id===c.equipe_id||e.codigo===c.equipe_id;})||{codigo:'—'};
     var ids=parseColabIds(c.colaborador_ids).filter(Boolean);
     var nomes=ids.map(function(id){var col=colaboradores.find(function(x){return x.id===id;});return col?col.nome.split(' ')[0]:'?';}).join(', ');
     return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#FEF9EE;border-radius:7px;border:.5px solid #e0dfd8">'
@@ -54624,7 +54847,7 @@ function trRenderColabsSel(){
     var bg=STATUS_BG[c.status]||'#f5f5f3';
     return '<div style="display:flex;align-items:center;gap:5px;background:'+bg+';border-radius:20px;padding:3px 10px;font-size:11px">'
       +(STATUS_ICON[c.status]||'⚪')+' '
-      +'<span style="font-weight:500">'+escHtml(c.nome.split(' ').slice(0,2).join(' '))+'</span>'
+      +'<span style="font-weight:500">'+escHtml(nomeAbrev(c.nome))+'</span>'
       +(c.re?'<span style="color:#aaa;font-size:10px">'+escHtml(c.re)+'</span>':'')
       +'<span onclick="trRemoverColab(\''+c.id+'\')" style="cursor:pointer;color:#888;margin-left:2px;font-size:13px;line-height:1" title="Remover">×</span>'
       +'</div>';
@@ -60009,5 +60232,11 @@ function comgasRemoverFoto(ncId, idx) {
 <nav id="bottom-nav" role="navigation" aria-label="Navegação principal"></nav>
 
 
+
+  <!-- Auto-refresh indicator -->
+  <div id="auto-refresh-indicator" style="display:none;position:fixed;bottom:70px;right:12px;z-index:9999;background:#1a1a18ee;color:#fff;font-size:10px;padding:4px 10px;border-radius:20px;align-items:center;gap:5px;pointer-events:none;box-shadow:0 2px 8px #0004">
+    <span id="ar-dot" style="width:6px;height:6px;background:#4CAF50;border-radius:50%;display:inline-block"></span>
+    <span>Auto-refresh ativo</span>
+  </div>
 </body>
 </html>
