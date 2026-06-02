@@ -6015,8 +6015,10 @@ function vtAbrirTratamento(id){
     +escHtml(t.decisao_obs||'')+'</textarea>'
     +'</div>'
 
-    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-    +'<div style="font-size:11px;color:#888">Status definido automaticamente ao salvar.</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:.5px solid #e0dfd8">'
+    +'<div style="font-size:11px;color:#888;flex:1">Status definido automaticamente ao salvar.</div>'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" style="background:#3B6D11;border-color:#3B6D11;padding:8px 20px;font-size:13px" data-vtid="'+id+'" data-vtresp="'+resp+'" onclick="vtSalvarTratamento(this.dataset.vtid,this.dataset.vtresp)">💾 Salvar Tratamento</button>'
     +'</div>';
 
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
@@ -6435,9 +6437,28 @@ function relTmaGerar(){
   var wrap = document.getElementById('tma-rel-resultado');
   wrap.innerHTML = '<div style="text-align:center;padding:2rem;color:#888">⏳ Gerando relatório...</div>';
 
-  // Buscar composições no período
+  // Buscar composições e veículos do período em paralelo
   var filters = ['data=gte.'+ini,'data=lte.'+fim];
-  sbFetch('composicao_dia',{filters:filters,order:'data,equipe_id'}).then(function(comps){
+  Promise.all([
+    sbFetch('composicao_dia',{filters:filters,order:'data,equipe_id'}),
+    sbFetch('prog_veiculos_dia',{filters:filters}),
+    sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'})
+  ]).then(function(res){
+    var comps = res[0]||[];
+    var veicsDB = res[1]||[];
+    var eqsDB = res[2]||[];
+    // Atualizar equipes em memória com dados frescos (pega telefone atualizado)
+    eqsDB.forEach(function(e){
+      var idx = equipes_disp.findIndex(function(x){return x.id===e.id;});
+      if(idx>=0) equipes_disp[idx]=e; else equipes_disp.push(e);
+    });
+    // Índice de veículos por equipe+data+slot
+    var veicIdx = {};
+    veicsDB.forEach(function(v){
+      var k = v.equipe_id+'|'+(v.data||'').split('T')[0]+'|'+(String(v.slot||'1'));
+      veicIdx[k] = v;
+    });
+    (function(comps){ /* closure para manter compatibilidade abaixo */
     comps = comps||[];
     // Filtrar por contrato TMA
     comps = comps.filter(function(c){
@@ -6501,10 +6522,17 @@ function relTmaGerar(){
         }
         filtrou = true;
 
-        // Veículo
-        var veic = frt_veiculos ? frt_veiculos.find(function(v){return v.id===comp.veiculo_id||v.id===eq.veiculo_padrao_id;}) : null;
-        var placa = veic ? veic.placa : (comp.veiculo_placa||'—');
-        var tipoVeic = veic ? (veic.tipo||veic.modelo||'—') : '—';
+        // Veículo — fonte 1: prog_veiculos_dia, fonte 2: composicao_dia.placa, fonte 3: cadastro
+        var dataComp = (comp.data||'').split('T')[0];
+        var veicDia  = veicIdx[comp.equipe_id+'|'+dataComp+'|1'];
+        var placa    = (veicDia&&veicDia.placa) ? veicDia.placa
+                     : (comp.placa||comp.veiculo_placa||'');
+        // Slot 2 (moto dupla)
+        var veicDia2 = veicIdx[comp.equipe_id+'|'+dataComp+'|2'];
+        if(veicDia2&&veicDia2.placa) placa = placa ? placa+' / '+veicDia2.placa : veicDia2.placa;
+        if(!placa) placa = '—';
+        var veic = frt_veiculos&&comp.veiculo_id ? frt_veiculos.find(function(v){return v.id===comp.veiculo_id;}) : null;
+        var tipoVeic = veic ? (veic.tipo||veic.modelo||'—') : (veicDia&&veicDia.modelo ? veicDia.modelo : '—');
         var turnoLabel = (eq.hora_inicio||'')+(eq.hora_fim?' – '+eq.hora_fim:'');
 
         membros.forEach(function(m, idx){
@@ -6589,6 +6617,7 @@ function relTmaGerar(){
     wrap._registros = todosRegistros;
     document.getElementById('btn-tma-pdf').style.display='';
     document.getElementById('btn-tma-excel').style.display='';
+    })(comps);
   }).catch(function(e){
     wrap.innerHTML='<div class="card" style="text-align:center;padding:2rem;color:#c00">Erro ao buscar dados: '+escHtml(e.message)+'</div>';
   });
@@ -17520,14 +17549,38 @@ function dbMotivoChange(){
 
 function dbAdicionarFotoOrdem(){
   if(!_dbOrdemAtual)return;
-  setModal('<div class="modal-bg"><div class="modal"><h3>Foto da ordem '+_dbOrdemAtual.numero_ordem+'</h3>'    +'<div class="fg"><input type="file" id="db-foto-ord" accept="image/*" capture="environment" style="width:100%;font-size:12px"/></div>'    +'<div id="db-foto-prev" style="text-align:center;margin:.5rem 0"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-foto-ord">Salvar foto</button></div></div></div>');
-  document.getElementById('db-foto-ord').onchange=function(ev){
-    var f=ev.target.files[0];if(!f)return;
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px">'
+    +'<div class="mh"><span style="font-weight:700">📷 Foto — Ordem '+escHtml(_dbOrdemAtual.numero_ordem)+'</span></div>'
+    +'<div style="padding:1rem">'
+    // Dois inputs ocultos: câmera e arquivo
+    +'<input type="file" id="db-foto-camera" accept="image/*" capture="environment" style="display:none"/>'
+    +'<input type="file" id="db-foto-arquivo" accept="image/*" style="display:none"/>'
+    // Botões de escolha
+    +'<div style="display:flex;gap:10px;margin-bottom:1rem">'
+    +'<button class="btn" id="btn-db-usar-camera" style="flex:1;padding:14px;font-size:13px;flex-direction:column;display:flex;align-items:center;gap:4px">📷<br><span style="font-size:11px">Câmera</span></button>'
+    +'<button class="btn" id="btn-db-usar-arquivo" style="flex:1;padding:14px;font-size:13px;flex-direction:column;display:flex;align-items:center;gap:4px">📁<br><span style="font-size:11px">Arquivo</span></button>'
+    +'</div>'
+    +'<div id="db-foto-prev" style="text-align:center;margin:.5rem 0"></div>'
+    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="btn-salvar-foto-ord" style="display:none">Salvar foto</button>'
+    +'</div></div></div></div>');
+
+  function dbFotoOnChange(f){
+    if(!f) return;
     var url=URL.createObjectURL(f);
-    document.getElementById('db-foto-prev').innerHTML='<img src="'+url+'" style="max-width:100%;border-radius:8px;max-height:200px"/>';
-  };
+    document.getElementById('db-foto-prev').innerHTML='<img src="'+url+'" style="max-width:100%;border-radius:8px;max-height:220px"/>';
+    var btnSalvar = document.getElementById('btn-salvar-foto-ord');
+    if(btnSalvar) btnSalvar.style.display='';
+  }
+  document.getElementById('db-foto-camera').onchange=function(ev){ dbFotoOnChange(ev.target.files[0]); };
+  document.getElementById('db-foto-arquivo').onchange=function(ev){ dbFotoOnChange(ev.target.files[0]); };
+  document.getElementById('btn-db-usar-camera').onclick=function(){ document.getElementById('db-foto-camera').click(); };
+  document.getElementById('btn-db-usar-arquivo').onclick=function(){ document.getElementById('db-foto-arquivo').click(); };
+
   document.getElementById('btn-salvar-foto-ord').onclick=async function(){
-    var f=document.getElementById('db-foto-ord').files[0];
+    var fCamera  = document.getElementById('db-foto-camera').files[0];
+    var fArquivo = document.getElementById('db-foto-arquivo').files[0];
+    var f = fCamera||fArquivo;
     if(!f){alert('Selecione uma foto.');return;}
     var url='';
     if(isOnline()&&!DEMO){
@@ -17617,7 +17670,7 @@ function renderDbOrdemAtual(){
           if(!DEMO) sbInsert('aprs',na).catch(function(){});
           progShowToast('✅ APR confirmada como preenchida.');
         }
-        dbRenderBotoesPosLogin();
+        dbAtualizarBotoes();
       };
     })(aprOk);
     acoes.appendChild(bApr);
@@ -26683,7 +26736,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.151',
+  numero: '7.9.157',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27018,10 +27071,26 @@ function progCarregarStatus(data){
       sbFetch('prog_status_diario', {
         filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lt.'+data,'deleted_at=is.null'],
         order:'data.desc', limit:500
-      })
+      }),
+      sbFetch('prog_veiculos_dia', {filters:['data=eq.'+data]})
     ]).then(function(res){
       var rowsDia      = res[0];
       var persistRows  = res[1] || [];
+      var veicRows     = res[2] || [];
+      // Popular _progVeiculos com dados do banco (sem apagar cache)
+      if(veicRows.length){
+        veicRows.forEach(function(r){
+          if(!r.equipe_id||!r.placa) return;
+          var key = String(r.slot||'1')==='2'
+            ? progVeiculoKeyB(r.equipe_id, r.data||data)
+            : progVeiculoKey(r.equipe_id, r.data||data);
+          _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
+            justificativa:r.justificativa,alterado_por:r.alterado_por};
+        });
+        try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+        // Invalidar cache de status para que progGetVeicStatusReal reconheça veículos em uso
+        window._veicEscCache = {};
+      }
 
       if(rowsDia === null){ return; } // erro de API — manter localStorage
 
@@ -27898,7 +27967,14 @@ function progGetVeicStatusReal(veic, data){
   if(!window._veicEscCache[data]){
     var _cache={};
     Object.keys(_progVeiculos||{}).forEach(function(k){
-      if(k.indexOf('_'+data)>=0){var pv=_progVeiculos[k];if(pv&&pv.placa)_cache[pv.placa]=true;}
+      if(k.indexOf('_'+data)>=0){
+        var pv=_progVeiculos[k];
+        if(pv&&pv.placa){
+          _cache[pv.placa]=true;
+          // Também guardar versão normalizada (sem hífen/espaço)
+          _cache[pv.placa.replace(/[-\s]/g,'').toUpperCase()]=true;
+        }
+      }
     });
     window._veicEscCache[data]=_cache;
     // Limpar caches de outros dias
@@ -27906,7 +27982,10 @@ function progGetVeicStatusReal(veic, data){
       if(d!==data) delete window._veicEscCache[d];
     });
   }
-  if(window._veicEscCache[data][veic.placa]) return 'Em Uso';
+  var _plcOrig = veic.placa||'';
+  var _plcNorm = _plcOrig.replace(/[-\s]/g,'').toUpperCase();
+  var _cache = window._veicEscCache[data];
+  if(_cache[_plcOrig]||_cache[_plcNorm]) return 'Em Uso';
   // Verificar escalado no PLPT (_plptProgDados)
   if(typeof _plptProgDados!=='undefined'){
     var plptData = (typeof _plptProgData!=='undefined' ? _plptProgData : null) || data;
@@ -27987,9 +28066,12 @@ function progVeicPainel(cid, data){
     var s=PROG_VEIC_STATUS[k];
     var ativo=_filtroVeicSt===k;
     return '<button data-pvfiltro="'+k+'" '
-      +'style="border:none;cursor:pointer;border-radius:12px;padding:3px 10px;font-size:11px;font-weight:600;'
+      +'style="border:'+(ativo?'none':'1.5px solid '+s.cor)+';cursor:pointer;border-radius:16px;'
+      +'padding:5px 14px;font-size:12px;font-weight:700;line-height:1.4;'
       +'background:'+(ativo?s.cor:s.bg)+';color:'+(ativo?'#fff':s.cor)+'">'
-      +k+' '+n+'</button>';
+      +'<span style="font-size:16px;font-weight:900;display:block;line-height:1">'+n+'</span>'
+      +'<span style="font-size:10px;font-weight:600">'+k+'</span>'
+      +'</button>';
   }).join(' ');
 
   // Lista de veículos
@@ -28072,7 +28154,7 @@ function progVeicPainel(cid, data){
     +'<div style="background:#f5f5f3;padding:.6rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">'
     +'<span style="font-size:12px;font-weight:700;color:#444">🚗 Veículos do Contrato ('+lista.length+'/'+veics.length+')</span>'
     +'<select data-pvmodelo style="font-size:11px;border:.5px solid #e0dfd8;border-radius:6px;padding:2px 6px;background:#fff;cursor:pointer">'+modeloOpts+'</select>'
-    +'<div style="display:flex;gap:5px;flex-wrap:wrap">'+chipsHtml+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+chipsHtml+'</div>'
     +'</div>'
     +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">'
     +'<thead><tr style="background:#fafaf8;font-size:10px;color:#888">'
@@ -41257,7 +41339,8 @@ function progSalvarVeiculoNoBanco(eqId, data, veiculoObj, slot){
   if(DEMO||!veiculoObj||!veiculoObj.placa) return Promise.resolve(true);
   var slotNum   = slot===2||slot==='2' ? 2 : 1;
   var dataStr   = (data||'').split('T')[0]; // garantir YYYY-MM-DD
-  var placa     = (veiculoObj.placa||'').trim().toUpperCase();
+  // Normalizar placa: remover hífen para manter padrão do cadastro (ex: TTJ9A72)
+  var placa     = (veiculoObj.placa||'').trim().toUpperCase().replace(/[-\s]/g,'');
   var logCtx    = {eqId:eqId,data:dataStr,slot:slotNum,placa:placa};
 
   var updatePayload = {
@@ -41339,6 +41422,7 @@ function progSetVeiculo(eqId, data, veiculoObj){
   }
   _progVeiculos[progVeiculoKey(eqId, data)] = veiculoObj;
   try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+        window._veicEscCache = {}; // Invalida cache de status
 
   // Verificar conflito de horário de veículo compartilhado
   if(veiculoObj && veiculoObj.id){
@@ -41461,7 +41545,8 @@ function progCarregarVeiculos(data){
 }
 
 // ── Renderiza mini-card de um slot de veículo (a=moto1, b=moto2) ─
-function _renderVeicSlot(eqId, data, v, slot){
+function _renderVeicSlot(eqId, data, v, slot, conflitos){
+  conflitos = conflitos||{};
   var btnId = slot==='b' ? 'prog-veic-btn2-'+eqId : 'prog-veic-btn-'+eqId;
   var lbl   = slot==='b' ? '🏍 Moto 2' : '🏍 Moto 1';
   if(!v){
@@ -41470,12 +41555,16 @@ function _renderVeicSlot(eqId, data, v, slot){
       +'style="background:#f5f5f3;border:.5px dashed #ccc;border-radius:6px;padding:3px 6px;'
       +'font-size:10px;color:#888;cursor:pointer;width:100%;white-space:nowrap">+ '+lbl+'</button>';
   }
+  var temConflito = !!(v.placa && conflitos[v.placa]);
+  var borda = temConflito ? 'border:2px solid #A32D2D;' : '';
+  var corTexto = temConflito ? '#A32D2D' : '#185FA5';
   return '<div id="'+btnId+'" data-eq="'+eqId+'" data-dt="'+data+'" data-slot="'+slot+'" '
     +'onclick="progAbrirSelecionarVeiculo(this.dataset.eq,this.dataset.dt,this.dataset.slot)" '
-    +'style="background:#E6F1FB;border-radius:6px;padding:3px 6px;cursor:pointer">'
-    +'<div style="font-size:9px;color:#185FA5;font-weight:600">'+lbl+'</div>'
-    +'<div style="font-family:monospace;font-size:11px;font-weight:700;color:#185FA5">'+v.placa+'</div>'
+    +'style="background:#E6F1FB;border-radius:6px;padding:3px 6px;cursor:pointer;'+borda+'">'
+    +'<div style="font-size:9px;color:'+corTexto+';font-weight:600">'+lbl+'</div>'
+    +'<div style="font-family:monospace;font-size:11px;font-weight:700;color:'+corTexto+'">'+v.placa+(temConflito?' ⚠':'')+'</div>'
     +'<div style="font-size:10px;color:#888">'+v.modelo+'</div>'
+    +(temConflito?'<div style="font-size:9px;color:#A32D2D;font-weight:700">Duplicado!</div>':'')
     +(v.justificativa?'<div style="font-size:9px;color:#854F0B" title="'+v.justificativa+'">✎ alterado</div>':'')
     +'</div>';
 }
@@ -41483,12 +41572,14 @@ function _renderVeicSlot(eqId, data, v, slot){
 // ── Renderiza a célula de veículo no card da equipe ──────────
 function progRenderVeiculoCell(eq, data){
   var v = progGetVeiculo(eq.id, data);
+  var conflitos = progVeicConflitos(data);
+
   // Moto Dupla → 2 slots lado a lado
   if(isMotoDupla(eq)){
     var v2 = progGetVeiculoB(eq.id, data);
     return '<div style="display:flex;gap:4px">'
-      +_renderVeicSlot(eq.id, data, v,  'a')
-      +_renderVeicSlot(eq.id, data, v2, 'b')
+      +_renderVeicSlot(eq.id, data, v,  'a', conflitos)
+      +_renderVeicSlot(eq.id, data, v2, 'b', conflitos)
       +'</div>';
   }
   // Equipe comum — 1 slot
@@ -41498,12 +41589,14 @@ function progRenderVeiculoCell(eq, data){
       +'style="background:#f5f5f3;border:.5px dashed #ccc;border-radius:6px;padding:3px 8px;font-size:11px;color:#888;cursor:pointer;width:100%">+ Veículo</button>';
   }
   var frtV = frt_veiculos ? frt_veiculos.find(function(x){return x.placa===v.placa;}) : null;
-  var statusCor = frtV ? (FRT_STATUS_COR[frtV.status]||'#555') : '#3B6D11';
-  return '<div style="background:#E6F1FB;border-radius:6px;padding:3px 6px;cursor:pointer" id="prog-veic-btn-'+eq.id+'" '
+  var temConflito = !!(v.placa && conflitos[v.placa]);
+  var bordaConflito = temConflito ? 'border:2px solid #A32D2D;' : '';
+  return '<div style="background:#E6F1FB;border-radius:6px;padding:3px 6px;cursor:pointer;'+bordaConflito+'" id="prog-veic-btn-'+eq.id+'" '
     +'data-eq="'+eq.id+'" data-dt="'+data+'" data-slot="a" '
     +'onclick="progAbrirSelecionarVeiculo(this.dataset.eq,this.dataset.dt,this.dataset.slot)">'
-    +'<div style="font-family:monospace;font-size:11px;font-weight:700;color:#185FA5">'+v.placa+'</div>'
+    +'<div style="font-family:monospace;font-size:11px;font-weight:700;color:'+(temConflito?'#A32D2D':'#185FA5')+'">'+v.placa+(temConflito?' ⚠':'')+' </div>'
     +'<div style="font-size:10px;color:#888">'+v.modelo+'</div>'
+    +(temConflito?'<div style="font-size:9px;color:#A32D2D;font-weight:700">Veículo duplicado!</div>':'')
     +(v.justificativa?'<div style="font-size:9px;color:#854F0B" title="'+v.justificativa+'">✎ alterado</div>':'')
     +'</div>';
 }
