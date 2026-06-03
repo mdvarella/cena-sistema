@@ -2407,7 +2407,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     <div class="card" style="margin-bottom:1rem">
       <div class="ch" style="flex-wrap:wrap;gap:8px">
         <span class="ct">🔍 Tratamento de Ocorrências — Verificar</span>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
           <input class="inp" type="date" id="vt-fil-ini" style="width:135px"/>
           <span style="font-size:12px;color:#888">até</span>
           <input class="inp" type="date" id="vt-fil-fim" style="width:135px"/>
@@ -2421,7 +2421,27 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
           <button class="btn btn-pri" onclick="vtCarregar()">🔍 Buscar</button>
           <button class="btn" onclick="vtGerarLista()" style="background:#3B6D11;color:#fff">+ Gerar da programação</button>
         </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div>
+            <div style="font-size:10px;color:#888;margin-bottom:2px">📅 Datas com pendência</div>
+            <select class="inp" id="vt-fil-data-pend" style="width:160px" onchange="vtFiltrarDataPendencia()">
+              <option value="">Todas as datas</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:#888;margin-bottom:2px">🏢 Pendente por setor</div>
+            <select class="inp" id="vt-fil-setor" style="width:180px" onchange="vtCarregar()">
+              <option value="">Todos os setores</option>
+              <option value="supervisao">⭕ Supervisão sem resposta</option>
+              <option value="coordenacao">⭕ Coordenação sem resposta</option>
+              <option value="gerencia">⭕ Gerência sem resposta</option>
+              <option value="dp">⭕ Depto. Pessoal sem resposta</option>
+            </select>
+          </div>
+          <button class="btn" onclick="vtCarregarDatasPendentes()" title="Atualizar datas com pendência" style="font-size:11px">🔄 Atualizar datas</button>
+        </div>
       </div>
+      <div id="vt-indicadores" style="display:none;padding:.75rem 1rem .25rem;border-bottom:.5px solid #e0dfd8"></div>
       <div id="vt-lista" style="padding:1rem">
         <div style="color:#888;font-size:12px">Selecione o período e clique em Buscar, ou use "Gerar da programação" para importar os colaboradores em Verificar do dia atual.</div>
       </div>
@@ -5846,19 +5866,67 @@ var VT_DECISOES = [
 ];
 var VT_STATUS_LABEL = {pendente:'🔴 Pendente', em_andamento:'🟡 Em andamento', concluido:'🟢 Concluído'};
 
+// ── Carrega datas com pendência para o select ────────────────────────────────
+function vtCarregarDatasPendentes(){
+  if(DEMO) return;
+  // Buscar todas as ocorrências não concluídas
+  sbFetch('verificar_tratamentos',{
+    filters:['status=in.(pendente,em_andamento)'],
+    select:'data_ocorrencia',
+    limit:500
+  }).then(function(rows){
+    var sel = document.getElementById('vt-fil-data-pend');
+    if(!sel) return;
+    // Coletar datas únicas e ordenar
+    var datas = [];
+    (rows||[]).forEach(function(r){
+      var d = (r.data_ocorrencia||'').split('T')[0];
+      if(d && datas.indexOf(d)<0) datas.push(d);
+    });
+    datas.sort().reverse(); // mais recente primeiro
+    // Reconstruir opções
+    var atual = sel.value;
+    sel.innerHTML = '<option value="">Todas as datas ('+datas.length+' com pendência)</option>';
+    datas.forEach(function(d){
+      var opt = document.createElement('option');
+      opt.value = d;
+      // Formato dd/mm/aa
+      var p = d.split('-');
+      opt.textContent = '📅 '+p[2]+'/'+p[1]+'/'+p[0].slice(2);
+      if(d===atual) opt.selected=true;
+      sel.appendChild(opt);
+    });
+  }).catch(function(e){ console.error('vtCarregarDatasPendentes erro:',e); });
+}
+
+function vtFiltrarDataPendencia(){
+  var data = (document.getElementById('vt-fil-data-pend')||{}).value||'';
+  if(data){
+    // Preencher filtros de data com a data selecionada
+    var ini = document.getElementById('vt-fil-ini');
+    var fim = document.getElementById('vt-fil-fim');
+    if(ini) ini.value = data;
+    if(fim) fim.value = data;
+  }
+  vtCarregar();
+}
+
 function vtInicializar(){
   var ini = document.getElementById('vt-fil-ini');
   var fim = document.getElementById('vt-fil-fim');
   if(ini && !ini.value){ ini.value = dataHojeLocal(); }
   if(fim && !fim.value){ fim.value = dataHojeLocal(); }
+  // Carregar datas com pendência automaticamente
+  vtCarregarDatasPendentes();
 }
 
 function vtCarregar(){
-  var ini   = (document.getElementById('vt-fil-ini')||{}).value||'';
-  var fim   = (document.getElementById('vt-fil-fim')||{}).value||'';
-  var busca = ((document.getElementById('vt-fil-colab')||{}).value||'').toLowerCase().trim();
-  var stFil = (document.getElementById('vt-fil-status')||{}).value||'';
-  var wrap  = document.getElementById('vt-lista');
+  var ini    = (document.getElementById('vt-fil-ini')||{}).value||'';
+  var fim    = (document.getElementById('vt-fil-fim')||{}).value||'';
+  var busca  = ((document.getElementById('vt-fil-colab')||{}).value||'').toLowerCase().trim();
+  var stFil  = (document.getElementById('vt-fil-status')||{}).value||'';
+  var setor  = (document.getElementById('vt-fil-setor')||{}).value||'';
+  var wrap   = document.getElementById('vt-lista');
   if(!wrap) return;
   if(!ini||!fim){ progShowToast('⚠ Informe o período.'); return; }
   wrap.innerHTML = '<div style="padding:1rem;color:#888">⏳ Carregando...</div>';
@@ -5866,28 +5934,91 @@ function vtCarregar(){
   sbFetch('verificar_tratamentos',{filters:filters,order:'data_ocorrencia.desc,status.asc',limit:500})
     .then(function(rows){
       _vtDados = rows||[];
-      vtRenderLista(busca, stFil);
+      vtRenderLista(busca, stFil, setor);
     }).catch(function(e){
       console.error('vtCarregar erro:',e);
       wrap.innerHTML='<div style="padding:1rem;color:#A32D2D">Erro ao carregar tratamentos.</div>';
     });
 }
 
-function vtRenderLista(busca, stFil){
+function vtRenderIndicadores(todos){
+  var el = document.getElementById('vt-indicadores');
+  if(!el) return;
+  if(!todos||!todos.length){ el.style.display='none'; return; }
+
+  // Calcular métricas
+  var total      = todos.length;
+  var pendente   = todos.filter(function(t){return t.status==='pendente';}).length;
+  var andamento  = todos.filter(function(t){return t.status==='em_andamento';}).length;
+  var concluido  = todos.filter(function(t){return t.status==='concluido';}).length;
+
+  // Decisões (um registro pode ter múltiplas)
+  var ajustado=0, advertencia=0, demissao=0, desconto=0;
+  todos.forEach(function(t){
+    if(!t.decisoes) return;
+    var dec = t.decisoes.split(',');
+    dec.forEach(function(d){
+      d = d.trim();
+      if(d==='ajustado')       ajustado++;
+      if(d==='advertencia')    advertencia++;
+      if(d==='demissao')       demissao++;
+      if(d==='desconto_folha') desconto++;
+    });
+  });
+
+  function card(valor, label, cor, bg, icon){
+    return '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;'
+      +'background:'+bg+';border:1.5px solid '+cor+';border-radius:10px;padding:8px 16px;min-width:80px;flex:1">'
+      +'<div style="font-size:22px;font-weight:900;color:'+cor+';line-height:1">'+valor+'</div>'
+      +'<div style="font-size:10px;color:'+cor+';font-weight:600;text-align:center;margin-top:2px">'+icon+' '+label+'</div>'
+      +'</div>';
+  }
+
+  el.style.display='block';
+  el.innerHTML =
+    // Linha 1 — Status
+    '<div style="margin-bottom:6px">'
+    +'<div style="font-size:10px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Visão Geral do Período</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+    + card(total,    'Total Verificar', '#8B1A6B','#FDF4FA','🔍')
+    + card(pendente, 'Pendentes',       '#C0392B','#FFF5F5','🔴')
+    + card(andamento,'Em Andamento',    '#B7770D','#FFFBEE','🟡')
+    + card(concluido,'Concluídos',      '#3B6D11','#F4FAF0','🟢')
+    +'</div></div>'
+    // Linha 2 — Decisões
+    +'<div>'
+    +'<div style="font-size:10px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px">Decisões Aplicadas</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+    + card(ajustado,    'Ajustados',       '#185FA5','#EEF6FF','✅')
+    + card(advertencia, 'Advertências',    '#854F0B','#FFF8EE','⚠️')
+    + card(demissao,    'Demissões',       '#A32D2D','#FFF5F5','❌')
+    + card(desconto,    'Descontos Folha', '#534AB7','#F5F4FF','💸')
+    +'</div></div>';
+}
+
+function vtRenderLista(busca, stFil, setor){
   var wrap = document.getElementById('vt-lista');
   if(!wrap) return;
+  // Indicadores calculados sobre TODOS os dados do período (sem filtros)
+  vtRenderIndicadores(_vtDados);
   var lista = _vtDados.filter(function(t){
     var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
     var nome = col?col.nome:'';
     var re   = col?(col.re||''):'';
     if(busca && nome.toLowerCase().indexOf(busca)<0 && String(re).toLowerCase().indexOf(busca)<0) return false;
     if(stFil && t.status!==stFil) return false;
+    if(setor){
+      var campoResp = 'resp_'+setor;
+      if(t[campoResp] && String(t[campoResp]).trim()) return false;
+    }
     return true;
   });
+
   if(!lista.length){
-    wrap.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Nenhuma ocorrência encontrada. Use "Gerar da programação" para importar os colaboradores em Verificar.</div>';
+    wrap.innerHTML='<div style="padding:1rem;color:#888">Nenhuma ocorrência encontrada. Use "Gerar da programação" para importar os colaboradores em Verificar.</div>';
     return;
   }
+
   var html='<div style="padding:.5rem 1rem;font-size:11px;color:#888;margin-bottom:.5rem">'+lista.length+' ocorrência(s)</div>';
   html+='<table style="width:100%;border-collapse:collapse;font-size:12px">';
   html+='<thead><tr style="background:#F9F4FA;color:#555">'
@@ -5899,6 +6030,7 @@ function vtRenderLista(busca, stFil){
     +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Decisão</th>'
     +'<th style="padding:8px 10px;text-align:center;border-bottom:.5px solid #e0dfd8"></th>'
     +'</tr></thead><tbody>';
+
   lista.forEach(function(t,i){
     var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
     var nome = col?col.nome:'('+t.colaborador_id+')';
@@ -5908,17 +6040,28 @@ function vtRenderLista(busca, stFil){
       var dec = VT_DECISOES.find(function(x){return x.id===d.trim();});
       return dec?dec.label:d;
     }).join(', ') : '—';
+    // Indicadores de pendência por setor
+    var pendencias = VT_ETAPAS.filter(function(e){
+      return !(t['resp_'+e.id]&&String(t['resp_'+e.id]).trim());
+    }).map(function(e){
+      return '<span style="background:#FFF3CC;color:#854F0B;border-radius:3px;padding:1px 5px;font-size:10px;margin-right:2px">⭕'+e.label+'</span>';
+    }).join('');
+
     html+='<tr style="background:'+bg+'" id="vt-row-'+t.id+'">'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+fmtD(t.data_ocorrencia)+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(re)+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-weight:500">'+escHtml(nome)+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;color:#8B1A6B;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escHtml(t.obs_verificar||'')+'">'+escHtml(t.obs_verificar||'—')+'</td>'
-      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+( VT_STATUS_LABEL[t.status]||t.status)+'</td>'
-      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-size:11px;color:#3B6D11">'+escHtml(decisoes)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+(VT_STATUS_LABEL[t.status]||t.status)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-size:11px">'
+      +(t.status!=='concluido'?pendencias:'<span style="color:#3B6D11">'+escHtml(decisoes)+'</span>')
+      +'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;text-align:center">'
-            +'<button class="btn btn-pri" style="font-size:11px;padding:3px 10px" data-vtid="'+t.id+'" onclick="vtAbrirTratamento(this.dataset.vtid)">✏️ Tratar</button>'+'</td>'
+      +'<button class="btn btn-pri" style="font-size:11px;padding:3px 10px" data-vtid="'+t.id+'" onclick="vtAbrirTratamento(this.dataset.vtid)">✏️ Tratar</button>'
+      +'</td>'
       +'</tr>';
   });
+
   html+='</tbody></table>';
   wrap.innerHTML = html;
 }
@@ -5954,6 +6097,7 @@ function vtGerarLista(){
       });
       return Promise.all(promises).then(function(){
         progShowToast('✅ '+inseridos+' ocorrência(s) importada(s). '+(existentes?' ('+existentes+' já existia(m))':''));
+        vtCarregarDatasPendentes();
         vtCarregar();
       });
     }).catch(function(e){
@@ -5961,6 +6105,7 @@ function vtGerarLista(){
       progShowToast('⚠ Erro ao gerar lista.','erro');
     });
 }
+
 
 function vtAbrirTratamento(id){
   var t = _vtDados.find(function(x){return x.id===id;});
@@ -6086,12 +6231,14 @@ function vtSalvarTratamento(id, resp){
       Object.assign(t, payload);
       progShowToast('✅ Tratamento salvo.');
       vtAtualizarAbaAlerta();
+      vtCarregarDatasPendentes(); // Atualiza datas com pendência
       closeModal();
       var ini = (document.getElementById('vt-fil-ini')||{}).value||'';
       var fim = (document.getElementById('vt-fil-fim')||{}).value||'';
       var busca = ((document.getElementById('vt-fil-colab')||{}).value||'').toLowerCase().trim();
       var stFil = (document.getElementById('vt-fil-status')||{}).value||'';
-      vtRenderLista(busca, stFil);
+      var setor = (document.getElementById('vt-fil-setor')||{}).value||'';
+      vtRenderLista(busca, stFil, setor);
     }).catch(function(e){
       console.error('vtSalvarTratamento erro:',e);
       progShowToast('⚠ Erro ao salvar tratamento.','erro');
@@ -26865,7 +27012,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.166',
+  numero: '7.9.170',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27177,6 +27324,12 @@ function progSalvarStatus(){
 var _progStatusDateCache = null; // data da última carga do banco
 
 function progCarregarStatus(data){
+  // Não sobrescrever estado se houve alteração manual recente (evita race condition)
+  if(window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < 5000){
+    console.log('[progCarregarStatus] ignorado — save recente (<5s)');
+    progRenderQuadro();
+    return;
+  }
   // RESET completo — cada dia começa limpo
   _progStatus = {}; _progStatusInfo = {};
 
@@ -27362,8 +27515,13 @@ function progLimparFiltros(){
 function progInit(){
   _progData = dataHojeLocal();
   var _dataInit = _progData;
-  progCarregarVeiculos(_dataInit);
   vtAtualizarAbaAlerta(); // Verificar se há pendências de tratamento
+  // Forçar refresh completo na primeira abertura (dados frescos do banco)
+  // progAtualizarQuadro já inclui status + veículos + composicao em Promise.all
+  setTimeout(function(){
+    _progVeiculosDateCache = null;
+    progAtualizarQuadro();
+  }, 300); // pequeno delay para DOM estar pronto
 
   // Carregar calendário de escala se ainda não carregado
   if(!Object.keys(_calDados||{}).length){
@@ -30648,7 +30806,7 @@ function progSetStatus(colabId, status, dataRetorno){
       var ids=parseColabIds(comp.colaborador_ids)
       if(ids.indexOf(colabId)<0)return;
       ids=ids.map(function(id){return id===colabId?null:id;});
-      comp.colaborador_ids=JSON.stringify(ids);
+      comp.colaborador_ids=ids; // array direto (JSONB)
       var eq=equipes_disp.find(function(e){return e.id===comp.equipe_id;});
       removidos.push(eq?eq.codigo:comp.equipe_id);
       if(!DEMO)sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
@@ -30705,6 +30863,8 @@ function progSetStatus(colabId, status, dataRetorno){
   closeModal();
   progVerificarRetornos();
   progSalvarStatus(); // Persistir no localStorage
+  // Marcar timestamp do último save para o auto-refresh não sobrescrever estado recente
+  window._progStatusUltimoSave = Date.now();
   progRenderQuadro();
 }
 
