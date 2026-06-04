@@ -27038,7 +27038,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.205',
+  numero: '7.9.209',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27350,6 +27350,127 @@ function progSalvarStatus(){
 var _progStatusDateCache = null; // data da última carga do banco
 var _progStatusPorDia = {};    // cache por data: {data: {status:{}, info:{}}}
 
+// ── API de Ponto (Nexusweb) ───────────────────────────────────────────────
+var PONTO_API_URL = 'https://cena-ponto-api-ecbnckaufzdqgxf5.brazilsouth-01.azurewebsites.net';
+var _pontoCache   = {};  // cache: {re_data: {status, entrada, saida, ...}}
+var _pontoLoading = {};  // evitar chamadas duplicadas
+
+// Horários permitidos para consulta à API de ponto (HH:MM)
+var PONTO_HORARIOS = ['07:00','07:30','11:00','11:30','17:00','17:30','20:00','20:30','22:00','22:30'];
+var _pontoUltimaConsulta = null; // timestamp da última consulta realizada
+
+// Verifica se agora é um horário de consulta (±5 minutos de tolerância)
+function pontoDeveConsultar(){
+  var agora = new Date();
+  var hh = String(agora.getHours()).padStart(2,'0');
+  var mm = String(agora.getMinutes()).padStart(2,'0');
+  var horaAtual = hh + ':' + mm;
+  var minutosAgora = agora.getHours()*60 + agora.getMinutes();
+
+  return PONTO_HORARIOS.some(function(h){
+    var partes = h.split(':');
+    var minH = parseInt(partes[0])*60 + parseInt(partes[1]);
+    return Math.abs(minutosAgora - minH) <= 5; // ±5 minutos de tolerância
+  });
+}
+
+// Invalidar cache para forçar nova consulta
+function pontoInvalidarCache(){
+  _pontoCache = {};
+  console.log('[Ponto] Cache invalidado — nova consulta agendada');
+}
+
+// Agendador de ponto
+// - Não escalados: consulta a cada 2 minutos (localizar quem está na empresa)
+// - Escalados: consulta nos horários fixos
+var _pontoTimerNaoEscalados = null;
+
+function pontoIniciarAgendador(){
+  // Timer 1: horários fixos para escalados (verifica a cada 1 minuto)
+  setInterval(function(){
+    if(pontoDeveConsultar()){
+      var agora = Date.now();
+      if(_pontoUltimaConsulta && (agora - _pontoUltimaConsulta) < 4*60*1000) return;
+      _pontoUltimaConsulta = agora;
+      pontoInvalidarCache();
+      if(typeof progCarregarBadgesPonto==='function'){
+        console.log('[Ponto] Consulta agendada — '+new Date().toLocaleTimeString());
+        progCarregarBadgesPonto();
+      }
+    }
+  }, 60000);
+
+  // Timer 2: a cada 2 minutos consulta colaboradores NÃO escalados
+  // para detectar quem bateu ponto e está disponível para escala
+  setInterval(function(){
+    var data = typeof progGetData==='function' ? progGetData() : dataHoje();
+    if(!data) return;
+    colaboradores.forEach(function(col){
+      if(!col.ativo || !col.re) return;
+      var stColab = _progStatus[col.id] || 'disponivel';
+      if(stColab === 'treinamento') return;
+      // Verificar se está escalado hoje
+      var escalado = composicao_dia.some(function(comp){
+        if((comp.data||'').slice(0,10) !== data) return false;
+        if(comp.deleted_at) return false;
+        var ids = parseColabIds(comp.colaborador_ids);
+        return ids.indexOf(col.id) >= 0;
+      });
+      if(escalado) return; // escalados são tratados nos horários fixos
+      // Invalidar cache individual para forçar nova consulta
+      var key = col.re + '_' + data;
+      delete _pontoCache[key];
+    });
+    // Re-renderizar badges dos não escalados
+    if(typeof progCarregarBadgesPonto==='function'){
+      progCarregarBadgesPonto();
+    }
+  }, 2*60*1000); // a cada 2 minutos
+}
+
+// Buscar dados de ponto de um colaborador (com cache)
+function pontoConsultar(re, data, callback){
+  var key = re + '_' + data;
+  if(_pontoCache[key] !== undefined){
+    callback(_pontoCache[key]);
+    return;
+  }
+  if(_pontoLoading[key]){
+    // Já está carregando — aguardar
+    setTimeout(function(){ pontoConsultar(re, data, callback); }, 500);
+    return;
+  }
+  _pontoLoading[key] = true;
+  fetch(PONTO_API_URL + '/api/v1/ponto', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({matricula: String(re), data: data})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    _pontoCache[key] = d;
+    delete _pontoLoading[key];
+    callback(d);
+  })
+  .catch(function(){
+    _pontoCache[key] = null;
+    delete _pontoLoading[key];
+    callback(null);
+  });
+}
+
+// Verificar se horário de entrada já passou para o colaborador
+function pontoHorarioPassou(horarioPrevisto){
+  if(!horarioPrevisto || !horarioPrevisto.entrada) return false; // sem info = não marcar ausente
+  var agora = new Date();
+  var partes = horarioPrevisto.entrada.split(':');
+  var horaEnt = new Date();
+  horaEnt.setHours(parseInt(partes[0]), parseInt(partes[1]), 0, 0);
+  // 1 hora de tolerância — só marca Ausente após 1h do horário previsto
+  horaEnt.setMinutes(horaEnt.getMinutes() + 60);
+  return agora >= horaEnt;
+}
+
 // ── PROTEÇÃO DE COMPOSIÇÃO CONFIRMADA ────────────────────────────────────
 // Verifica se uma composição está confirmada antes de alterar membros
 // Retorna true se pode alterar, false se está bloqueada
@@ -27616,6 +27737,8 @@ function progInit(){
   _progData = dataHojeLocal();
   var _dataInit = _progData;
   vtAtualizarAbaAlerta(); // Verificar se há pendências de tratamento
+  // Iniciar agendador de consultas de ponto nos horários definidos
+  setTimeout(pontoIniciarAgendador, 2000);
   // Forçar refresh completo na primeira abertura (dados frescos do banco)
   // progAtualizarQuadro já inclui status + veículos + composicao em Promise.all
   setTimeout(function(){
@@ -29133,6 +29256,7 @@ function progRenderEquipeRow(eq, data){
       +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">'+(col.cargo||'')+'</div>'
       +'<div style="font-size:9px;color:'+stInfo.cor+';margin-top:1px">'+stInfo.label+'</div>'
       +folgaBadge+alertaCnhD+motoristaBadge
+      +'<div id="ponto-badge-'+col.id+'" style="margin-top:2px"></div>'
       +(confirmada
         ? '<div style="position:absolute;top:2px;right:3px;font-size:10px;color:#3B6D11" title="Programada">🔒</div>'
         : '<div style="position:absolute;top:2px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#555;line-height:1;user-select:none" '
@@ -29855,6 +29979,95 @@ function progBuscarParaSlot(eqId, pos){
   }, 80);
 }
 
+// ── Badges de ponto nos slots ─────────────────────────────────────────────
+function progCarregarBadgesPonto(){
+  var data = progGetData();
+  var hoje = dataHoje();
+
+  composicao_dia.forEach(function(comp){
+    if((comp.data||'').slice(0,10) !== data) return;
+    if(comp.deleted_at) return;
+    var ids = parseColabIds(comp.colaborador_ids);
+    ids.forEach(function(colabId){
+      if(!colabId) return;
+      var col = colaboradores.find(function(c){return c.id===colabId;});
+      if(!col || !col.re) return;
+
+      // Verificar status do colaborador — treinamento não exibe badge
+      var stColab = _progStatus[colabId] || 'disponivel';
+      if(stColab === 'treinamento') return;
+
+      pontoConsultar(col.re, data, function(ponto){
+        var el = document.getElementById('ponto-badge-'+colabId);
+        if(!el) return;
+
+        if(!ponto || ponto.status === 'nao_encontrado' || ponto.status === 'sem_registro' || ponto.status === 'falta'){
+          // Só marca Ausente se tem horário previsto E passou 1 hora do previsto
+          var hp = ponto && ponto.horario_previsto ? ponto.horario_previsto : null;
+          if(hp && hp.entrada && pontoHorarioPassou(hp)){
+            el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block;animation:piscar 1s infinite">● Ausente</div>';
+          } else {
+            el.innerHTML = ''; // ainda não está na hora — sem badge
+          }
+          return;
+        }
+
+        if(ponto.status === 'presente'){
+          el.innerHTML = '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+ponto.entrada+'</div>';
+        }
+      });
+    });
+  });
+
+  // Verificar colaboradores que bateram ponto mas NÃO foram escalados
+  if(data === hoje){
+    colaboradores.forEach(function(col){
+      if(!col.ativo || !col.re) return;
+      var stColab = _progStatus[col.id] || 'disponivel';
+      if(stColab === 'treinamento') return; // treinamento não verifica
+
+      // Verificar se está escalado hoje
+      var escalado = composicao_dia.some(function(comp){
+        if((comp.data||'').slice(0,10) !== data) return false;
+        if(comp.deleted_at) return false;
+        var ids = parseColabIds(comp.colaborador_ids);
+        return ids.indexOf(col.id) >= 0;
+      });
+      if(escalado) return; // já tratado acima
+
+      pontoConsultar(col.re, data, function(ponto){
+        if(!ponto || ponto.status !== 'presente') return;
+        // Bateu ponto mas não foi escalado — ir para Verificar
+        var jaVerificando = _progStatus[col.id] === 'verificar';
+        if(jaVerificando) return;
+        var obs = 'Bateu ponto sem estar escalado';
+        if(ponto.entrada) obs += ' — Entrada: '+ponto.entrada;
+        if(ponto.saida)   obs += ' / Saída: '+ponto.saida;
+        // Registrar status verificar automaticamente
+        _progStatus[col.id] = 'verificar';
+        if(!_progStatusInfo[col.id]) _progStatusInfo[col.id] = {};
+        _progStatusInfo[col.id].obs = obs;
+        if(!DEMO){
+          sbInsert('prog_status_diario',{
+            colaborador_id: col.id,
+            data: data,
+            status: 'verificar',
+            obs: obs
+          }).catch(function(){});
+        }
+        progRenderQuadroDebounced();
+      });
+    });
+  }
+}
+
+// ── Animação piscar ────────────────────────────────────────────────────────
+(function(){
+  var style = document.createElement('style');
+  style.textContent = '@keyframes piscar { 0%,100%{opacity:1} 50%{opacity:0.2} }';
+  document.head.appendChild(style);
+})();
+
 // Revogar empréstimo — remove colaborador da equipe destino e o devolve à disponibilidade
 function progRevogarEmprestimo(colabId, eqDestId, eqOrigId){
   var data = progGetData();
@@ -30490,6 +30703,12 @@ function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
       .then(function(r){if(r&&r[0]&&r[0].id){nova.id=r[0].id;nova._local=false;}});
   }
   progRenderQuadro();
+  // Badges de ponto — só atualizar se cache disponível (consultas agendadas)
+  setTimeout(function(){
+    if(typeof progCarregarBadgesPonto==='function' && Object.keys(_pontoCache).length > 0){
+      progCarregarBadgesPonto();
+    }
+  }, 400);
 }
 
 function progDropPool(event){
@@ -52685,6 +52904,7 @@ async function sesmtCarregarDados(){
     try{ if(typeof renderEvolucao==='function') renderEvolucao(); }catch(e){}
     try{ if(typeof renderTreinamentos==='function') renderTreinamentos(); }catch(e){}
     try{ if(typeof renderDashboardSesmt==='function') renderDashboardSesmt(); }catch(e){}
+    try{ if(typeof progCarregarBadgesPonto==='function' && Object.keys(_pontoCache).length>0) progCarregarBadgesPonto(); }catch(e){}
   }, 200);
 }
 function atualizarMetricas(){
