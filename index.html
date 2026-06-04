@@ -27036,7 +27036,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.189',
+  numero: '7.9.192',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27346,6 +27346,26 @@ function progSalvarStatus(){
 }
 
 var _progStatusDateCache = null; // data da última carga do banco
+var _progStatusPorDia = {};    // cache por data: {data: {status:{}, info:{}}}
+
+// Salvar estado atual no cache por data
+function _progSalvarCacheDia(data){
+  if(!data) return;
+  _progStatusPorDia[data] = {
+    status: Object.assign({}, _progStatus),
+    info:   Object.assign({}, _progStatusInfo)
+  };
+}
+// Restaurar estado do cache para uma data
+function _progRestaurarCacheDia(data){
+  var cached = _progStatusPorDia[data];
+  if(cached){
+    _progStatus     = Object.assign({}, cached.status);
+    _progStatusInfo = Object.assign({}, cached.info);
+    return true;
+  }
+  return false;
+}
 
 function progCarregarStatus(data){
   // Não sobrescrever estado se houve alteração manual recente (evita race condition)
@@ -27354,6 +27374,43 @@ function progCarregarStatus(data){
     progRenderQuadro();
     return;
   }
+  // Salvar estado do dia anterior no cache antes de trocar
+  if(_progData && _progData !== data) _progSalvarCacheDia(_progData);
+
+  // Tentar restaurar do cache em memória (instantâneo, sem hit no banco)
+  if(_progRestaurarCacheDia(data)){
+    progAplicarPersistentes(data);
+    progRenderQuadro();
+    // Ainda busca do banco para atualizar, mas não trava a tela
+    if(_progStatusDateCache !== data && !DEMO){
+      _progStatusDateCache = data; // marcar já para não buscar de novo se voltar rápido
+      // Busca silenciosa em background
+      Promise.all([
+        sbFetch('prog_status_diario', {filters:['data=eq.'+data,'deleted_at=is.null']}),
+        sbFetch('prog_status_diario', {
+          filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lt.'+data,'deleted_at=is.null'],
+          order:'data.desc', limit:500
+        })
+      ]).then(function(res){
+        if(res[0]===null) return;
+        _progStatus = {}; _progStatusInfo = {};
+        (res[0]||[]).forEach(function(r){
+          var stDia = r.status==='faltou'?'falta':r.status;
+          _progStatus[r.colaborador_id] = stDia==='disponivel'?undefined:stDia;
+          if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+          if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+          if(r.obs) _progStatusInfo[r.colaborador_id].obs = r.obs;
+          _progStatusInfo[r.colaborador_id]._data = r.data;
+        });
+        progAplicarPersistentes(data);
+        _progSalvarCacheDia(data); // atualizar cache com dados do banco
+        _progLS.salvarStatus(data);
+        progRenderQuadro();
+      }).catch(function(){});
+    }
+    return;
+  }
+
   // RESET completo — cada dia começa limpo
   _progStatus = {}; _progStatusInfo = {};
 
@@ -27422,6 +27479,7 @@ function progCarregarStatus(data){
         if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
         if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
         if(r.obs) _progStatusInfo[r.colaborador_id].obs = r.obs;
+        _progStatusInfo[r.colaborador_id]._data = r.data; // guardar data do registro para validação
       });
       // jaSetNoDia inclui quem tem 'disponivel' explícito — bloqueia persistentes
       progAplicarPersistentes(data);
@@ -29444,9 +29502,16 @@ function progBuscarParaSlot(eqId, pos){
   function stEfetivo(c){
     if(_stCache[c.id]!==undefined) return _stCache[c.id];
     var st = _progStatus[c.id] || 'disponivel';
+    // Verificar se o status em memória realmente pertence ao dia sendo programado
+    // Evita que status registrado para outro dia (ex: amanhã) bloqueie hoje
+    if(st !== 'disponivel'){
+      var info = _progStatusInfo[c.id] || {};
+      // Se tem data registrada e é diferente do dia atual da programação → ignorar
+      if(info._data && info._data !== data) st = 'disponivel';
+    }
     if(st==='disponivel'){
       var p=lsPersist[c.id];
-      if(p&&p.status&&STATUS_BLOQ.indexOf(p.status)>=0&&p.data_retorno>=data) st=p.status;
+      if(p&&p.status&&STATUS_BLOQ.indexOf(p.status)>=0&&p.data_retorno&&p.data_retorno>=data) st=p.status;
     }
     _stCache[c.id]=st;
     return st;
@@ -29740,6 +29805,15 @@ function progRevogarEmprestimo(colabId, eqDestId, eqOrigId){
 function progEfetuarEmprestimo(colabId, eqId, pos){
   var data = progGetData();
   var eq = equipes_disp.find(function(e){return e.id===eqId;})||{codigo:eqId};
+  // Verificar se já está escalado na equipe de destino
+  var compDestino = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  if(compDestino){
+    var idsDestino = parseColabIds(compDestino.colaborador_ids);
+    if(idsDestino.indexOf(colabId) >= 0){
+      progShowToast('⚠ Colaborador já está escalado nesta equipe.');
+      return;
+    }
+  }
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
   var ids = comp ? parseColabIds(comp.colaborador_ids).slice() : [];
   // Inserir na posição correta
@@ -30199,6 +30273,23 @@ function progValidarComposicao(colabId, toEqId, data){
   return erros;
 }
 
+// ── Validação de escala única ────────────────────────────────────────────────
+// Retorna null se OK, ou {eqCod, eqId} se já escalado em outra equipe no dia
+function _checarDuplicidadeEscala(colabId, toEqId, data){
+  var conflito = null;
+  composicao_dia.forEach(function(comp){
+    if(comp.data !== data) return;
+    if(comp.equipe_id === toEqId) return; // mesma equipe = OK
+    if(comp.deleted_at) return;
+    var ids = parseColabIds(comp.colaborador_ids);
+    if(ids.indexOf(colabId) >= 0){
+      var eq = equipes_disp.find(function(e){ return e.id === comp.equipe_id; });
+      conflito = { eqCod: eq ? eq.codigo : comp.equipe_id, eqId: comp.equipe_id };
+    }
+  });
+  return conflito;
+}
+
 function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
   var data=progGetData();
   var col=colaboradores.find(function(c){return c.id===colabId;});
@@ -30263,6 +30354,15 @@ function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
 }
 
 function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
+  // Bloquear escala duplicada (mesmo colaborador em duas equipes no mesmo dia)
+  if(!duplicar){
+    var conflito = _checarDuplicidadeEscala(colabId, toEqId, data);
+    if(conflito){
+      var col = colaboradores.find(function(c){return c.id===colabId;})||{};
+      progShowToast('⛔ '+(col.nome||'Colaborador').split(' ')[0]+' já está escalado em '+conflito.eqCod+' neste dia. Use 🔄 Empréstimo ou remova primeiro.');
+      return;
+    }
+  }
   if(!duplicar){
     composicao_dia.forEach(function(comp){
       if(comp.data!==data) return;
@@ -31049,6 +31149,7 @@ function progSetStatus(colabId, status, dataRetorno){
   closeModal();
   progVerificarRetornos();
   progSalvarStatus(); // Persistir no localStorage
+  _progSalvarCacheDia(data); // Atualizar cache por data
   // Marcar timestamp do último save para o auto-refresh não sobrescrever estado recente
   window._progStatusUltimoSave = Date.now();
   progRenderQuadro();
@@ -32825,6 +32926,20 @@ async function openProgEquipe(eqId, data){
     btn.onclick=async function(){
       // Combinar selecionados da equipe + emprestados
       var todosIds=_selecionados.concat(_emprestados.filter(function(id){return _selecionados.indexOf(id)<0;}));
+      // Verificar duplicidades — bloquear colaboradores já escalados em outra equipe (exceto emprestados que é intencional)
+      var duplicados=[];
+      _selecionados.forEach(function(cid){
+        var conflito=_checarDuplicidadeEscala(cid, eqId, data);
+        if(conflito){
+          var col=colaboradores.find(function(c){return c.id===cid;})||{};
+          duplicados.push((col.nome||'').split(' ')[0]+' → '+conflito.eqCod);
+        }
+      });
+      if(duplicados.length){
+        var err=document.getElementById('prog-err');
+        if(err){err.textContent='⛔ Já escalados em outra equipe: '+duplicados.join(', ')+'. Remova-os primeiro ou use Empréstimo.';err.style.display='block';}
+        return;
+      }
       if(!todosIds.length){
         var err=document.getElementById('prog-err');
         if(err){err.textContent='Selecione ao menos um colaborador.';err.style.display='block';}
