@@ -9645,13 +9645,31 @@ function cadRenderListaCursos(lista){
         +'<td style="font-size:11px;color:#888">'+escHtml(c.modalidade||'—')+'</td>'
         +'<td style="text-align:center">'+(c.bloqueia_programacao?'<span style="color:#A32D2D;font-weight:600">Sim</span>':'<span style="color:#aaa">—</span>')+'</td>'
         +'<td><span style="background:'+(c.status==='Inativo'?'#f5f5f3':'#EAF3DE')+';color:'+(c.status==='Inativo'?'#888':'#3B6D11')+';border-radius:4px;padding:1px 6px;font-size:10px">'+escHtml(c.status||'Ativo')+'</span></td>'
-        +'<td style="white-space:nowrap">'
+        +'<td style="white-space:nowrap;display:flex;gap:4px">'
         +'<button class="btn btn-sm" style="font-size:10px" onclick="cadNovoCurso(\''+c.id+'\')">✎ Editar</button>'
+        +'<button class="btn btn-sm" style="font-size:10px;background:#FCEBEB;color:#A32D2D" onclick="cadDeletarCurso(\''+c.id+'\',\''+escHtml(c.nome)+'\')">🗑 Excluir</button>'
         +'</td></tr>';
     }).join('')
     +'</tbody></table></div>';
 }
 
+function cadDeletarCurso(id, nome){
+  // Verificar se o curso está em uso em algum treinamento
+  var emUso = treinamentos.some(function(t){
+    var cur = (_cad_cursos||[]).find(function(x){return x.id===id;});
+    return cur && (t.nr===cur.sigla || (t.titulo||'').includes(cur.nome));
+  });
+  if(emUso){
+    progShowToast('⚠ Curso "'+nome+'" está em uso em treinamentos e não pode ser excluído.');
+    return;
+  }
+  if(!confirm('Excluir o curso "'+nome+'"? Esta ação não pode ser desfeita.')) return;
+  var idx = _cad_cursos.findIndex(function(x){return x.id===id;});
+  if(idx>=0) _cad_cursos.splice(idx,1);
+  if(!DEMO) sbDelete('sesmt_cursos','id=eq.'+id);
+  cadRenderListaCursos(_cad_cursos);
+  progShowToast('✅ Curso excluído.');
+}
 function cadNovoCurso(id){
   var c=id?(_cad_cursos.find(function(x){return x.id===id;})||{}):{}; var isNew=!id;
   var optsContratos=contratos.map(function(x){
@@ -27018,7 +27036,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.180',
+  numero: '7.9.187',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -29443,11 +29461,17 @@ function progBuscarParaSlot(eqId, pos){
   });
 
   var disponiveis = [];
+  var emprestados = []; // escalados em outra equipe no mesmo dia
   var nBloqueados = 0;
   candidatos.forEach(function(c){
     var st=stEfetivo(c);
-    if(STATUS_BLOQ.indexOf(st)>=0) nBloqueados++;
-    else disponiveis.push(c);
+    if(STATUS_BLOQ.indexOf(st)>=0){ nBloqueados++; return; }
+    var jaEscEq = jaEscalado[c.id];
+    if(jaEscEq && jaEscEq !== eqId){
+      emprestados.push(c); // está emprestado para outra equipe hoje
+    } else {
+      disponiveis.push(c);
+    }
   });
 
   // Data do calendário para detectar folga por cor
@@ -29528,8 +29552,44 @@ function progBuscarParaSlot(eqId, pos){
     +'<input type="text" id="busca-col-input" class="inp" placeholder="Buscar por nome ou RE..." '
     +'style="width:100%" autocomplete="off"/>'
     +'</div>'
-    +'<div id="busca-col-lista" style="max-height:380px;overflow-y:auto">'
+    +'<div id="busca-col-lista" style="max-height:260px;overflow-y:auto">'
     +renderLista('')
+    +'</div>'
+    +(emprestados.length
+      ? '<div style="border-top:.5px solid #e0dfd8">'
+        +'<div style="padding:5px 12px;font-size:10px;font-weight:600;color:#854F0B;background:#FEF3E2;display:flex;align-items:center;gap:5px">'
+        +'🔄 EMPRESTADOS HOJE ('+emprestados.length+')'
+        +'<span style="font-size:9px;font-weight:400;color:#a07030"> — escalados em outra equipe neste dia</span>'
+        +'</div>'
+        +emprestados.map(function(c){
+          var jaEscEq=jaEscalado[c.id];
+          var eqDest=eqPorComp[jaEscEq]||{codigo:'outra equipe'};
+          return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:.5px solid #f0efe8;background:#FFFAEB">'
+            +'<div>'
+            +'<div style="font-size:12px;font-weight:500">'+escHtml(c.nome)+'</div>'
+            +'<div style="font-size:10px;color:#888">RE:'+escHtml(c.re||'—')+' | '+escHtml(c.cargo||'—')+' | <b style="color:#854F0B">Emprestado em '+escHtml(eqDest.codigo)+'</b></div>'
+            +'</div>'
+            +'<button onclick="progRevogarEmprestimo(\''+c.id+'\',\''+jaEscEq+'\',\''+eqId+'\')" style="padding:3px 9px;border-radius:6px;border:.5px solid #854F0B;background:#fff;color:#854F0B;font-size:10px;cursor:pointer;flex-shrink:0">↩ Retornar</button>'
+            +'</div>';
+        }).join('')
+        +'</div>'
+      : '')
+    +''
+    +'<div style="border-top:.5px solid #e0dfd8;padding:.5rem 1rem">'
+    +'<button id="btn-toggle-emp" onclick="_toggleEmpSlot()" style="width:100%;padding:7px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;font-size:12px;color:#854F0B;cursor:pointer;text-align:left">🔄 Buscar em outro contrato (Empréstimo) ▾</button>'
+    +'<div id="area-emp-slot" style="display:none;margin-top:.5rem">'
+    +'<div style="font-size:11px;color:#666;margin-bottom:.4rem">O colaborador aparecerá no slot sem alterar sua equipe de origem.</div>'
+    +'<div style="display:flex;gap:6px;margin-bottom:.4rem">'
+    +'<input id="busca-emp-input" class="inp" placeholder="RE ou nome..." style="flex:1;font-size:12px" autocomplete="off"/>'
+    +'<select id="busca-emp-cont" style="padding:6px 8px;border:.5px solid #e0dfd8;border-radius:8px;font-size:11px">'
+    +'<option value="">Todos contratos</option>'
+    +contratos.filter(function(ct){return ct.id!==eq.contrato_id;}).map(function(ct){return '<option value="'+ct.id+'">'+escHtml(ct.nome)+'</option>';}).join('')
+    +'</select>'
+    +'</div>'
+    +'<div id="busca-emp-lista" style="max-height:180px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px">'
+    +'<div style="padding:.5rem;text-align:center;color:#aaa;font-size:12px">Digite para buscar</div>'
+    +'</div>'
+    +'</div>'
     +'</div>'
     +'</div></div>';
 
@@ -29546,6 +29606,64 @@ function progBuscarParaSlot(eqId, pos){
       };
     }
     vincularBuscaCliques();
+
+    // ── Empréstimo ──────────────────────────────────────────────
+    window._toggleEmpSlot = function(){
+      var area = document.getElementById('area-emp-slot');
+      var btn  = document.getElementById('btn-toggle-emp');
+      if(!area) return;
+      var aberto = area.style.display !== 'none';
+      area.style.display = aberto ? 'none' : '';
+      if(btn) btn.textContent = '🔄 Buscar em outro contrato (Empréstimo) ' + (aberto ? '▾' : '▴');
+    };
+
+    function renderEmpLista(){
+      var div = document.getElementById('busca-emp-lista'); if(!div) return;
+      var busca = ((document.getElementById('busca-emp-input')||{}).value||'').toLowerCase().trim();
+      var cidEmp = (document.getElementById('busca-emp-cont')||{}).value||'';
+      if(!busca && !cidEmp){
+        div.innerHTML='<div style="padding:.5rem;text-align:center;color:#aaa;font-size:12px">Digite para buscar</div>';
+        return;
+      }
+      var empCandidatos = colaboradores.filter(function(c){
+        if(c.contrato_id === eq.contrato_id) return false;
+        if(!c.ativo || c.dispensado) return false;
+        if(cidEmp && c.contrato_id !== cidEmp) return false;
+        if(busca) return (c.nome||'').toLowerCase().indexOf(busca)>=0 || String(c.re||'').indexOf(busca)>=0;
+        return true;
+      }).slice(0,30);
+      if(!empCandidatos.length){
+        div.innerHTML='<div style="padding:.5rem;text-align:center;color:#aaa;font-size:12px">Nenhum encontrado</div>';
+        return;
+      }
+      div.innerHTML = empCandidatos.map(function(c){
+        var jaEsc = jaEscalado[c.id];
+        var eqAtual = jaEsc ? (eqPorComp[jaEsc]||null) : null;
+        var ct = contratos.find(function(x){return x.id===c.contrato_id;});
+        return '<div id="emp-col-'+c.id+'" style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:.5px solid #f0efe8;cursor:pointer;background:#FEF3E2">'
+          +'<div style="flex:1">'
+          +'<div style="font-size:12px;font-weight:500">'+escHtml(c.nome)+'</div>'
+          +'<div style="font-size:10px;color:#888">RE:'+escHtml(c.re||'—')+' | '+(ct?escHtml(ct.nome):'—')+(c.equipe_codigo?' | Eq:'+escHtml(c.equipe_codigo):'')+(jaEsc&&eqAtual?' | <b style="color:#A32D2D">Escalado em '+escHtml(eqAtual.codigo)+'</b>':'')
+          +'</div></div>'
+          +'<button style="padding:4px 10px;border-radius:6px;border:.5px solid #854F0B;background:#FEF3E2;color:#854F0B;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;margin-left:8px">🔄 Emprestar</button>'
+          +'</div>';
+      }).join('');
+      // Vincular cliques
+      empCandidatos.forEach(function(c){
+        var el = document.getElementById('emp-col-'+c.id); if(!el) return;
+        el.onclick = function(){
+          closeModal();
+          // Escalar como empréstimo — sem alterar equipe_id
+          progEfetuarEmprestimo(c.id, eqId, pos);
+        };
+      });
+    }
+
+    var empInput = document.getElementById('busca-emp-input');
+    var empCont  = document.getElementById('busca-emp-cont');
+    if(empInput) empInput.oninput = renderEmpLista;
+    if(empCont)  empCont.onchange = renderEmpLista;
+    // ── fim Empréstimo ──────────────────────────────────────────
 
     function vincularBuscaCliques(){
       disponiveis.forEach(function(c){
@@ -29577,6 +29695,46 @@ function progBuscarParaSlot(eqId, pos){
       });
     }
   }, 80);
+}
+
+// Revogar empréstimo — remove colaborador da equipe destino e o devolve à disponibilidade
+function progRevogarEmprestimo(colabId, eqDestId, eqOrigId){
+  var data = progGetData();
+  var col = colaboradores.find(function(c){return c.id===colabId;})||{nome:'Colaborador'};
+  var eqDest = equipes_disp.find(function(e){return e.id===eqDestId;})||{codigo:'outra equipe'};
+  if(!confirm('Retornar '+col.nome.split(' ')[0]+' da equipe '+eqDest.codigo+'?')) return;
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqDestId&&c.data===data;});
+  if(comp){
+    var ids = parseColabIds(comp.colaborador_ids).filter(function(id){return id!==colabId;});
+    comp.colaborador_ids = ids;
+    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
+  }
+  closeModal();
+  progShowToast('↩ '+col.nome.split(' ')[0]+' retornou para disponibilidade.');
+  renderProgram();
+}
+
+// Escalar colaborador emprestado (de outro contrato) — sem alterar equipe_id
+function progEfetuarEmprestimo(colabId, eqId, pos){
+  var data = progGetData();
+  var eq = equipes_disp.find(function(e){return e.id===eqId;})||{codigo:eqId};
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  var ids = comp ? parseColabIds(comp.colaborador_ids).slice() : [];
+  // Inserir na posição correta
+  if(pos < ids.length) ids[pos] = colabId;
+  else ids.push(colabId);
+  ids = ids.filter(Boolean);
+  if(comp){
+    comp.colaborador_ids = ids;
+    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
+  } else {
+    var nova={id:'cd'+Date.now(),equipe_id:eqId,data:data,colaborador_ids:ids,turno:'Manhã',confirmada:false,erro_reportado:false};
+    composicao_dia.push(nova);
+    if(!DEMO) sbInsert('composicao_dia',{equipe_id:eqId,data:data,colaborador_ids:ids,turno:'Manhã',confirmada:false,erro_reportado:false})
+      .then(function(res){if(res&&res[0]&&res[0].id){var loc=composicao_dia.find(function(x){return x.id===nova.id;});if(loc)loc.id=res[0].id;}});
+  }
+  progShowToast('🔄 Empréstimo: '+((colaboradores.find(function(c){return c.id===colabId;})||{}).nome||'colaborador')+' escalado em '+eq.codigo);
+  renderProgram();
 }
 
 // Helper: lê colaborador_ids como array independente de ser string ou array (JSONB do Supabase)
@@ -32260,7 +32418,15 @@ function renderProgEquipes(){
 
       } else {
         // Já programada: mostrar quem foi e quem ficou
+        // Incluir colaboradores escalados mesmo que não tenham equipe_id vinculado (evita "escala fantasma")
         var colsNomes=colsSel.map(function(cid2){return colaboradores.find(function(x){return x.id===cid2;})||null;}).filter(Boolean);
+        // Garantir que todos os escalados apareçam, mesmo sem vínculo de equipe
+        colsSel.forEach(function(cid2){
+          if(!colsNomes.find(function(x){return x.id===cid2;})){
+            var c2=colaboradores.find(function(x){return x.id===cid2;});
+            if(c2) colsNomes.push(c2);
+          }
+        });
         var naoEscalados=vinculados.filter(function(c){return colsSel.indexOf(c.id)<0;});
 
         selecaoHtml+='<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:4px">Escalados ('+colsNomes.length+')</div>';
@@ -32415,8 +32581,7 @@ async function openProgEquipe(eqId, data){
     +(sugeridos.length?' &nbsp;|&nbsp; <span style="color:#185FA5">'+sugeridos.length+' sugerido(s)</span>':'')
     +'</div>'
     // Turno do dia
-    +'<div style="display:flex;gap:6px;margin-bottom:.75rem">'
-    +['Manhã','Tarde','Noite'].map(function(t){
+    +'<div style="display:flex;gap:4px;margin-bottom:.75rem;border-bottom:.5px solid #e0dfd8;padding-bottom:.5rem">'    +'<button id="prog-aba-equipe" onclick="_progAba(\'equipe\')" style="flex:1;padding:6px;border-radius:6px;border:.5px solid #185FA5;background:#E6F1FB;color:#185FA5;font-size:11px;font-weight:600;cursor:pointer">👥 Equipe</button>'    +'<button id="prog-aba-emprestimo" onclick="_progAba(\'emprestimo\')" style="flex:1;padding:6px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;color:#666;font-size:11px;cursor:pointer">🔄 Empréstimo</button>'    +'</div>'    +'<div id="prog-aba-emprestimo-area" style="display:none;margin-bottom:.75rem">'    +'<div style="font-size:11px;color:#666;margin-bottom:.5rem">Busque colaboradores de outros contratos. O empréstimo é apenas para o dia selecionado — sem alterar a equipe de origem.</div>'    +'<div style="display:flex;gap:6px;margin-bottom:.5rem">'    +'<input id="prog-emp-busca" placeholder="RE ou nome..." style="flex:1;padding:7px 10px;border:.5px solid #e0dfd8;border-radius:8px;font-size:12px" oninput="_renderEmprestimo()"/>'    +'<select id="prog-emp-contrato" style="padding:7px 10px;border:.5px solid #e0dfd8;border-radius:8px;font-size:12px" onchange="_renderEmprestimo()">'    +'<option value="">Todos contratos</option>'    +contratos.map(function(ct){return '<option value="'+ct.id+'"'+(ct.id===eq.contrato_id?' disabled':'')+'>'+escHtml(ct.nome)+'</option>';}).join('')    +'</select>'    +'</div>'    +'<div id="prog-emp-lista" style="max-height:200px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px;padding:0 10px">'    +'<div style="padding:.75rem;text-align:center;color:#aaa;font-size:12px">Digite para buscar</div>'    +'</div>'    +'<div id="prog-emp-selecionados" style="margin-top:.5rem"></div>'    +'</div>'    +'<div id="prog-aba-equipe-area">'    +'<div style="display:flex;gap:6px;margin-bottom:.75rem">'    +['Manhã','Tarde','Noite'].map(function(t){
       var sel=(comp&&comp.turno===t)||(!comp&&t==='Manhã');
       return '<label style="flex:1;text-align:center;padding:6px;border:.5px solid '+(sel?'#185FA5':'#e0dfd8')+';border-radius:8px;cursor:pointer;background:'+(sel?'#E6F1FB':'#fff')+';font-size:12px;font-weight:'+(sel?'600':'400')+'">'
         +'<input type="radio" name="prog-turno" value="'+t+'" style="display:none"'+(sel?' checked':'')+'/>'
@@ -32525,6 +32690,108 @@ async function openProgEquipe(eqId, data){
 
   _renderLista('');
 
+  // Empréstimos selecionados (colaboradores de outros contratos)
+  var _emprestados = [];
+  // Carregar emprestados já salvos (ids que não pertencem ao contrato da equipe)
+  jaSelec.forEach(function(cid){
+    var col=colaboradores.find(function(c){return c.id===cid;});
+    if(col && col.contrato_id !== eq.contrato_id){
+      _emprestados.push(cid);
+    }
+  });
+
+  function _progAba(aba){
+    var btnEq=document.getElementById('prog-aba-equipe');
+    var btnEmp=document.getElementById('prog-aba-emprestimo');
+    var areaEq=document.getElementById('prog-aba-equipe-area');
+    var areaEmp=document.getElementById('prog-aba-emprestimo-area');
+    if(aba==='equipe'){
+      if(btnEq){btnEq.style.background='#E6F1FB';btnEq.style.color='#185FA5';btnEq.style.borderColor='#185FA5';}
+      if(btnEmp){btnEmp.style.background='#fff';btnEmp.style.color='#666';btnEmp.style.borderColor='#e0dfd8';}
+      if(areaEq)areaEq.style.display='';
+      if(areaEmp)areaEmp.style.display='none';
+    } else {
+      if(btnEq){btnEq.style.background='#fff';btnEq.style.color='#666';btnEq.style.borderColor='#e0dfd8';}
+      if(btnEmp){btnEmp.style.background='#FEF3E2';btnEmp.style.color='#854F0B';btnEmp.style.borderColor='#F5C87A';}
+      if(areaEq)areaEq.style.display='none';
+      if(areaEmp)areaEmp.style.display='';
+      _renderEmprestimo();
+    }
+    window._progAbaAtiva=aba;
+  }
+  window._progAba=_progAba;
+
+  function _renderEmprestimoSelecionados(){
+    var div=document.getElementById('prog-emp-selecionados');
+    if(!div)return;
+    if(!_emprestados.length){div.innerHTML='';return;}
+    div.innerHTML='<div style="font-size:11px;font-weight:600;color:#854F0B;margin-bottom:4px">🔄 Emprestados selecionados ('+_emprestados.length+'):</div>'
+      +_emprestados.map(function(cid){
+        var col=colaboradores.find(function(c){return c.id===cid;});
+        if(!col)return '';
+        var ct=contratos.find(function(x){return x.id===col.contrato_id;});
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 8px;background:#FEF3E2;border-radius:6px;margin-bottom:3px;font-size:12px">'
+          +'<span>'+col.nome+' <span style="color:#aaa;font-size:10px">RE:'+col.re+' | '+(ct?ct.nome:'—')+'</span></span>'
+          +'<button onclick="_removerEmprestado(\''+cid+'\')" style="background:none;border:none;color:#A32D2D;cursor:pointer;font-size:14px;padding:0 4px">✕</button>'
+          +'</div>';
+      }).join('');
+  }
+
+  function _removerEmprestado(cid){
+    _emprestados=_emprestados.filter(function(x){return x!==cid;});
+    _renderEmprestimo();
+    _renderEmprestimoSelecionados();
+  }
+  window._removerEmprestado=_removerEmprestado;
+
+  function _renderEmprestimo(){
+    var div=document.getElementById('prog-emp-lista');
+    if(!div)return;
+    var busca=((document.getElementById('prog-emp-busca')||{}).value||'').toLowerCase().trim();
+    var cidFiltro=(document.getElementById('prog-emp-contrato')||{}).value||'';
+    if(!busca&&!cidFiltro){div.innerHTML='<div style="padding:.75rem;text-align:center;color:#aaa;font-size:12px">Digite para buscar</div>';_renderEmprestimoSelecionados();return;}
+    var resultados=colaboradores.filter(function(c){
+      if(c.contrato_id===eq.contrato_id)return false; // só outros contratos
+      if(!c.ativo)return false;
+      if(cidFiltro&&c.contrato_id!==cidFiltro)return false;
+      if(busca){
+        return (c.nome||'').toLowerCase().indexOf(busca)>=0||String(c.re||'').indexOf(busca)>=0;
+      }
+      return true;
+    }).slice(0,30);
+    if(!resultados.length){div.innerHTML='<div style="padding:.75rem;text-align:center;color:#aaa;font-size:12px">Nenhum colaborador encontrado</div>';_renderEmprestimoSelecionados();return;}
+    div.innerHTML=resultados.map(function(col){
+      var isEmp=_emprestados.indexOf(col.id)>=0;
+      var isOcup=ocupados[col.id]&&!isEmp;
+      var ct=contratos.find(function(x){return x.id===col.contrato_id;});
+      var eqOrig=equipes_disp.find(function(e){return e.id===col.equipe_id||String(e.id)===String(col.equipe_id);});
+      return '<div class="prog-emp-item" data-id="'+col.id+'" style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:.5px solid #f5f5f3;cursor:'+(isOcup?'not-allowed':'pointer')+';opacity:'+(isOcup?'0.5':'1')+'">'
+        +'<div style="width:18px;height:18px;border-radius:50%;border:2px solid '+(isEmp?'#854F0B':'#ccc')+';background:'+(isEmp?'#854F0B':'#fff')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'
+        +(isEmp?'<span style="color:#fff;font-size:10px">✓</span>':'')
+        +'</div>'
+        +'<div style="flex:1">'
+        +'<div style="font-size:12px;font-weight:500">'+col.nome
+        +(isEmp?'<span style="font-size:10px;background:#854F0B;color:#fff;border-radius:4px;padding:1px 5px;margin-left:4px">🔄 Emprestado</span>':'')
+        +'</div>'
+        +'<div style="font-size:10px;color:#888">RE:'+col.re+' | '+(col.cargo||'—')+' | '+(ct?ct.nome:'—')+(eqOrig?' | Eq:'+eqOrig.codigo:'')+(isOcup?' | <b style="color:#A32D2D">Em outra equipe</b>':'')
+        +'</div></div></div>';
+    }).join('');
+    div.querySelectorAll('.prog-emp-item').forEach(function(el){
+      var cid=el.getAttribute('data-id');
+      var col=colaboradores.find(function(c){return c.id===cid;});
+      if(!col||ocupados[cid]) return;
+      el.onclick=function(){
+        var idx=_emprestados.indexOf(cid);
+        if(idx>=0)_emprestados.splice(idx,1);
+        else _emprestados.push(cid);
+        _renderEmprestimo();
+        _renderEmprestimoSelecionados();
+      };
+    });
+    _renderEmprestimoSelecionados();
+  }
+  window._renderEmprestimo=_renderEmprestimo;
+
   // Busca em tempo real
   setTimeout(function(){
     var inp=document.getElementById('prog-busca');
@@ -32534,11 +32801,14 @@ async function openProgEquipe(eqId, data){
     var btn=document.getElementById('btn-salvar-prog');
     if(!btn)return;
     btn.onclick=async function(){
-      if(!_selecionados.length){
+      // Combinar selecionados da equipe + emprestados
+      var todosIds=_selecionados.concat(_emprestados.filter(function(id){return _selecionados.indexOf(id)<0;}));
+      if(!todosIds.length){
         var err=document.getElementById('prog-err');
         if(err){err.textContent='Selecione ao menos um colaborador.';err.style.display='block';}
         return;
       }
+      _selecionados=todosIds;
 
       // Verificar colaboradores que mudarão de equipe
       var mudamEquipe=[];
@@ -32606,11 +32876,13 @@ async function openProgEquipe(eqId, data){
         });
       }
 
-      // Atualizar vínculo de equipe nos colaboradores
+      // Atualizar vínculo de equipe — apenas para colaboradores DO contrato (não emprestados)
       var promises=[];
       _selecionados.forEach(function(cid){
         var col=colaboradores.find(function(c){return c.id===cid;});
         if(!col) return;
+        var isEmprestado=_emprestados.indexOf(cid)>=0;
+        if(isEmprestado) return; // não alterar equipe_id de emprestados
         var mudou=col.equipe_id!==eqId;
         col.equipe_id=eqId;
         col.equipe_codigo=eq.codigo;
@@ -50392,12 +50664,13 @@ function renderSesmtEvolucao(){
     sel.innerHTML = '<option value="">Todos os contratos</option>'
       + contratos.map(function(c){ return '<option value="'+c.id+'">'+c.nome+'</option>'; }).join('');
   }
-  // Sempre aguardar o promise de carregamento antes de renderizar
   var doRender = function(){ renderEvolucao(); };
-  if(_sesmtDadosPromise){
-    _sesmtDadosPromise.then(doRender).catch(doRender);
-  } else {
+  if(!_sesmtDadosPromise || treinamentos.length > 0){
+    // Dados já disponíveis — renderizar imediatamente
     doRender();
+  } else {
+    // Aguardar fetch completar
+    _sesmtDadosPromise.then(doRender).catch(doRender);
   }
 }
 
@@ -50904,15 +51177,36 @@ function salvarEtapaMobilizacao(colabId){
   renderMobilizacao();
 }
 
+function _treinCalcValidade(dataReal, meses){
+  if(!dataReal||!meses) return '';
+  var d = new Date(dataReal); d.setMonth(d.getMonth()+parseInt(meses));
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function _treinOnCursoChange(){
+  var sel = document.getElementById('trein-curso-id'); if(!sel) return;
+  var cur = (_cad_cursos||[]).find(function(x){return x.id===sel.value;});
+  if(!cur) return;
+  var nr = document.getElementById('trein-nr');
+  var titulo = document.getElementById('trein-titulo');
+  var data = document.getElementById('trein-data');
+  var val = document.getElementById('trein-validade');
+  if(nr) nr.value = cur.sigla||'';
+  if(titulo) titulo.value = cur.nome||'';
+  if(cur.validade_controlada && cur.periodicidade && data && data.value && val && !val.value){
+    val.value = _treinCalcValidade(data.value, cur.periodicidade);
+  }
+}
 function openLancarTreinamento(colabId){
   var c = colaboradores.find(function(x){ return x.id===colabId; }); if(!c) return;
   var nrs = (MOB_NRS_CARGO[c.cargo]||MOB_NRS_CARGO['_default']);
-  var nrOpts = ['NR-6','NR-10','NR-11','NR-12','NR-13','NR-18','NR-33','NR-34','NR-35','ASO','INTEG','NR-1'].map(function(n){
-    return '<option value="'+n+'"'+(nrs.indexOf(n)>=0?' style="font-weight:bold"':'')+'>'+n+(nrs.indexOf(n)>=0?' ★':'')+'</option>';
-  }).join('');
-
+  var cursos = (_cad_cursos||[]).filter(function(x){return x.status!=='Inativo';});
+  var cursoOpts = '<option value="">— Selecione um curso —</option>'
+    + cursos.map(function(cur){
+        var obrig = nrs.some(function(n){return (cur.sigla||'').toUpperCase().startsWith(n.replace('-','').toUpperCase())||cur.sigla===n;});
+        return '<option value="'+cur.id+'"'+(obrig?' style="font-weight:700;color:#185FA5"':'')+'>'+escHtml(cur.sigla||'')+(obrig?' ★':'')+' — '+escHtml(cur.nome)+'</option>';
+      }).join('');
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:420px">'
+    +'<div class="modal" style="max-width:440px">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
     +'<h3 style="margin:0">🎓 Registrar treinamento</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>'
@@ -50920,13 +51214,17 @@ function openLancarTreinamento(colabId){
     +'<div style="font-size:13px;color:#555;margin-bottom:1rem">'+c.nome+' · '+c.cargo+'</div>'
     +'<div style="background:#EBF4FD;border-radius:8px;padding:.5rem .75rem;font-size:11px;color:#185FA5;margin-bottom:.75rem">★ = NR obrigatória para este cargo</div>'
     +'<div style="display:flex;flex-direction:column;gap:.75rem;margin-bottom:1rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">NR / Tipo *</label>'
-    +'<select class="inp" id="trein-nr" style="width:100%">'+nrOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Título *</label>'
-    +'<input class="inp" id="trein-titulo" style="width:100%" placeholder="Ex: Segurança em Eletricidade NR-10"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Curso *</label>'
+    +'<select class="inp" id="trein-curso-id" style="width:100%" onchange="_treinOnCursoChange()">'+cursoOpts+'</select></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Sigla / NR</label>'
+    +'<input class="inp" id="trein-nr" style="width:100%" placeholder="Ex: NR-10"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Título</label>'
+    +'<input class="inp" id="trein-titulo" style="width:100%" placeholder="Preenchido ao selecionar"/></div>'
+    +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data realização</label>'
-    +'<input class="inp" id="trein-data" type="date" value="'+dataHoje()+'" style="width:100%"/></div>'
+    +'<input class="inp" id="trein-data" type="date" value="'+dataHoje()+'" style="width:100%" onchange="_treinOnCursoChange()"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Validade</label>'
     +'<input class="inp" id="trein-validade" type="date" style="width:100%"/></div>'
     +'</div>'
@@ -51948,6 +52246,16 @@ function _almShowAbaInterna(aba){
 
 var funcs=[],epis=[],ferramentas=[],ocorrencias=[],vales=[],estoque=[],treinamentos=[],aprovacoes=[];
 var _sesmtDadosPromise=null;
+
+// stV(dateStr) — retorna {cls, lbl} com status de validade de uma data
+function stV(dateStr){
+  if(!dateStr) return null;
+  var hoje = dataHoje();
+  var em30 = _diasAdiante(30);
+  if(dateStr < hoje)  return {cls:'venc',  lbl:'Vencido'};
+  if(dateStr <= em30) return {cls:'prox',  lbl:'A vencer'};
+  return {cls:'ok', lbl:'Válido'};
+}
 var uniformesCat=[],uniformesEnt=[],uniformesMov=[],estoqueUni=[];
 var filiais=[],depositos=[],locacoes=[];
 var filialAtiva=null;
