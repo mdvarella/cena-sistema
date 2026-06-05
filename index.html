@@ -2363,6 +2363,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
         <button class="btn btn-pri" onclick="progAutoEscalarTodas()">⚡ Auto-escalar todas</button>
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11">💾 Salvar tudo</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B" title="Verificar colaboradores sem equipe nem status">⚠ Sem escala</button>
+        <button class="btn" id="btn-sync-ponto" onclick="progSyncPonto()" style="color:#185FA5;border-color:#185FA5" title="Sincronizar registros de ponto do dia com o Nexusweb">🔄 Sync Ponto</button>
         <button class="btn" onclick="enviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366">📲 WhatsApp</button>
         <button class="btn" onclick="progAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5" title="Recarregar dados do banco">🔄 Atualizar</button>
       </div>
@@ -27038,7 +27039,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.214',
+  numero: '7.9.216',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27741,6 +27742,13 @@ function progInit(){
   _progData = dataHojeLocal();
   var _dataInit = _progData;
   vtAtualizarAbaAlerta(); // Verificar se há pendências de tratamento
+  // Carregar dados de ponto do Supabase ao abrir a programação
+  var _dataInit2 = progGetData();
+  setTimeout(function(){
+    progCarregarPontoDoSupabase(_dataInit2, function(){
+      progCarregarBadgesPonto();
+    });
+  }, 1000);
   // Iniciar agendador de consultas de ponto nos horários definidos
   setTimeout(pontoIniciarAgendador, 2000);
   // Forçar refresh completo na primeira abertura (dados frescos do banco)
@@ -29983,6 +29991,80 @@ function progBuscarParaSlot(eqId, pos){
   }, 80);
 }
 
+// ── Sincronização de Ponto ────────────────────────────────────────────────
+function progSyncPonto(){
+  var data = progGetData();
+  var btn  = document.getElementById('btn-sync-ponto');
+  if(btn){ btn.textContent='⏳ Sincronizando...'; btn.disabled=true; }
+
+  // Coletar todos os REs dos colaboradores ativos de campo
+  var matriculas = colaboradores
+    .filter(function(c){ return c.ativo && !c.dispensado && (c.vinculo||'campo')==='campo' && c.re; })
+    .map(function(c){ return String(c.re); });
+
+  if(!matriculas.length){
+    progShowToast('Nenhum colaborador de campo encontrado.');
+    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+    return;
+  }
+
+  progShowToast('🔄 Sincronizando ponto de '+matriculas.length+' colaboradores...');
+
+  fetch(PONTO_API_URL + '/api/v1/sincronizar-dia', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({matriculas: matriculas, data: data})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    // Invalidar cache e recarregar badges
+    pontoInvalidarCache();
+    // Carregar dados salvos do Supabase
+    progCarregarPontoDoSupabase(data, function(){
+      progCarregarBadgesPonto();
+      progShowToast('✅ Ponto sincronizado — '+data+' ('+d.sincronizados+'/'+d.total+' colaboradores)');
+      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+    });
+  })
+  .catch(function(e){
+    progShowToast('❌ Erro ao sincronizar ponto: '+e.message);
+    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+  });
+}
+
+// Carregar dados de ponto do Supabase (após sincronização ou ao abrir dia anterior)
+function progCarregarPontoDoSupabase(data, callback){
+  sbFetch('ponto_registros', {filters:['data=eq.'+data], limit:2000})
+  .then(function(rows){
+    if(!rows) { if(callback) callback(); return; }
+    // Popular cache local com dados do banco
+    rows.forEach(function(r){
+      if(!r.re) return;
+      var key = r.re + '_' + data;
+      var marcacoes = [];
+      try { marcacoes = JSON.parse(r.todas_marcacoes||'[]'); } catch(e){}
+      _pontoCache[key] = {
+        matricula:  r.re,
+        data:       data,
+        status:     r.status,
+        entrada:    r.entrada,
+        saida:      r.saida,
+        intervalo: { saida: r.intervalo_saida, retorno: r.intervalo_retorno },
+        todas_marcacoes: marcacoes,
+        horario_previsto: {
+          entrada:   r.horario_entrada,
+          saida:     r.horario_saida,
+          intervalo: null,
+          retorno:   null,
+          total:     null
+        }
+      };
+    });
+    if(callback) callback();
+  })
+  .catch(function(){ if(callback) callback(); });
+}
+
 // ── Badges de ponto nos slots ─────────────────────────────────────────────
 function progCarregarBadgesPonto(){
   var data = progGetData();
@@ -30009,7 +30091,7 @@ function progCarregarBadgesPonto(){
           // Só marca Ausente se tem horário previsto E passou 1 hora do previsto
           var hp = ponto && ponto.horario_previsto ? ponto.horario_previsto : null;
           if(hp && hp.entrada && pontoHorarioPassou(hp)){
-            el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block;animation:piscar 1s infinite">● Ausente</div>';
+            el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block;">● Ausente</div>';
           } else {
             el.innerHTML = ''; // ainda não está na hora — sem badge
           }
@@ -30050,7 +30132,7 @@ function progCarregarBadgesPonto(){
           var obs = 'Bateu ponto sem estar escalado';
           if(ponto.entrada) obs += ' — Entrada: '+ponto.entrada;
           if(ponto.saida)   obs += ' / Saída: '+ponto.saida;
-          el.innerHTML = '<div style="margin-top:2px;background:#8B1A6B;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;animation:piscar 1s infinite" title="'+obs+'">🔍 Verificar</div>';
+          el.innerHTML = '<div style="margin-top:2px;background:#8B1A6B;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;" title="'+obs+'">🔍 Verificar</div>';
         }
       });
     });
@@ -30258,7 +30340,7 @@ function progRenderPainelDisp(eqs, data, cid){
             var temEnt=p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}));
             if(temEnt) return '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700">✓ Presente '+(p.entrada||'')+'</div>';
             var hp=p.horario_previsto||{};
-            if(hp&&hp.entrada&&pontoHorarioPassou(hp)) return '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;animation:piscar 1s infinite">● Ausente</div>';
+            if(hp&&hp.entrada&&pontoHorarioPassou(hp)) return '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">● Ausente</div>';
             return '<div id="ponto-badge-'+c.id+'" style="margin-top:2px"></div>';
           }())
           +'</div>';
@@ -30286,7 +30368,7 @@ function progRenderPainelDisp(eqs, data, cid){
           +'<span style="color:#3B6D11;font-weight:500">'+nomeAbrev(c.nome)+cnhLabel+'</span>'
           +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||'')+'</span>'
           
-          +(c.escala_id&&getEscala(c.escala_id)?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+getEscala(c.escala_id).tipo+'</span>':'')+(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')+(function(){            if((c.vinculo||'campo')!=='campo') return '';            var key=c.re+'_'+data;            var p=_pontoCache[key];            if(!p) return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';            var temEnt=p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}));            if(temEnt) return '<span style="margin-left:2px;background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">✓ '+( p.entrada||'')+'</span>';            var hp=p.horario_previsto||{};            if(hp.entrada&&pontoHorarioPassou(hp)) return '<span style="margin-left:2px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;animation:piscar 1s infinite">● Aus</span>';            return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';          }())
+          +(c.escala_id&&getEscala(c.escala_id)?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+getEscala(c.escala_id).tipo+'</span>':'')+(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')+(function(){            if((c.vinculo||'campo')!=='campo') return '';            var key=c.re+'_'+data;            var p=_pontoCache[key];            if(!p) return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';            var temEnt=p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}));            if(temEnt) return '<span style="margin-left:2px;background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">✓ '+( p.entrada||'')+'</span>';            var hp=p.horario_previsto||{};            if(hp.entrada&&pontoHorarioPassou(hp)) return '<span style="margin-left:2px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;">● Aus</span>';            return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';          }())
           +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
           +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
           +'ondragstart="event.stopPropagation()">⋮</span>'
