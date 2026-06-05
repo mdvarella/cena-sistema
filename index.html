@@ -27038,7 +27038,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.209',
+  numero: '7.9.210',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27431,16 +27431,18 @@ function pontoIniciarAgendador(){
 // Buscar dados de ponto de um colaborador (com cache)
 function pontoConsultar(re, data, callback){
   var key = re + '_' + data;
+  // Cache hit — retornar imediatamente
   if(_pontoCache[key] !== undefined){
     callback(_pontoCache[key]);
     return;
   }
+  // Já está carregando — NÃO fazer loop, só registrar callback
   if(_pontoLoading[key]){
-    // Já está carregando — aguardar
-    setTimeout(function(){ pontoConsultar(re, data, callback); }, 500);
+    _pontoLoading[key].push(callback);
     return;
   }
-  _pontoLoading[key] = true;
+  // Iniciar consulta
+  _pontoLoading[key] = [callback];
   fetch(PONTO_API_URL + '/api/v1/ponto', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -27449,13 +27451,15 @@ function pontoConsultar(re, data, callback){
   .then(function(r){ return r.json(); })
   .then(function(d){
     _pontoCache[key] = d;
+    var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
-    callback(d);
+    cbs.forEach(function(cb){ try{ cb(d); }catch(e){} });
   })
   .catch(function(){
     _pontoCache[key] = null;
+    var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
-    callback(null);
+    cbs.forEach(function(cb){ try{ cb(null); }catch(e){} });
   });
 }
 
@@ -30048,12 +30052,13 @@ function progCarregarBadgesPonto(){
         if(!_progStatusInfo[col.id]) _progStatusInfo[col.id] = {};
         _progStatusInfo[col.id].obs = obs;
         if(!DEMO){
-          sbInsert('prog_status_diario',{
+          // Usar upsert para evitar conflito de chave duplicada
+          sbUpsert('prog_status_diario',{
             colaborador_id: col.id,
             data: data,
             status: 'verificar',
             obs: obs
-          }).catch(function(){});
+          },'colaborador_id,data').catch(function(){});
         }
         progRenderQuadroDebounced();
       });
