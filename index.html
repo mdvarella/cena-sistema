@@ -27040,7 +27040,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.227',
+  numero: '7.9.230',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27402,32 +27402,19 @@ function pontoIniciarAgendador(){
     }
   }, 60000);
 
-  // Timer 2: a cada 2 minutos consulta colaboradores NÃO escalados
-  // para detectar quem bateu ponto e está disponível para escala
+  // Timer 2: a cada 5 minutos recarrega dados do Supabase e atualiza badges
+  // Não invalida cache — usa dados já sincronizados
   setInterval(function(){
     var data = typeof progGetData==='function' ? progGetData() : dataHoje();
     if(!data) return;
-    colaboradores.forEach(function(col){
-      if(!col.ativo || !col.re) return;
-      var stColab = _progStatus[col.id] || 'disponivel';
-      if(stColab === 'treinamento') return;
-      // Verificar se está escalado hoje
-      var escalado = composicao_dia.some(function(comp){
-        if((comp.data||'').slice(0,10) !== data) return false;
-        if(comp.deleted_at) return false;
-        var ids = parseColabIds(comp.colaborador_ids);
-        return ids.indexOf(col.id) >= 0;
-      });
-      if(escalado) return; // escalados são tratados nos horários fixos
-      // Invalidar cache individual para forçar nova consulta
-      var key = col.re + '_' + data;
-      delete _pontoCache[key];
+    // Só recarregar se há dados no cache (já sincronizou antes)
+    if(Object.keys(_pontoCache).length === 0) return;
+    progCarregarPontoDoSupabase(data, function(){
+      if(typeof progCarregarBadgesPonto==='function'){
+        progCarregarBadgesPonto();
+      }
     });
-    // Re-renderizar badges dos não escalados
-    if(typeof progCarregarBadgesPonto==='function'){
-      progCarregarBadgesPonto();
-    }
-  }, 2*60*1000); // a cada 2 minutos
+  }, 5*60*1000); // a cada 5 minutos
 }
 
 // Buscar dados de ponto de um colaborador (com cache)
@@ -28277,11 +28264,11 @@ function progAtualizarQuadro(){
 
       // Also reload veiculos
       progCarregarVeiculos(data);
-      progRenderQuadro();
-      progShowToast('✅ Quadro atualizado!');
-      // Recarregar badges de ponto do Supabase
+      // Carregar ponto do Supabase ANTES de renderizar para badges aparecerem imediatamente
       progCarregarPontoDoSupabase(data, function(){
-        progCarregarBadgesPonto();
+        progRenderQuadro();
+        progShowToast('✅ Quadro atualizado!');
+        setTimeout(function(){ progCarregarBadgesPonto(); }, 200);
       });
     }).catch(function(e){
       console.error('progAtualizarQuadro erro:',e);
@@ -30070,10 +30057,15 @@ function progSyncPonto(){
       return;
     }
     progCarregarPontoDoSupabase(data, function(){
-      progCarregarBadgesPonto();
-      progShowToast('✅ Ponto sincronizado — '+data+' ('+d.sincronizados+'/'+d.total+' colaboradores)');
-      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-      if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+      // Renderizar quadro primeiro para criar os elementos ponto-badge-{id}
+      // depois atualizar os badges com os dados carregados
+      progRenderQuadro();
+      setTimeout(function(){
+        progCarregarBadgesPonto();
+        progShowToast('✅ Ponto sincronizado — '+data+' ('+d.sincronizados+'/'+d.total+' colaboradores)');
+        if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+        if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+      }, 300);
     });
   })
   .catch(function(e){
@@ -57589,7 +57581,7 @@ document.documentElement.setAttribute('data-device', _device);
 document.documentElement.setAttribute('data-pwa', _isPWA ? '1' : '0');
 
 // ── Service Worker ────────────────────────────────────────
-if(false && 'serviceWorker' in navigator){ // SW temporariamente desligado
+if(false && 'serviceWorker' in navigator){ // SW desligado — religar após testes
   window.addEventListener('load', function(){
     fetch('./sw.js', {method:'HEAD'}).then(function(r){
       if(!r.ok) return;
