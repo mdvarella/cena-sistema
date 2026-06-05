@@ -2348,6 +2348,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     <button id="tab-prog-verificar" onclick="progAbaSelecionar('verificar')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">🔍 Tratamento Verificar</button>
   </div>
 
+  <div id="prog-mobile-view" style="display:none"></div>
   <div id="prog-aba-escala">
   <div id="prog-header-placeholder" style="height:0;transition:height .1s"></div>
   <div class="card" id="prog-header-fixo" style="margin-bottom:1rem;background:#fff;box-shadow:0 2px 8px #0002">
@@ -2365,6 +2366,7 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11">💾 Salvar tudo</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B" title="Verificar colaboradores sem equipe nem status">⚠ Sem escala</button>
         <button class="btn" id="btn-sync-ponto" onclick="progSyncPonto()" style="color:#185FA5;border-color:#185FA5" title="Sincronizar registros de ponto do dia com o Nexusweb">🔄 Sync Ponto</button>
+        <button class="btn" id="btn-modo-mobile" onclick="progMobileToggle()" style="color:#533AB7;border-color:#533AB7" title="Modo Supervisor Mobile">📱 Mobile</button>
         <button class="btn" onclick="enviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366">📲 WhatsApp</button>
         <button class="btn" onclick="progAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5" title="Recarregar dados do banco">🔄 Atualizar</button>
       </div>
@@ -2375,7 +2377,14 @@ body.perfil-administrativo #mn-cadastros { display:none !important; }
     </div>
     <!-- Busca colaborador + filtro incompletas + filtro equipe -->
     <div style="padding:.5rem 1rem;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-top:.5px solid #f0efe8">
-      <input type="text" id="prog-busca-colab" class="inp" placeholder="🔍 Buscar colaborador..." 
+      <select id="prog-busca-scope" class="inp" style="width:130px;font-size:12px" onchange="progRenderQuadro()">
+          <option value="todos">🔍 Todos</option>
+          <option value="colaborador">👤 Colaborador</option>
+          <option value="equipe">🚛 Equipe</option>
+          <option value="placa">🚗 Placa</option>
+          <option value="status">📋 Status</option>
+        </select>
+        <input type="text" id="prog-busca-colab" class="inp" placeholder="Buscar..." 
         style="width:200px;font-size:12px" oninput="progFiltrarPorColab(this.value)"/>
       <select id="prog-fil-equipe" class="inp" style="width:160px;font-size:12px" onchange="progRenderQuadroDebounced()">
         <option value="">Todas as equipes</option>
@@ -9061,11 +9070,23 @@ function openNovaEquipeDisp(){
 // ── Helpers de turno e escala ──────────────────────────────────
 function calcularTurnoTipo(horaInicio){
   if(!horaInicio) return 'Manhã';
-  var p=horaInicio.split(':'), h=parseInt(p[0]||0), m=parseInt(p[1]||0);
-  var min=h*60+m;
-  if(min>=450&&min<720)  return 'Manhã';  // 07:30–11:59
-  if(min>=720&&min<1080) return 'Tarde';  // 12:00–17:59
-  return 'Noite';                          // 18:00–04:59 (inclui madrugada)
+  // Tentar casar com escalas cadastradas
+  if(typeof escalas_cad !== 'undefined' && escalas_cad && escalas_cad.length){
+    var h = horaInicio.substring(0,5); // HH:MM
+    var melhor = null;
+    escalas_cad.forEach(function(esc){
+      var ini = (esc.inicio||'').substring(0,5);
+      if(ini === h) melhor = esc.tipo;
+    });
+    if(melhor) return melhor;
+  }
+  // Fallback por faixa de horário
+  var p=horaInicio.split(':'), hh=parseInt(p[0]||0), mm=parseInt(p[1]||0);
+  var min=hh*60+mm;
+  if(min>=390&&min<720)  return 'Manhã';   // 06:30–11:59
+  if(min>=720&&min<1140) return 'Tarde';   // 12:00–18:59
+  if(min>=1140&&min<1260) return 'Noite 1'; // 19:00–20:59
+  return 'Noite 2';                          // 21:00+
 }
 
 function equipeEstaEmFolga(eq, data){
@@ -27040,7 +27061,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.232',
+  numero: '7.9.237',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -27569,7 +27590,9 @@ function progCarregarStatus(data){
       var rowsDia      = res[0];
       var persistRows  = res[1] || [];
       var veicRows     = res[2] || [];
-      // Popular _progVeiculos com dados do banco (sem apagar cache)
+      // Limpar cache do dia antes de popular — evita veículos fantasma após remoção
+      Object.keys(_progVeiculos).forEach(function(k){ if(k.indexOf('_'+data)>=0) delete _progVeiculos[k]; });
+      // Popular _progVeiculos com dados do banco (atualizado do banco)
       if(veicRows.length){
         veicRows.forEach(function(r){
           if(!r.equipe_id||!r.placa) return;
@@ -27692,6 +27715,11 @@ function progCarregarStatus(data){
 function progFiltrarPorColab(texto){
   _progFiltroColab = texto.trim().toLowerCase();
   progRenderQuadro();
+}
+
+function progGetBuscaScope(){
+  var sel = document.getElementById('prog-busca-scope');
+  return sel ? sel.value : 'todos';
 }
 
 function progToggleSoIncompletas(){
@@ -28391,7 +28419,7 @@ function progRenderQuadro(){
   var ativas  = eqs.filter(function(eq){ return !equipeEstaEmFolga(eq,data); });
 
   // ── Agrupar ativas por turno depois por tipo ───────────────
-  var TURNOS = ['Manhã','Tarde','Noite'];
+  var TURNOS = ['Manhã','Tarde','Noite 1','Noite 2','Noite'];
   var porTurno = {};
   TURNOS.forEach(function(t){ porTurno[t]={}; });
 
@@ -28433,11 +28461,11 @@ function progRenderQuadro(){
   var resumoHtml = progRenderResumo(ativas, data, nFolgaReal);
 
   // Quadro por turno → tipo
-  var turnoIcons={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'};
+  var turnoIcons={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙','Noite 1':'🌙','Noite 2':'🌑'};
   var quadroHtml = TURNOS.map(function(turno){
     var grupos = porTurno[turno]||{};
     if(!Object.keys(grupos).length) return '';
-    var corTurno={'Manhã':'#185FA5','Tarde':'#854F0B','Noite':'#1a1a18'}[turno]||'#555';
+    var corTurno={'Manhã':'#185FA5','Tarde':'#854F0B','Noite':'#1a1a18','Noite 1':'#1a1a18','Noite 2':'#2d1a4a'}[turno]||'#555';
     var horaLabel='';
     // Pegar intervalo de horários do turno
     var eqsDoTurno=[];
@@ -30014,6 +30042,281 @@ function progBuscarParaSlot(eqId, pos){
   }, 80);
 }
 
+// ══════════════════════════════════════════════════════════════════
+// MODO SUPERVISOR MOBILE
+// ══════════════════════════════════════════════════════════════════
+var _mobileAtivo = false;
+
+function progMobileToggle(){
+  _mobileAtivo = !_mobileAtivo;
+  var btn = document.getElementById('btn-modo-mobile');
+  var escala = document.getElementById('prog-aba-escala');
+  var mobile = document.getElementById('prog-mobile-view');
+  if(_mobileAtivo){
+    if(escala) escala.style.display = 'none';
+    if(mobile) mobile.style.display = '';
+    if(btn){ btn.style.background='#533AB7'; btn.style.color='#fff'; btn.textContent='🖥 Desktop'; }
+    progMobileRenderLista();
+  } else {
+    if(escala) escala.style.display = '';
+    if(mobile) mobile.style.display = 'none';
+    if(btn){ btn.style.background=''; btn.style.color='#533AB7'; btn.textContent='📱 Mobile'; }
+  }
+}
+
+// Detectar mobile automaticamente
+setTimeout(function(){
+  if(window.innerWidth < 768 && document.getElementById('prog-mobile-view')){
+    // Em telas pequenas oferecer modo mobile
+    var banner = document.createElement('div');
+    banner.style = 'background:#533AB7;color:#fff;padding:8px 12px;font-size:12px;text-align:center;cursor:pointer;margin-bottom:8px;border-radius:6px';
+    banner.innerHTML = '📱 Tela pequena detectada — <b>Ativar Modo Supervisor Mobile</b>';
+    banner.onclick = progMobileToggle;
+    var prog = document.getElementById('prog-mobile-view');
+    if(prog) prog.parentNode.insertBefore(banner, prog);
+  }
+}, 1500);
+
+function progMobileRenderLista(){
+  var mobile = document.getElementById('prog-mobile-view');
+  if(!mobile) return;
+  var data = progGetData();
+
+  // Filtrar equipes com composição no dia
+  var equipesDia = equipes_disp.filter(function(eq){
+    return eq.status !== 'Inativo' && !eq.deleted_at;
+  });
+
+  var html = '<div style="padding:8px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+    +'<div style="font-size:16px;font-weight:700">📋 Equipes — '+fmtD(data)+'</div>'
+    +'<div style="display:flex;gap:6px">'
+    +'<button onclick="progNavData(-1)" style="padding:6px 10px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer">◀</button>'
+    +'<button onclick="progNavData(1)" style="padding:6px 10px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer">▶</button>'
+    +'</div></div>'
+    +'<input id="mob-busca" placeholder="🔍 Buscar equipe..." oninput="progMobileRenderLista()" '
+    +'style="width:100%;padding:10px;border:.5px solid #e0dfd8;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'
+    +'<div id="mob-equipes">';
+
+  var busca = '';
+  setTimeout(function(){
+    var inp = document.getElementById('mob-busca');
+    if(inp) busca = inp.value.toLowerCase();
+  }, 0);
+
+  var count = 0;
+  equipesDia.forEach(function(eq){
+    var comp = composicao_dia.find(function(c){return c.equipe_id===eq.id&&c.data===data&&!c.deleted_at;});
+    var ids = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
+    var membros = ids.map(function(id){ return colaboradores.find(function(c){return c.id===id;}); }).filter(Boolean);
+
+    if(busca && eq.codigo.toLowerCase().indexOf(busca)<0 &&
+       !membros.some(function(m){return m.nome.toLowerCase().indexOf(busca)>=0;})) return;
+
+    var statusComp = comp && comp.confirmada ? '✅ Programada' : (ids.length ? '📝 Rascunho' : '⬜ Vazia');
+    var corStatus = comp && comp.confirmada ? '#3B6D11' : (ids.length ? '#854F0B' : '#aaa');
+    var bgStatus  = comp && comp.confirmada ? '#EAF3DE'  : (ids.length ? '#FEF3E2' : '#f5f5f3');
+
+    html += '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:12px;margin-bottom:8px;box-shadow:0 1px 4px #0001">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">'
+      +'<div style="font-size:15px;font-weight:700">'+escHtml(eq.codigo)+'</div>'
+      +'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;background:'+bgStatus+';color:'+corStatus+'">'+statusComp+'</span>'
+      +'</div>';
+
+    if(comp && comp.placa){
+      html += '<div style="font-size:12px;color:#666;margin-bottom:4px">🚛 '+escHtml(comp.placa||'')+(comp.modelo?' — '+escHtml(comp.modelo):'')+'</div>';
+    }
+
+    html += '<div style="font-size:12px;color:#555;margin-bottom:8px">👥 '+membros.length+' colaborador'+(membros.length!==1?'es':'');
+    if(membros.length){
+      html += ': '+membros.map(function(m){ return escHtml(m.nome.split(' ')[0])+' RE'+m.re; }).join(' / ');
+    }
+    html += '</div>';
+
+    html += '<button onclick="progMobileRenderEquipe(\"'+eq.id+'\")" '
+      +'style="width:100%;padding:10px;border-radius:8px;border:none;background:#1A1A18;color:#fff;font-size:14px;font-weight:600;cursor:pointer">'
+      +'✏️ Editar equipe</button>'
+      +'</div>';
+    count++;
+  });
+
+  if(!count){
+    html += '<div style="text-align:center;padding:2rem;color:#aaa">Nenhuma equipe encontrada</div>';
+  }
+
+  html += '</div></div>';
+  mobile.innerHTML = html;
+
+  // Re-vincular busca
+  setTimeout(function(){
+    var inp = document.getElementById('mob-busca');
+    if(inp) inp.oninput = function(){ progMobileRenderLista(); };
+  }, 50);
+}
+
+function progMobileRenderEquipe(eqId){
+  var mobile = document.getElementById('prog-mobile-view');
+  if(!mobile) return;
+  var data = progGetData();
+  var eq = equipes_disp.find(function(e){return e.id===eqId;});
+  if(!eq) return;
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data&&!c.deleted_at;});
+  var ids = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
+  var membros = ids.map(function(id){ return colaboradores.find(function(c){return c.id===id;}); }).filter(Boolean);
+  var confirmada = comp && comp.confirmada;
+
+  var html = '<div style="padding:8px">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    +'<button onclick="progMobileRenderLista()" style="padding:8px 12px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer;font-size:14px">◀ Voltar</button>'
+    +'<div style="font-size:16px;font-weight:700">'+escHtml(eq.codigo)+'</div>'
+    +(confirmada?'<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:#EAF3DE;color:#3B6D11;font-weight:600">✅ Programada</span>':'')
+    +'</div>';
+
+  if(comp && comp.placa){
+    html += '<div style="background:#f5f5f3;border-radius:8px;padding:8px 12px;font-size:12px;margin-bottom:8px">🚛 '+escHtml(comp.placa||'')+(comp.modelo?' — '+escHtml(comp.modelo):'')+(comp.turno?' | '+escHtml(comp.turno):'')+'</div>';
+  }
+
+  html += '<div style="font-size:12px;font-weight:600;color:#888;margin-bottom:6px">COLABORADORES ('+membros.length+')</div>';
+
+  // Lista de membros
+  membros.forEach(function(m){
+    var st = _progStatus[m.id]||'disponivel';
+    var stInfo = PROG_STATUS[st]||{label:'Disponível',cor:'#3B6D11',bg:'#EAF3DE'};
+    var key = m.re+'_'+data;
+    var ponto = _pontoCache[key];
+    var temEnt = ponto && (ponto.entrada||(ponto.todas_marcacoes&&ponto.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})));
+
+    html += '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;gap:8px">'
+      +'<div style="flex:1">'
+      +'<div style="font-size:13px;font-weight:600">'+escHtml(m.nome)+'</div>'
+      +'<div style="font-size:11px;color:#888">RE: '+escHtml(m.re||'—')+' | '+escHtml(m.cargo||'—')+'</div>'
+      +(st!=='disponivel'?'<span style="font-size:10px;background:'+stInfo.bg+';color:'+stInfo.cor+';border-radius:4px;padding:1px 6px;font-weight:600">'+stInfo.label+'</span>':'')
+      +(temEnt?'<span style="font-size:10px;background:#EAF3DE;color:#3B6D11;border-radius:4px;padding:1px 6px;margin-left:2px">✓ '+ponto.entrada+'</span>':'')
+      +'</div>'
+      +(!confirmada?'<button onclick="progMobileRemover(\\"'+eqId+'\\",\\"'+m.id+'\\")" style="padding:6px 10px;border-radius:6px;border:.5px solid #FCEBEB;background:#FCEBEB;color:#A32D2D;cursor:pointer;font-size:12px">Remover</button>':'')
+      +'</div>';
+  });
+
+  html += '<div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">';
+
+  if(!confirmada){
+    html += '<button onclick="progMobileAdicionar(\\"'+eqId+'\\")" style="padding:12px;border-radius:8px;border:none;background:#185FA5;color:#fff;font-size:14px;font-weight:600;cursor:pointer">+ Adicionar colaborador</button>';
+  }
+
+  if(confirmada){
+    html += '<button onclick="progMobileDesprogramar(\\"'+eqId+'\\")" style="padding:12px;border-radius:8px;border:.5px solid #A32D2D;background:#FCEBEB;color:#A32D2D;font-size:14px;font-weight:600;cursor:pointer">🔓 Desprogramar para editar</button>';
+  } else if(ids.length > 0) {
+    html += '<button onclick="progMobileProgramar(\\"'+eqId+'\\")" style="padding:12px;border-radius:8px;border:none;background:#3B6D11;color:#fff;font-size:14px;font-weight:600;cursor:pointer">✅ Confirmar programação</button>';
+  }
+
+  html += '</div></div>';
+  mobile.innerHTML = html;
+}
+
+function progMobileAdicionar(eqId){
+  var mobile = document.getElementById('prog-mobile-view');
+  if(!mobile) return;
+  var data = progGetData();
+  var eq = equipes_disp.find(function(e){return e.id===eqId;});
+
+  var html = '<div style="padding:8px">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
+    +'<button onclick="progMobileRenderEquipe(\\"'+eqId+'\\")" style="padding:8px 12px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer;font-size:14px">◀ Voltar</button>'
+    +'<div style="font-size:16px;font-weight:700">Adicionar — '+escHtml(eq?eq.codigo:'')+' </div>'
+    +'</div>'
+    +'<input id="mob-add-busca" placeholder="🔍 RE ou nome..." '
+    +'style="width:100%;padding:12px;border:.5px solid #e0dfd8;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'
+    +'<div id="mob-add-lista" style="max-height:60vh;overflow-y:auto"></div>'
+    +'</div>';
+
+  mobile.innerHTML = html;
+
+  setTimeout(function(){
+    var inp = document.getElementById('mob-add-busca');
+    if(!inp) return;
+    inp.focus();
+    inp.oninput = function(){
+      var busca = inp.value.toLowerCase().trim();
+      var lista = document.getElementById('mob-add-lista');
+      if(!lista) return;
+      if(!busca){ lista.innerHTML = '<div style="text-align:center;padding:1rem;color:#aaa">Digite para buscar</div>'; return; }
+
+      var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data&&!c.deleted_at;});
+      var jaEscalados = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
+
+      var resultados = colaboradores.filter(function(c){
+        if(!c.ativo||c.dispensado) return false;
+        return c.nome.toLowerCase().indexOf(busca)>=0||(c.re||'').indexOf(busca)>=0;
+      }).slice(0,20);
+
+      lista.innerHTML = resultados.map(function(c){
+        var jaEsc = jaEscalados.indexOf(c.id)>=0;
+        var st = _progStatus[c.id]||'disponivel';
+        var stInfo = PROG_STATUS[st]||{label:'Disponível',cor:'#3B6D11',bg:'#EAF3DE'};
+        var bloq = ['falta','ferias','afastado','treinamento','fraude','demitido'].indexOf(st)>=0;
+        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;gap:8px;opacity:'+(bloq?'0.6':'1')+'">'
+          +'<div style="flex:1">'
+          +'<div style="font-size:13px;font-weight:600">'+escHtml(c.nome)+'</div>'
+          +'<div style="font-size:11px;color:#888">RE: '+escHtml(c.re||'—')+' | '+escHtml(c.cargo||'—')+(c.equipe_codigo?' | '+escHtml(c.equipe_codigo):'')+'</div>'
+          +(st!=='disponivel'?'<span style="font-size:10px;background:'+stInfo.bg+';color:'+stInfo.cor+';border-radius:4px;padding:1px 5px">'+stInfo.label+'</span>':'')
+          +(jaEsc?'<span style="font-size:10px;background:#FEF3E2;color:#854F0B;border-radius:4px;padding:1px 5px;margin-left:2px">Já escalado</span>':'')
+          +'</div>'
+          +(!jaEsc&&!bloq?'<button onclick="progMobileEscalar(\\"'+eqId+'\\",\\"'+c.id+'\\")" style="padding:8px 14px;border-radius:6px;border:none;background:#3B6D11;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Escalar</button>':'')
+          +'</div>';
+      }).join('') || '<div style="text-align:center;padding:1rem;color:#aaa">Nenhum encontrado</div>';
+    };
+  }, 50);
+}
+
+function progMobileEscalar(eqId, colabId){
+  var conflito = _checarDuplicidadeEscala(colabId, eqId, progGetData());
+  if(conflito){
+    alert('⚠️ ' + (colaboradores.find(function(c){return c.id===colabId;})||{}).nome + ' já está escalado em ' + conflito.eqCod);
+    return;
+  }
+  progEfetuarDrop(colabId, null, eqId, -1, false);
+  progMobileRenderEquipe(eqId);
+  progShowToast('✅ Colaborador adicionado');
+}
+
+function progMobileRemover(eqId, colabId){
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===progGetData()&&!c.deleted_at;});
+  if(!_podeAlterarComposicao(comp,'remover membros')) return;
+  var col = colaboradores.find(function(c){return c.id===colabId;})||{};
+  var motivo = prompt('Motivo da remoção de '+col.nome.split(' ')[0]+':\n1-Faltou 2-Férias 3-Afastado 4-Folga 5-Treinamento 6-Pátio 7-Verificar 8-Outro');
+  if(!motivo) return;
+  var motivos = {1:'falta',2:'ferias',3:'afastado',4:'folga',5:'treinamento',6:'patio',7:'verificar',8:'verificar'};
+  var stNovo = motivos[parseInt(motivo)]||'verificar';
+  if(comp){
+    var ids = parseColabIds(comp.colaborador_ids).filter(function(id){return id!==colabId;});
+    comp.colaborador_ids = ids;
+    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
+  }
+  _progStatus[colabId] = stNovo;
+  if(!DEMO) sbUpsert('prog_status_diario',{colaborador_id:colabId,data:progGetData(),status:stNovo},'colaborador_id,data').catch(function(){});
+  progShowToast('✅ Colaborador removido — status: '+stNovo);
+  progMobileRenderEquipe(eqId);
+}
+
+function progMobileProgramar(eqId){
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===progGetData()&&!c.deleted_at;});
+  if(!comp) return;
+  comp.confirmada = true;
+  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  progShowToast('✅ Equipe programada!');
+  progMobileRenderEquipe(eqId);
+}
+
+function progMobileDesprogramar(eqId){
+  if(!confirm('Desprogramar esta equipe para edição?')) return;
+  var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===progGetData()&&!c.deleted_at;});
+  if(!comp) return;
+  comp.confirmada = false;
+  if(!DEMO) sbUpdate('composicao_dia',{confirmada:false},'id=eq.'+comp.id);
+  progShowToast('🔓 Equipe desprogramada');
+  progMobileRenderEquipe(eqId);
+}
+
 // ── Sincronização de Ponto ────────────────────────────────────────────────
 function progSyncPonto(){
   var data = progGetData();
@@ -30358,10 +30661,14 @@ function progRenderPainelDisp(eqs, data, cid){
       treinamento:'📚 Treinamento', falta:'❌ Faltou',
       integracao:'🔄 Em Integração', patio:'🏗 Pátio', verificar:'🔍 Verificar'
     };
+    var _filtroIndisp = window._progFiltroIndisp || 'todos';
+    var indispFiltrados = _filtroIndisp === 'todos' ? indisponiveis : indisponiveis.filter(function(c){ var st = _progStatus[c.id]||'folga'; return st === _filtroIndisp; });
+    var INDISP_BTNS = [{v:'todos',l:'Todos'},{v:'falta',l:'Faltou'},{v:'ferias',l:'Férias'},{v:'afastado',l:'Afastado'},{v:'folga',l:'Folga'},{v:'treinamento',l:'Treinamento'},{v:'integracao',l:'Integração'},{v:'patio',l:'Pátio'},{v:'verificar',l:'Verificar'},{v:'fraude',l:'Fraude'},{v:'demitido',l:'Demitido'}];
     indispHtml = '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
-      +'<div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:#888">Indisponíveis hoje ('+indisponiveis.length+')</div>'
+      +'<div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:#888">Indisponíveis hoje ('+indispFiltrados.length+'/'+indisponiveis.length+')</div>'
+      +'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">'+INDISP_BTNS.map(function(f){var a=_filtroIndisp===f.v;return '<button onclick="window._progFiltroIndisp=\''+f.v+'\';progRenderQuadro()" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid '+(a?'#185FA5':'#e0dfd8')+';background:'+(a?'#185FA5':'#fff')+';color:'+(a?'#fff':'#888')+';cursor:pointer">'+f.l+'</button>';}).join('')+'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
-      +indisponiveis.map(function(c){
+      +indispFiltrados.map(function(c){
         var st = _progStatus[c.id]||'folga';
         var isCal = corDia && c.cor_escala && c.cor_escala === corDia && st==='disponivel';
         var label = isCal ? '📅 Folga '+corDia : (INDISP_LABEL[st]||st);
@@ -30418,8 +30725,20 @@ function progRenderPainelDisp(eqs, data, cid){
       +escalas_cad.map(function(e){return '<option value="'+e.id+'"'+(window._progFiltroEscalaId===e.id?' selected':'')+'>⏰ '+escHtml(e.tipo)+' ('+e.inicio+'-'+e.fim+')</option>';}).join('')
       +'</select>'
     : '';
-  var livresHtml = livres.length
-    ? livres.map(function(c){
+  var _filtroPontoLivres = window._progFiltroPontoLivres || 'todos';
+  var _pontoFiltroHtml = '<select id="prog-filtro-ponto" class="inp" style="font-size:11px;padding:3px 8px;border-radius:6px" onchange="window._progFiltroPontoLivres=this.value;progRenderQuadro()">'
+    +'<option value="todos"'+(window._progFiltroPontoLivres==="todos"?" selected":"")+'>👥 Todos</option>'
+    +'<option value="presentes"'+(window._progFiltroPontoLivres==="presentes"?" selected":"")+'>✓ Presentes</option>'
+    +'<option value="ausentes"'+(window._progFiltroPontoLivres==="ausentes"?" selected":"")+'>● Ausentes</option>'
+    +'</select>';
+  var livresFiltrados = livres;
+  if(window._progFiltroPontoLivres === 'presentes'){
+    livresFiltrados = livres.filter(function(c){ var key=c.re+'_'+data; var p=_pontoCache[key]; return p&&(p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))); });
+  } else if(window._progFiltroPontoLivres === 'ausentes'){
+    livresFiltrados = livres.filter(function(c){ var key=c.re+'_'+data; var p=_pontoCache[key]; return !p||(!p.entrada&&!(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))); });
+  }
+  var livresHtml = livresFiltrados.length
+    ? livresFiltrados.map(function(c){
         var isMot = c.motorista || c.cnh_categoria;
         var cnhLabel = c.cnh_categoria && c.cnh_categoria!=='Não' ? ' <span style="background:#185FA5;color:#fff;border-radius:3px;padding:0 3px;font-size:8px;font-weight:700">'+c.cnh_categoria+'</span>' : '';
         return '<div class="prog-colab-chip" draggable="true" '
@@ -30443,11 +30762,11 @@ function progRenderPainelDisp(eqs, data, cid){
   return indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
-    +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados (<b>'+livres.length+'</b>)</span>'
+    +'<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>'
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
     +'</div>'
     +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
-    +'<span style="font-size:11px;font-weight:600;color:#3B6D11">⚡ Disponíveis ('+livres.length+')</span>'
+    +'<span style="font-size:11px;font-weight:600;color:#3B6D11">⚡ Disponíveis ('+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+')</span>'
     +_escalaFiltroHtml
     +'</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
@@ -41518,7 +41837,7 @@ function _progProjRenderQuadroInterno(data, cid){
     }).join('')+'</div>';
 
   // ── Filtros por turno e escala ───────────────────
-  var TURNOS=['Manhã','Tarde','Noite'];
+  var TURNOS=['Manhã','Tarde','Noite 1','Noite 2','Noite'];
   var ESCALAS=['4x1','4x2','3x2','3x3'];
   var turnoIcons={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙'};
   var filtrosHtml='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem;align-items:center">'
