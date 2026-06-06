@@ -27082,7 +27082,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.248',
+  numero: '7.9.249',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -30339,9 +30339,8 @@ function progMobileAdicionar(eqId){
   var data = progGetData();
   var eq = equipes_disp.find(function(e){return e.id===eqId;});
 
-  // Tipos de equipe para filtro
-  var tiposDisponiveis = [];
-  tipos_equipe.forEach(function(t){ if(t.nome) tiposDisponiveis.push(t.nome); });
+  // Filtros fixos de tipo de equipe
+  var tiposDisponiveis = ['CESTO AÉREO', 'FIORINO', 'MOTO DUPLA'];
 
   var html = '<div style="padding:8px">'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
@@ -30375,7 +30374,14 @@ function progMobileAdicionar(eqId){
 
     var resultados = colaboradores.filter(function(c){
       if(!c.ativo||c.dispensado) return false;
-      if(tipoFiltro && (c.tipo_equipe||c.cargo_tipo||'') !== tipoFiltro) return false;
+      if(tipoFiltro){
+        var cargoUpper = (c.cargo||'').toUpperCase();
+        var tipoMatch = false;
+        if(tipoFiltro === 'CESTO AÉREO') tipoMatch = cargoUpper.indexOf('CESTO')>=0||cargoUpper.indexOf('CE ')>=0||cargoUpper.indexOf('CE3')>=0||cargoUpper.indexOf('CE4')>=0||cargoUpper.indexOf('LV ')>=0;
+        else if(tipoFiltro === 'FIORINO') tipoMatch = cargoUpper.indexOf('FIORINO')>=0||cargoUpper.indexOf('LEVE')>=0;
+        else if(tipoFiltro === 'MOTO DUPLA') tipoMatch = cargoUpper.indexOf('MOTO')>=0||cargoUpper.indexOf('MK')>=0;
+        if(!tipoMatch) return false;
+      }
       if(busca) return c.nome.toLowerCase().indexOf(busca)>=0||(c.re||'').indexOf(busca)>=0;
       return true;
     }).slice(0,30);
@@ -30441,31 +30447,79 @@ function progMobileAdicionar(eqId){
 function progMobileEscalar(eqId, colabId){
   var conflito = _checarDuplicidadeEscala(colabId, eqId, progGetData());
   if(conflito){
-    alert('⚠️ ' + (colaboradores.find(function(c){return c.id===colabId;})||{}).nome + ' já está escalado em ' + conflito.eqCod);
+    var nomeConfl = (colaboradores.find(function(c){return c.id===colabId;})||{}).nome||'';
+    alert('⚠️ '+nomeConfl+' já está escalado em '+(conflito.eqCod||'outra equipe'));
     return;
   }
-  progEfetuarDrop(colabId, null, eqId, -1, false);
-  progMobileRenderEquipe(eqId);
-  progShowToast('✅ Colaborador adicionado');
+  try {
+    progEfetuarDrop(colabId, null, eqId, -1, false);
+  } catch(e) {
+    console.error('progMobileEscalar erro:', e);
+  }
+  // Aguardar o drop processar antes de re-renderizar
+  setTimeout(function(){
+    progMobileRenderEquipe(eqId);
+    progShowToast('✅ Colaborador adicionado');
+  }, 300);
 }
 
 function progMobileRemover(eqId, colabId){
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===progGetData()&&!c.deleted_at;});
   if(!_podeAlterarComposicao(comp,'remover membros')) return;
   var col = colaboradores.find(function(c){return c.id===colabId;})||{};
-  var motivo = prompt('Motivo da remoção de '+col.nome.split(' ')[0]+':\n1-Faltou 2-Férias 3-Afastado 4-Folga 5-Treinamento 6-Pátio 7-Verificar 8-Outro');
-  if(!motivo) return;
-  var motivos = {1:'falta',2:'ferias',3:'afastado',4:'folga',5:'treinamento',6:'patio',7:'verificar',8:'verificar'};
-  var stNovo = motivos[parseInt(motivo)]||'verificar';
-  if(comp){
-    var ids = parseColabIds(comp.colaborador_ids).filter(function(id){return id!==colabId;});
-    comp.colaborador_ids = ids;
-    if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
-  }
-  _progStatus[colabId] = stNovo;
-  if(!DEMO) sbUpsert('prog_status_diario',{colaborador_id:colabId,data:progGetData(),status:stNovo},'colaborador_id,data').catch(function(){});
-  progShowToast('✅ Colaborador removido — status: '+stNovo);
-  progMobileRenderEquipe(eqId);
+  var mobile = document.getElementById('prog-mobile-view');
+  if(!mobile) return;
+
+  // Mostrar menu de opções em vez de prompt
+  var opcoes = [
+    {st:'disponivel', label:'✅ Disponível — manter livre'},
+    {st:'falta',      label:'❌ Faltou'},
+    {st:'ferias',     label:'🏖 Férias'},
+    {st:'afastado',   label:'🏥 Afastado'},
+    {st:'folga',      label:'📅 Folga'},
+    {st:'treinamento',label:'📚 Treinamento'},
+    {st:'patio',      label:'🏗 Pátio'},
+    {st:'verificar',  label:'🔍 Verificar'},
+  ];
+
+  var overlay = document.createElement('div');
+  overlay.style = 'position:fixed;top:0;left:0;right:0;bottom:0;background:#0005;z-index:9999;display:flex;align-items:flex-end';
+  overlay.innerHTML = '<div style="background:#fff;border-radius:16px 16px 0 0;padding:16px;width:100%;max-height:80vh;overflow-y:auto">'
+    +'<div style="font-size:14px;font-weight:700;margin-bottom:12px">Remover '+escHtml(col.nome.split(' ')[0])+'<br><span style="font-size:12px;color:#888;font-weight:400">Selecione o motivo:</span></div>'
+    +opcoes.map(function(o){
+      return '<button data-st="'+o.st+'" style="display:block;width:100%;padding:12px;margin-bottom:6px;border-radius:8px;border:.5px solid #e0dfd8;background:#fff;font-size:14px;text-align:left;cursor:pointer">'+o.label+'</button>';
+    }).join('')
+    +'<button id="mob-remover-cancelar" style="display:block;width:100%;padding:12px;border-radius:8px;border:none;background:#f5f5f3;color:#888;font-size:14px;font-weight:600;cursor:pointer;margin-top:4px">Cancelar</button>'
+    +'</div>';
+
+  document.body.appendChild(overlay);
+
+  overlay.querySelectorAll('[data-st]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var stNovo = this.getAttribute('data-st');
+      document.body.removeChild(overlay);
+      // Remover da composição
+      if(comp){
+        var ids = parseColabIds(comp.colaborador_ids).filter(function(id){return id!==colabId;});
+        comp.colaborador_ids = ids;
+        if(!DEMO) sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
+      }
+      // Atualizar status se não for disponivel
+      if(stNovo !== 'disponivel'){
+        _progStatus[colabId] = stNovo;
+        if(!DEMO) sbUpsert('prog_status_diario',{colaborador_id:colabId,data:progGetData(),status:stNovo},'colaborador_id,data').catch(function(){});
+      } else {
+        delete _progStatus[colabId];
+        if(!DEMO) sbDelete('prog_status_diario','colaborador_id=eq.'+colabId+'&data=eq.'+progGetData()).catch(function(){});
+      }
+      progShowToast('✅ Colaborador removido');
+      progMobileRenderEquipe(eqId);
+    });
+  });
+
+  document.getElementById('mob-remover-cancelar').addEventListener('click', function(){
+    document.body.removeChild(overlay);
+  });
 }
 
 function progMobileProgramar(eqId){
@@ -58158,13 +58212,11 @@ var _pwaPrompt = null;
 window.addEventListener('beforeinstallprompt', function(e){
   e.preventDefault();
   _pwaPrompt = e;
-  // Mostrar banner após 3s (rápido para tablets/mobile)
-  setTimeout(function(){
-    if(!localStorage.getItem('pwa_instalado') && !_isPWA){
-      var b = document.getElementById('pwa-install-banner');
-      if(b) b.classList.add('visible');
-    }
-  }, 3000);
+  // Banner PWA desabilitado temporariamente
+  // if(!localStorage.getItem('pwa_instalado') && !_isPWA){
+  //   var b = document.getElementById('pwa-install-banner');
+  //   if(b) b.classList.add('visible');
+  // }
 });
 window.addEventListener('appinstalled', function(){
   localStorage.setItem('pwa_instalado', '1');
