@@ -27082,7 +27082,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.247',
+  numero: '7.9.248',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -30339,53 +30339,103 @@ function progMobileAdicionar(eqId){
   var data = progGetData();
   var eq = equipes_disp.find(function(e){return e.id===eqId;});
 
+  // Tipos de equipe para filtro
+  var tiposDisponiveis = [];
+  tipos_equipe.forEach(function(t){ if(t.nome) tiposDisponiveis.push(t.nome); });
+
   var html = '<div style="padding:8px">'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">'
-    +'<button onclick="progMobileRenderEquipe(\\"'+eqId+'\\")" style="padding:8px 12px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer;font-size:14px">◀ Voltar</button>'
-    +'<div style="font-size:16px;font-weight:700">Adicionar — '+escHtml(eq?eq.codigo:'')+' </div>'
+    +'<button id="mob-add-voltar" style="padding:8px 12px;border-radius:6px;border:.5px solid #e0dfd8;background:#fff;cursor:pointer;font-size:14px">◀ Voltar</button>'
+    +'<div style="font-size:16px;font-weight:700">Adicionar — '+escHtml(eq?eq.codigo:'')+'</div>'
+    +'</div>'
+    // Filtros de tipo (igual imagem)
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<button class="mob-tipo-btn mob-tipo-ativo" data-tipo="" style="padding:6px 12px;border-radius:20px;border:none;background:#1A1A18;color:#fff;font-size:12px;font-weight:600;cursor:pointer">Todos</button>'
+    +tiposDisponiveis.map(function(t){
+      return '<button class="mob-tipo-btn" data-tipo="'+escHtml(t)+'" style="padding:6px 12px;border-radius:20px;border:.5px solid #e0dfd8;background:#fff;color:#555;font-size:12px;font-weight:600;cursor:pointer">'+escHtml(t)+'</button>';
+    }).join('')
     +'</div>'
     +'<input id="mob-add-busca" placeholder="🔍 RE ou nome..." '
     +'style="width:100%;padding:12px;border:.5px solid #e0dfd8;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'
-    +'<div id="mob-add-lista" style="max-height:60vh;overflow-y:auto"></div>'
+    +'<div id="mob-add-lista" style="max-height:55vh;overflow-y:auto"></div>'
     +'</div>';
 
   mobile.innerHTML = html;
 
-  setTimeout(function(){
+  var tipoFiltro = '';
+
+  function atualizarLista(){
     var inp = document.getElementById('mob-add-busca');
-    if(!inp) return;
+    var lista = document.getElementById('mob-add-lista');
+    if(!lista) return;
+    var busca = inp ? inp.value.toLowerCase().trim() : '';
+
+    var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data&&!c.deleted_at;});
+    var jaEscalados = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
+
+    var resultados = colaboradores.filter(function(c){
+      if(!c.ativo||c.dispensado) return false;
+      if(tipoFiltro && (c.tipo_equipe||c.cargo_tipo||'') !== tipoFiltro) return false;
+      if(busca) return c.nome.toLowerCase().indexOf(busca)>=0||(c.re||'').indexOf(busca)>=0;
+      return true;
+    }).slice(0,30);
+
+    if(!busca && !tipoFiltro){
+      lista.innerHTML = '<div style="text-align:center;padding:1rem;color:#aaa">Digite para buscar</div>';
+      return;
+    }
+
+    lista.innerHTML = resultados.map(function(c){
+      var jaEsc = jaEscalados.indexOf(c.id)>=0;
+      var st = _progStatus[c.id]||'disponivel';
+      var stInfo = PROG_STATUS[st]||{label:'Disponível',cor:'#3B6D11',bg:'#EAF3DE'};
+      var bloq = ['falta','ferias','afastado','treinamento','fraude','demitido'].indexOf(st)>=0;
+      return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;gap:8px;opacity:'+(bloq?'0.6':'1')+'">'
+        +'<div style="flex:1">'
+        +'<div style="font-size:13px;font-weight:600">'+escHtml(c.nome)+'</div>'
+        +'<div style="font-size:11px;color:#888">RE: '+escHtml(c.re||'—')+' | '+escHtml(c.cargo||'—')+'</div>'
+        +(st!=='disponivel'?'<span style="font-size:10px;background:'+stInfo.bg+';color:'+stInfo.cor+';border-radius:4px;padding:1px 5px">'+stInfo.label+'</span>':'')
+        +(jaEsc?'<span style="font-size:10px;background:#FEF3E2;color:#854F0B;border-radius:4px;padding:1px 5px;margin-left:2px">Já escalado</span>':'')
+        +'</div>'
+        +(!jaEsc&&!bloq?'<button class="mob-btn-escalar" data-colab-id="'+c.id+'" style="padding:8px 14px;border-radius:6px;border:none;background:#3B6D11;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Escalar</button>':'')
+        +'</div>';
+    }).join('') || '<div style="text-align:center;padding:1rem;color:#aaa">Nenhum encontrado</div>';
+
+    // Vincular botões escalar
+    lista.querySelectorAll('.mob-btn-escalar').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        progMobileEscalar(eqId, this.getAttribute('data-colab-id'));
+      });
+    });
+  }
+
+  // Voltar
+  var btnVoltar = document.getElementById('mob-add-voltar');
+  if(btnVoltar) btnVoltar.addEventListener('click', function(){ progMobileRenderEquipe(eqId); });
+
+  // Busca — sem perder foco
+  var inp = document.getElementById('mob-add-busca');
+  if(inp){
     inp.focus();
-    inp.oninput = function(){
-      var busca = inp.value.toLowerCase().trim();
-      var lista = document.getElementById('mob-add-lista');
-      if(!lista) return;
-      if(!busca){ lista.innerHTML = '<div style="text-align:center;padding:1rem;color:#aaa">Digite para buscar</div>'; return; }
+    inp.addEventListener('input', function(){ atualizarLista(); });
+  }
 
-      var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data&&!c.deleted_at;});
-      var jaEscalados = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
-
-      var resultados = colaboradores.filter(function(c){
-        if(!c.ativo||c.dispensado) return false;
-        return c.nome.toLowerCase().indexOf(busca)>=0||(c.re||'').indexOf(busca)>=0;
-      }).slice(0,20);
-
-      lista.innerHTML = resultados.map(function(c){
-        var jaEsc = jaEscalados.indexOf(c.id)>=0;
-        var st = _progStatus[c.id]||'disponivel';
-        var stInfo = PROG_STATUS[st]||{label:'Disponível',cor:'#3B6D11',bg:'#EAF3DE'};
-        var bloq = ['falta','ferias','afastado','treinamento','fraude','demitido'].indexOf(st)>=0;
-        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;gap:8px;opacity:'+(bloq?'0.6':'1')+'">'
-          +'<div style="flex:1">'
-          +'<div style="font-size:13px;font-weight:600">'+escHtml(c.nome)+'</div>'
-          +'<div style="font-size:11px;color:#888">RE: '+escHtml(c.re||'—')+' | '+escHtml(c.cargo||'—')+(c.equipe_codigo?' | '+escHtml(c.equipe_codigo):'')+'</div>'
-          +(st!=='disponivel'?'<span style="font-size:10px;background:'+stInfo.bg+';color:'+stInfo.cor+';border-radius:4px;padding:1px 5px">'+stInfo.label+'</span>':'')
-          +(jaEsc?'<span style="font-size:10px;background:#FEF3E2;color:#854F0B;border-radius:4px;padding:1px 5px;margin-left:2px">Já escalado</span>':'')
-          +'</div>'
-          +(!jaEsc&&!bloq?'<button onclick="progMobileEscalar(\\"'+eqId+'\\",\\"'+c.id+'\\")" style="padding:8px 14px;border-radius:6px;border:none;background:#3B6D11;color:#fff;font-size:13px;font-weight:600;cursor:pointer">Escalar</button>':'')
-          +'</div>';
-      }).join('') || '<div style="text-align:center;padding:1rem;color:#aaa">Nenhum encontrado</div>';
-    };
-  }, 50);
+  // Filtros de tipo
+  mobile.querySelectorAll('.mob-tipo-btn').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      tipoFiltro = this.getAttribute('data-tipo');
+      // Atualizar visual dos botões
+      mobile.querySelectorAll('.mob-tipo-btn').forEach(function(b){
+        b.style.background = '#fff';
+        b.style.color = '#555';
+        b.style.border = '.5px solid #e0dfd8';
+      });
+      this.style.background = '#1A1A18';
+      this.style.color = '#fff';
+      this.style.border = 'none';
+      atualizarLista();
+    });
+  });
 }
 
 function progMobileEscalar(eqId, colabId){
