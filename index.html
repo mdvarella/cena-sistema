@@ -27143,7 +27143,7 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.289',
+  numero: '7.9.291',
   data:   '26/05/2026',
   build:  '20260526-1400',
   log: [
@@ -58823,19 +58823,8 @@ async function lcAnalisarContrato(){
   </div>
 </div>
 
-<!-- ALERTA DE NOVA MENSAGEM -->
-<div id="chat-alerta" style="display:none;position:fixed;bottom:24px;right:16px;background:#fff;border:.5px solid #e0dfd8;border-radius:14px;padding:14px 18px;z-index:9000;box-shadow:0 8px 32px #0004;cursor:pointer;min-width:280px;max-width:340px;border-left:4px solid #185FA5" onclick="chatAlertaClicar()">
-  <div style="display:flex;align-items:center;gap:10px">
-    <div style="width:40px;height:40px;border-radius:50%;background:#185FA5;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">💬</div>
-    <div style="flex:1;min-width:0">
-      <div style="font-size:12px;color:#888;margin-bottom:2px">Nova mensagem</div>
-      <div style="font-size:14px;font-weight:700;color:#1a1a18" id="chat-alerta-de"></div>
-      <div style="font-size:13px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" id="chat-alerta-texto"></div>
-    </div>
-    <div id="chat-alerta-fechar" style="color:#aaa;font-size:18px;flex-shrink:0;padding:2px 4px">✕</div>
-  </div>
-  <div id="chat-alerta-barra" style="position:absolute;bottom:0;left:0;height:3px;background:#185FA5;border-radius:0 0 0 14px;width:100%;transition:width linear"></div>
-</div>
+<!-- CHAT TOAST NOTIFICATIONS -->
+<div id="chat-toast-container" style="position:fixed;bottom:24px;right:16px;z-index:9500;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none;max-width:340px"></div>
 
 <div id="pwa-install-banner">
   <span style="flex:1">📱 Instale o <b>CENA ERP</b> na tela inicial para acesso rápido</span>
@@ -58932,7 +58921,9 @@ var CHAT_PERFIS = [
   {v:'supervisor', l:'Supervisores'},
   {v:'supervisor_tma', l:'Sup. TMA'},
   {v:'coordenador_tma', l:'Coordenadores'},
+  {v:'coordenador', l:'Coordenadores'},
   {v:'gestor', l:'Gestores'},
+  {v:'escritorio', l:'Escritório'},
   {v:'administrativo', l:'Administrativo'},
   {v:'almoxarife', l:'Almoxarifado'},
 ];
@@ -58949,13 +58940,23 @@ function chatInit(){
 }
 
 function chatRegistrarPresenca(){
-  if(!usuarioLogado) return;
-  sbUpsert('chat_presenca', {
+  if(!usuarioLogado || !usuarioLogado.id) return;
+  var dados = {
     usuario_id: usuarioLogado.id,
-    usuario_nome: usuarioLogado.nome,
-    perfil: usuarioLogado.perfil,
+    usuario_nome: usuarioLogado.nome || 'Usuário',
+    perfil: usuarioLogado.perfil || 'equipe',
     ultimo_ping: new Date().toISOString()
-  }, 'usuario_id').catch(function(){});
+  };
+  fetch(SB.url+'/rest/v1/chat_presenca?on_conflict=usuario_id', {
+    method: 'POST',
+    headers: {
+      'apikey': SB.key,
+      'Authorization': 'Bearer '+SB.key,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates,return=minimal'
+    },
+    body: JSON.stringify(dados)
+  }).catch(function(){});
 }
 
 function chatCarregarNaoLidas(){
@@ -59043,53 +59044,149 @@ function chatReceberMensagem(row){
   chatMostrarAlerta(uid, nome, row.texto);
 }
 
+// ── ChatToastNotification ─────────────────────────────────────
+var ChatToast = {
+  _fila: [],
+  _vistos: {},
+  _timers: {},
+
+  show: function(dados){
+    // Deduplicar por msgId
+    if(dados.msgId && this._vistos[dados.msgId]) return;
+    if(dados.msgId) this._vistos[dados.msgId] = true;
+
+    // Se janela está aberta para esse remetente — não mostrar
+    if(_chatUsuarioAtivo && _chatUsuarioAtivo.id === dados.remetenteId) return;
+
+    // Verificar se já tem toast desse remetente — atualizar em vez de empilhar
+    var existente = this._fila.findIndex(function(t){ return t.remetenteId === dados.remetenteId; });
+    if(existente >= 0){
+      this._fila[existente] = dados;
+      clearTimeout(this._timers[dados.remetenteId]);
+    } else {
+      // Máx 3 toasts — remover o mais antigo
+      if(this._fila.length >= 3) {
+        var removido = this._fila.shift();
+        clearTimeout(this._timers[removido.remetenteId]);
+      }
+      this._fila.push(dados);
+    }
+
+    this._render();
+
+    // Auto-dismiss após 5s
+    var self = this;
+    this._timers[dados.remetenteId] = setTimeout(function(){
+      self._dismiss(dados.remetenteId);
+    }, 5000);
+  },
+
+  _render: function(){
+    var container = document.getElementById('chat-toast-container');
+    if(!container) return;
+    var self = this;
+    container.innerHTML = '';
+    this._fila.forEach(function(d){
+      var el = document.createElement('div');
+      el.style.cssText = 'background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:12px 14px;box-shadow:0 4px 20px #0003;cursor:pointer;width:320px;max-width:calc(100vw - 32px);border-left:4px solid #185FA5;pointer-events:all;animation:chatToastIn .3s ease;position:relative;overflow:hidden';
+      el.setAttribute('data-uid', d.remetenteId);
+
+      var hora = d.hora || '';
+      var preview = d.texto ? (d.texto.length > 60 ? d.texto.substring(0,60)+'...' : d.texto) : '';
+      var inicial = (d.remetenteNome||'?').charAt(0).toUpperCase();
+
+      el.innerHTML = '<div style="display:flex;align-items:center;gap:10px">'
+        +'<div style="width:38px;height:38px;border-radius:50%;background:#185FA5;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#fff;flex-shrink:0">'+inicial+'</div>'
+        +'<div style="flex:1;min-width:0">'
+        +'<div style="font-size:11px;color:#888;margin-bottom:1px">💬 Nova mensagem'+(hora?' · '+hora:'')+'</div>'
+        +'<div style="font-size:13px;font-weight:700;color:#1a1a18;margin-bottom:2px">'+escHtml(d.remetenteNome||'')+'</div>'
+        +(preview?'<div style="font-size:12px;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(preview)+'</div>':'')
+        +'</div>'
+        +'<button style="background:transparent;border:none;color:#aaa;cursor:pointer;font-size:16px;padding:2px 4px;flex-shrink:0;pointer-events:all" data-close="'+d.remetenteId+'">✕</button>'
+        +'</div>'
+        +'<div style="position:absolute;bottom:0;left:0;height:3px;background:#185FA5;border-radius:0;width:100%" class="chat-toast-barra" data-uid="'+d.remetenteId+'"></div>';
+
+      // Clique no toast — abrir conversa
+      el.addEventListener('click', function(e){
+        if(e.target.getAttribute('data-close')) return;
+        var uid = this.getAttribute('data-uid');
+        self._onClicar(uid);
+      });
+
+      // Botão fechar
+      el.querySelectorAll('[data-close]').forEach(function(btn){
+        btn.addEventListener('click', function(e){
+          e.stopPropagation();
+          self._dismiss(this.getAttribute('data-close'));
+        });
+      });
+
+      container.appendChild(el);
+
+      // Barra de progresso
+      setTimeout(function(){
+        var barra = container.querySelector('.chat-toast-barra[data-uid="'+d.remetenteId+'"]');
+        if(barra){
+          barra.style.transition = 'width 5s linear';
+          barra.style.width = '0%';
+        }
+      }, 50);
+    });
+  },
+
+  _dismiss: function(remetenteId){
+    this._fila = this._fila.filter(function(t){ return t.remetenteId !== remetenteId; });
+    clearTimeout(this._timers[remetenteId]);
+    delete this._timers[remetenteId];
+    this._render();
+  },
+
+  _onClicar: function(uid){
+    this._dismiss(uid);
+    // Fechar painel se aberto
+    chatFecharPainel();
+    // Buscar usuário e abrir conversa
+    var lista = (typeof usuarios_sistema !== 'undefined' && usuarios_sistema && usuarios_sistema.length)
+      ? usuarios_sistema : (window._usuarios_chat||[]);
+    var usr = lista.find(function(u){ return u.id === uid; });
+    if(usr){
+      chatAbrirConversa(usr);
+    } else {
+      // Buscar do banco se não encontrado
+      sbFetch('usuarios_sistema', {filters:['id=eq.'+uid], limit:1}).then(function(rows){
+        if(rows && rows[0]) chatAbrirConversa(rows[0]);
+      });
+    }
+  }
+};
+
+// CSS para animação do toast
+(function(){
+  var s = document.createElement('style');
+  s.textContent = '@keyframes chatToastIn { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }';
+  document.head.appendChild(s);
+})();
+
+// Manter compatibilidade com chamadas antigas
 function chatMostrarAlerta(uid, nome, texto){
-  var alerta = document.getElementById('chat-alerta');
-  var elDe = document.getElementById('chat-alerta-de');
-  var elTexto = document.getElementById('chat-alerta-texto');
-  var barra = document.getElementById('chat-alerta-barra');
-  var btnFechar = document.getElementById('chat-alerta-fechar');
-  if(!alerta) return;
+  // Buscar dados completos do remetente
+  var lista = (typeof usuarios_sistema !== 'undefined' && usuarios_sistema && usuarios_sistema.length)
+    ? usuarios_sistema : (window._usuarios_chat||[]);
+  var usr = lista.find(function(u){ return u.id === uid; });
+  var nomeCompleto = usr ? usr.nome : nome;
+  var hora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
 
-  if(elDe) elDe.textContent = nome;
-  if(elTexto) elTexto.textContent = texto.length > 55 ? texto.substring(0,55)+'...' : texto;
-  alerta.style.display = 'block';
-  alerta.setAttribute('data-uid', uid);
-
-  // Barra de progresso
-  if(barra){
-    barra.style.transition = 'none';
-    barra.style.width = '100%';
-    setTimeout(function(){
-      barra.style.transition = 'width 5s linear';
-      barra.style.width = '0%';
-    }, 50);
-  }
-
-  // Botão fechar
-  if(btnFechar){
-    btnFechar.onclick = function(e){
-      e.stopPropagation();
-      alerta.style.display = 'none';
-      if(_chatAlertaTimeout) clearTimeout(_chatAlertaTimeout);
-    };
-  }
-
-  if(_chatAlertaTimeout) clearTimeout(_chatAlertaTimeout);
-  _chatAlertaTimeout = setTimeout(function(){
-    if(alerta) alerta.style.display = 'none';
-  }, 5000);
+  ChatToast.show({
+    msgId: uid + '_' + Date.now(),
+    remetenteId: uid,
+    remetenteNome: nomeCompleto,
+    texto: texto,
+    hora: hora
+  });
 }
 
 function chatAlertaClicar(){
-  var alerta = document.getElementById('chat-alerta');
-  if(!alerta) return;
-  var uid = alerta.getAttribute('data-uid');
-  alerta.style.display = 'none';
-  if(uid){
-    var usr = (usuarios_sistema||[]).find(function(u){return u.id===uid;});
-    if(usr) chatAbrirConversa(usr);
-  }
+  // mantido para compatibilidade
 }
 
 function chatAbrirPainel(){
@@ -59114,7 +59211,7 @@ function chatFecharPainel(){
 
 function chatAtualizarPresenca(){
   // Buscar quem fez ping nos últimos 2 minutos
-  var limite = new Date(Date.now() - 2*60*1000).toISOString();
+  var limite = new Date(Date.now() - 3*60*1000).toISOString();
   sbFetch('chat_presenca', {filters:['ultimo_ping=gte.'+limite], limit:500})
   .then(function(rows){
     _chatOnline = {};
@@ -59369,7 +59466,14 @@ function chatMarcarLidas(userId){
 // Iniciar chat após login
 setTimeout(function(){
   if(usuarioLogado && usuarioLogado.id) chatInit();
-}, 3000);
+}, 2000);
+
+// Re-registrar presença a cada vez que o usuário interagir
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && usuarioLogado && usuarioLogado.id){
+    chatRegistrarPresenca();
+  }
+});
 // ══════════════════════════════════════════════════════════════════
 
 // ── PWA Install Prompt ────────────────────────────────────
