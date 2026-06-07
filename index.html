@@ -60,6 +60,8 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
 #content-wrapper{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0;}
 #app-content-area{flex:1;overflow-y:auto;overflow-x:hidden;background:#f5f5f3;display:block;min-width:0;height:0;}
 #pg-tma{overflow:visible!important;}
+#pg-programacao-projetos{overflow:visible!important;}
+#pp-header-fixo{background:#f5f5f3;}
 
 /* Ociosidade: layout interno com scroll próprio — ativado via JS */
 #pg-frotas-ociosidade.ocio-ativa{
@@ -27143,10 +27145,17 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.294',
-  data:   '26/05/2026',
-  build:  '20260526-1400',
+  numero: '7.9.300',
+  data:   '07/06/2026',
+  build:  '20260607-1400',
   log: [
+    {v:'7.9.300', d:'07/06/2026', itens:[
+      'Programação de Projetos: abas + barra de filtros fixas ao rolar (igual TMA)',
+    ]},
+    {v:'7.9.299', d:'07/06/2026', itens:[
+      'Programação de Projetos: carrega ponto_registros do Supabase ao abrir/trocar data (igual TMA)',
+      'Fix: apontamentos de ponto sumiam após F5/reload — ficavam só na memória (_pontoCache)',
+    ]},
     {v:'6.2.0', d:'19/05/2026', itens:[
       'NOVO MÓDULO: COMGÁS SSM — Gestão de Segurança, Saúde e Meio Ambiente',
       'Baseado no Manual de SSM para Parceiros Comgás (Jan/2026)',
@@ -40225,11 +40234,11 @@ function _ensureInACA(pgId){
 // ══════════════════════════════════════════════════════════════════
 var _autoRefresh = {
   _pausado: false,
-  pausar: function(){ this._pausado = true; console.log('[auto-refresh] pausado'); },
-  retomar: function(){ this._pausado = false; console.log('[auto-refresh] retomado'); },
+  pausar: function(){ this._pausado = true; console.log('[auto-refresh] pausado'); this._atualizarIndicador(true); },
+  retomar: function(){ this._pausado = false; console.log('[auto-refresh] retomado'); this._atualizarIndicador(true); },
   _timer: null,
   _paginaAtual: null,
-  _intervaloMs: 60000, // 1 minuto
+  _intervaloMs: 90000, // 1 minuto e 30 segundos
 
   // Mapa: pageId → função de refresh
   _handlers: {
@@ -40271,7 +40280,14 @@ var _autoRefresh = {
       return;
     }
     el.style.display = 'flex';
-    el.title = 'Atualização automática a cada 1 min — última: '+new Date().toLocaleTimeString('pt-BR');
+    if(this._pausado){
+      el.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Auto-refresh Pausado';
+      el.style.background = '#854F0Bee';
+    } else {
+      el.innerHTML = '<span style="width:7px;height:7px;border-radius:50%;background:#4CAF50;display:inline-block"></span> Auto-refresh ativo';
+      el.style.background = '#1a1a18ee';
+    }
+    el.title = 'Atualização automática a cada 1min30s — última: '+new Date().toLocaleTimeString('pt-BR');
   }
 };
 
@@ -41510,7 +41526,10 @@ function ppNavData(dias){
   var nova = d.toISOString().slice(0,10);
   el.value = nova;
   _pp.data = nova;
-  progProjRenderQuadro();
+  progCarregarPontoDoSupabase(nova, function(){
+    progProjCarregarStatus(nova);
+    progProjRenderQuadro();
+  });
 }
 
 function ppNavHoje(){
@@ -41519,7 +41538,10 @@ function ppNavHoje(){
   var hoje = dataHojeLocal();
   el.value = hoje;
   _pp.data = hoje;
-  progProjRenderQuadro();
+  progCarregarPontoDoSupabase(hoje, function(){
+    progProjCarregarStatus(hoje);
+    progProjRenderQuadro();
+  });
 }
 function progProjGetCid(){  return (document.getElementById('pp-cont')||{}).value || ''; }
 
@@ -41563,6 +41585,8 @@ function ppSetAba(aba){
     tabs[aba].style.color = '#1a1a18';
     tabs[aba].style.fontWeight = '700';
   }
+  var tbWrap = document.getElementById('pp-toolbar-wrap');
+  if(tbWrap) tbWrap.style.display = (aba === 'programacao') ? 'block' : 'none';
   // Chamar render da aba
   if(aba==='dashboard')   ppRenderDashboard();
   if(aba==='programacao') progProjRenderQuadro && progProjRenderQuadro();
@@ -41835,8 +41859,47 @@ function _ppObrasCarregarProjetos(){
 }
 
 
+var _ppStickyIniciado = false;
+
+function progProjInitStickyHeader(){
+  if(_ppStickyIniciado) return;
+  _ppStickyIniciado = true;
+  setTimeout(function(){
+    var container = document.getElementById('app-content-area');
+    var header    = document.getElementById('pp-header-fixo');
+    if(!container || !header) return;
+    var headerOffsetTop = null;
+    container.addEventListener('scroll', function(){
+      if(!header || header.offsetParent === null) return;
+      if(headerOffsetTop === null) headerOffsetTop = header.offsetTop;
+      if(container.scrollTop > headerOffsetTop){
+        var cRect = container.getBoundingClientRect();
+        header.style.position = 'fixed';
+        header.style.top = cRect.top + 'px';
+        header.style.left = cRect.left + 'px';
+        header.style.width = container.clientWidth + 'px';
+        header.style.zIndex = '200';
+        header.style.boxShadow = '0 4px 16px #0004';
+        header.style.padding = '0 1rem';
+        var ph = document.getElementById('pp-header-placeholder');
+        if(ph) ph.style.height = header.offsetHeight + 'px';
+      } else {
+        header.style.position = '';
+        header.style.top = '';
+        header.style.left = '';
+        header.style.width = '';
+        header.style.boxShadow = '';
+        header.style.padding = '';
+        var ph = document.getElementById('pp-header-placeholder');
+        if(ph) ph.style.height = '0';
+      }
+    }, {passive: true});
+  }, 800);
+}
+
 function progProjInit(){
   ppSetAba(_ppAba || 'programacao');
+  progProjInitStickyHeader();
   _pp.data = dataHojeLocal();
   var selData = document.getElementById('pp-data');
   if(selData) selData.value = _pp.data;
@@ -41856,13 +41919,18 @@ function progProjInit(){
     var contsPrj = _contratosVisiveis().filter(function(c){
       return !(c.modalidade_trabalho||'').toLowerCase().includes('disponibilidade');
     });
+    var _cidAtual = selCont.value || (_pp&&_pp.cid) || '';
     selCont.innerHTML = '<option value="">Selecione o contrato...</option>'
       + contsPrj.map(function(c){
           return '<option value="'+c.id+'">'+c.nome+'</option>';
         }).join('');
   }
-  progProjAtualizarPillsTipo();
-  progProjRenderQuadro();
+    if(_cidAtual && selCont) selCont.value = _cidAtual;
+  var _dataInit = (selData && selData.value) ? selData.value : _pp.data;
+  progCarregarPontoDoSupabase(_dataInit, function(){
+    progProjAtualizarPillsTipo();
+    progProjRenderQuadro();
+  });
 }
 
 function progProjMudarContrato(){
@@ -42106,8 +42174,22 @@ function progProjAtualizarQuadro(){
   var cid = progProjGetCid();
   if(!cid){ progShowToast('Selecione um contrato primeiro'); return; }
   progShowToast('⏳ Atualizando...');
+  // Salvar data e contrato para restaurar após refresh
+  var _dataAtual = data;
+  var _cidAtual = cid;
   progProjCarregarStatus(data);
   progProjInit();
+  // Restaurar data e contrato após init (que pode resetar o input)
+  setTimeout(function(){
+    var inp = document.getElementById('pp-data');
+    if(inp && _dataAtual) inp.value = _dataAtual;
+    var sel = document.getElementById('pp-cont');
+    if(sel && _cidAtual) sel.value = _cidAtual;
+    if(_pp) { _pp.data = _dataAtual; _pp.cid = _cidAtual; }
+    progCarregarPontoDoSupabase(_dataAtual, function(){
+      progProjRenderQuadro();
+    });
+  }, 100);
 }
 
 function ppNavScroll(sec){ var el=document.getElementById('pp-sec-'+sec); if(el){el.scrollIntoView({behavior:'smooth',block:'start'});el.style.outline='2px solid #185FA5';setTimeout(function(){el.style.outline='';},1500);}else{var q=document.getElementById('pp-quadro');if(q)q.scrollIntoView({behavior:'smooth',block:'start'});} }
@@ -42126,6 +42208,7 @@ function ppSyncPonto(){
   if(!colsContrato.length){
     progShowToast('Nenhum colaborador com RE encontrado');
     if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+        if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
     return;
   }
 
@@ -42180,6 +42263,7 @@ function plptSyncPonto(){
   if(!data){ progShowToast('Selecione uma data primeiro'); return; }
   var btn = document.getElementById('plpt-btn-sync-ponto');
   if(btn){ btn.textContent='⏳ Sincronizando...'; btn.disabled=true; }
+  if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
 
   // Coletar todos os REs dos colaboradores do contrato atual
   var colsContrato = colaboradores.filter(function(c){
@@ -57699,27 +57783,21 @@ async function lcAnalisarContrato(){
 
 </script>
 <!-- ══ PROGRAMAÇÃO EQUIPES PLPT ══════════════════════════════ -->
-<div id="pg-programacao-projetos" class="hidden" style="overflow-y:auto;padding-bottom:4rem">
+<div id="pg-programacao-projetos" class="hidden" style="padding-bottom:4rem">
 
+  <div id="pp-header-placeholder" style="height:0;transition:height .1s"></div>
+  <div id="pp-header-fixo">
   <!-- Tab bar -->
-  <div style="display:flex;gap:0;border-bottom:2px solid #e0dfd8;margin-bottom:1rem;background:#fff;border-radius:10px 10px 0 0;padding:0 .5rem">
+  <div id="pp-tab-bar" style="display:flex;gap:0;border-bottom:2px solid #e0dfd8;margin-bottom:0;background:#fff;border-radius:10px 10px 0 0;padding:0 .5rem">
     <button id="pp-tab-dashboard"    onclick="ppSetAba('dashboard')"   style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#aaa;transition:all .15s">📊 Dashboard</button>
     <button id="pp-tab-programacao"  onclick="ppSetAba('programacao')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18;transition:all .15s">📅 Programação</button>
     <button id="pp-tab-requisicoes" onclick="ppSetAba('requisicoes')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">🧰 Requisições</button>
     <button id="pp-tab-obras" onclick="ppSetAba('obras')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">📋 Projetos de Obras</button>
   </div>
 
-  <!-- Painel Dashboard -->
-  <div id="pp-painel-dashboard" class="hidden">
-    <div id="pp-dash-inner"></div>
-  </div>
-
-  <!-- Mobile View Projetos -->
-  <div id="pp-mobile-view" style="display:none"></div>
-  <!-- Painel Programação -->
-  <div id="pp-painel-programacao" class="hidden" style="display:none">
-  <!-- Filtros -->
-  <div class="card" style="margin-bottom:1rem">
+  <!-- Filtros (fixos junto com abas na aba Programação) -->
+  <div id="pp-toolbar-wrap">
+  <div class="card" style="margin-bottom:1rem;border-radius:0 0 10px 10px">
     <div class="ch" style="flex-wrap:wrap;gap:8px">
       <span class="ct">🗂 Programação de Projetos</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -57766,8 +57844,18 @@ async function lcAnalisarContrato(){
       <span style="font-size:10px;background:#EEEDFE;color:#534AB7;padding:1px 6px;border-radius:4px">Treinamento</span>
     </div>
   </div>
+  </div><!-- /pp-toolbar-wrap -->
+  </div><!-- /pp-header-fixo -->
 
+  <!-- Painel Dashboard -->
+  <div id="pp-painel-dashboard" class="hidden">
+    <div id="pp-dash-inner"></div>
+  </div>
 
+  <!-- Painel Programação -->
+  <div id="pp-painel-programacao" class="hidden" style="display:none">
+  <!-- Mobile View Projetos -->
+  <div id="pp-mobile-view" style="display:none"></div>
 
   <!-- Quadro principal -->
   <div id="pp-quadro">
