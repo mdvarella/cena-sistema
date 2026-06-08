@@ -27145,10 +27145,17 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.300',
+  numero: '7.9.302',
   data:   '07/06/2026',
-  build:  '20260607-1400',
+  build:  '20260607-1700',
   log: [
+    {v:'7.9.302', d:'07/06/2026', itens:[
+      'Sync Ponto TMA: sincroniza apenas colaboradores do contrato TMA Oeste',
+    ]},
+    {v:'7.9.301', d:'07/06/2026', itens:[
+      'Sync Ponto TMA: sincronização em lotes (evita timeout/CORS falso no Azure)',
+      'Sync Ponto TMA: filtra por contrato selecionado quando houver',
+    ]},
     {v:'7.9.300', d:'07/06/2026', itens:[
       'Programação de Projetos: abas + barra de filtros fixas ao rolar (igual TMA)',
     ]},
@@ -30689,83 +30696,103 @@ function progMobileDesprogramar(eqId){
 // ── Sincronização de Ponto ────────────────────────────────────────────────
 function progSyncPonto(){
   var data = progGetData();
+  var cid  = _TMA_CID; // tela TMA = sempre contrato TMA Oeste
   var btn  = document.getElementById('btn-sync-ponto');
   if(btn){ btn.textContent='⏳ Sincronizando...'; btn.disabled=true; }
 
-  // Coletar todos os REs dos colaboradores ativos de campo
+  // Colaboradores de campo do contrato TMA Oeste apenas
   var matriculas = colaboradores
-    .filter(function(c){ return c.ativo && !c.dispensado && (c.vinculo||'campo')==='campo' && c.re; })
+    .filter(function(c){
+      if(!c.ativo || c.dispensado || (c.vinculo||'campo')!=='campo' || !c.re) return false;
+      if(c.contrato_id !== cid) return false;
+      return true;
+    })
     .map(function(c){ return String(c.re); });
 
   if(!matriculas.length){
-    progShowToast('Nenhum colaborador de campo encontrado.');
+    progShowToast('Nenhum colaborador de campo encontrado no TMA Oeste.');
     if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
     return;
   }
 
-  progShowToast('🔄 Sincronizando ponto de '+matriculas.length+' colaboradores...');
+  progShowToast('🔄 Sincronizando ponto TMA Oeste ('+matriculas.length+' colaboradores)...');
 
-  // Pausar auto-refresh durante sincronização
   if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
-  var dataSyncInicio = data; // guardar dia do início do sync
+  var dataSyncInicio = data;
+  var BATCH = 20;
+  var totalSinc = 0;
+  var totalErros = 0;
+  var idx = 0;
 
-  fetch(PONTO_API_URL + '/api/v1/sincronizar-dia', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({matriculas: matriculas, data: data})
-  })
-  .then(function(r){ return r.json(); })
-  .then(function(d){
-    pontoInvalidarCache();
-    // Só atualizar badges se o usuário ainda está no mesmo dia
-    var dataAtual = progGetData();
-    if(dataAtual !== dataSyncInicio){
-      progShowToast('✅ Ponto sincronizado — '+dataSyncInicio+' ('+d.sincronizados+'/'+d.total+')');
-      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-      if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
-      return;
-    }
-    progCarregarPontoDoSupabase(data, function(){
-      // Corrigir status de colaboradores que bateram ponto mas estavam como falta
-      var corrigidos = 0;
-      colaboradores.forEach(function(col){
-        if(!col.ativo || !col.re) return;
-        var st = _progStatus[col.id] || 'disponivel';
-        // Só corrigir se estava como falta
-        if(st !== 'falta') return;
-        var key = col.re + '_' + data;
-        var ponto = _pontoCache[key];
-        if(!ponto) return;
-        var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
-        if(!temEntrada) return;
-        // Bateu ponto mas estava como falta — corrigir para disponivel
-        _progStatus[col.id] = 'disponivel';
-        if(!DEMO){
-          sbDelete('prog_status_diario', 'colaborador_id=eq.'+col.id+'&data=eq.'+data)
-            .catch(function(){});
-        }
-        corrigidos++;
-      });
-      if(corrigidos > 0){
-        console.log('[Sync Ponto] '+corrigidos+' status de falta corrigidos para disponivel');
-      }
-      // Renderizar quadro com dados atualizados
-      progRenderQuadro();
-      setTimeout(function(){
-        progCarregarBadgesPonto();
-        var msg = '✅ Ponto sincronizado — '+data+' ('+d.sincronizados+'/'+d.total+')';
-        if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
-        progShowToast(msg);
+  function syncLote(){
+    if(idx >= matriculas.length){
+      pontoInvalidarCache();
+      var dataAtual = progGetData();
+      if(dataAtual !== dataSyncInicio){
+        progShowToast('✅ Ponto sincronizado — '+dataSyncInicio+' ('+totalSinc+'/'+matriculas.length+')');
         if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
         if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
-      }, 300);
+        return;
+      }
+      progCarregarPontoDoSupabase(data, function(){
+        var corrigidos = 0;
+        colaboradores.forEach(function(col){
+          if(!col.ativo || !col.re) return;
+          if(cid && col.contrato_id !== cid) return;
+          var st = _progStatus[col.id] || 'disponivel';
+          if(st !== 'falta') return;
+          var key = col.re + '_' + data;
+          var ponto = _pontoCache[key];
+          if(!ponto) return;
+          var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
+          if(!temEntrada) return;
+          _progStatus[col.id] = 'disponivel';
+          if(!DEMO){
+            sbDelete('prog_status_diario', 'colaborador_id=eq.'+col.id+'&data=eq.'+data).catch(function(){});
+          }
+          corrigidos++;
+        });
+        progRenderQuadro();
+        setTimeout(function(){
+          progCarregarBadgesPonto();
+          var msg = '✅ Ponto sincronizado — '+data+' ('+totalSinc+'/'+matriculas.length+')';
+          if(totalErros > 0) msg += ' | '+totalErros+' erro(s)';
+          if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
+          progShowToast(msg);
+          if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+          if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+        }, 300);
+      });
+      return;
+    }
+
+    var lote = matriculas.slice(idx, idx + BATCH);
+    if(btn) btn.textContent = '⏳ ' + Math.min(idx + lote.length, matriculas.length) + '/' + matriculas.length + '...';
+
+    fetch(PONTO_API_URL + '/api/v1/sincronizar-dia', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({matriculas: lote, data: data})
+    })
+    .then(function(r){
+      if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+(t?': '+t.substring(0,80):'')); });
+      return r.json();
+    })
+    .then(function(d){
+      totalSinc += (d && d.sincronizados) ? d.sincronizados : lote.length;
+      totalErros += (d && d.erros) ? d.erros : 0;
+      idx += BATCH;
+      syncLote();
+    })
+    .catch(function(e){
+      console.error('[Sync Ponto] lote falhou idx='+idx+':', e);
+      progShowToast('❌ Erro ao sincronizar ponto: '+e.message);
+      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+      if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
     });
-  })
-  .catch(function(e){
-    progShowToast('❌ Erro ao sincronizar ponto: '+e.message);
-    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-    if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
-  });
+  }
+
+  syncLote();
 }
 
 // Carregar dados de ponto do Supabase (após sincronização ou ao abrir dia anterior)
