@@ -625,6 +625,15 @@ select.inp{cursor:pointer}
                  oninput="acordSimularParcelas('neg')"/>
         </div>
         <div class="fg">
+          <label>Valor de Entrada (R$)</label>
+          <input class="inp" type="number" step="0.01" id="wiz-entrada-val" placeholder="0,00"
+                 oninput="acordSimularParcelas()"/>
+        </div>
+        <div class="fg" id="wiz-fg-entrada-data" style="display:none">
+          <label>Data da Entrada *</label>
+          <input class="inp" type="date" id="wiz-entrada-data"/>
+        </div>
+        <div class="fg">
           <label>Nº de Parcelas *</label>
           <input class="inp" type="number" min="1" id="wiz-num-parcelas" value="1"
                  oninput="acordSimularParcelas()"/>
@@ -640,6 +649,10 @@ select.inp{cursor:pointer}
           <label>Data da 1ª Parcela *</label>
           <input class="inp" type="date" id="wiz-data-primeira" oninput="acordSimularParcelas()"/>
         </div>
+        <div class="fg" style="display:flex;align-items:center;gap:8px;padding-top:22px">
+          <input type="checkbox" id="wiz-datas-variaveis" onchange="acordSimularParcelas()" style="width:16px;height:16px;cursor:pointer"/>
+          <label for="wiz-datas-variaveis" style="margin:0;cursor:pointer;font-size:12px">Datas variáveis por parcela</label>
+        </div>
         <div class="fg">
           <label>Responsável pelo acordo</label>
           <input class="inp" id="wiz-responsavel" placeholder="Nome do negociador"/>
@@ -653,7 +666,7 @@ select.inp{cursor:pointer}
       <div style="font-size:11px;color:#888;margin-bottom:6px">Simulação de parcelas:</div>
       <div style="border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden;max-height:220px;overflow-y:auto">
         <table class="tbl">
-          <thead><tr><th>#</th><th>Vencimento</th><th>Valor</th></tr></thead>
+          <thead><tr><th>#</th><th id="wiz-th-venc">Vencimento</th><th>Valor</th></tr></thead>
           <tbody id="tbody-simulacao"><tr><td colspan="3" style="text-align:center;color:#aaa;padding:1rem">Preencha os campos acima</td></tr></tbody>
         </table>
       </div>
@@ -735,7 +748,8 @@ select.inp{cursor:pointer}
 <!-- ═══════════════════════════ SCRIPT ════════════════════════════════════ -->
 <script>
 
-var APP_VERSAO = { numero: '1.0.0', log: [
+var APP_VERSAO = { numero: '1.1.0', log: [
+  { v: '1.1.0', data: '2026-06-09', desc: 'Fornecedores: filtrar só quem tem título; pesquisa por nome. Simulador: entrada, intervalos 30 dias, flag datas variáveis por parcela' },
   { v: '1.0.0', data: '2026-06-09', desc: 'Fase 1 — Estrutura base: login, dashboard, CRUD fornecedores e títulos, wizard de negociação' }
 ]};
 
@@ -785,6 +799,11 @@ function acordEscHtml(s) {
 }
 function acordParseMoeda(s) {
   return parseFloat(String(s||'0').replace(/\./g,'').replace(',','.')) || 0;
+}
+function acordAddDias(dataStr, n) {
+  var d = new Date(dataStr + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
 function acordAddMeses(dataStr, n) {
   var d = new Date(dataStr + 'T00:00:00');
@@ -1035,7 +1054,8 @@ function acordRenderFornecedores() {
   var busca = (document.getElementById('forn-busca') && document.getElementById('forn-busca').value || '').toLowerCase();
   var lista = _acordFornecedores.filter(function(f) {
     if (!f.ativo) return false;
-    if (busca && (f.nome||'').toLowerCase().indexOf(busca) < 0 && (f.cnpj_cpf||'').indexOf(busca) < 0) return false;
+    if (!_acordTitulos.some(function(t) { return t.fornecedor_id === f.id; })) return false;
+    if (busca && (f.nome||'').toLowerCase().indexOf(busca) < 0 && (f.cnpj_cpf||'').toLowerCase().indexOf(busca) < 0) return false;
     return true;
   });
   document.getElementById('forn-subtitulo').textContent = lista.length + ' fornecedor(es)';
@@ -1510,35 +1530,70 @@ function acordSimularParcelas(modo) {
   else if (modo === 'pct') { descVal = orig * descPct / 100; valNeg = orig - descVal; document.getElementById('wiz-desconto-val').value = descVal.toFixed(2); document.getElementById('wiz-val-negociado').value = valNeg.toFixed(2); }
   else if (modo === 'neg') { descVal = orig - valNeg; descPct = orig > 0 ? descVal/orig*100 : 0; document.getElementById('wiz-desconto-val').value = descVal.toFixed(2); document.getElementById('wiz-desconto-pct').value = descPct.toFixed(2); }
 
+  // Entrada
+  var entradaVal = parseFloat(document.getElementById('wiz-entrada-val').value)||0;
+  var fgEntrada = document.getElementById('wiz-fg-entrada-data');
+  if (fgEntrada) fgEntrada.style.display = entradaVal > 0 ? '' : 'none';
+
   var n    = parseInt(document.getElementById('wiz-num-parcelas').value)||1;
   var tipo = document.getElementById('wiz-tipo-parcelas').value;
   var data = document.getElementById('wiz-data-primeira').value;
+  var datasVar = document.getElementById('wiz-datas-variaveis').checked;
   if (!data || n < 1 || valNeg <= 0) return;
+
+  // Valor base das parcelas = negociado menos entrada
+  var valParcelas = Math.max(0, Math.round((valNeg - entradaVal) * 100) / 100);
 
   _wizParcelasSimuladas = [];
   var html = '';
-  if (tipo === 'fixas') {
-    var base    = Math.floor(valNeg / n * 100) / 100;
-    var resto   = Math.round((valNeg - base * n) * 100) / 100;
+
+  // Linha de entrada (parcela 0)
+  if (entradaVal > 0) {
+    var dtEntrada = document.getElementById('wiz-entrada-data').value || data;
+    _wizParcelasSimuladas.push({ numero: 0, valor: entradaVal, data_vencimento: dtEntrada, entrada: true });
+    html += '<tr style="background:#fffbe6"><td><em>Entrada</em></td><td>' + acordFmtData(dtEntrada) + '</td><td>' + acordFmtMoeda(entradaVal) + '</td></tr>';
+  }
+
+  if (tipo === 'fixas' && !datasVar) {
+    var base  = Math.floor(valParcelas / n * 100) / 100;
+    var resto = Math.round((valParcelas - base * n) * 100) / 100;
     for (var i = 0; i < n; i++) {
-      var vl   = i === n-1 ? base + resto : base;
-      var dt   = i === 0 ? data : acordAddMeses(data, i);
+      var vl = i === n-1 ? base + resto : base;
+      var dt = acordAddDias(data, i * 30);
       _wizParcelasSimuladas.push({ numero: i+1, valor: vl, data_vencimento: dt });
       html += '<tr><td>' + (i+1) + '</td><td>' + acordFmtData(dt) + '</td><td>' + acordFmtMoeda(vl) + '</td></tr>';
     }
   } else {
+    // Parcelas variáveis em valor E/OU datas editáveis
+    var base2  = tipo === 'fixas' ? Math.floor(valParcelas / n * 100) / 100 : 0;
+    var resto2 = tipo === 'fixas' ? Math.round((valParcelas - base2 * n) * 100) / 100 : 0;
     for (var j = 0; j < n; j++) {
-      var dt2 = j === 0 ? data : acordAddMeses(data, j);
-      _wizParcelasSimuladas.push({ numero: j+1, valor: 0, data_vencimento: dt2 });
-      html += '<tr><td>' + (j+1) + '</td><td>' + acordFmtData(dt2) + '</td><td><input type="number" step="0.01" class="inp" style="width:90px" placeholder="0,00" value="" data-idx="' + j + '" oninput="acordWizAtualizarParcelaVar(this)"/></td></tr>';
+      var dt3 = acordAddDias(data, j * 30);
+      var vl3 = tipo === 'fixas' ? (j === n-1 ? base2 + resto2 : base2) : 0;
+      _wizParcelasSimuladas.push({ numero: j+1, valor: vl3, data_vencimento: dt3 });
+      var dtInput = datasVar
+        ? '<input type="date" class="inp" style="width:130px;font-size:11px" value="' + dt3 + '" data-idx="' + j + '" oninput="acordWizAtualizarDataVar(this)"/>'
+        : acordFmtData(dt3);
+      var vlInput = tipo === 'variaveis'
+        ? '<input type="number" step="0.01" class="inp" style="width:90px" placeholder="0,00" value="' + (vl3||'') + '" data-idx="' + j + '" oninput="acordWizAtualizarParcelaVar(this)"/>'
+        : acordFmtMoeda(vl3);
+      html += '<tr><td>' + (j+1) + '</td><td>' + dtInput + '</td><td>' + vlInput + '</td></tr>';
     }
   }
+
   document.getElementById('tbody-simulacao').innerHTML = html;
 }
 
 function acordWizAtualizarParcelaVar(el) {
   var idx = parseInt(el.getAttribute('data-idx'));
-  if (_wizParcelasSimuladas[idx]) _wizParcelasSimuladas[idx].valor = parseFloat(el.value)||0;
+  // _wizParcelasSimuladas[0] pode ser entrada (numero:0), parcelas começam depois
+  var offset = (_wizParcelasSimuladas.length > 0 && _wizParcelasSimuladas[0].entrada) ? 1 : 0;
+  if (_wizParcelasSimuladas[offset + idx]) _wizParcelasSimuladas[offset + idx].valor = parseFloat(el.value)||0;
+}
+function acordWizAtualizarDataVar(el) {
+  var idx = parseInt(el.getAttribute('data-idx'));
+  var offset = (_wizParcelasSimuladas.length > 0 && _wizParcelasSimuladas[0].entrada) ? 1 : 0;
+  if (_wizParcelasSimuladas[offset + idx]) _wizParcelasSimuladas[offset + idx].data_vencimento = el.value;
 }
 
 function acordWizP3() {
@@ -1551,8 +1606,11 @@ function acordWizP3() {
   if (_wizParcelasSimuladas.length === 0) { acordShowToast('Simule as parcelas antes de continuar', 'aviso'); return; }
   if (tipo === 'variaveis') {
     var soma = _wizParcelasSimuladas.reduce(function(s,p) { return s+p.valor; }, 0);
-    if (Math.abs(soma - valNeg) > 0.02) { acordShowToast('Soma das parcelas variáveis (' + acordFmtMoeda(soma) + ') deve ser igual ao valor negociado (' + acordFmtMoeda(valNeg) + ')', 'aviso'); return; }
+    if (Math.abs(soma - valNeg) > 0.02) { acordShowToast('Soma das parcelas (' + acordFmtMoeda(soma) + ') deve ser igual ao valor negociado (' + acordFmtMoeda(valNeg) + ')', 'aviso'); return; }
   }
+  var entradaVal3 = parseFloat(document.getElementById('wiz-entrada-val').value)||0;
+  var entradaDt3  = document.getElementById('wiz-entrada-data').value;
+  if (entradaVal3 > 0 && !entradaDt3) { acordShowToast('Informe a data da entrada', 'aviso'); return; }
 
   var fornId  = document.getElementById('wiz-fornecedor-id').value;
   var forn    = _acordFornecedores.find(function(f) { return f.id === fornId; }) || {};
@@ -1567,7 +1625,9 @@ function acordWizP3() {
   html += '<tr><td style="color:#888">Valor original total:</td><td>' + acordFmtMoeda(orig) + '</td></tr>';
   html += '<tr><td style="color:#888">Desconto:</td><td>' + acordFmtMoeda(descVal) + ' (' + descPct.toFixed(1) + '%)</td></tr>';
   html += '<tr><td style="color:#888">Valor negociado:</td><td><strong>' + acordFmtMoeda(valNeg) + '</strong></td></tr>';
-  html += '<tr><td style="color:#888">Parcelas:</td><td>' + n + 'x · ' + (tipo === 'fixas' ? 'fixas' : 'variáveis') + ' · 1ª em ' + acordFmtData(data) + '</td></tr>';
+  if (entradaVal3 > 0) html += '<tr><td style="color:#888">Entrada:</td><td>' + acordFmtMoeda(entradaVal3) + ' em ' + acordFmtData(entradaDt3) + '</td></tr>';
+  var datasVar3 = document.getElementById('wiz-datas-variaveis').checked;
+  html += '<tr><td style="color:#888">Parcelas:</td><td>' + n + 'x · ' + (tipo === 'fixas' ? 'fixas' : 'variáveis') + (datasVar3 ? ' · datas individuais' : ' · a cada 30 dias') + ' · 1ª em ' + acordFmtData(data) + '</td></tr>';
   html += '<tr><td style="color:#888">Responsável:</td><td>' + acordEscHtml(document.getElementById('wiz-responsavel').value || '—') + '</td></tr>';
   html += '</table>';
   document.getElementById('wiz-resumo').innerHTML = html;
