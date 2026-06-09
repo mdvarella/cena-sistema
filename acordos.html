@@ -769,7 +769,8 @@ select.inp{cursor:pointer}
 <!-- ═══════════════════════════ SCRIPT ════════════════════════════════════ -->
 <script>
 
-var APP_VERSAO = { numero: '1.4.0', log: [
+var APP_VERSAO = { numero: '1.5.0', log: [
+  { v: '1.5.0', data: '2026-06-09', desc: 'Excluir negociação: remove parcelas, restaura títulos para pendente' },
   { v: '1.4.0', data: '2026-06-09', desc: 'Títulos: status Impostos com badge laranja, botão Mover (quarentena/impostos), indicador no dashboard' },
   { v: '1.3.0', data: '2026-06-09', desc: 'Negociações: novos status Proposta Enviada, Proposta Aprovada, Confirmada, Quarentena — badges coloridos e seletor no detalhe' },
   { v: '1.2.0', data: '2026-06-09', desc: 'Status Quarentena em títulos: badge, botão mover/restaurar, indicador no dashboard com valor total' },
@@ -1476,6 +1477,45 @@ async function acordConfirmarPagamento() {
   acordSetLoading(false);
 }
 
+// ── EXCLUIR NEGOCIAÇÃO ────────────────────────────────────────────────────
+async function acordExcluirNegociacao(negId) {
+  var n = _acordNegociacoes.find(function(x) { return x.id === negId; });
+  if (!n) return;
+  var forn = _acordFornecedores.find(function(f) { return f.id === n.fornecedor_id; }) || {};
+  var msg = 'Excluir negociação ' + (n.codigo||negId) + ' — ' + (forn.nome||'') + '?\n\n' +
+    '• As parcelas serão removidas\n' +
+    '• Os títulos voltam para "pendente"\n\n' +
+    'Esta ação não pode ser desfeita. Confirma?';
+  if (!confirm(msg)) return;
+  acordSetLoading(true);
+  try {
+    // 1. Restaurar situação dos títulos vinculados
+    var vinc = await _sb.from('acord_negociacao_titulos').select('titulo_id').eq('negociacao_id', negId);
+    if (vinc.error) throw vinc.error;
+    for (var i = 0; i < vinc.data.length; i++) {
+      await _sb.from('acord_titulos').update({ situacao: 'pendente' }).eq('id', vinc.data[i].titulo_id);
+    }
+    // 2. Excluir negociação (parcelas e vínculos cascadeiam)
+    var res = await _sb.from('acord_negociacoes').delete().eq('id', negId);
+    if (res.error) throw res.error;
+    // 3. Atualizar cache local
+    _acordNegociacoes = _acordNegociacoes.filter(function(x) { return x.id !== negId; });
+    _acordParcelas    = _acordParcelas.filter(function(p) { return p.negociacao_id !== negId; });
+    vinc.data.forEach(function(v) {
+      var t = _acordTitulos.find(function(x) { return x.id === v.titulo_id; });
+      if (t) t.situacao = 'pendente';
+    });
+    acordFecharModal('modal-detalhe-neg');
+    acordRenderNegociacoes();
+    acordRenderTitulos();
+    acordRenderDashboard();
+    acordShowToast('Negociação excluída. Títulos restaurados para pendente.', 'ok');
+  } catch(e) {
+    acordShowToast('Erro ao excluir: ' + e.message, 'erro');
+  }
+  acordSetLoading(false);
+}
+
 // ── ALTERAR STATUS NEGOCIAÇÃO ─────────────────────────────────────────────
 async function acordAlterarStatusNeg(negId, novoStatus) {
   if (!novoStatus) return;
@@ -1551,6 +1591,9 @@ function acordVerNegociacao(negId) {
   });
   html += '</tbody></table>';
   if (n.observacoes) html += '<div style="margin-top:1rem;font-size:12px;color:#555"><strong>Observações:</strong> ' + acordEscHtml(n.observacoes) + '</div>';
+  html += '<div style="margin-top:1.5rem;padding-top:1rem;border-top:.5px solid #e0dfd8;display:flex;justify-content:flex-end">';
+  html += '<button class="btn" style="background:#FCEBEB;color:#A32D2D;border-color:#f0c0c0" onclick="acordExcluirNegociacao(\'' + n.id + '\')" title="Excluir esta negociação">🗑 Excluir Negociação</button>';
+  html += '</div>';
   document.getElementById('modal-detalhe-corpo').innerHTML = html;
   acordAbrirModal('modal-detalhe-neg');
 }
