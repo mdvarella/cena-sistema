@@ -652,7 +652,7 @@ select.inp{cursor:pointer}
         </div>
         <div class="fg" id="wiz-fg-entrada-data" style="display:none">
           <label>Data da Entrada *</label>
-          <input class="inp" type="date" id="wiz-entrada-data"/>
+          <input class="inp" type="date" id="wiz-entrada-data" oninput="acordSimularParcelas()"/>
         </div>
         <div class="fg">
           <label>Nº de Parcelas *</label>
@@ -769,7 +769,8 @@ select.inp{cursor:pointer}
 <!-- ═══════════════════════════ SCRIPT ════════════════════════════════════ -->
 <script>
 
-var APP_VERSAO = { numero: '1.5.0', log: [
+var APP_VERSAO = { numero: '1.5.1', log: [
+  { v: '1.5.1', data: '2026-06-09', desc: 'Dashboard: corrige saldo a negociar — Total em Aberto inclui quarentena/impostos, saldo desconta os três corretamente' },
   { v: '1.5.0', data: '2026-06-09', desc: 'Excluir negociação: remove parcelas, restaura títulos para pendente' },
   { v: '1.4.0', data: '2026-06-09', desc: 'Títulos: status Impostos com badge laranja, botão Mover (quarentena/impostos), indicador no dashboard' },
   { v: '1.3.0', data: '2026-06-09', desc: 'Negociações: novos status Proposta Enviada, Proposta Aprovada, Confirmada, Quarentena — badges coloridos e seletor no detalhe' },
@@ -952,8 +953,17 @@ function acordRenderDashboard() {
   var d7   = new Date(); d7.setDate(d7.getDate() + 7);
   var em7s = d7.getFullYear()+'-'+String(d7.getMonth()+1).padStart(2,'0')+'-'+String(d7.getDate()).padStart(2,'0');
 
-  // Valores em aberto
-  var titAbertos = _acordTitulos.filter(function(t) { return t.situacao === 'pendente' || t.situacao === 'em_negociacao'; });
+  // Quarentena e Impostos (calculados cedo para usar no saldo)
+  var titQuar = _acordTitulos.filter(function(t) { return t.situacao === 'quarentena'; });
+  var vlQuar  = titQuar.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0); }, 0);
+  var titImp  = _acordTitulos.filter(function(t) { return t.situacao === 'impostos'; });
+  var vlImp   = titImp.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0); }, 0);
+
+  // Total em Aberto = todos os títulos não resolvidos (pendente + em_negociacao + quarentena + impostos)
+  var titAbertos = _acordTitulos.filter(function(t) {
+    return t.situacao === 'pendente' || t.situacao === 'em_negociacao' ||
+           t.situacao === 'quarentena' || t.situacao === 'impostos';
+  });
   var vlAberto = titAbertos.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0) + (parseFloat(t.valor_juros)||0) + (parseFloat(t.valor_multa)||0); }, 0);
 
   // Negociados
@@ -983,10 +993,7 @@ function acordRenderDashboard() {
 
   document.getElementById('met-aberto').textContent    = acordFmtMoeda(vlAberto);
   document.getElementById('met-negociado').textContent = acordFmtMoeda(vlNeg);
-  var titQuar = _acordTitulos.filter(function(t) { return t.situacao === 'quarentena'; });
-  var vlQuar  = titQuar.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0); }, 0);
-  var titImp  = _acordTitulos.filter(function(t) { return t.situacao === 'impostos'; });
-  var vlImp   = titImp.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0); }, 0);
+  // Saldo = Total em Aberto − Negociados − Quarentena − Impostos (quarentena/impostos já estão em vlAberto)
   document.getElementById('met-saldo').textContent     = acordFmtMoeda(Math.max(0, vlAberto - vlNeg - vlQuar - vlImp));
   document.getElementById('met-desconto').textContent  = acordFmtMoeda(vlDesc);
   document.getElementById('met-parc7').textContent     = parc7.length;
@@ -994,9 +1001,7 @@ function acordRenderDashboard() {
   document.getElementById('met-taxa').textContent      = taxa + '%';
   document.getElementById('met-forn').textContent      = Object.keys(fornIds).length;
 
-  // Quarentena
-  var titQuar = _acordTitulos.filter(function(t) { return t.situacao === 'quarentena'; });
-  var vlQuar  = titQuar.reduce(function(s,t) { return s + (parseFloat(t.valor_original)||0); }, 0);
+  // Quarentena / Impostos
   document.getElementById('met-quar-val').textContent = vlQuar > 0 ? acordFmtMoeda(vlQuar) : '—';
   document.getElementById('met-quar').textContent     = titQuar.length + ' doc(s)';
   document.getElementById('met-imp-val').textContent  = vlImp > 0 ? acordFmtMoeda(vlImp) : '—';
@@ -1612,7 +1617,11 @@ function acordAbrirWizardNegociacao() {
   // Popular select de fornecedor
   var sel = document.getElementById('wiz-fornecedor-id');
   sel.innerHTML = '<option value="">— Selecione —</option>';
-  _acordFornecedores.filter(function(f) { return f.ativo; }).forEach(function(f) {
+  _acordFornecedores.filter(function(f) {
+    return f.ativo && _acordTitulos.some(function(t) {
+      return t.fornecedor_id === f.id && (t.situacao === 'pendente' || t.situacao === 'em_negociacao');
+    });
+  }).forEach(function(f) {
     var o = document.createElement('option'); o.value = f.id; o.textContent = f.nome;
     sel.appendChild(o);
   });
@@ -1719,7 +1728,7 @@ function acordSimularParcelas(modo) {
 
   // Linha de entrada (parcela 0)
   if (entradaVal > 0) {
-    var dtEntrada = document.getElementById('wiz-entrada-data').value || data;
+    var dtEntrada = document.getElementById('wiz-entrada-data').value;
     _wizParcelasSimuladas.push({ numero: 0, valor: entradaVal, data_vencimento: dtEntrada, entrada: true });
     html += '<tr style="background:#fffbe6"><td><em>Entrada</em></td><td>' + acordFmtData(dtEntrada) + '</td><td>' + acordFmtMoeda(entradaVal) + '</td></tr>';
   }
