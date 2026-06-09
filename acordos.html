@@ -335,6 +335,7 @@ select.inp{cursor:pointer}
               <h2 style="font-size:16px;font-weight:600">Fornecedores</h2>
               <p style="font-size:11px;color:#888;margin-top:2px" id="forn-subtitulo">Carregando...</p>
             </div>
+            <button class="btn btn-sm" onclick="acordAbrirImportarERP()" title="Importar fornecedores do ERP CENA">⬇️ Importar do ERP</button>
             <button class="btn btn-pri btn-sm" onclick="acordAbrirFornecedor(null)">+ Novo Fornecedor</button>
           </div>
           <div class="card" style="margin-bottom:.75rem;padding:.75rem 1rem">
@@ -702,6 +703,22 @@ select.inp{cursor:pointer}
     <div class="ma">
       <button class="btn" onclick="acordFecharModal('modal-pagamento')">Cancelar</button>
       <button class="btn btn-ok" onclick="acordConfirmarPagamento()">✅ Confirmar Pagamento</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Importar do ERP -->
+<div class="modal-bg hidden" id="modal-importar-erp">
+  <div class="modal modal-lg">
+    <button class="modal-close" onclick="acordFecharModal('modal-importar-erp')">✕</button>
+    <h3>Importar Fornecedores do ERP CENA</h3>
+    <div id="imp-status" style="font-size:12px;margin-bottom:.75rem;color:#888">Aguardando...</div>
+    <div style="border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden;max-height:360px;overflow-y:auto;margin-bottom:.75rem">
+      <div id="imp-lista"></div>
+    </div>
+    <div class="ma">
+      <button class="btn" onclick="acordFecharModal('modal-importar-erp')">Fechar</button>
+      <button class="btn btn-pri" id="btn-imp-confirmar" onclick="acordConfirmarImportacao()" style="display:none">⬇️ Importar</button>
     </div>
   </div>
 </div>
@@ -1647,6 +1664,148 @@ document.querySelectorAll('.modal-bg').forEach(function(bg) {
     if (e.target === bg) bg.classList.add('hidden');
   });
 });
+
+// ── IMPORTAR FORNECEDORES DO ERP ─────────────────────────────────────────
+var ERP_URL   = 'https://erp.cenabr.app/api/external/v1';
+var ERP_TOKEN = '3ef63343d60c1819dcca665a8731a49f';
+
+function erpNormForn(s) {
+  return {
+    nome:          s.razao_social || s.name || s.nome || s.company_name || '',
+    cnpj_cpf:      s.cnpj || s.cpf || s.cnpj_cpf || s.document || s.tax_id || '',
+    contato_nome:  s.contato || s.contact_name || '',
+    contato_fone:  s.telefone || s.phone || s.celular || s.mobile || '',
+    contato_email: s.email || '',
+    ativo:         true
+  };
+}
+
+function erpFetchPaginaForn(pg) {
+  return fetch(ERP_URL + '/suppliers?page=' + pg, {
+    headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + ERP_TOKEN }
+  }).then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+}
+
+async function acordAbrirImportarERP() {
+  acordAbrirModal('modal-importar-erp');
+  document.getElementById('imp-status').textContent = 'Conectando ao ERP...';
+  document.getElementById('imp-status').style.color = '#888';
+  document.getElementById('imp-lista').innerHTML = '';
+  document.getElementById('btn-imp-confirmar').style.display = 'none';
+
+  try {
+    // Buscar página 1 para saber total de páginas
+    var resp1 = await erpFetchPaginaForn(1);
+    var items = resp1.data || resp1.results || [];
+    var meta  = resp1.meta || {};
+    var lastPage = meta.last_page || resp1.last_page || 1;
+    var total    = meta.total || resp1.total || items.length;
+
+    document.getElementById('imp-status').textContent = 'Carregando ' + total + ' fornecedores...';
+
+    // Buscar páginas restantes em paralelo
+    if (lastPage > 1) {
+      var promises = [];
+      for (var p = 2; p <= lastPage; p++) {
+        promises.push(erpFetchPaginaForn(p).then(function(r) { return r.data || r.results || []; }).catch(function() { return []; }));
+      }
+      var pages = await Promise.all(promises);
+      pages.forEach(function(pg) { items = items.concat(pg); });
+    }
+
+    // Normalizar e filtrar vazios
+    var normalizados = items.map(erpNormForn).filter(function(f) { return f.nome; });
+
+    // Verificar quais já existem no banco (por nome)
+    var nomesExistentes = {};
+    _acordFornecedores.forEach(function(f) { nomesExistentes[f.nome.toLowerCase()] = true; });
+
+    var novos   = normalizados.filter(function(f) { return !nomesExistentes[f.nome.toLowerCase()]; });
+    var existem = normalizados.filter(function(f) { return  nomesExistentes[f.nome.toLowerCase()]; });
+
+    document.getElementById('imp-status').innerHTML =
+      '<span style="color:#3B6D11">✅ ' + normalizados.length + ' fornecedores encontrados</span> · ' +
+      '<strong>' + novos.length + ' novos</strong> · ' +
+      '<span style="color:#888">' + existem.length + ' já cadastrados</span>';
+
+    // Guardar para usar no confirmar
+    window._erpImportNovos = novos;
+
+    if (novos.length === 0) {
+      document.getElementById('imp-lista').innerHTML = '<div style="text-align:center;color:#888;padding:1rem;font-size:12px">Todos os fornecedores já estão cadastrados.</div>';
+      return;
+    }
+
+    // Renderizar lista dos novos
+    var html = '<table class="tbl"><thead><tr><th style="width:32px"><input type="checkbox" id="imp-check-all" checked onchange="acordImpToggleAll(this)"/></th><th>Nome</th><th>CNPJ/CPF</th><th>Telefone</th></tr></thead><tbody>';
+    novos.forEach(function(f, i) {
+      html += '<tr>';
+      html += '<td><input type="checkbox" class="imp-check" data-idx="' + i + '" checked onchange="acordImpAtualizarContador()"/></td>';
+      html += '<td>' + acordEscHtml(f.nome) + '</td>';
+      html += '<td>' + acordEscHtml(f.cnpj_cpf || '—') + '</td>';
+      html += '<td>' + acordEscHtml(f.contato_fone || '—') + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    document.getElementById('imp-lista').innerHTML = html;
+    document.getElementById('btn-imp-confirmar').style.display = 'inline-flex';
+    acordImpAtualizarContador();
+
+  } catch(e) {
+    document.getElementById('imp-status').innerHTML = '<span style="color:#A32D2D">Erro ao acessar o ERP: ' + acordEscHtml(e.message) + '</span>';
+  }
+}
+
+function acordImpToggleAll(cb) {
+  document.querySelectorAll('.imp-check').forEach(function(el) { el.checked = cb.checked; });
+  acordImpAtualizarContador();
+}
+
+function acordImpAtualizarContador() {
+  var n = document.querySelectorAll('.imp-check:checked').length;
+  var btn = document.getElementById('btn-imp-confirmar');
+  btn.textContent = '⬇️ Importar ' + n + ' fornecedor(es)';
+}
+
+async function acordConfirmarImportacao() {
+  var novos = window._erpImportNovos || [];
+  var selecionados = [];
+  document.querySelectorAll('.imp-check:checked').forEach(function(cb) {
+    var idx = parseInt(cb.getAttribute('data-idx'));
+    if (novos[idx]) selecionados.push(novos[idx]);
+  });
+
+  if (!selecionados.length) { acordShowToast('Nenhum fornecedor selecionado', 'aviso'); return; }
+
+  var btn = document.getElementById('btn-imp-confirmar');
+  btn.disabled = true;
+  btn.textContent = 'Importando...';
+  document.getElementById('imp-status').innerHTML = '<span style="color:#185FA5">Salvando ' + selecionados.length + ' fornecedores...</span>';
+
+  try {
+    var email = _acordSessao ? _acordSessao.email : null;
+    // Inserir em lotes de 50
+    var lote = 50; var total = 0;
+    for (var i = 0; i < selecionados.length; i += lote) {
+      var bloco = selecionados.slice(i, i + lote).map(function(f) {
+        return { nome: f.nome, cnpj_cpf: f.cnpj_cpf || null, contato_nome: f.contato_nome || null, contato_fone: f.contato_fone || null, contato_email: f.contato_email || null, ativo: true, criado_por: email };
+      });
+      var res = await _sb.from('acord_fornecedores').insert(bloco);
+      if (res.error) throw res.error;
+      total += bloco.length;
+      document.getElementById('imp-status').innerHTML = '<span style="color:#185FA5">Salvando... ' + total + '/' + selecionados.length + '</span>';
+    }
+
+    acordFecharModal('modal-importar-erp');
+    await acordCarregarDados(true);
+    acordShowToast(total + ' fornecedores importados com sucesso!', 'ok');
+    acordNav('fornecedores');
+  } catch(e) {
+    acordShowToast('Erro ao importar: ' + e.message, 'erro');
+    btn.disabled = false;
+    btn.textContent = '⬇️ Importar selecionados';
+  }
+}
 
 // ── Inicializar ───────────────────────────────────────────────────────────
 acordVerificarSessao();
