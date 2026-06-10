@@ -27366,10 +27366,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.328',
+  numero: '7.9.330',
   data:   '10/06/2026',
-  build:  '20260610-1020',
+  build:  '20260610-1400',
   log: [
+    {v:'7.9.330', d:'10/06/2026', itens:[
+      'Fix: status "verificar" revertia para disponível após refresh — race condition entre save assíncrono e re-leitura do banco; alterações locais dos últimos 30s agora são preservadas na atualização em background',
+    ]},
+    {v:'7.9.329', d:'10/06/2026', itens:[
+      'Escalas Modelo: pool de colaboradores agora exibe Disponíveis primeiro e Folguistas da cor por último',
+    ]},
     {v:'7.9.328', d:'10/06/2026', itens:[
       'Diário de Bordo (mobile): botão ✏️ trocar no card de veículo permite alterar a placa durante o turno — salva em turnos_abertos',
     ]},
@@ -27904,13 +27910,14 @@ function escalasModeloRenderPool(cor){
   }
 
   var html = '';
-  if(folguistas.length){
-    html += '<div style="font-size:10px;font-weight:700;color:'+corInfo.cor+';padding:4px 2px 2px;margin-bottom:2px;border-bottom:1px solid '+corInfo.border+'">🏖 Folguistas '+corInfo.label+'</div>';
-    html += folguistas.map(function(c){ return renderCard(c,true); }).join('');
-  }
+  // Disponíveis do dia primeiro, folguistas da cor do modelo por último
   if(outros.length){
-    if(folguistas.length) html += '<div style="font-size:10px;font-weight:700;color:#666;padding:6px 2px 2px;margin-top:4px;border-bottom:1px solid #ddd">👤 Disponíveis</div>';
+    if(folguistas.length) html += '<div style="font-size:10px;font-weight:700;color:#555;padding:4px 2px 2px;margin-bottom:2px;border-bottom:1px solid #ddd">👤 Disponíveis</div>';
     html += outros.map(function(c){ return renderCard(c,false); }).join('');
+  }
+  if(folguistas.length){
+    html += '<div style="font-size:10px;font-weight:700;color:'+corInfo.cor+';padding:6px 2px 2px;margin-top:'+(outros.length?'6':'2')+'px;border-bottom:1px solid '+corInfo.border+'">🏖 Folga '+corInfo.label+'</div>';
+    html += folguistas.map(function(c){ return renderCard(c,true); }).join('');
   }
   lista.innerHTML = html;
 }
@@ -28449,6 +28456,9 @@ function progCarregarStatus(data){
         })
       ]).then(function(res){
         if(res[0]===null) return;
+        // Preservar alterações feitas nos últimos 30s (evita race condition save→read)
+        var _localRecente = (window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < 30000)
+          ? Object.assign({}, _progStatus) : null;
         _progStatus = {}; _progStatusInfo = {};
         (res[0]||[]).forEach(function(r){
           var stDia = r.status==='faltou'?'falta':r.status;
@@ -28458,6 +28468,12 @@ function progCarregarStatus(data){
           if(r.obs) _progStatusInfo[r.colaborador_id].obs = r.obs;
           _progStatusInfo[r.colaborador_id]._data = r.data;
         });
+        // Restaurar alterações locais recentes que o banco ainda não confirmou
+        if(_localRecente){
+          Object.keys(_localRecente).forEach(function(id){
+            if(_localRecente[id] && !_progStatus[id]) _progStatus[id] = _localRecente[id];
+          });
+        }
         progAplicarPersistentes(data);
         _progSalvarCacheDia(data); // atualizar cache com dados do banco
         _progLS.salvarStatus(data);
@@ -28515,6 +28531,10 @@ function progCarregarStatus(data){
 
       if(rowsDia === null){ return; } // erro de API — manter localStorage
 
+      // Preservar alterações feitas nos últimos 30s (evita race condition save→read)
+      var _localRecentePrinc = (window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < 30000)
+        ? Object.assign({}, _progStatus) : null;
+
       // Aplicar status do dia — com verificação de auto-retorno
       _progStatus = {}; _progStatusInfo = {};
       var hoje2 = dataHojeLocal();
@@ -28539,6 +28559,12 @@ function progCarregarStatus(data){
         if(r.obs) _progStatusInfo[r.colaborador_id].obs = r.obs;
         _progStatusInfo[r.colaborador_id]._data = r.data; // guardar data do registro para validação
       });
+      // Restaurar alterações locais recentes que o banco ainda não confirmou
+      if(_localRecentePrinc){
+        Object.keys(_localRecentePrinc).forEach(function(id){
+          if(_localRecentePrinc[id] && !_progStatus[id]) _progStatus[id] = _localRecentePrinc[id];
+        });
+      }
       // jaSetNoDia inclui quem tem 'disponivel' explícito — bloqueia persistentes
       progAplicarPersistentes(data);
 
