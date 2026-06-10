@@ -12341,6 +12341,7 @@ var equipes_disp = [];
 var _equipsCarregadasDB = false;   // {id, codigo, nome, tipo_id, contrato_id, status}
 var tipos_equipe = [];   // {id, nome, meta_horas_mes}
 var colaboradores = [];  // {id, contrato_id, re, nome, cargo}
+var _colabHistorico = {}; // {id: colab} — inativos/dispensados encontrados em escalas passadas
 var composicao_dia = []; // {id, equipe_id, data, colaborador_id, confirmada, erro_reportado}
 var sessoes_disp = [];   // {id, equipe_id, data, login_ts, almoco_ts, retorno_ts, logout_ts, minutos_faturados, eventos:[]}
 var ordens_db = [];      // {id, equipe_id, data, numero_ordem, eventos:[{tipo,ts,obs,foto}], status, motivo_cancel}
@@ -27366,10 +27367,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.331',
+  numero: '7.9.332',
   data:   '10/06/2026',
   build:  '20260610-1400',
   log: [
+    {v:'7.9.332', d:'10/06/2026', itens:[
+      'Histórico: colaboradores demitidos/dispensados aparecem nas escalas de datas anteriores à dispensa; lista de disponíveis também preserva o histórico; cache _colabHistorico carregado sob demanda para datas passadas',
+    ]},
     {v:'7.9.331', d:'10/06/2026', itens:[
       'Fix definitivo: status "verificar" (e outros) revertia para disponível — upsert não limpava deleted_at do soft-delete anterior; corrigido com deleted_at:null no payload; auto-refresh também preserva alterações recentes',
     ]},
@@ -29297,11 +29301,15 @@ function progRenderQuadro(){
   // ── Limpeza de fantasmas — APENAS status críticos e irreversíveis ────
   // ATENÇÃO: só remove automaticamente status que tornam o colaborador
   // definitivamente indisponível (demitido, fraude).
+  // Em datas PASSADAS não remove — o histórico deve ser preservado.
   // Falta/férias/afastado/treinamento NÃO são removidos automaticamente
   // — devem ser tratados via confirmação do usuário (progSetStatus).
   var STATUS_AUTO_REMOVE = ['demitido','fraude'];
+  var _hojeParaFantasma = dataHojeLocal();
   composicao_dia.forEach(function(comp){
     if((comp.data||'').split('T')[0] !== data) return;
+    // Não limpar fantasmas em datas passadas — preservar histórico de escalas
+    if(data < _hojeParaFantasma) return;
     var ids = parseColabIds(comp.colaborador_ids);
     var mudou = false;
     var idsLimpos = ids.map(function(id){
@@ -29328,6 +29336,8 @@ function progRenderQuadro(){
     _progVeiculosDateCache = null;
     progCarregarStatus(data);
     progCarregarVeiculos(data);
+    // Para datas passadas: garantir colaboradores históricos (dispensados) em memória
+    progCarregarColabHistorico(data);
   }
   _progData = data;
 
@@ -30391,15 +30401,16 @@ function progRenderEquipeRow(eq, data){
   }
   // Slots — máximo 2 por equipe
   var slots = [null, null];
+  var _ehDataPassadaSlot = data < dataHojeLocal();
   ids.forEach(function(id, i){
     if(i >= 2) return;
-    var col = colaboradores.find(function(c){return c.id===id;});
+    var col = progFindColab(id); // busca ativo ou histórico (dispensados em passado)
     if(!col) return;
     var st = _progStatus[col.id]||'disponivel';
-    // Mostrar no slot se não tem status bloqueante
-    // emOutraEq não bloqueia — colaborador pode trabalhar em qualquer equipe
-    // equipe_id do cadastro é só sugestão para auto-escala
-    if(STATUS_BLOQUEADOS.indexOf(st)<0) slots[i]=col;
+    // Em datas passadas: mostrar colaboradores mesmo que demitidos/dispensados
+    // (eram ativos naquela data — histórico deve ser preservado)
+    if(!_ehDataPassadaSlot && STATUS_BLOQUEADOS.indexOf(st)>=0) return;
+    slots[i]=col;
   });
 
   // Projetos vinculados a esta equipe neste dia
@@ -32095,6 +32106,39 @@ function progEfetuarEmprestimo(colabId, eqId, pos){
   renderProgram();
 }
 
+// Helper: busca colaborador ativo ou histórico (dispensados em escalas passadas)
+function progFindColab(id){
+  if(!id) return null;
+  var c = colaboradores.find(function(x){return x.id===id;});
+  if(c) return c;
+  return _colabHistorico[id] || null;
+}
+
+// Garante que colaboradores referenciados em composicao_dia de datas passadas
+// estejam em memória (mesmo que inativos). Dispara fetch assíncrono se faltar algum.
+function progCarregarColabHistorico(data){
+  var hoje = dataHojeLocal();
+  if(data >= hoje) return; // só para datas passadas
+  var faltando = [];
+  composicao_dia.forEach(function(comp){
+    var cd = (comp.data||'').split('T')[0];
+    if(cd !== data) return;
+    parseColabIds(comp.colaborador_ids).forEach(function(id){
+      if(id && !colaboradores.find(function(c){return c.id===id;}) && !_colabHistorico[id]){
+        faltando.push(id);
+      }
+    });
+  });
+  if(!faltando.length) return;
+  // Fetch em batch (até 50 por vez)
+  var filtro = 'id=in.('+faltando.slice(0,50).join(',')+')';
+  sbFetch('colaboradores', {filters:[filtro], limit:50}).then(function(rows){
+    if(!rows) return;
+    rows.forEach(function(c){ _colabHistorico[c.id] = c; });
+    progRenderQuadro(); // re-renderizar com os dados carregados
+  }).catch(function(){});
+}
+
 // Helper: lê colaborador_ids como array independente de ser string ou array (JSONB do Supabase)
 function parseColabIds(raw){
   if(!raw) return [];
@@ -32103,12 +32147,23 @@ function parseColabIds(raw){
 }
 
 function progRenderPainelDisp(eqs, data, cid){
+  var hoje = dataHojeLocal();
+  var ehPassado = data < hoje;
   var cols = colaboradores.filter(function(c){
-    if(c.ativo === false) return false;
     if(cid && c.contrato_id !== cid) return false;
     // Apenas colaboradores de campo aparecem na programação TMA
     if((c.vinculo||'campo') !== 'campo') return false;
-    if((_progStatus[c.id]||'')  ==='demitido') return false; // não exibir demitidos
+    // Inativo/dispensado: em datas passadas, mostrar SE foi dispensado DEPOIS dessa data
+    if(c.ativo === false || c.dispensado){
+      if(!ehPassado) return false; // data atual/futura → ocultar
+      // data passada → mostrar se dispensa ocorreu após a data visualizada
+      var dataDispensa = c.data_dispensa || null;
+      if(!dataDispensa) return false; // sem data de dispensa → não dá para saber → ocultar
+      if(dataDispensa <= data) return false; // já estava dispensado nesta data → ocultar
+      // dispensa foi após esta data → era ativo nesta data → mostrar
+      return true;
+    }
+    if((_progStatus[c.id]||'')==='demitido' && !ehPassado) return false;
     return true;
   });
 
