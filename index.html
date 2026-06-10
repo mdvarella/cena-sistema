@@ -27366,12 +27366,12 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.330',
+  numero: '7.9.331',
   data:   '10/06/2026',
   build:  '20260610-1400',
   log: [
-    {v:'7.9.330', d:'10/06/2026', itens:[
-      'Fix: status "verificar" revertia para disponível após refresh — race condition entre save assíncrono e re-leitura do banco; alterações locais dos últimos 30s agora são preservadas na atualização em background',
+    {v:'7.9.331', d:'10/06/2026', itens:[
+      'Fix definitivo: status "verificar" (e outros) revertia para disponível — upsert não limpava deleted_at do soft-delete anterior; corrigido com deleted_at:null no payload; auto-refresh também preserva alterações recentes',
     ]},
     {v:'7.9.329', d:'10/06/2026', itens:[
       'Escalas Modelo: pool de colaboradores agora exibe Disponíveis primeiro e Folguistas da cor por último',
@@ -28257,6 +28257,7 @@ function progSalvarStatus(){
           status:_progStatus[colId],
           data_retorno:info.retorno||null,
           obs:(info.obs||null),
+          deleted_at:null,
           registrado_por:usuarioLogado?usuarioLogado.nome:''
         };
       });
@@ -29159,6 +29160,8 @@ function notifAbrirPainel(){
 function progAtualizarQuadro(){
   _progStatusDateCache = null;
   _progVeiculosDateCache = null;
+  // Preservar alterações recentes antes do reset (evita auto-refresh apagar status recém-definido)
+  var _statusAntes = Object.assign({}, _progStatus);
   _progStatus = {};
   _progStatusInfo = {};
   var btn = document.querySelector('[onclick="progAtualizarQuadro()"]');
@@ -29251,6 +29254,15 @@ function progAtualizarQuadro(){
           progSalvarPersistente(r.colaborador_id,r.status,r.data,r.data_retorno,r.obs||'');
         }
       });
+
+      // Restaurar status definidos manualmente que o banco ainda não confirmou
+      // (evita auto-refresh de 90s apagar 'verificar', 'falta', etc. recém-definidos)
+      var _limiteRecente = 5 * 60 * 1000; // 5 minutos
+      if(window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < _limiteRecente){
+        Object.keys(_statusAntes).forEach(function(id){
+          if(_statusAntes[id] && !_progStatus[id]) _progStatus[id] = _statusAntes[id];
+        });
+      }
 
       // Also reload veiculos
       progCarregarVeiculos(data);
@@ -33587,6 +33599,7 @@ function progSetStatus(colabId, status, dataRetorno){
         headers:Object.assign({},_h,{'Prefer':'resolution=merge-duplicates,return=minimal'}),
         body:JSON.stringify([{colaborador_id:colabId,data:_data,status:status,
           data_retorno:dataRetorno||null,obs:_info.obs||null,
+          deleted_at:null,
           registrado_por:usuarioLogado?usuarioLogado.nome:''}])
       }).catch(function(e){console.error('[progSetStatus] save err:',e);});
     }
