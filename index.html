@@ -27308,10 +27308,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.325',
-  data:   '09/06/2026',
-  build:  '20260609-1900',
+  numero: '7.9.326',
+  data:   '10/06/2026',
+  build:  '20260610-1000',
   log: [
+    {v:'7.9.326', d:'10/06/2026', itens:[
+      'Indisponíveis: filtro multi-seleção de ponto (Presente / Ausente / Sem marcação) composto com filtro de status',
+    ]},
     {v:'7.9.325', d:'09/06/2026', itens:[
       'Tratamento Verificar: somente RH/admin pode encerrar — botao Encerrar (RH) exclusivo; checkboxes nao concluem mais automaticamente',
       'Tratamento Verificar: salvar com decisoes define em_andamento; status concluido nao regride apos encerramento',
@@ -32089,11 +32092,26 @@ function progRenderPainelDisp(eqs, data, cid){
       integracao:'🔄 Em Integração', patio:'🏗 Pátio', verificar:'🔍 Verificar'
     };
     var _filtroIndisp = window._progFiltroIndisp || 'todos';
-    var indispFiltrados = _filtroIndisp === 'todos' ? indisponiveis : indisponiveis.filter(function(c){ var st = _progStatus[c.id]||'folga'; return st === _filtroIndisp; });
+    var _filtroIndispPonto = window._progFiltroIndispPonto || [];
     var INDISP_BTNS = [{v:'todos',l:'Todos'},{v:'falta',l:'Faltou'},{v:'ferias',l:'Férias'},{v:'afastado',l:'Afastado'},{v:'folga',l:'Folga'},{v:'treinamento',l:'Treinamento'},{v:'integracao',l:'Integração'},{v:'patio',l:'Pátio'},{v:'verificar',l:'Verificar'},{v:'fraude',l:'Fraude'},{v:'demitido',l:'Demitido'}];
+    var PONTO_BTNS = [{v:'presente',l:'✓ Presente',bg:'#3B6D11'},{v:'ausente',l:'● Ausente',bg:'#A32D2D'},{v:'sem_marcacao',l:'◌ Sem marcação',bg:'#777'}];
+    var indispFiltrados = indisponiveis.filter(function(c){
+      var st = _progStatus[c.id]||'folga';
+      if (_filtroIndisp !== 'todos' && st !== _filtroIndisp) return false;
+      if (_filtroIndispPonto.length > 0) {
+        var pe = progPontoEstado(c, data);
+        if (_filtroIndispPonto.indexOf(pe) < 0) return false;
+      }
+      return true;
+    });
     indispHtml = '<div id="prog-sec-indisp" style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
       +'<div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:#888">Indisponíveis hoje ('+indispFiltrados.length+'/'+indisponiveis.length+')</div>'
-      +'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">'+INDISP_BTNS.map(function(f){var a=_filtroIndisp===f.v;return '<button onclick="window._progFiltroIndisp=\''+f.v+'\';progRenderQuadro()" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid '+(a?'#185FA5':'#e0dfd8')+';background:'+(a?'#185FA5':'#fff')+';color:'+(a?'#fff':'#888')+';cursor:pointer">'+f.l+'</button>';}).join('')+'</div>'
+      +'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:3px">'+INDISP_BTNS.map(function(f){var a=_filtroIndisp===f.v;return '<button onclick="window._progFiltroIndisp=\''+f.v+'\';progRenderQuadro()" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid '+(a?'#185FA5':'#e0dfd8')+';background:'+(a?'#185FA5':'#fff')+';color:'+(a?'#fff':'#888')+';cursor:pointer">'+f.l+'</button>';}).join('')+'</div>'
+      +'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px;padding-top:3px;border-top:.5px solid #f0efe8">'
+      +'<span style="font-size:9px;color:#aaa;align-self:center">Ponto:</span>'
+      +PONTO_BTNS.map(function(f){var a=_filtroIndispPonto.indexOf(f.v)>=0;return '<button onclick="progToggleFiltroIndispPonto(\''+f.v+'\')" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid '+(a?f.bg:'#e0dfd8')+';background:'+(a?f.bg:'#fff')+';color:'+(a?'#fff':'#888')+';cursor:pointer">'+f.l+'</button>';}).join('')
+      +(_filtroIndispPonto.length>0?'<button onclick="window._progFiltroIndispPonto=[];progRenderQuadro()" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid #e0dfd8;background:#fff;color:#A32D2D;cursor:pointer">✕</button>':'')
+      +'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +indispFiltrados.map(function(c){
         var st = _progStatus[c.id]||'folga';
@@ -32301,7 +32319,7 @@ function progAlterarStatusPool(colabId){
           data_retorno:info.retorno||null,
           obs:info.obs||null,
           registrado_por:usuarioLogado?usuarioLogado.nome:''
-        },'prog_status_diario_colaborador_id_data_key').then(function(){
+        },'colaborador_id,data').then(function(){
           progShowToast('✅ Status salvo.');
           _progStatusDateCache=null;
           progRenderQuadro();
@@ -32328,6 +32346,28 @@ function progDefinirStatusPool(colabId,novoStatus){
 // ── Drag & Drop ──────────────────────────────────────────────
 
 // Liberar colaborador indisponível manualmente
+// Toggle multi-seleção ponto no painel de indisponíveis
+function progToggleFiltroIndispPonto(v) {
+  var arr = window._progFiltroIndispPonto ? window._progFiltroIndispPonto.slice() : [];
+  var idx = arr.indexOf(v);
+  if (idx >= 0) arr.splice(idx, 1); else arr.push(v);
+  window._progFiltroIndispPonto = arr;
+  progRenderQuadro();
+}
+
+// Retorna estado de ponto de um colaborador: 'presente' | 'ausente' | 'sem_marcacao'
+function progPontoEstado(c, data) {
+  if ((c.vinculo || 'campo') !== 'campo') return 'sem_marcacao';
+  var key = c.re + '_' + data;
+  var p = _pontoCache[key];
+  if (!p) return 'sem_marcacao';
+  var temEnt = p.entrada || (p.todas_marcacoes && p.todas_marcacoes.some(function(m){ return m.tipo === 'Entrada'; }));
+  if (temEnt) return 'presente';
+  var hp = p.horario_previsto || {};
+  if (hp && hp.entrada && pontoHorarioPassou(hp)) return 'ausente';
+  return 'sem_marcacao';
+}
+
 function progRelevarIndisponivel(colabId){
   var col = colaboradores.find(function(c){return c.id===colabId;});
   if(!col) return;
@@ -33073,7 +33113,7 @@ function progSalvarMenuStatus(colabId){
         data_retorno:retorno||null,
         obs:_obsParaSalvar||null,
         registrado_por:usuarioLogado?usuarioLogado.nome:''
-      },'prog_status_diario_colaborador_id_data_key').then(function(){
+      },'colaborador_id,data').then(function(){
         // Propagar nova data para todos os dias futuros do mesmo status
         if(retorno && ['ferias','afastado','treinamento'].indexOf(novoSt)>=0){
           sbUpdate('prog_status_diario',
@@ -33452,7 +33492,7 @@ function progSetStatus(colabId, status, dataRetorno){
     } else {
       // Upsert para outros status
       var _info=_progStatusInfo[colabId]||{};
-      fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=prog_status_diario_colaborador_id_data_key',{
+      fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
         method:'POST',
         headers:Object.assign({},_h,{'Prefer':'resolution=merge-duplicates,return=minimal'}),
         body:JSON.stringify([{colaborador_id:colabId,data:_data,status:status,
@@ -45185,7 +45225,7 @@ function ppDefinirStatus(colabId, status, dataRetorno){
         colaborador_id:colabId, data:dataPP, status:'disponivel',
         data_retorno:null, obs:null,
         registrado_por:usuarioLogado?usuarioLogado.nome:''
-      },'prog_status_diario_colaborador_id_data_key');
+      },'colaborador_id,data');
       sbDelete('prog_status_diario',
         'colaborador_id=eq.'+colabId+'&data=neq.'+dataPP+
         '&status=in.(ferias,afastado,treinamento,demitido)');
@@ -45199,7 +45239,7 @@ function ppDefinirStatus(colabId, status, dataRetorno){
       colaborador_id:colabId, data:dataPP2, status:status,
       data_retorno:dataRetorno||null, obs:null,
       registrado_por:usuarioLogado?usuarioLogado.nome:''
-    },'prog_status_diario_colaborador_id_data_key');
+    },'colaborador_id,data');
   }
   _ppStatus[colabId] = status;
   if(!_ppStatusInfo[colabId]) _ppStatusInfo[colabId] = {};
