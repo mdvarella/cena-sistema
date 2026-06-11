@@ -843,6 +843,7 @@ var _acordContatos      = [];
 // ── Wizard state ──────────────────────────────────────────────────────────
 var _wizTitulosSelecionados = [];
 var _wizParcelasSimuladas   = [];
+var _wizEditandoNegId       = null;
 
 // ── Hoje ──────────────────────────────────────────────────────────────────
 function acordHoje() {
@@ -1663,8 +1664,9 @@ function acordVerNegociacao(negId) {
   });
   html += '</tbody></table>';
   if (n.observacoes) html += '<div style="margin-top:1rem;font-size:12px;color:#555"><strong>Observações:</strong> ' + acordEscHtml(n.observacoes) + '</div>';
-  html += '<div style="margin-top:1.5rem;padding-top:1rem;border-top:.5px solid #e0dfd8;display:flex;justify-content:flex-end">';
+  html += '<div style="margin-top:1.5rem;padding-top:1rem;border-top:.5px solid #e0dfd8;display:flex;justify-content:space-between;align-items:center">';
   html += '<button class="btn" style="background:#FCEBEB;color:#A32D2D;border-color:#f0c0c0" onclick="acordExcluirNegociacao(\'' + n.id + '\')" title="Excluir esta negociação">🗑 Excluir Negociação</button>';
+  html += '<button class="btn" style="background:#E6F1FB;color:#185FA5;border-color:#185FA566" onclick="acordFecharModal(\'modal-detalhe-neg\');acordEditarNegociacao(\'' + n.id + '\')">✏️ Editar Negociação</button>';
   html += '</div>';
   document.getElementById('modal-detalhe-corpo').innerHTML = html;
   acordAbrirModal('modal-detalhe-neg');
@@ -1672,6 +1674,7 @@ function acordVerNegociacao(negId) {
 
 // ── WIZARD NOVA NEGOCIAÇÃO ───────────────────────────────────────────────
 function acordAbrirWizardNegociacao() {
+  _wizEditandoNegId = null;
   // Resetar wizard
   ['wstep-1','wstep-2','wstep-3'].forEach(function(id) {
     document.getElementById(id).className = 'wstep';
@@ -1994,6 +1997,35 @@ async function acordSalvarNegociacao() {
   var resp    = document.getElementById('wiz-responsavel').value.trim();
   var obs     = document.getElementById('wiz-obs').value.trim();
 
+  // -- MODO EDICAO: atualizar negociacao existente
+  if (_wizEditandoNegId) {
+    acordSetLoading(true);
+    try {
+      var resUpd = await _sb.from('acord_negociacoes').update({
+        valor_original_total: orig, valor_negociado: valNeg,
+        desconto_valor: descVal, desconto_percentual: descPct,
+        tipo_parcelas: tipo, num_parcelas: nParc,
+        data_primeira_parcela: data1, data_acordo: dtAcord,
+        responsavel: resp || null, observacoes: obs || null,
+        atualizado_em: new Date().toISOString(),
+        atualizado_por: _acordSessao ? _acordSessao.email : null
+      }).eq('id', _wizEditandoNegId).select().single();
+      if (resUpd.error) throw resUpd.error;
+      await _sb.from('acord_parcelas').delete().eq('negociacao_id', _wizEditandoNegId);
+      for (var ei = 0; ei < _wizParcelasSimuladas.length; ei++) {
+        var ep = _wizParcelasSimuladas[ei];
+        await _sb.from('acord_parcelas').insert({ negociacao_id: _wizEditandoNegId, numero: ep.numero, valor: ep.valor, data_vencimento: ep.data_vencimento, status: 'aberta' });
+      }
+      _wizEditandoNegId = null; _wizTitulosSelecionados = []; _wizParcelasSimuladas = [];
+      acordFecharModal('modal-negociacao');
+      await acordCarregarDados(true);
+      acordShowToast('Negociação atualizada com sucesso!', 'ok');
+      acordNav('negociacoes');
+    } catch(e) { acordShowToast('Erro ao atualizar: ' + e.message, 'erro'); }
+    acordSetLoading(false);
+    return;
+  }
+
   // Gerar código sequencial
   var seq   = _acordNegociacoes.length + 1;
   var ano   = dtAcord.split('-')[0] || new Date().getFullYear();
@@ -2048,65 +2080,54 @@ async function acordEditarNegociacao(negId) {
   var neg = _acordNegociacoes.find(function(n){ return n.id === negId; });
   if (!neg) { acordShowToast('Negociação não encontrada', 'erro'); return; }
 
-  // Abrir wizard
+  _wizEditandoNegId = negId;
+  _wizParcelasSimuladas = [];
+
+  // Fechar detalhe se aberto e abrir wizard direto no P2
+  acordFecharModal('modal-detalhe-neg');
   acordAbrirModal('modal-negociacao');
-  document.getElementById('wstep-1').className = 'wstep on';
-  document.getElementById('wstep-2').className = 'wstep';
+  document.getElementById('wstep-1').className = 'wstep done';
+  document.getElementById('wstep-2').className = 'wstep on';
   document.getElementById('wstep-3').className = 'wstep';
-  document.getElementById('wizard-p1').classList.remove('hidden');
-  document.getElementById('wizard-p2').classList.add('hidden');
+  document.getElementById('wizard-p1').classList.add('hidden');
+  document.getElementById('wizard-p2').classList.remove('hidden');
   document.getElementById('wizard-p3').classList.add('hidden');
 
-  // P1: preencher fornecedor
-  var selForn = document.getElementById('wiz-fornecedor');
-  if (selForn) { selForn.value = neg.fornecedor_id; acordWizFornecedorChange(); }
+  // Garantir fornecedor no select (necessário para acordWizP3)
   var hidForn = document.getElementById('wiz-fornecedor-id');
   if (hidForn) {
-    // Garantir que o fornecedor esteja na lista mesmo que tenha sido filtrado
     if (!hidForn.querySelector('option[value="' + neg.fornecedor_id + '"]')) {
       var fEdit = _acordFornecedores.find(function(f){ return f.id === neg.fornecedor_id; });
-      if (fEdit) {
-        var oEdit = document.createElement('option');
-        oEdit.value = fEdit.id; oEdit.textContent = fEdit.nome;
-        hidForn.appendChild(oEdit);
-      }
+      if (fEdit) { var oEdit = document.createElement('option'); oEdit.value = fEdit.id; oEdit.textContent = fEdit.nome; hidForn.appendChild(oEdit); }
     }
     hidForn.value = neg.fornecedor_id;
-    acordWizFiltrarTitulos();
   }
 
-  // Buscar títulos vinculados a esta negociação
+  // Pré-preencher campos P2 com valores existentes
+  document.getElementById('wiz-val-original').value   = neg.valor_original_total || '';
+  document.getElementById('wiz-val-negociado').value  = neg.valor_negociado || '';
+  document.getElementById('wiz-desconto-val').value   = neg.desconto_valor || '';
+  document.getElementById('wiz-desconto-pct').value   = neg.desconto_percentual || '';
+  document.getElementById('wiz-num-parcelas').value   = neg.num_parcelas || 1;
+  document.getElementById('wiz-tipo-parcelas').value  = neg.tipo_parcelas || 'fixas';
+  document.getElementById('wiz-data-primeira').value  = neg.data_primeira_parcela || '';
+  document.getElementById('wiz-data-acordo').value    = neg.data_acordo || '';
+  document.getElementById('wiz-responsavel').value    = neg.responsavel || '';
+  document.getElementById('wiz-obs').value            = neg.observacoes || '';
+  document.getElementById('wiz-entrada-val').value    = '';
+
+  // Carregar parcelas existentes como simuladas (para exibição no P3)
   acordSetLoading(true);
   try {
     var resTit = await _sb.from('acord_negociacao_titulos').select('titulo_id').eq('negociacao_id', negId);
     _wizTitulosSelecionados = (resTit.data || []).map(function(r){ return r.titulo_id; });
 
-    // Aguardar render dos checkboxes e marcar
-    setTimeout(function(){
-      _wizTitulosSelecionados.forEach(function(tid){
-        var cb = document.querySelector('#lista-titulos-wiz input[data-id="' + tid + '"]');
-        if (cb) cb.checked = true;
-      });
-      acordWizContarSelecionados();
-    }, 300);
-
-    // Avançar para P2 com valores pré-preenchidos
-    setTimeout(function(){
-      acordWizP2();
-      // Preencher campos P2
-      document.getElementById('wiz-val-negociado').value  = neg.valor_negociado || '';
-      document.getElementById('wiz-desconto-val').value   = neg.desconto_valor || '';
-      document.getElementById('wiz-desconto-pct').value   = neg.desconto_percentual || '';
-      document.getElementById('wiz-num-parcelas').value   = neg.num_parcelas || 1;
-      document.getElementById('wiz-tipo-parcelas').value  = neg.tipo_parcelas || 'fixas';
-      document.getElementById('wiz-data-primeira').value  = neg.data_primeira_parcela || '';
-      document.getElementById('wiz-data-acordo').value    = neg.data_acordo || '';
-      document.getElementById('wiz-responsavel').value    = neg.responsavel || '';
-      document.getElementById('wiz-obs').value            = neg.observacoes || '';
-      // Voltar para P1 para o usuário revisar títulos antes de salvar
-      acordWizVoltar(1);
-    }, 400);
-  } catch(e) { acordShowToast('Erro ao carregar negociação: ' + e.message, 'erro'); }
+    var resParc = await _sb.from('acord_parcelas').select('*').eq('negociacao_id', negId).order('numero');
+    _wizParcelasSimuladas = (resParc.data || []).map(function(p){
+      return { numero: p.numero, valor: parseFloat(p.valor)||0, data_vencimento: p.data_vencimento };
+    });
+    if (_wizParcelasSimuladas.length) { acordSimularParcelas('neg'); }
+  } catch(e) { acordShowToast('Erro ao carregar dados: ' + e.message, 'erro'); }
   acordSetLoading(false);
 }
 
