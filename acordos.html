@@ -1379,6 +1379,19 @@ function acordAtualizarTotalTitulo() {
   document.getElementById('tit-total-preview').textContent = acordFmtMoeda(v+j+m);
 }
 
+function acordTituloChaveDuplicada(fornId, numTit, valOrig, venc, excludeId) {
+  var numNorm = (numTit || '').trim();
+  var valNorm = Math.round(parseFloat(valOrig) * 100) / 100;
+  return _acordTitulos.find(function(t) {
+    if (excludeId && t.id === excludeId) return false;
+    if (t.fornecedor_id !== fornId) return false;
+    if ((t.numero_titulo || '').trim() !== numNorm) return false;
+    if (Math.round(parseFloat(t.valor_original) * 100) / 100 !== valNorm) return false;
+    if ((t.data_vencimento || '') !== venc) return false;
+    return true;
+  }) || null;
+}
+
 async function acordSalvarTitulo() {
   var fornId = document.getElementById('tit-fornecedor-id').value;
   var numTit = document.getElementById('tit-numero').value.trim();
@@ -1389,28 +1402,48 @@ async function acordSalvarTitulo() {
   if (!valOrig || valOrig <= 0) { acordShowToast('Informe o valor original', 'aviso'); return; }
   if (!venc)   { acordShowToast('Informe o vencimento', 'aviso'); return; }
   var id = document.getElementById('tit-id').value;
+  valOrig = Math.round(valOrig * 100) / 100;
+  var dup = acordTituloChaveDuplicada(fornId, numTit, valOrig, venc, id || null);
+  if (dup) {
+    acordShowToast(
+      'Já existe outro título com o mesmo fornecedor, número (' + (numTit || '—') + '), valor (R$ ' +
+      valOrig.toFixed(2) + ') e vencimento (' + acordFmtData(venc) + '). Altere um desses campos ou edite o outro título.',
+      'erro'
+    );
+    return;
+  }
   var dados = {
     fornecedor_id:  fornId,
-    numero_titulo:  document.getElementById('tit-numero').value.trim() || null,
+    numero_titulo:  numTit || null,
     descricao:      document.getElementById('tit-descricao').value.trim() || null,
     valor_original: valOrig,
-    valor_juros:    parseFloat(document.getElementById('tit-juros').value)||0,
-    valor_multa:    parseFloat(document.getElementById('tit-multa').value)||0,
+    valor_juros:    Math.round((parseFloat(document.getElementById('tit-juros').value) || 0) * 100) / 100,
+    valor_multa:    Math.round((parseFloat(document.getElementById('tit-multa').value) || 0) * 100) / 100,
     data_vencimento:venc,
-    data_emissao:   document.getElementById('tit-emissao').value || null,
-    criado_por:     _acordSessao ? _acordSessao.email : null
+    data_emissao:   document.getElementById('tit-emissao').value || null
   };
   acordSetLoading(true);
   try {
     var res;
-    if (id) { res = await _sb.from('acord_titulos').update(dados).eq('id', id).select().single(); }
-    else    { res = await _sb.from('acord_titulos').insert(dados).select().single(); }
+    if (id) {
+      res = await _sb.from('acord_titulos').update(dados).eq('id', id).select().single();
+    } else {
+      dados.criado_por = _acordSessao ? _acordSessao.email : null;
+      res = await _sb.from('acord_titulos').insert(dados).select().single();
+    }
     if (res.error) throw res.error;
     acordFecharModal('modal-titulo');
     await acordCarregarDados(true);
     acordShowToast(id ? 'Título atualizado' : 'Título cadastrado', 'ok');
     acordNav('titulos');
-  } catch(e) { acordShowToast('Erro ao salvar: ' + e.message, 'erro'); }
+  } catch(e) {
+    var msg = e.message || String(e);
+    if (e.code === '23505' || msg.indexOf('409') >= 0 || (msg.toLowerCase().indexOf('duplicate') >= 0)) {
+      msg = 'Conflito: já existe título com mesmo fornecedor, número, valor original e vencimento.';
+    }
+    acordShowToast('Erro ao salvar: ' + msg, 'erro');
+    console.error('[acordos] salvarTitulo erro:', e);
+  }
   acordSetLoading(false);
 }
 
