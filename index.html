@@ -27389,6 +27389,12 @@ var APP_VERSAO = {
     {v:'7.9.326', d:'10/06/2026', itens:[
       'Indisponíveis: filtro multi-seleção de ponto (Presente / Ausente / Sem marcação) composto com filtro de status',
     ]},
+    {v:'7.9.328', d:'09/06/2026', itens:[
+      'Historico escalas: colaboradores demitidos/inativos carregados em _colabHistorico no inicio da sessao — nomes preservados em datas anteriores a demissao',
+      'Historico escalas: progCarregarColabHistorico marca IDs como tentados para evitar loop; busca sem filtro ativo para incluir demitidos',
+      'Limpeza escala: equipes confirmadas agora sao limpas tambem (confirmada resetada para false) — protecao era redundante com confirmacao do modal',
+      'Scroll quadro: posicao preservada apos render; ignorado quando modal esta aberto',
+    ]},
     {v:'7.9.325', d:'09/06/2026', itens:[
       'Tratamento Verificar: somente RH/admin pode encerrar — botao Encerrar (RH) exclusivo; checkboxes nao concluem mais automaticamente',
       'Tratamento Verificar: salvar com decisoes define em_andamento; status concluido nao regride apos encerramento',
@@ -28766,6 +28772,18 @@ function progInit(){
   if(selData) selData.value = _progData;
   progCarregarStatus(_progData);
   progAtualizarPillsTipo();
+  // Carregar colaboradores inativos/demitidos para preservar histórico de escalas passadas
+  if(!DEMO){
+    setTimeout(function(){
+      var cid = progGetCont ? progGetCont() : (_progContrato||'');
+      var filtros = ['ativo=eq.false'];
+      if(cid) filtros.push('contrato_id=eq.'+cid);
+      sbFetch('colaboradores',{filters:filtros,order:'nome',limit:500}).then(function(rows){
+        if(!rows) return;
+        rows.forEach(function(c){ if(!colaboradores.find(function(x){return x.id===c.id;})) _colabHistorico[c.id]=c; });
+      }).catch(function(){});
+    }, 2000); // delay para não disputar com carregamento inicial
+  }
 
   // Garantir colaboradores carregados para contratos de disponibilidade
   if(!DEMO){
@@ -32130,10 +32148,12 @@ function progCarregarColabHistorico(data){
     });
   });
   if(!faltando.length) return;
-  // Fetch em batch (até 50 por vez)
+  // Marcar como tentado para evitar loop infinito caso RLS bloqueie inativos
+  faltando.forEach(function(id){ if(!_colabHistorico[id]) _colabHistorico[id] = null; });
+  // Fetch em batch — sem filtro ativo para incluir demitidos/dispensados
   var filtro = 'id=in.('+faltando.slice(0,50).join(',')+')';
   sbFetch('colaboradores', {filters:[filtro], limit:50}).then(function(rows){
-    if(!rows) return;
+    if(!rows || !rows.length) return;
     rows.forEach(function(c){ _colabHistorico[c.id] = c; });
     progRenderQuadro(); // re-renderizar com os dados carregados
   }).catch(function(){});
