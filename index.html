@@ -27437,10 +27437,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.355',
+  numero: '7.9.357',
   data:   '11/06/2026',
   build:  '20260612-0200',
   log: [
+    {v:'7.9.357', d:'12/06/2026', itens:[
+      'Gestao de Ponto: Sincronizar agora processa em LOTES de 10 colaboradores (corrige timeout/erro 499 que aparecia como CORS no sync de contratos grandes); barra de progresso por lote e continua mesmo se um lote falhar',
+    ]},
+    {v:'7.9.356', d:'12/06/2026', itens:[
+      'Gestao de Ponto: card Entrada antecipada agora mostra qtd de colaboradores E soma de minutos antecipados lado a lado; aba Registros ganhou alternancia Diario / Acumulado por colaborador + filtro por colaborador (nome/RE); CSV respeita o filtro',
+    ]},
     {v:'7.9.355', d:'12/06/2026', itens:[
       'Novo modulo Gestao de Ponto (Operacional): dashboard por contrato/mes (presentes, ausentes, entrada antecipada >5min, ferias, suspensao, ausencia motivada, HE do mes, acima da meta), aba Registros detalhada+CSV, aba Limites HE por cargo, aba Sincronizar (API /sincronizar-mes)',
       'API ponto (main.py v2.1.2): parser expandido extrai HE/ferias/ausencia motivada/suspensao/antecipacao do Nexus; upsert ponto_registros com novos campos; novo endpoint /api/v1/sincronizar-mes. SQL sql_ponto_registros_expand.sql + sql_ponto_he_limites.sql',
@@ -52943,6 +52949,7 @@ function gpRenderDashboard(){
   var presentesHoje=regHoje.filter(function(r){return r.entrada;}).length;
   var ausentesHoje=regHoje.filter(function(r){return !r.entrada && (r.status==='falta'||r.tipo_dia==='falta');}).length;
   var antecip=regHoje.filter(function(r){return (r.minutos_antecipacao||0)>5;});
+  var antecipMin=antecip.reduce(function(s,r){return s+(r.minutos_antecipacao||0);},0);
   var feriasReSet={}, suspReSet={};
   regs.forEach(function(r){ if(r.ferias||r.tipo_dia==='ferias') feriasReSet[String(r.re)]=true; if(r.suspensao||r.tipo_dia==='suspensao') suspReSet[String(r.re)]=true; });
   var ausMot=regs.filter(function(r){return r.ausencia_motivada;});
@@ -52955,7 +52962,12 @@ function gpRenderDashboard(){
     +_gpCard('👥','Colaboradores ativos',escopo.length,'#185FA5','no contrato')
     +_gpCard('✅','Presentes hoje',presentesHoje,'#3B6D11',fmtD(hoje))
     +_gpCard('❌','Ausentes hoje',ausentesHoje,ausentesHoje?'#A32D2D':'#3B6D11','')
-    +_gpCard('⚠️','Entrada antecipada hoje',antecip.length,antecip.length?'#854F0B':'#3B6D11','>5 min antes')
+    +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.8rem;display:flex;flex-direction:column;gap:3px">'
+      +'<div style="font-size:17px">⚠️</div><div style="font-size:11px;color:#888">Entrada antecipada hoje</div>'
+      +'<div style="display:flex;gap:16px;align-items:baseline">'
+        +'<div><span style="font-size:21px;font-weight:700;color:'+(antecip.length?'#854F0B':'#3B6D11')+'">'+antecip.length+'</span><span style="font-size:10px;color:#aaa"> colab</span></div>'
+        +'<div><span style="font-size:21px;font-weight:700;color:'+(antecipMin?'#854F0B':'#3B6D11')+'">'+antecipMin+'</span><span style="font-size:10px;color:#aaa"> min</span></div>'
+      +'</div><div style="font-size:10px;color:#aaa">>5 min antes do previsto</div></div>'
     +_gpCard('🏖','Férias (mês)',Object.keys(feriasReSet).length,'#185FA5','colaboradores')
     +_gpCard('⛔','Suspensão (mês)',Object.keys(suspReSet).length,suspReSet&&Object.keys(suspReSet).length?'#A32D2D':'#3B6D11','')
     +_gpCard('📋','Ausência motivada',ausMot.length,'#854F0B','dias no mês')
@@ -52979,26 +52991,73 @@ function gpRenderDashboard(){
     +_gpLista('🏖 Férias no mês','#185FA5',lFer,'Ninguém de férias no mês');
 }
 
+function gpRegSetModo(m){ _gp.regModo=m; gpRenderRegistros(); }
+function gpRegFiltrar(){ _gp.regFiltro=(document.getElementById('gp-reg-busca')||{}).value||''; gpRenderRegistros(); }
+function gpRegFiltrados(){
+  var f=(_gp.regFiltro||'').toLowerCase().trim();
+  if(!f) return _gp.registros.slice();
+  return _gp.registros.filter(function(r){ var c=gpColabByRe(r.re)||{}; return (c.nome||'').toLowerCase().indexOf(f)>=0 || String(r.re).indexOf(f)>=0; });
+}
 function gpRenderRegistros(){
   var el=document.getElementById('gp-tab-registros'); if(!el) return;
-  var regs=_gp.registros.slice().sort(function(a,b){ var d=(a.data||'').localeCompare(b.data||''); return d!==0?d:String(a.re).localeCompare(String(b.re)); });
+  var modo=_gp.regModo||'diario';
+  var btnA=(modo==='diario'?'background:#1a1a18;color:#fff;border-color:#1a1a18':'');
+  var btnB=(modo==='acumulado'?'background:#1a1a18;color:#fff;border-color:#1a1a18':'');
+  var ctrl='<div class="card" style="margin-bottom:.5rem;padding:.6rem .85rem;display:flex;gap:10px;flex-wrap:wrap;align-items:center">'
+    +'<div style="display:flex;gap:4px">'
+    +'<button class="btn btn-sm" onclick="gpRegSetModo(\'diario\')" style="'+btnA+'">📅 Diário</button>'
+    +'<button class="btn btn-sm" onclick="gpRegSetModo(\'acumulado\')" style="'+btnB+'">Σ Acumulado/colaborador</button>'
+    +'</div>'
+    +'<input class="inp" id="gp-reg-busca" placeholder="🔍 Filtrar colaborador (nome ou RE)" value="'+escHtml(_gp.regFiltro||'')+'" oninput="gpRegFiltrar()" style="width:250px;font-size:12px"/>'
+    +'<button class="btn btn-sm" onclick="gpExportCsv()" style="margin-left:auto">📥 CSV</button>'
+    +'</div>';
+  var regs=gpRegFiltrados();
+
+  if(modo==='acumulado'){
+    var ag={};
+    regs.forEach(function(r){ var k=String(r.re); var a=ag[k]||(ag[k]={re:k,he:0,faltas:0,ausencias:0,ferias:0,folgas:0,trab:0,antecCount:0,antecMin:0});
+      a.he+=parseFloat(r.horas_extras)||0;
+      if(r.tipo_dia==='falta'||r.status==='falta') a.faltas++;
+      if(r.ausencia_motivada) a.ausencias++;
+      if(r.ferias||r.tipo_dia==='ferias') a.ferias++;
+      if(r.tipo_dia==='folga') a.folgas++;
+      if(r.entrada) a.trab++;
+      if((r.minutos_antecipacao||0)>5){ a.antecCount++; a.antecMin+=r.minutos_antecipacao; }
+    });
+    var rows=Object.keys(ag).map(function(k){ return {a:ag[k], c:gpColabByRe(k)||{}}; })
+      .sort(function(x,y){ return (x.c.nome||'').localeCompare(y.c.nome||''); });
+    var headA='<tr><th>Colaborador</th><th>RE</th><th>Cargo</th><th style="text-align:center">Dias trab.</th><th style="text-align:right">HE mês</th><th style="text-align:center">Faltas</th><th style="text-align:center">Aus. mot.</th><th style="text-align:center">Férias</th><th style="text-align:center">Antecip. (qtd/min)</th></tr>';
+    var linhasA=rows.map(function(o){ var a=o.a,c=o.c; return '<tr><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td><td style="font-family:monospace">'+escHtml(a.re)+'</td><td style="font-size:11px">'+escHtml(c.cargo||'')+'</td>'
+      +'<td style="text-align:center">'+a.trab+'</td>'
+      +'<td style="text-align:right;color:#534AB7;font-weight:'+(a.he?'700':'400')+'">'+(a.he?gpHHMM(a.he):'—')+'</td>'
+      +'<td style="text-align:center;color:'+(a.faltas?'#A32D2D':'#555')+';font-weight:'+(a.faltas?'700':'400')+'">'+a.faltas+'</td>'
+      +'<td style="text-align:center">'+(a.ausencias||'—')+'</td><td style="text-align:center">'+(a.ferias||'—')+'</td>'
+      +'<td style="text-align:center;color:'+(a.antecCount?'#854F0B':'#555')+'">'+(a.antecCount?(a.antecCount+' / '+a.antecMin+' min'):'—')+'</td></tr>'; });
+    el.innerHTML=ctrl+'<div class="card"><div class="ch"><span class="ct">Σ Acumulado por colaborador — '+escHtml(_gp.mes)+' ('+rows.length+' colaboradores)</span></div>'
+      +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead>'+headA+'</thead><tbody>'
+      +(linhasA.length?linhasA.join(''):'<tr><td colspan="9" style="text-align:center;color:#aaa;padding:1.5rem">Sem registros para o filtro.</td></tr>')
+      +'</tbody></table></div></div>';
+    return;
+  }
+
+  // ── Diário ──
+  var regsD=regs.slice().sort(function(a,b){ var c=gpColabByRe(a.re)||{}, d=gpColabByRe(b.re)||{}; var n=(c.nome||'').localeCompare(d.nome||''); return n!==0?n:(a.data||'').localeCompare(b.data||''); });
   var head='<tr><th>Colaborador</th><th>RE</th><th>Cargo</th><th>Data</th><th>Entrada</th><th>Int.S</th><th>Int.R</th><th>Saída</th><th>HE dia</th><th>Tipo</th><th>Motivo</th><th>⚠️</th></tr>';
-  var linhas=regs.map(function(r){ var c=gpColabByRe(r.re)||{}; var antec=(r.minutos_antecipacao||0)>5;
+  var linhas=regsD.map(function(r){ var c=gpColabByRe(r.re)||{}; var antec=(r.minutos_antecipacao||0)>5;
     var tipoCor={ferias:'#185FA5',suspensao:'#A32D2D',ausencia:'#854F0B',falta:'#A32D2D',folga:'#888',normal:'#3B6D11'}[r.tipo_dia]||'#555';
     return '<tr><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td><td style="font-family:monospace">'+escHtml(String(r.re))+'</td><td style="font-size:11px">'+escHtml(c.cargo||'')+'</td>'
       +'<td>'+fmtD((r.data||'').slice(0,10))+'</td><td>'+(r.entrada||'—')+'</td><td>'+(r.intervalo_saida||'—')+'</td><td>'+(r.intervalo_retorno||'—')+'</td><td>'+(r.saida||'—')+'</td>'
       +'<td style="text-align:right;color:#534AB7;font-weight:'+(parseFloat(r.horas_extras)?'700':'400')+'">'+(parseFloat(r.horas_extras)?gpHHMM(r.horas_extras):'—')+'</td>'
       +'<td><span style="color:'+tipoCor+';font-weight:600;font-size:11px">'+(r.tipo_dia||'—')+'</span></td>'
       +'<td style="font-size:11px;color:#888">'+escHtml(r.ausencia_motivo||'')+'</td>'
-      +'<td>'+(antec?'<span title="Entrada '+r.minutos_antecipacao+' min antes" style="color:#854F0B">⚠️</span>':'')+'</td></tr>'; });
-  el.innerHTML='<div class="card"><div class="ch"><span class="ct">📋 Registros — '+escHtml(_gp.mes)+' ('+regs.length+' dias)</span>'
-    +'<button class="btn btn-sm" onclick="gpExportCsv()">📥 CSV</button></div>'
+      +'<td>'+(antec?'<span title="Entrada '+r.minutos_antecipacao+' min antes" style="color:#854F0B">⚠️ '+r.minutos_antecipacao+'m</span>':'')+'</td></tr>'; });
+  el.innerHTML=ctrl+'<div class="card"><div class="ch"><span class="ct">📅 Registros diários — '+escHtml(_gp.mes)+' ('+regsD.length+' dias)</span></div>'
     +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead>'+head+'</thead><tbody>'
     +(linhas.length?linhas.join(''):'<tr><td colspan="12" style="text-align:center;color:#aaa;padding:1.5rem">Sem registros. Use a aba Sincronizar.</td></tr>')
     +'</tbody></table></div></div>';
 }
 function gpExportCsv(){
-  var regs=_gp.registros;
+  var regs=gpRegFiltrados();
   var csv='Colaborador,RE,Cargo,Data,Entrada,IntSaida,IntRetorno,Saida,HE_dia,Tipo,Motivo,MinAntecipacao\n'
     +regs.map(function(r){ var c=gpColabByRe(r.re)||{}; return ['"'+(c.nome||'').replace(/"/g,'""')+'"',r.re,'"'+(c.cargo||'')+'"',(r.data||'').slice(0,10),r.entrada||'',r.intervalo_saida||'',r.intervalo_retorno||'',r.saida||'',r.horas_extras||0,r.tipo_dia||'','"'+(r.ausencia_motivo||'')+'"',r.minutos_antecipacao||0].join(','); }).join('\n');
   var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='gestao_ponto_'+_gp.mes+'.csv'; a.click();
@@ -53038,7 +53097,7 @@ function gpRenderSync(){
   el.innerHTML='<div class="card"><div class="ch"><span class="ct">🔄 Sincronizar mês — '+escHtml(_gp.mes)+'</span></div>'
     +'<div style="padding:1rem;font-size:13px;color:#555">'
     +'<p>Vai buscar o ponto de <b>'+n+'</b> colaboradores do contrato no período <b>'+fmtD(r.ini)+' a '+fmtD(r.fim)+'</b> (API Nexus) e gravar todos os dias.</p>'
-    +'<p style="font-size:11px;color:#888">Pode levar alguns minutos (1 chamada por colaborador, com pausa de 200ms).</p>'
+    +'<p style="font-size:11px;color:#888">Processa em lotes de 10 (evita timeout); pode levar alguns minutos. Acompanhe o progresso ao lado do botão.</p>'
     +'<button class="btn btn-pri" id="gp-btn-sync" onclick="gpSyncMes()" style="background:#3B6D11;border-color:#3B6D11">🔄 Sincronizar '+n+' colaboradores</button>'
     +'<span id="gp-sync-status" style="margin-left:10px;font-size:12px;color:#888"></span>'
     +'</div></div>';
@@ -53046,20 +53105,30 @@ function gpRenderSync(){
 function gpSyncMes(){
   var escopo=_gp.escopo||[]; if(!escopo.length){ progShowToast('Selecione um contrato com colaboradores.'); return; }
   var r=gpMesRange(_gp.mes);
-  var matriculas=escopo.map(function(c){return String(c.re);}).filter(Boolean);
+  var mats=escopo.map(function(c){return String(c.re);}).filter(Boolean);
+  var BATCH=10; // lotes pequenos para não estourar o timeout do Azure/proxy
   var btn=document.getElementById('gp-btn-sync'); var st=document.getElementById('gp-sync-status');
-  if(btn){ btn.disabled=true; btn.textContent='⏳ Sincronizando '+matriculas.length+'...'; }
-  if(st) st.textContent='Aguarde — consultando Nexus...';
-  fetch(PONTO_API_URL+'/api/v1/sincronizar-mes',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({matriculas:matriculas,data_inicio:r.ini,data_fim:r.fim})})
-    .then(function(resp){return resp.json();})
-    .then(function(j){
-      if(btn){ btn.disabled=false; btn.textContent='🔄 Sincronizar '+matriculas.length+' colaboradores'; }
-      if(st) st.textContent='✅ '+(j.sincronizados||0)+'/'+(j.total||0)+' colaboradores · '+(j.dias_gravados||0)+' dias gravados'+(j.erros?(' · '+j.erros+' erros'):'');
-      progShowToast('✅ Sync concluído: '+(j.dias_gravados||0)+' dias gravados');
+  if(btn) btn.disabled=true;
+  var idx=0, totDias=0, totSinc=0, totErr=0;
+  function proximo(){
+    if(idx>=mats.length){
+      if(btn){ btn.disabled=false; btn.textContent='🔄 Sincronizar '+mats.length+' colaboradores'; }
+      if(st) st.textContent='✅ '+totSinc+'/'+mats.length+' colaboradores · '+totDias+' dias'+(totErr?(' · '+totErr+' falhas'):'');
+      progShowToast('✅ Sync concluído: '+totDias+' dias gravados'+(totErr?(' ('+totErr+' falhas)'):''));
       gpCarregar();
-    })
-    .catch(function(e){ if(btn){btn.disabled=false;btn.textContent='🔄 Tentar de novo';} if(st) st.textContent='❌ Erro: '+(e.message||e); progShowToast('❌ Erro no sync: '+(e.message||e),'erro'); });
+      return;
+    }
+    var lote=mats.slice(idx, idx+BATCH);
+    var ate=Math.min(idx+lote.length, mats.length);
+    if(btn) btn.textContent='⏳ '+ate+'/'+mats.length+'...';
+    if(st) st.textContent='Sincronizando '+(idx+1)+'–'+ate+' de '+mats.length+' (Nexus)...';
+    fetch(PONTO_API_URL+'/api/v1/sincronizar-mes',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({matriculas:lote,data_inicio:r.ini,data_fim:r.fim})})
+      .then(function(resp){ if(!resp.ok) throw new Error('HTTP '+resp.status); return resp.json(); })
+      .then(function(j){ totDias+=(j.dias_gravados||0); totSinc+=(j.sincronizados||0); totErr+=(j.erros||0); idx+=BATCH; proximo(); })
+      .catch(function(e){ totErr+=lote.length; idx+=BATCH; if(st) st.textContent='⚠ lote com erro ('+(e.message||e)+'), continuando...'; setTimeout(proximo, 300); });
+  }
+  proximo();
 }
 
 // ══ MÓDULO PROGRAMAÇÃO PLPT ══════════════════════════════════
