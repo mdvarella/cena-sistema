@@ -1382,7 +1382,7 @@ body.perfil-coordenador #mn-plr { display:none !important; }
           <span class="ct">📅 Programação de Equipes</span>
           <div style="display:flex;gap:6px">
             <input type="date" class="inp" id="co-prog-data" style="width:145px" onchange="coRenderProgramacao()"/>
-            <button class="btn btn-pri" onclick="progPreviewAutoEscala()">⚡ Auto-escala Inteligente</button>
+            <!-- Auto-escala Inteligente desativado a pedido -->
           </div>
         </div>
       </div>
@@ -2422,13 +2422,14 @@ body.perfil-coordenador #mn-plr { display:none !important; }
       <div style="width:.5px;height:24px;background:#e0dfd8;flex-shrink:0"></div>
       <!-- Ações -->
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <button class="btn btn-pri" onclick="progPreviewAutoEscala()" style="font-size:11px;padding:4px 8px">⚡ Auto-escala Inteligente</button>
+        <!-- Auto-escala Inteligente desativado a pedido -->
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11;font-size:11px;padding:4px 8px">💾 Salvar</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="color:#854F0B;border-color:#854F0B;font-size:11px;padding:4px 8px">⚠ Sem escala</button>
         <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
           <button class="btn" id="btn-sync-ponto" onclick="progSyncPonto()" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 10px;white-space:nowrap">🔄 Sync Ponto</button>
           <span id="sync-ponto-hora" style="font-size:9px;color:#aaa;white-space:nowrap"></span>
         </div>
+        <button class="btn" onclick="progAnaliseDoDia()" style="color:#533AB7;border-color:#533AB7;font-size:11px;padding:4px 8px">📊 Análise do Dia</button>
         <button class="btn" onclick="progNavScroll('topo')" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px">🏠 Topo</button>
         <button class="btn" onclick="progNavScroll('indisp')" style="color:#A32D2D;border-color:#A32D2D;font-size:11px;padding:4px 8px">🚫 Indisp.</button>
         <button class="btn" id="btn-modo-mobile" onclick="progMobileToggle()" style="color:#533AB7;border-color:#533AB7;font-size:11px;padding:4px 8px">📱 Mobile</button>
@@ -6059,11 +6060,32 @@ function vtCarregar(){
   sbFetch('verificar_tratamentos',{filters:filters,order:'data_ocorrencia.desc,status.asc',limit:500})
     .then(function(rows){
       _vtDados = rows||[];
-      vtRenderLista(busca, stFil, setor);
+      vtCarregarColabsFaltantes(_vtDados, function(){
+        vtRenderLista(busca, stFil, setor);
+      });
     }).catch(function(e){
       console.error('vtCarregar erro:',e);
       wrap.innerHTML='<div style="padding:1rem;color:#A32D2D">Erro ao carregar tratamentos.</div>';
     });
+}
+
+// Busca em _colabHistorico os colaboradores (inclusive dispensados) referenciados
+// nos tratamentos que não estão no array ativo. Chama cb ao terminar (sempre).
+function vtCarregarColabsFaltantes(rows, cb){
+  var faltando = [];
+  (rows||[]).forEach(function(t){
+    var id = t.colaborador_id;
+    if(id && !colaboradores.find(function(c){return String(c.id)===String(id);}) && !(id in _colabHistorico)){
+      if(faltando.indexOf(id)<0) faltando.push(id);
+    }
+  });
+  if(!faltando.length || DEMO){ cb(); return; }
+  faltando.forEach(function(id){ _colabHistorico[id]=null; }); // marca tentado (evita refetch)
+  sbFetch('colaboradores',{filters:['id=in.('+faltando.slice(0,200).join(',')+')'],limit:200})
+    .then(function(rows2){
+      (rows2||[]).forEach(function(c){ _colabHistorico[c.id]=c; });
+      cb();
+    }).catch(function(){ cb(); });
 }
 
 function vtRenderIndicadores(todos){
@@ -6127,7 +6149,7 @@ function vtRenderLista(busca, stFil, setor){
   // Indicadores calculados sobre TODOS os dados do período (sem filtros)
   vtRenderIndicadores(_vtDados);
   var lista = _vtDados.filter(function(t){
-    var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
+    var col = progFindColab(t.colaborador_id);
     var nome = col?col.nome:'';
     var re   = col?(col.re||''):'';
     if(busca && nome.toLowerCase().indexOf(busca)<0 && String(re).toLowerCase().indexOf(busca)<0) return false;
@@ -6157,8 +6179,11 @@ function vtRenderLista(busca, stFil, setor){
     +'</tr></thead><tbody>';
 
   lista.forEach(function(t,i){
-    var col = colaboradores.find(function(c){return String(c.id)===String(t.colaborador_id);});
-    var nome = col?col.nome:'('+t.colaborador_id+')';
+    var col = progFindColab(t.colaborador_id);
+    var nome = col?escHtml(col.nome):'<span style="color:#aaa" title="Colaborador não encontrado">('+escHtml(String(t.colaborador_id).substring(0,8))+'…)</span>';
+    if(col && (col.dispensado===true || col.ativo===false)){
+      nome += ' <span style="background:#FCEBEB;color:#A32D2D;border-radius:3px;padding:0 5px;font-size:9px;font-weight:700;vertical-align:middle" title="'+(col.data_dispensa?'Dispensado em '+fmtD(col.data_dispensa):'Inativo')+(col.motivo_dispensa?' — '+escHtml(col.motivo_dispensa):'')+'">DEMITIDO</span>';
+    }
     var re   = col?(col.re||'—'):'—';
     var bg   = i%2===0?'#fff':'#fdf9ff';
     var decisoes = t.decisoes ? t.decisoes.split(',').map(function(d){
@@ -6175,7 +6200,7 @@ function vtRenderLista(busca, stFil, setor){
     html+='<tr style="background:'+bg+'" id="vt-row-'+t.id+'">'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+fmtD(t.data_ocorrencia)+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(re)+'</td>'
-      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-weight:500">'+escHtml(nome)+'</td>'
+      +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-weight:500">'+nome+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;color:#8B1A6B;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+escHtml(t.obs_verificar||'')+'">'+escHtml(t.obs_verificar||'—')+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8">'+(VT_STATUS_LABEL[t.status]||t.status)+'</td>'
       +'<td style="padding:7px 10px;border-bottom:.5px solid #f0efe8;font-size:11px">'
@@ -8008,7 +8033,7 @@ function renderConteudoCadastro(id){
   else if(id==='checklists'){renderChecklistsCad();}
   else if(id==='cursos'){cadRenderCursos();}
   else if(id==='normas'){cadRenderNormas();}
-  else if(id==='estoque'){almRenderEstoqueAba();}
+  else if(id==='estoque'){almRenderEstoqueAba(); _cadBannerAlmox('sesmt-estoque');}
   else if(id==='veiculos') { if(!frt_veiculos||!frt_veiculos.length){ frtInit(); } renderVeiculosVis(); }
   else if(id==='clientes'){renderClientesVis();}
   else if(id==='tipos-servico'){
@@ -8030,7 +8055,20 @@ function renderConteudoCadastro(id){
     var s=document.getElementById('mat-fil-cont');
     if(s){s.innerHTML='<option value="">Todos os contratos</option>'+contratos.map(function(c){return '<option value="'+c.id+'">'+c.nome+'</option>';}).join('');}
     renderMateriaisVis();
+    _cadBannerAlmox('sesmt-itens');
   }
+}
+
+// Banner que direciona cadastros de almox (catálogo/estoque) para o hub Almoxarifado
+function _cadBannerAlmox(destino){
+  var inner=document.getElementById('cad-conteudo-inner'); if(!inner) return;
+  if(inner.querySelector('#cad-banner-almox')) return;
+  var html='<div id="cad-banner-almox" style="display:flex;align-items:center;gap:10px;background:#EEF4FF;border:.5px solid #185FA5;border-radius:8px;padding:.6rem .85rem;margin-bottom:.75rem;font-size:12px;color:#185FA5">'
+    +'<span style="font-size:16px">🏭</span>'
+    +'<span style="flex:1">Cadastro centralizado no módulo <b>Almoxarifado</b>. Recomendamos usar o hub para entradas, estoque e catálogo.</span>'
+    +'<button class="btn btn-sm" onclick="showMain(\'almoxarifado\');showSub(\''+destino+'\')" style="background:#185FA5;color:#fff;border-color:#185FA5;white-space:nowrap">Ir para Almoxarifado →</button>'
+    +'</div>';
+  inner.insertAdjacentHTML('afterbegin', html);
 }
 
 // Funções Vis — renderizam nos tbody visíveis
@@ -27395,10 +27433,41 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.341',
+  numero: '7.9.350',
   data:   '11/06/2026',
-  build:  '20260611-1800',
+  build:  '20260612-0200',
   log: [
+    {v:'7.9.350', d:'12/06/2026', itens:[
+      'Almoxarifado Fase 1 — hub unico: removido pg-alm-dashboard duplicado; nova aba Materiais SAP (integra pg-obras-sap); aba Catalogo (itens) exposta na navegacao; MAIN_CONFIG/SIDEBAR/showPage atualizados; tooltips nas abas; banner nos cadastros (catalogo/estoque) direcionando ao hub',
+    ]},
+    {v:'7.9.349', d:'11/06/2026', itens:[
+      'Limpeza: removido bloco HTML duplicado pg-sesmt-estoque (IDs repetidos est-fil-* / tbody-est) que tornava a tela fragil; agora ha um unico bloco',
+    ]},
+    {v:'7.9.348', d:'11/06/2026', itens:[
+      'Almoxarifado › Estoque: filtro de Tipo agora é dinâmico (montado a partir dos tipos presentes no estoque) — antes as opções fixas (Ferramenta/Material) não batiam com os dados em maiúsculas (FERRAMENTA/DIVERSOS) e o filtro não retornava nada',
+    ]},
+    {v:'7.9.347', d:'11/06/2026', itens:[
+      'Programação: botões "Auto-escala Inteligente" desativados (barra principal e tela auxiliar) e botão "Auto Escalar" removido das linhas das equipes — escala passa a ser manual/por modelo (funções mantidas no código)',
+    ]},
+    {v:'7.9.346', d:'11/06/2026', itens:[
+      'Programação: botão "📊 Análise do Dia" (read-only) — modal com 6 relatórios: escalados sem ponto, disponíveis/folga com ponto não escalados, escalados que faltaram, simulação de equipes extras por turno (Cesto/Moto/Fiorino) e Verificar com observações',
+    ]},
+    {v:'7.9.345', d:'11/06/2026', itens:[
+      'Dash TMA: novos cards Equipes programadas hoje e Média de equipes programadas (período), + seção Equipes programadas por tipo (hoje e média) — programada = composição com ≥1 colaborador escalado',
+    ]},
+    {v:'7.9.344', d:'11/06/2026', itens:[
+      'Dash TMA — faltas corrigidas: ausência no ponto só conta como falta se o colaborador estava disponível no dia; folguistas do dia (cor do calendário), folga, férias, afastado e treinamento deixam de inflar as faltas. Badge Faltou continua contando sempre',
+    ]},
+    {v:'7.9.343', d:'11/06/2026', itens:[
+      'Dashboard TMA reformulado: faltas = Ausentes (ponto) + badge Faltou unidos sem dupla contagem por colab/dia; métricas seguem o filtro de período (padrão últimos 30 dias)',
+      'Dash: Top 20 colaboradores com mais faltas; Faltas e Folguistas com 2 indicadores (Hoje + período); Média de equipes logadas (ignora dias sem movimentação)',
+      'Dash: card Equipes com 3 colabs removido; Equipes 2+ CNH agora D/AD/E/AE; Status = Escalados no mês / Afastados / Férias / Nunca escalados (por colaborador distinto)',
+      'Dash: novo card Colaboradores com faltas sequenciais (4+ dias seguidos)',
+    ]},
+    {v:'7.9.342', d:'11/06/2026', itens:[
+      'Tratamento Verificar: colaboradores dispensados/inativos agora têm o nome exibido (carregados em _colabHistorico via progFindColab) em vez do ID cru',
+      'Tratamento Verificar: flag DEMITIDO ao lado do nome quando dispensado/inativo, com data e motivo no tooltip',
+    ]},
     {v:'7.9.341', d:'11/06/2026', itens:[
       'SESMT › Registrar treinamento: select de cursos vinha vazio quando a tela de Cadastros › Cursos ainda não tinha sido aberta — modal agora carrega sesmt_cursos do banco sob demanda',
     ]},
@@ -30738,8 +30807,7 @@ function progRenderEquipeRow(eq, data){
     +'<td style="padding:4px 6px;vertical-align:top;display:flex;flex-direction:column;gap:3px">'
     +(confirmada
       ? '<button class="btn btn-sm" onclick="progDesprogramarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap;color:#A32D2D;border-color:#A32D2D">↩ Desprogramar</button>'
-      : '<button class="btn btn-sm" onclick="progAutoEscalar(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
-        +'<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
+      : '<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
     )
     +(confirmada
       ? (supConfirmada
@@ -34433,6 +34501,158 @@ function progFecharModal(){
   if(o) o.remove();
 }
 
+// ── 📊 Análise do Dia (read-only) ────────────────────────────────────────
+// 6 relatórios cruzando composição do dia × ponto × status × calendário.
+async function progAnaliseDoDia(){
+  var data = progGetData();
+  var cid  = progGetCont();
+  progAbrirModal('<div style="width:min(700px,92vw);padding:4px">'
+    +'<div style="font-size:16px;font-weight:700;margin-bottom:6px">📊 Análise do Dia — '+fmtD(data)+'</div>'
+    +'<div style="color:#888;font-size:12px">⏳ Carregando ponto e tratativas...</div></div>');
+
+  // Pré-requisitos: ponto do dia + tratativas Verificar
+  await new Promise(function(res){ try{ progCarregarPontoDoSupabase(data, res); }catch(e){ res(); } });
+  var vtObs = {};
+  try{
+    var vt = await sbFetch('verificar_tratamentos',{filters:['data_ocorrencia=eq.'+data],limit:500});
+    (vt||[]).forEach(function(t){ if(t.colaborador_id) vtObs[t.colaborador_id]=t.obs_verificar||''; });
+  }catch(e){}
+
+  var corDia = (_calDados && _calDados[data]) || CAL_CORES_2026[data] || '';
+  var BLOQ = (typeof BLOQ_STATUS!=='undefined') ? BLOQ_STATUS
+           : ['ferias','afastado','treinamento','falta','faltou','integracao','patio','verificar','fraude','demitido'];
+  var stMap = (_progStatusPorDia[data] && _progStatusPorDia[data].status) || _progStatus || {};
+  function stOf(id){ return stMap[id] || 'disponivel'; }
+
+  // Escalados do dia (composicao_dia)
+  var escaladoSet = {};
+  composicao_dia.forEach(function(comp){
+    if((comp.data||'').split('T')[0] !== data) return;
+    parseColabIds(comp.colaborador_ids).forEach(function(id){ if(id) escaladoSet[id]=true; });
+  });
+
+  // Ponto: bateu / faltou
+  function temPonto(c){
+    var p=_pontoCache[c.re+'_'+data]; if(!p) return false;
+    if(p.entrada) return true;
+    if(p.todas_marcacoes && p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';})) return true;
+    if((p.status||'').toLowerCase()==='presente') return true;
+    return false;
+  }
+  function faltou(c){
+    if(temPonto(c)) return false;
+    var p=_pontoCache[c.re+'_'+data];
+    var st=(p&&(p.status||'').toLowerCase())||'';
+    if(st==='falta'||st==='sem_registro') return true;
+    var hp=p&&p.horario_previsto;
+    if(hp&&hp.entrada&&pontoHorarioPassou(hp,data)) return true;
+    return false;
+  }
+  function ehFolgaCal(c){ return !!(corDia && c.cor_escala && c.cor_escala===corDia && stOf(c.id)==='disponivel'); }
+  function turnoColab(c){
+    if(!c.escala_id) return 'Sem turno';
+    var e=(escalas_cad||[]).find(function(x){return x.id===c.escala_id;});
+    return (e&&e.tipo)||'Sem turno';
+  }
+  function cnh(c){ return (c.cnh_categoria||'').toUpperCase().replace(/\s/g,''); }
+
+  // Escopo: contrato ativo, não dispensado/inativo
+  var escopo = colaboradores.filter(function(c){
+    if(c.ativo===false||c.dispensado) return false;
+    if(cid && c.contrato_id!==cid) return false;
+    return true;
+  });
+
+  // 1) Escalados sem ponto
+  var sec1 = escopo.filter(function(c){ return escaladoSet[c.id] && !temPonto(c); });
+  // 4) Escalados que faltaram (sem ponto + critério de falta)
+  var sec4 = escopo.filter(function(c){ return escaladoSet[c.id] && faltou(c); });
+  // 2) Disponíveis com ponto, não escalados
+  var sec2 = escopo.filter(function(c){ return !escaladoSet[c.id] && stOf(c.id)==='disponivel' && !ehFolgaCal(c) && temPonto(c); });
+  // 3) Folga (calendário) com ponto, não escalados
+  var sec3 = escopo.filter(function(c){ return !escaladoSet[c.id] && ehFolgaCal(c) && temPonto(c); });
+  // 6) Verificar
+  var sec6 = escopo.filter(function(c){ return stOf(c.id)==='verificar' || (c.id in vtObs); });
+
+  // 5) Simulação de equipes extras — pool = sec2 + sec3, agrupado por turno
+  var pool = sec2.concat(sec3);
+  var porTurno = {};
+  pool.forEach(function(c){ var t=turnoColab(c); (porTurno[t]||(porTurno[t]=[])).push(c); });
+  var HEAVY=['D','AD','E','AE'];
+  var simCesto=0, simMoto=0, simFiorino=0, simListas=[];
+  Object.keys(porTurno).forEach(function(t){
+    var disp=porTurno[t].slice(), usado={};
+    function pegar(pred){ for(var i=0;i<disp.length;i++){ if(!usado[disp[i].id]&&pred(disp[i])) return disp[i]; } return null; }
+    function pegarQualquer(){ for(var i=0;i<disp.length;i++){ if(!usado[disp[i].id]) return disp[i]; } return null; }
+    var x;
+    // Cesto Aéreo: 1 motorista CNH pesada + 1 qualquer
+    while((x=pegar(function(c){return HEAVY.indexOf(cnh(c))>=0;}))){
+      usado[x.id]=true; var o=pegarQualquer();
+      if(!o){ usado[x.id]=false; break; }
+      usado[o.id]=true; simCesto++;
+      if(simListas.length<5) simListas.push('Cesto ['+t+']: '+nomeAbrev(x.nome)+' + '+nomeAbrev(o.nome));
+    }
+    // Moto Dupla: ambos CNH A
+    while((x=pegar(function(c){return cnh(c)==='A';}))){
+      usado[x.id]=true; var a2=pegar(function(c){return cnh(c)==='A';});
+      if(!a2){ usado[x.id]=false; break; }
+      usado[a2.id]=true; simMoto++;
+      if(simListas.length<5) simListas.push('Moto ['+t+']: '+nomeAbrev(x.nome)+' + '+nomeAbrev(a2.nome));
+    }
+    // Fiorino: 1 CNH B/C + 1 qualquer
+    while((x=pegar(function(c){return cnh(c)==='B'||cnh(c)==='C';}))){
+      usado[x.id]=true; var o2=pegarQualquer();
+      if(!o2){ usado[x.id]=false; break; }
+      usado[o2.id]=true; simFiorino++;
+      if(simListas.length<5) simListas.push('Fiorino ['+t+']: '+nomeAbrev(x.nome)+' + '+nomeAbrev(o2.nome));
+    }
+  });
+
+  // ── Render ──
+  function nomeLi(c, extra){
+    return '<li style="padding:2px 0;font-size:12px">'+escHtml(c.nome)
+      +(c.re?' <span style="color:#aaa;font-size:10px">RE '+escHtml(String(c.re))+'</span>':'')
+      +(extra?' <span style="color:#8B1A6B;font-size:11px">— '+escHtml(extra)+'</span>':'')+'</li>';
+  }
+  function secHtml(titulo, cor, arr, obsMap){
+    var corpo = arr.length
+      ? '<ul style="margin:4px 0 0;padding-left:18px;max-height:160px;overflow:auto">'
+        + arr.map(function(c){ return nomeLi(c, obsMap?obsMap[c.id]:''); }).join('') + '</ul>'
+      : '<div style="font-size:12px;color:#aaa;padding:2px 0">Nenhum</div>';
+    return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+      +'<div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:'+cor+'">'
+      +'<span>'+titulo+'</span>'
+      +'<span style="background:'+cor+'22;color:'+cor+';border-radius:10px;padding:0 7px;font-size:11px;font-weight:700">'+arr.length+'</span></div>'
+      +corpo+'</div>';
+  }
+
+  var simBox = '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px 10px;margin-bottom:8px">'
+    +'<div style="font-size:13px;font-weight:600;color:#185FA5;margin-bottom:4px">5) 🧩 Simulação de equipes extras</div>'
+    +'<div style="font-size:12px;color:#555">Pool de '+pool.length+' colaborador(es) com ponto e não escalados:</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'
+    +['Cesto Aéreo: '+simCesto,'Moto Dupla: '+simMoto,'Fiorino: '+simFiorino].map(function(s){
+        return '<span style="background:#EEF4FF;color:#185FA5;border-radius:6px;padding:3px 9px;font-size:12px;font-weight:700">'+s+'</span>';
+      }).join('')
+    +'</div>'
+    +(simListas.length?'<ul style="margin:0;padding-left:18px;font-size:11px;color:#666">'+simListas.map(function(s){return '<li>'+escHtml(s)+'</li>';}).join('')+'</ul>'
+      :'<div style="font-size:11px;color:#aaa">Sem combinações possíveis com o pool atual.</div>')
+    +'</div>';
+
+  var html = '<div style="width:min(700px,92vw);max-height:82vh;overflow:auto;padding:2px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;position:sticky;top:0;background:#fff;padding-bottom:4px">'
+    +'<div style="font-size:16px;font-weight:700">📊 Análise do Dia — '+fmtD(data)+'</div>'
+    +'<button class="btn" onclick="progFecharModal()" style="padding:2px 10px">✕</button></div>'
+    +secHtml('1) ⚠️ Escalados sem ponto','#A32D2D',sec1)
+    +secHtml('2) ✅ Disponíveis com ponto, não escalados','#3B6D11',sec2)
+    +secHtml('3) 🏖 Folga com ponto, não escalados','#854F0B',sec3)
+    +secHtml('4) ❌ Escalados que faltaram','#A32D2D',sec4)
+    +simBox
+    +secHtml('6) 🔍 Verificar','#8B1A6B',sec6,vtObs)
+    +'</div>';
+  progFecharModal(); // remove o overlay "carregando" antes de exibir o resultado
+  progAbrirModal(html);
+}
+
 // ── Ajuste automático da escala após Sync Ponto ──
 async function progAjustarEscalaPosSyncPonto(dataSync){
   var data = dataSync || progGetData();
@@ -34782,50 +35002,64 @@ function _atualizarTabsTMA(aba){
   });
 }
 
+// Diferença em dias entre duas datas YYYY-MM-DD
+function _tmaDiffDias(a,b){
+  return Math.round((new Date(b+'T12:00:00')-new Date(a+'T12:00:00'))/86400000);
+}
+// Maior sequência de dias consecutivos num conjunto de datas YYYY-MM-DD
+function _tmaMaxSequencia(dias){
+  var s=dias.slice().sort();
+  var best=0,cur=0,prev=null;
+  s.forEach(function(d){
+    if(prev && _tmaDiffDias(prev,d)===1) cur++; else cur=1;
+    if(cur>best) best=cur;
+    prev=d;
+  });
+  return best;
+}
+var TMA_FALTA_SEQ_MIN = 4; // faltas sequenciais a partir de N dias seguidos
+
 function renderTMADashboard(){
-  var hoje    = dataHojeLocal();
-  var dataIni = _tmaDataIni || hoje;
-  var dataFim = _tmaDataFim || hoje;
+  var hoje = dataHojeLocal();
+  // Janela padrão: últimos 30 dias (seguir filtro de período do topo)
+  if(!_tmaDataIni) _tmaDataIni = _diasAtras(29);
+  if(!_tmaDataFim) _tmaDataFim = hoje;
+  var dataIni = _tmaDataIni, dataFim = _tmaDataFim;
   if(dataIni > dataFim){ var tmp=dataIni; dataIni=dataFim; dataFim=tmp; }
-  var data = dataIni;
 
   var el = document.getElementById('tma-dash-inner');
   if(!el) return;
 
-  // ── Buscar status do banco para período não-hoje ─────────────
-  // (localStorage só tem dados se o usuário abriu a programação naquele dia)
+  // ── Carregar status + ponto do período (cache por range) ─────────────
   var _cacheKey = dataIni+'|'+dataFim;
-  if(!DEMO && !(dataIni===hoje && dataFim===hoje) && renderTMADashboard._statusCarregado !== _cacheKey){
-    renderTMADashboard._statusCarregado = _cacheKey;
-    el.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando status do período...</div>';
-    sbFetch('prog_status_diario',{
-      filters:['data=gte.'+dataIni,'data=lte.'+dataFim,'deleted_at=is.null'],
-      order:'data', limit:2000
-    }).then(function(rows){
-      renderTMADashboard._statusDB = rows || [];
+  if(!DEMO && renderTMADashboard._loadedKey !== _cacheKey){
+    renderTMADashboard._loadedKey = _cacheKey;
+    el.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando status e ponto do período...</div>';
+    Promise.all([
+      sbFetchAll('prog_status_diario',{filters:['data=gte.'+dataIni,'data=lte.'+dataFim,'deleted_at=is.null'],order:'data'}),
+      sbFetchAll('ponto_registros',{select:'re,data,status',filters:['data=gte.'+dataIni,'data=lte.'+dataFim],order:'data'})
+    ]).then(function(res){
+      renderTMADashboard._statusDB = res[0]||[];
+      renderTMADashboard._pontoDB  = res[1]||[];
       renderTMADashboard();
     }).catch(function(){
-      renderTMADashboard._statusDB = [];
+      renderTMADashboard._statusDB = []; renderTMADashboard._pontoDB = [];
       renderTMADashboard();
     });
     return;
   }
-  // Se voltou para hoje, limpar cache
-  if(dataIni===hoje && dataFim===hoje){
-    renderTMADashboard._statusCarregado = null;
-    renderTMADashboard._statusDB = null;
-  }
-
   var statusDB = renderTMADashboard._statusDB || [];
+  var pontoDB  = renderTMADashboard._pontoDB  || [];
 
-  // ── Equipes ────────────────────────────────────
-  // Filtrar equipes do contrato TMA apenas
+  // ── Equipes / colaboradores TMA ────────────────────────────
   var _tmaCid = _TMA_CID || '04277076-baa5-4ea4-85dc-bddf55541e68';
-  var eqsFil = equipes_disp.filter(function(e){
-    return e.status==='Ativo' && e.contrato_id === _tmaCid;
-  });
-  var _tmaEqIds = {};
-  eqsFil.forEach(function(e){ _tmaEqIds[e.id] = true; });
+  var eqsFil = equipes_disp.filter(function(e){ return e.status==='Ativo' && e.contrato_id === _tmaCid; });
+  var _tmaEqIds = {}; eqsFil.forEach(function(e){ _tmaEqIds[e.id] = true; });
+
+  var colsTMA = colaboradores.filter(function(c){ return c.contrato_id===_tmaCid && (c.vinculo||'campo')==='campo'; });
+  var colById = {}, colByRe = {};
+  colaboradores.forEach(function(c){ colById[c.id]=c; });
+  colsTMA.forEach(function(c){ if(c.re) colByRe[String(c.re)]=c; });
 
   function getColabIds(comp){
     var raw=comp.colaborador_ids;
@@ -34833,200 +35067,170 @@ function renderTMADashboard(){
     try{ return JSON.parse(raw||'[]').filter(Boolean); }catch(e){ return []; }
   }
 
-  // Composições no período
-  // Filtrar composições do período — só equipes TMA, deduplicar por (equipe_id, data)
-  var _compAll = composicao_dia.filter(function(c){
-    if(!_tmaEqIds[c.equipe_id]) return false;  // só equipes TMA
-    var d=(c.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim;
-  });
+  // Composições do período — só equipes TMA, deduplicar por (equipe_id, data) mantendo a mais recente
   var _compIdx = {};
-  _compAll.forEach(function(c){
-    var key = (c.equipe_id||c.id) + '|' + (c.data||'').split('T')[0];
-    // Manter a mais recente (maior criado_em ou última no array)
-    var ex = _compIdx[key];
-    if(!ex || (c.criado_em||'') >= (ex.criado_em||'')) _compIdx[key] = c;
+  composicao_dia.forEach(function(c){
+    if(!_tmaEqIds[c.equipe_id]) return;
+    var d=(c.data||'').split('T')[0]; if(d<dataIni||d>dataFim) return;
+    var key=(c.equipe_id||c.id)+'|'+d;
+    var ex=_compIdx[key];
+    if(!ex || (c.criado_em||'') >= (ex.criado_em||'')) _compIdx[key]=c;
   });
-  var compDia = Object.values(_compIdx);
+  var compDia = Object.keys(_compIdx).map(function(k){return _compIdx[k];});
 
-  // Sessões no período
+  // Status por (colab|dia) e cor do calendário por dia
+  var statusByDay = {};
+  statusDB.forEach(function(r){ statusByDay[r.colaborador_id+'|'+(r.data||'').split('T')[0]]=r.status; });
+  function corDoDia(d){ return (_calDados&&_calDados[d])||CAL_CORES_2026[d]||''; }
+
+  // ── 1/3/8. FALTAS, sem dupla contagem por colab/dia ──
+  // Definição: falta = quem estava DISPONÍVEL e não veio (ausente no ponto) + badge "Faltou".
+  // NÃO conta folguistas do dia (cor de escala = cor do calendário), folga manual, férias,
+  // afastado, treinamento — esses ficam ausentes no ponto mas não eram esperados no trabalho.
+  var faltaDias = {}; // colabId -> { 'YYYY-MM-DD': true }
+  function addFalta(colId,d){ if(!colId||d<dataIni||d>dataFim) return; (faltaDias[colId]||(faltaDias[colId]={}))[d]=true; }
+  // Badge "Faltou" (marcação manual da programação) — sempre conta
+  statusDB.forEach(function(r){
+    if(r.status==='falta'||r.status==='faltou') addFalta(r.colaborador_id,(r.data||'').split('T')[0]);
+  });
+  // Ausente no ponto — só conta se o colaborador estava DISPONÍVEL naquele dia
+  pontoDB.forEach(function(r){
+    var st=(r.status||'').toLowerCase();
+    if(st!=='falta'&&st!=='ausente'&&st!=='faltou') return;
+    var c=colByRe[String(r.re)]; if(!c) return;
+    var d=(r.data||'').split('T')[0];
+    var stDia=statusByDay[c.id+'|'+d]||'disponivel';
+    if(stDia!=='disponivel') return;              // folga/férias/afastado/treinamento/etc. → não é falta
+    var cor=corDoDia(d);
+    if(cor && c.cor_escala && c.cor_escala===cor) return; // folguista do dia (folga pelo calendário)
+    addFalta(c.id,d);
+  });
+  var faltaList = Object.keys(faltaDias).map(function(id){
+    var dias=Object.keys(faltaDias[id]);
+    return { col:colById[id], dias:dias, n:dias.length, seq:_tmaMaxSequencia(dias) };
+  }).filter(function(x){ return x.col; });
+
+  var topFaltas      = faltaList.slice().sort(function(a,b){return b.n-a.n;}).slice(0,20);
+  var faltasPeriodo  = faltaList.reduce(function(s,x){return s+x.n;},0);
+  var faltasHoje     = faltaList.filter(function(x){return x.dias.indexOf(hoje)>=0;}).length;
+  var faltasSeq      = faltaList.filter(function(x){return x.seq>=TMA_FALTA_SEQ_MIN;}).sort(function(a,b){return b.seq-a.seq;});
+
+  // ── 2. MÉDIA DE EQUIPES LOGADAS (período, ignorando dias sem movimentação) ──
   var sessDia = sessoes_disp.filter(function(s){
-    var d=(s.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&s.login_ts;
+    var d=(s.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&s.login_ts&&_tmaEqIds[s.equipe_id];
   });
+  var eqsPorDia = {};
+  sessDia.forEach(function(s){ var d=(s.data||'').split('T')[0]; (eqsPorDia[d]||(eqsPorDia[d]={}))[s.equipe_id]=true; });
+  var diasComMov = Object.keys(eqsPorDia);
+  var somaEqLog  = diasComMov.reduce(function(s,d){return s+Object.keys(eqsPorDia[d]).length;},0);
+  var mediaLogadas = diasComMov.length ? (somaEqLog/diasComMov.length) : 0;
+  var logadasHoje  = eqsPorDia[hoje] ? Object.keys(eqsPorDia[hoje]).length : 0;
 
-  // Ordens no período
-  var ordsDia = ordens_db.filter(function(o){
-    var d=(o.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&o.status!=='cancelada';
-  });
-
-
-  // ── 1. Equipes logadas por tipo ───────────────────
-  var logadas = {}; // {tipo: count}
+  // Equipes logadas por tipo (período)
+  var logadas = {};
   sessDia.forEach(function(s){
-    var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;});
-    if(!eq) return;
+    var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;}); if(!eq) return;
     var tipo = (tipos_equipe.find(function(t){return t.id===eq.tipo_id;})||{}).nome || eq.tipo || 'Sem tipo';
     logadas[tipo] = (logadas[tipo]||0) + 1;
   });
-  var totalLogadas = Object.keys(logadas).reduce(function(s,k){return s+logadas[k];},0);
 
-  // ── 2. Faltas/Status no período ─────────────────────────
-  var statusPeriodo = {}; // {colabId: {falta:N, folga:N, ferias:N, afastado:N, outros:N}}
-
-  // Prioridade: banco (statusDB) > localStorage
-  if(statusDB.length){
-    statusDB.forEach(function(r){
-      var id = r.colaborador_id; if(!id) return;
-      // Garantir que o registro está dentro do período selecionado
-      var rd = (r.data||'').split('T')[0];
-      if(rd < dataIni || rd > dataFim) return;
-      if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
-      var st = r.status||'disponivel';
-      if(st==='falta')         statusPeriodo[id].falta++;
-      else if(st==='folga')    statusPeriodo[id].folga++;
-      else if(st==='ferias')   statusPeriodo[id].ferias++;
-      else if(st==='afastado') statusPeriodo[id].afastado++;
-      else if(st!=='disponivel') statusPeriodo[id].outros++;
-    });
-  } else {
-    // Fallback: localStorage
-    var dCur = new Date(dataIni+'T12:00:00'), dFim2 = new Date(dataFim+'T12:00:00');
-    while(dCur <= dFim2){
-      var ds = dCur.getFullYear()+'-'+String(dCur.getMonth()+1).padStart(2,'0')+'-'+String(dCur.getDate()).padStart(2,'0');
-      try{
-        var sv = JSON.parse(localStorage.getItem('prog_status_'+ds)||'{}');
-        var stMap = sv.status || sv;
-        if(typeof stMap === 'object'){
-          Object.keys(stMap).forEach(function(id){
-            if(!statusPeriodo[id]) statusPeriodo[id]={falta:0,folga:0,ferias:0,afastado:0,outros:0};
-            var st = stMap[id];
-            if(st==='falta')         statusPeriodo[id].falta++;
-            else if(st==='folga')    statusPeriodo[id].folga++;
-            else if(st==='ferias')   statusPeriodo[id].ferias++;
-            else if(st==='afastado') statusPeriodo[id].afastado++;
-            else if(st!=='disponivel') statusPeriodo[id].outros++;
-          });
-        }
-      }catch(e){}
-      dCur.setDate(dCur.getDate()+1);
-    }
+  // ── 2b. EQUIPES PROGRAMADAS (composição com ≥1 colaborador) — hoje + média, total e por tipo ──
+  function tipoDaEq(eqId){
+    var eq=equipes_disp.find(function(e){return e.id===eqId;}); if(!eq) return 'Sem tipo';
+    return (tipos_equipe.find(function(t){return t.id===eq.tipo_id;})||{}).nome || eq.tipo || 'Sem tipo';
   }
-
-  var nFaltas = 0, colabsComFalta = [];
-  Object.keys(statusPeriodo).forEach(function(id){
-    var n = statusPeriodo[id].falta;
-    if(n>0){ nFaltas+=n; var col=colaboradores.find(function(x){return x.id===id;}); if(col) colabsComFalta.push({nome:col.nome,faltas:n}); }
+  var progPorDia={}, progPorDiaTipo={};
+  compDia.forEach(function(c){
+    if(!getColabIds(c).length) return; // só conta equipe com gente escalada
+    var d=(c.data||'').split('T')[0];
+    (progPorDia[d]||(progPorDia[d]={}))[c.equipe_id]=true;
+    var tp=tipoDaEq(c.equipe_id);
+    if(!progPorDiaTipo[d]) progPorDiaTipo[d]={};
+    if(!progPorDiaTipo[d][tp]) progPorDiaTipo[d][tp]={};
+    progPorDiaTipo[d][tp][c.equipe_id]=true;
   });
-  colabsComFalta.sort(function(a,b){return b.faltas-a.faltas;});
+  var diasComProg = Object.keys(progPorDia);
+  var progHoje = progPorDia[hoje] ? Object.keys(progPorDia[hoje]).length : 0;
+  var somaProg = diasComProg.reduce(function(s,d){return s+Object.keys(progPorDia[d]).length;},0);
+  var mediaProg = diasComProg.length ? (somaProg/diasComProg.length) : 0;
+  // por tipo
+  var tiposProgSet={};
+  diasComProg.forEach(function(d){ Object.keys(progPorDiaTipo[d]||{}).forEach(function(tp){tiposProgSet[tp]=true;}); });
+  var progPorTipo = Object.keys(tiposProgSet).map(function(tp){
+    var h = (progPorDiaTipo[hoje]&&progPorDiaTipo[hoje][tp]) ? Object.keys(progPorDiaTipo[hoje][tp]).length : 0;
+    var soma = diasComProg.reduce(function(s,d){ return s + ((progPorDiaTipo[d]&&progPorDiaTipo[d][tp])?Object.keys(progPorDiaTipo[d][tp]).length:0); },0);
+    var med = diasComProg.length ? (soma/diasComProg.length) : 0;
+    return { tipo:tp, hoje:h, media:med };
+  }).sort(function(a,b){return b.media-a.media;});
 
-  // ── 3. Folguistas trabalhando ─────────────────────
-  // Usar status específico do dia analisado (não _progStatus que é do dia atual)
-  var statusDoData = {};
-  if(statusDB.length){
-    statusDB.filter(function(r){return (r.data||'').split('T')[0]===data;}).forEach(function(r){
-      if(r.colaborador_id) statusDoData[r.colaborador_id]=r.status;
+  // ── 4. FOLGUISTAS TRABALHANDO (Hoje + período) ──
+  function folguistasNoDia(d){
+    var cnt=0, seen={}, cor=corDoDia(d);
+    compDia.forEach(function(comp){
+      if((comp.data||'').split('T')[0]!==d) return;
+      getColabIds(comp).forEach(function(id){
+        if(seen[id]) return; seen[id]=true;
+        var col=colById[id]; if(!col) return;
+        var st=statusByDay[id+'|'+d]||'disponivel';
+        var folgaManual=(st==='folga');
+        var folgaCal=cor&&col.cor_escala&&col.cor_escala===cor&&st==='disponivel';
+        if(folgaManual||folgaCal) cnt++;
+      });
     });
-  } else {
-    try{
-      var sv2=JSON.parse(localStorage.getItem('prog_status_'+data)||'{}');
-      statusDoData=(sv2.status||sv2)||{};
-    }catch(e){}
+    return cnt;
   }
+  var diasComComp={}; compDia.forEach(function(c){ diasComComp[(c.data||'').split('T')[0]]=true; });
+  var folguistasPeriodo = Object.keys(diasComComp).reduce(function(s,d){return s+folguistasNoDia(d);},0);
+  var folguistasHoje    = folguistasNoDia(hoje);
 
-  var calDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
-  // FOLGUISTAS TRABALHANDO:
-  // Mesma lógica de progRenderResumo._horaExtraSet:
-  // colabs escalados no dia que teriam folga (manual=folga OU calendário de escala)
+  // ── 6. EQUIPES COM 2+ CNH D/AD/E/AE (hoje) ──
+  var CNH_PESADA = ['D','AD','E','AE','A/E','E/A','DE','EAD','ADE'];
   var STATUS_BLOQ = BLOQ_STATUS;
-  var _escalSet = {};
+  var nEqHeavy = 0;
   compDia.forEach(function(comp){
-    getColabIds(comp).forEach(function(id){ _escalSet[id] = true; });
-  });
-  var nFolguistas = 0;
-  Object.keys(_escalSet).forEach(function(id){
-    var col = colaboradores.find(function(c){return c.id===id;}); if(!col) return;
-    var st = statusDoData[id] || 'disponivel';
-    var folgaManual = (st === 'folga');
-    var folgaCal    = calDia && col.cor_escala && (col.cor_escala === calDia) && (st === 'disponivel');
-    if(folgaManual || folgaCal) nFolguistas++;
-  });
-
-  // ── 4. EQUIPES COM 3 COLABORADORES:
-  // Mesma lógica de progRenderEquipeRow.slots:
-  // slots ativos = colabs cujo status NÃO está em STATUS_BLOQUEADOS
-  var nEq3 = 0;
-  compDia.forEach(function(comp){
-    var ids = getColabIds(comp);
-    var slots = ids.filter(function(id){
-      var st = statusDoData[id] || 'disponivel';
-      return STATUS_BLOQ.indexOf(st) < 0; // não bloqueado = ativo
-    });
-    if(slots.length === 3) nEq3++;
-  });
-
-  // ── 5. EQUIPES COM 2+ CNH D OU AD:
-  // Mesma lógica do alerta na programação:
-  // Conta colabs nos slots ATIVOS (não bloqueados) com CNH D ou AD
-  var nEqDAD = 0;
-  compDia.forEach(function(comp){
-    var ids = getColabIds(comp);
-    // Só contar colabs ativos (não bloqueados — igual aos slots visíveis na prog.)
-    var slotsAtivos = ids.filter(function(id){
-      var st = statusDoData[id] || 'disponivel';
+    if((comp.data||'').split('T')[0]!==hoje) return;
+    var ativos = getColabIds(comp).filter(function(id){
+      var st = statusByDay[id+'|'+hoje]||'disponivel';
       return STATUS_BLOQ.indexOf(st) < 0;
     });
-    var dCount = slotsAtivos.filter(function(id){
-      var col = colaboradores.find(function(c){return c.id===id;});
-      if(!col) return false;
-      var cat = (col.cnh_categoria||col.carta||'').toUpperCase().trim();
-      return cat==='D' || cat==='AD';
+    var n = ativos.filter(function(id){
+      var col=colById[id]; if(!col) return false;
+      var cat=(col.cnh_categoria||col.carta||'').toUpperCase().replace(/\s/g,'');
+      return CNH_PESADA.indexOf(cat) >= 0;
     }).length;
-    if(dCount >= 2) nEqDAD++;
+    if(n>=2) nEqHeavy++;
   });
 
-  // ── 6. Status de colaboradores no DIA filtrado ───────────────
-  // Afastados e Férias = contagem de colaboradores indisponíveis com esse status
-  // Fonte: statusDoData (status do dia = dataIni, já carregado do banco ou _progStatus)
-  var statusCount = {escalado:0, afastado:0, ferias:0, outros:0};
-
-  // Escalados = colabs únicos nas programações do dia
+  // ── 7. STATUS DOS COLABORADORES (período) ──
   var escaladosSet = {};
   compDia.forEach(function(c){ getColabIds(c).forEach(function(id){ escaladosSet[id]=true; }); });
-  statusCount.escalado = Object.keys(escaladosSet).length;
+  var escaladosMes = Object.keys(escaladosSet).length; // por colaborador (distinto)
 
-  // Afastados/Férias = colaboradores com esse status no dia filtrado
-  // Usa statusDoData (status real do dia dataIni, vindo do banco ou _progStatus)
-  var afastadosSet = {}, feriasSet = {};
-  // Para hoje: usar _progStatus; para outros dias: usar statusDoData (do banco)
-  var fonteStatus = (dataIni === hoje) ? _progStatus : statusDoData;
-  colaboradores.forEach(function(col){
-    var st = fonteStatus[col.id];
-    if(!st) return;
-    if(st === 'afastado') afastadosSet[col.id] = true;
-    else if(st === 'ferias') feriasSet[col.id] = true;
+  var afastSet={}, feriasSet={};
+  statusDB.forEach(function(r){
+    if(r.status==='afastado') afastSet[r.colaborador_id]=true;
+    else if(r.status==='ferias') feriasSet[r.colaborador_id]=true;
   });
-  statusCount.afastado = Object.keys(afastadosSet).length;
-  statusCount.ferias   = Object.keys(feriasSet).length;
+  var afastadosMes = Object.keys(afastSet).length;
+  var feriasMes    = Object.keys(feriasSet).length;
+  var nuncaEscalados = colsTMA.filter(function(c){
+    return c.ativo!==false && !c.dispensado && !escaladosSet[c.id];
+  }).length;
 
-  // ── 11. Top faltas (já calculado) ───
-  var topFaltas = colabsComFalta.slice(0,10);
-
-  // ── 12/13. Equipes por tempo logado ───────────────
+  // ── Equipes por tempo logado e por OS (período) ──
   var tempoEqs = sessDia.map(function(s){
     var eq = equipes_disp.find(function(e){return e.id===s.equipe_id;})||{codigo:'?'};
     var min = s.minutos_faturados || 0;
-    if(!min && s.login_ts && s.logout_ts){
-      min = Math.round((new Date(s.logout_ts)-new Date(s.login_ts))/60000);
-    } else if(!min && s.login_ts){
-      min = Math.round((new Date()-new Date(s.login_ts))/60000);
-    }
+    if(!min && s.login_ts && s.logout_ts) min = Math.round((new Date(s.logout_ts)-new Date(s.login_ts))/60000);
+    else if(!min && s.login_ts) min = Math.round((new Date()-new Date(s.login_ts))/60000);
     return {eq:eq.codigo||eq.nome||'?', min:min, logada:!s.logout_ts};
   }).sort(function(a,b){return b.min-a.min;});
 
-  // ── 14/15. Equipes por OS atendidas ──────────────
-  var osEqs = {};
-  ordsDia.forEach(function(o){
-    osEqs[o.equipe_id] = (osEqs[o.equipe_id]||0)+1;
+  var ordsDia = ordens_db.filter(function(o){
+    var d=(o.data||'').split('T')[0]; return d>=dataIni&&d<=dataFim&&o.status!=='cancelada';
   });
+  var osEqs = {};
+  ordsDia.forEach(function(o){ osEqs[o.equipe_id]=(osEqs[o.equipe_id]||0)+1; });
   var topOS = Object.keys(osEqs).map(function(eid){
     var eq=equipes_disp.find(function(e){return e.id===eid;})||{codigo:'?'};
     return {eq:eq.codigo||eq.nome||'?', os:osEqs[eid]};
@@ -35041,22 +35245,16 @@ function renderTMADashboard(){
       +(sub?'<div style="font-size:10px;color:#aaa">'+sub+'</div>':'')
       +'</div>';
   }
-
   function tabelaRanking(titulo,linhas,cols){
     return '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">'+titulo+'</span></div>'
       +'<table class="tbl" style="font-size:12px"><thead><tr>'
       +cols.map(function(c){return '<th>'+c+'</th>';}).join('')
-      +'</tr></thead><tbody>'
-      +linhas+'</tbody></table></div>';
+      +'</tr></thead><tbody>'+linhas+'</tbody></table></div>';
   }
 
-  var el = document.getElementById('tma-dash-inner');
-  if(!el) return;
+  var nDias = _tmaDiffDias(dataIni,dataFim)+1;
+  var labelPeriodo = '('+nDias+' dias)';
 
-  var dataIni = _tmaDataIni || data;
-  var dataFim = _tmaDataFim || data;
-
-  // Filtros do dashboard — intervalo de datas, sem filtro de contrato
   var filtroHtml = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">'
     +'<label style="font-size:11px;font-weight:600;color:#555">Período:</label>'
     +'<div style="display:flex;align-items:center;gap:6px">'
@@ -35067,18 +35265,35 @@ function renderTMADashboard(){
     +'<button class="btn" onclick="renderTMADashboard()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>'
     +'</div>';
 
-  // Cards gerais
+  // Cards gerais (item 2,3,4,6 — item 5 removido)
   var cardsHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1rem">'
-    +card('🚌','Equipes logadas hoje',totalLogadas,'#185FA5','de '+eqsFil.length+' ativas')
-    +card('❌','Faltas',nFaltas,nFaltas>0?'#A32D2D':'#3B6D11','colaboradores')
-    +card('🔄','Folguistas trabalhando',nFolguistas,nFolguistas>0?'#854F0B':'#3B6D11','hora extra')
-    +card('👥','Equipes com 3 colabs',nEq3,'#533AB7','no dia')
-    +card('🚗','Equipes com 2+ D/AD',nEqDAD,nEqDAD>0?'#854F0B':'#3B6D11','atenção')
+    +card('📋','Equipes programadas hoje',progHoje,'#185FA5','de '+eqsFil.length+' ativas')
+    +card('📋','Média equipes programadas '+labelPeriodo,mediaProg.toFixed(1),'#185FA5',diasComProg.length+' dias com programação')
+    +card('🚌','Média equipes logadas '+labelPeriodo,mediaLogadas.toFixed(1),'#1E8E7E',diasComMov.length+' dias com mov. · hoje '+logadasHoje)
+    +card('❌','Faltas hoje',faltasHoje,faltasHoje>0?'#A32D2D':'#3B6D11','colaboradores')
+    +card('❌','Faltas '+labelPeriodo,faltasPeriodo,faltasPeriodo>0?'#A32D2D':'#3B6D11','total no período')
+    +card('🔄','Folguistas trab. hoje',folguistasHoje,folguistasHoje>0?'#854F0B':'#3B6D11','hora extra')
+    +card('🔄','Folguistas trab. '+labelPeriodo,folguistasPeriodo,folguistasPeriodo>0?'#854F0B':'#3B6D11','soma no período')
+    +card('🚗','Equipes 2+ D/AD/E/AE',nEqHeavy,nEqHeavy>0?'#854F0B':'#3B6D11','hoje')
     +'</div>';
 
-  // Equipes logadas por tipo
+  // Equipes programadas por tipo (hoje + média)
+  var progTipoHtml = progPorTipo.length
+    ? '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">📋 Equipes programadas por tipo '+labelPeriodo+'</span></div>'
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:.5rem">'
+      +progPorTipo.map(function(x){
+        return '<div style="background:#EEF4FF;border-radius:8px;padding:8px 12px;text-align:center">'
+          +'<div style="font-size:11px;color:#555;margin-bottom:3px;font-weight:600">'+escHtml(x.tipo)+'</div>'
+          +'<div style="display:flex;justify-content:center;gap:14px">'
+          +'<div><div style="font-size:18px;font-weight:700;color:#185FA5">'+x.hoje+'</div><div style="font-size:9px;color:#888">hoje</div></div>'
+          +'<div><div style="font-size:18px;font-weight:700;color:#534AB7">'+x.media.toFixed(1)+'</div><div style="font-size:9px;color:#888">média</div></div>'
+          +'</div></div>';
+      }).join('')
+      +'</div></div>'
+    : '';
+
   var tiposHtml = Object.keys(logadas).length
-    ? '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">🚌 Equipes logadas por tipo</span></div>'
+    ? '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">🚌 Equipes logadas por tipo '+labelPeriodo+'</span></div>'
       +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:.5rem">'
       +Object.keys(logadas).map(function(t){
         return '<div style="background:#E6F1FB;border-radius:8px;padding:8px 12px;text-align:center">'
@@ -35086,20 +35301,16 @@ function renderTMADashboard(){
           +'<div style="font-size:11px;color:#555">'+escHtml(t)+'</div></div>';
       }).join('')
       +'</div></div>'
-    : '<div class="card" style="margin-bottom:.75rem;padding:1rem;text-align:center;color:#aaa;font-size:12px">Nenhuma equipe logada em '+fmtD(data)+'</div>';
+    : '<div class="card" style="margin-bottom:.75rem;padding:1rem;text-align:center;color:#aaa;font-size:12px">Nenhuma equipe logada no período</div>';
 
-  // Status TMA
-  var outrosLabel = Object.keys(statusCount.outros).map(function(k){
-    return (PROG_STATUS[k]||{label:k}).label+': '+statusCount.outros[k];
-  }).join(' · ')||'—';
-
-  var statusHtml = '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">👷 Status dos Colaboradores</span></div>'
+  // Status dos colaboradores (item 7)
+  var statusHtml = '<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">👷 Status dos Colaboradores '+labelPeriodo+'</span></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;padding:.5rem">'
     +[
-      {icon:'✅',label:'Escalados',val:statusCount.escalado,cor:'#3B6D11',bg:'#EAF3DE'},
-      {icon:'🛌',label:'Afastados', val:statusCount.afastado,cor:'#555',bg:'#f5f5f3'},
-      {icon:'🌴',label:'Férias',    val:statusCount.ferias, cor:'#185FA5',bg:'#E6F1FB'},
-      {icon:'⚠',label:'Outros',    val:statusCount.outros||0, cor:'#854F0B',bg:'#FEF3E2'},
+      {icon:'✅',label:'Escalados no mês',val:escaladosMes,cor:'#3B6D11',bg:'#EAF3DE'},
+      {icon:'🛌',label:'Afastados',       val:afastadosMes,cor:'#555',bg:'#f5f5f3'},
+      {icon:'🌴',label:'Férias',          val:feriasMes,  cor:'#185FA5',bg:'#E6F1FB'},
+      {icon:'🚫',label:'Nunca escalados', val:nuncaEscalados,cor:'#A32D2D',bg:'#FCEBEB'},
     ].map(function(x){
       return '<div style="background:'+x.bg+';border-radius:8px;padding:8px 12px;text-align:center">'
         +'<div style="font-size:20px;font-weight:700;color:'+x.cor+'">'+x.val+'</div>'
@@ -35107,35 +35318,45 @@ function renderTMADashboard(){
     }).join('')
     +'</div></div>';
 
-  // Rankings
+  // Item 1 — Top 20 colaboradores com mais faltas
   var colabFaltasHtml = tabelaRanking(
-    '🚨 Colaboradores com mais faltas (30 dias)',
+    '🚨 Colaboradores com mais faltas '+labelPeriodo,
     topFaltas.length
       ? topFaltas.map(function(x,i){
           return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
-            +'<td style="font-weight:500">'+escHtml(x.nome)+'</td>'
-            +'<td style="text-align:center;font-weight:700;color:#A32D2D">'+x.faltas+'</td></tr>';
+            +'<td style="font-weight:500">'+escHtml(x.col.nome)+(x.col.re?' <span style="color:#aaa;font-size:10px">RE '+escHtml(String(x.col.re))+'</span>':'')+'</td>'
+            +'<td style="text-align:center;font-weight:700;color:#A32D2D">'+x.n+'</td></tr>';
         }).join('')
-      : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhuma falta registrada nos últimos 30 dias</td></tr>',
+      : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhuma falta registrada no período</td></tr>',
     ['#','Colaborador','Faltas']
+  );
+
+  // Item 8 — Faltas sequenciais (>= TMA_FALTA_SEQ_MIN dias seguidos)
+  var faltasSeqHtml = tabelaRanking(
+    '🔴 Faltas sequenciais ('+TMA_FALTA_SEQ_MIN+'+ dias seguidos)',
+    faltasSeq.length
+      ? faltasSeq.map(function(x,i){
+          return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
+            +'<td style="font-weight:500">'+escHtml(x.col.nome)+(x.col.re?' <span style="color:#aaa;font-size:10px">RE '+escHtml(String(x.col.re))+'</span>':'')+'</td>'
+            +'<td style="text-align:center;font-weight:700;color:#A32D2D">'+x.seq+' dias</td></tr>';
+        }).join('')
+      : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhum colaborador com '+TMA_FALTA_SEQ_MIN+'+ faltas seguidas no período</td></tr>',
+    ['#','Colaborador','Dias seguidos']
   );
 
   var tempo5top = tempoEqs.slice(0,5);
   var tempo5bot = tempoEqs.slice().reverse().slice(0,5);
   function fmtMin(min){ return Math.floor(min/60)+'h'+String(min%60).padStart(2,'0')+'m'; }
-
   var linhasTempo = function(arr){
     return arr.length
       ? arr.map(function(x,i){
           return '<tr><td style="color:#aaa;font-size:11px">'+(i+1)+'°</td>'
             +'<td style="font-family:monospace;font-weight:600">'+escHtml(x.eq)+'</td>'
             +'<td style="text-align:center;font-weight:700;color:#185FA5">'+fmtMin(x.min)+'</td>'
-            +(x.logada?'<td><span style="font-size:10px;color:#3B6D11">🟢 Em campo</span></td>':'<td></td>')
-            +'</tr>';
+            +(x.logada?'<td><span style="font-size:10px;color:#3B6D11">🟢 Em campo</span></td>':'<td></td>')+'</tr>';
         }).join('')
       : '<tr><td colspan="4" style="color:#aaa;text-align:center;padding:1rem">Nenhuma sessão registrada</td></tr>';
   };
-
   var linhasOS = function(arr){
     return arr.length
       ? arr.map(function(x,i){
@@ -35145,16 +35366,18 @@ function renderTMADashboard(){
         }).join('')
       : '<tr><td colspan="3" style="color:#aaa;text-align:center;padding:1rem">Nenhuma OS registrada</td></tr>';
   };
-
   var topOS10  = topOS.slice(0,10);
   var botOS10  = topOS.slice().reverse().slice(0,10);
 
-  el.innerHTML = filtroHtml + cardsHtml + tiposHtml + statusHtml
+  el.innerHTML = filtroHtml + cardsHtml + progTipoHtml + tiposHtml + statusHtml
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">'
+    +colabFaltasHtml
+    +faltasSeqHtml
+    +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">'
     +tabelaRanking('⏱ Top 5 — Maior tempo logado', linhasTempo(tempo5top), ['#','Equipe','Tempo',''])
     +tabelaRanking('⏱ Bottom 5 — Menor tempo logado',linhasTempo(tempo5bot),['#','Equipe','Tempo',''])
     +'</div>'
-    +colabFaltasHtml
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">'
     +tabelaRanking('📋 Top 10 — Mais OS atendidas',    linhasOS(topOS10),  ['#','Equipe','OS'])
     +tabelaRanking('📋 Bottom 10 — Menos OS atendidas', linhasOS(botOS10), ['#','Equipe','OS'])
@@ -41440,12 +41663,14 @@ var MAIN_CONFIG = {
     {id:'comgas-rem',          label:'📋 COMGÁS — REM'},
   ]},
   almoxarifado: {label:'🏭 Almoxarifado', subs:[
-    {id:'sesmt-alm',          label:'📦 Almoxarifado'},
+    {id:'sesmt-alm',          label:'📦 Movimentações'},
+    {id:'sesmt-itens',        label:'🗂 Catálogo'},
     {id:'sesmt-estoque',      label:'🗄 Estoque'},
     {id:'sesmt-epis',         label:'🦺 EPIs / EPCs'},
+    {id:'sesmt-ferramentas',  label:'🔧 Ferramentas'},
     {id:'sesmt-uniformes',    label:'👕 Uniformes'},
     {id:'sesmt-lavagem',      label:'🧺 Lavagem'},
-    {id:'sesmt-ferramentas',  label:'🔧 Ferramentas'},
+    {id:'sesmt-sap-obra',     label:'🏭 Materiais SAP'},
     {id:'sesmt-locacoes',     label:'🏗 Locações'},
     {id:'sesmt-vales',        label:'📄 Vales'},
     {id:'sesmt-filiais',      label:'🏢 Filiais'},
@@ -41475,7 +41700,7 @@ var ALL_PAGES = ['dashboard','contratos-lista','adiantamentos',
   'obras-projetos','obras-sap','obras-execucao','obras-movSAP',
   'relatorios','cadastros','campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
-  'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
+  'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','obras-requisicao','obras-medicao','plr','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
 
 // ── SIDEBAR RENDER ─────────────────────────────────────────
@@ -41531,19 +41756,21 @@ var SIDEBAR_GROUPS = {
   plr:        [{label:'PLR',        items:[{id:'plr',        icon:'🏆', label:'PLR'}]}],
   almoxarifado: [
     {label:'Estoque e EPIs', items:[
-      {id:'sesmt-alm',        icon:'📦', label:'Almoxarifado'},
-      {id:'sesmt-epis',       icon:'🦺', label:'EPIs / EPCs'},
+      {id:'sesmt-alm',        icon:'📦', label:'Movimentações'},
+      {id:'sesmt-itens',      icon:'🗂', label:'Catálogo de itens'},
       {id:'sesmt-estoque',    icon:'🗄', label:'Estoque'},
-    ]},
-    {label:'Vestimenta', items:[
-      {id:'sesmt-lavagem',    icon:'🧺', label:'Lavagem'},
-      {id:'sesmt-uniformes',  icon:'👕', label:'Uniformes'},
+      {id:'sesmt-epis',       icon:'🦺', label:'EPIs / EPCs'},
     ]},
     {label:'Patrimônio', items:[
       {id:'sesmt-ferramentas',icon:'🔧', label:'Ferramentas'},
-      {id:'sesmt-locacoes',   icon:'🏗', label:'Locações'},
+      {id:'sesmt-uniformes',  icon:'👕', label:'Uniformes'},
+      {id:'sesmt-lavagem',    icon:'🧺', label:'Lavagem'},
     ]},
-    {label:'Financeiro', items:[
+    {label:'Obra / SAP', items:[
+      {id:'sesmt-sap-obra',   icon:'🏭', label:'Materiais SAP'},
+    ]},
+    {label:'Admin', items:[
+      {id:'sesmt-locacoes',   icon:'🏗', label:'Locações'},
       {id:'sesmt-filiais',    icon:'🏢', label:'Filiais / Depósitos'},
       {id:'sesmt-vales',      icon:'📄', label:'Vales / Relatórios'},
     ]},
@@ -42045,7 +42272,7 @@ function showPage(pageId){
    'verbas','lancamentos','aprovacao','obras','relatorios','cadastros',
    'campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
    'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
-   'sesmt-alm','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
+   'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
    'obras-projetos','obras-sap','obras-execucao','obras-movSAP','obras-requisicao',
    'obras-medicao','plr','sugestoes',
    'frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao',
@@ -42124,6 +42351,8 @@ function showPage(pageId){
     });
   }
   else if(pageId==='sesmt-alm')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureInACA('pg-sesmt-alm'); _almShowAba('alm'); }); }
+  else if(pageId==='sesmt-itens')      { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('itens'); }); }
+  else if(pageId==='sesmt-sap-obra')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('sap-obra'); }); }
   else if(pageId==='sesmt-estoque')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('estoque'); }); }
   else if(pageId==='sesmt-epis')       { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('epis'); }); }
   else if(pageId==='sesmt-uniformes')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('uniformes'); }); }
@@ -55991,7 +56220,7 @@ function _almShowAbaInterna(aba){
     : [];
 
   // Atualizar botões de aba
-  ['alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','vales','filiais','ficha-epi'].forEach(function(a){
+  ['alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','vales','filiais','ficha-epi','sap-obra'].forEach(function(a){
     var btn = document.getElementById('alm-tab-'+a);
     if(!btn) return;
     btn.style.background  = a===aba ? '#1a1a18' : '';
@@ -56010,10 +56239,17 @@ function _almShowAbaInterna(aba){
   var pgFicha = document.getElementById('pg-sesmt-ficha-epi');
   if(pgFicha) pgFicha.classList[aba==='ficha-epi' ? 'remove' : 'add']('hidden');
 
+  // Materiais SAP / Obra: página separada (pg-obras-sap), controlada pela visibilidade (não é pg-sesmt-*)
+  var pgSap = document.getElementById('pg-obras-sap');
+  if(pgSap){
+    if(aba==='sap-obra'){ if(typeof _ensureInACA==='function') _ensureInACA('pg-obras-sap'); pgSap.style.display=''; pgSap.classList.remove('hidden'); }
+    else { pgSap.style.display='none'; }
+  }
+
   var target = aba==='ficha-epi'
     ? document.getElementById('pg-sesmt-ficha-epi')
     : document.getElementById('pg-sesmt-'+aba);
-  if(!target && aba!=='ficha-epi'){
+  if(!target && aba!=='ficha-epi' && aba!=='sap-obra'){
     console.warn('_almShowAba: container pg-sesmt-'+aba+' não encontrado.');
     return;
   }
@@ -56038,6 +56274,8 @@ function _almShowAbaInterna(aba){
     else if(aba==='vales')       { if(typeof renderVales==='function')               renderVales(); }
     else if(aba==='filiais')     { if(typeof renderFiliais==='function')             renderFiliais(); }
     else if(aba==='ficha-epi')   { iniciarFichaEpi(); }
+    else if(aba==='sap-obra')    { if(typeof almInit==='function') almInit();
+                                   else { if(typeof almCarregarDados==='function') almCarregarDados(); if(typeof almRender==='function') almRender(); } }
   };
 
   if(!_sesmtCarregado){
@@ -57585,6 +57823,21 @@ function renderEstoque(){
   if(selFil && selFil.options.length<=1 && typeof filiais!=='undefined'){
     selFil.innerHTML = '<option value="">Todas as filiais</option>'
       + filiais.map(function(f){ return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>'; }).join('');
+  }
+
+  // Popular filtro de tipos a partir dos tipos realmente presentes no estoque
+  // (garante que as opções batem com os dados — evita mismatch de maiúsc./minúsc. ou valores ausentes)
+  var selTipo = document.getElementById('est-fil-tipo');
+  if(selTipo){
+    var tiposPresentes = {};
+    (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){ var t=(e.tipo||'').trim(); if(t) tiposPresentes[t]=true; });
+    var keysTipo = Object.keys(tiposPresentes).sort();
+    if(keysTipo.length){
+      var selAnterior = selTipo.value;
+      selTipo.innerHTML = '<option value="">Todos os tipos</option>'
+        + keysTipo.map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>'; }).join('');
+      selTipo.value = tiposPresentes[selAnterior] ? selAnterior : '';
+    }
   }
 
   var filtTipo   = (document.getElementById('est-fil-tipo')||{}).value||'';
@@ -59804,23 +60057,26 @@ async function lcAnalisarContrato(){
 
 
 
+<!-- HUB ALMOXARIFADO v1 — patrimônio (sesmt-*) + materiais SAP (pg-obras-sap) -->
+<!-- Fase 2 futura: unificar tabelas itens_catalogo / movimentacoes_itens -->
 <div id="pg-alm-dashboard" class="hidden">
   <!-- Barra de abas do Almoxarifado -->
   <div class="card" style="margin-bottom:1rem">
     <div class="ch" style="flex-wrap:wrap;gap:6px">
       <span class="ct">🏭 Almoxarifado e Patrimônio</span>
       <div style="display:flex;gap:4px;flex-wrap:wrap" id="alm-tabs-bar">
-        <button class="btn btn-sm" id="alm-tab-alm"         onclick="_almShowAba('alm')"         >📦 Movimentações</button>
-        <button class="btn btn-sm" id="alm-tab-itens"       onclick="_almShowAba('itens')"       >🗂 Itens</button>
-        <button class="btn btn-sm" id="alm-tab-estoque"     onclick="_almShowAba('estoque')"     >🗄 Estoque</button>
-        <button class="btn btn-sm" id="alm-tab-epis"        onclick="_almShowAba('epis')"        >🦺 EPIs/EPCs</button>
-        <button class="btn btn-sm" id="alm-tab-ferramentas" onclick="_almShowAba('ferramentas')" >🔧 Ferramentas</button>
-        <button class="btn btn-sm" id="alm-tab-uniformes"   onclick="_almShowAba('uniformes')"   >👕 Uniformes</button>
-        <button class="btn btn-sm" id="alm-tab-lavagem"     onclick="_almShowAba('lavagem')"     >🧺 Lavagem</button>
-        <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    >🏗 Locações</button>
-        <button class="btn btn-sm" id="alm-tab-vales"       onclick="_almShowAba('vales')"       >📄 Vales</button>
-        <button class="btn btn-sm" id="alm-tab-filiais"     onclick="_almShowAba('filiais')"     >🏢 Filiais</button>
-        <button class="btn btn-sm" id="alm-tab-ficha-epi"   onclick="_almShowAba('ficha-epi')"   >📋 Ficha de EPI</button>
+        <button class="btn btn-sm" id="alm-tab-alm"         onclick="_almShowAba('alm')"         title="Entradas, saídas e movimentações">📦 Movimentações</button>
+        <button class="btn btn-sm" id="alm-tab-itens"       onclick="_almShowAba('itens')"       title="Catálogo de itens cadastrados">🗂 Catálogo</button>
+        <button class="btn btn-sm" id="alm-tab-estoque"     onclick="_almShowAba('estoque')"     title="Estoque/patrimônio por filial e depósito">🗄 Estoque</button>
+        <button class="btn btn-sm" id="alm-tab-epis"        onclick="_almShowAba('epis')"        title="EPIs e EPCs">🦺 EPIs/EPCs</button>
+        <button class="btn btn-sm" id="alm-tab-ferramentas" onclick="_almShowAba('ferramentas')" title="Ferramentas (patrimônio)">🔧 Ferramentas</button>
+        <button class="btn btn-sm" id="alm-tab-uniformes"   onclick="_almShowAba('uniformes')"   title="Uniformes entregues">👕 Uniformes</button>
+        <button class="btn btn-sm" id="alm-tab-lavagem"     onclick="_almShowAba('lavagem')"     title="Controle de lavagem">🧺 Lavagem</button>
+        <button class="btn btn-sm" id="alm-tab-sap-obra"    onclick="_almShowAba('sap-obra')"    title="Materiais de obra (SAP): estoque, entradas, saídas e retorno" style="border-color:#185FA5;color:#185FA5">🏭 Materiais SAP</button>
+        <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    title="Equipamentos locados">🏗 Locações</button>
+        <button class="btn btn-sm" id="alm-tab-vales"       onclick="_almShowAba('vales')"       title="Vales e relatórios">📄 Vales</button>
+        <button class="btn btn-sm" id="alm-tab-filiais"     onclick="_almShowAba('filiais')"     title="Filiais e depósitos">🏢 Filiais</button>
+        <button class="btn btn-sm" id="alm-tab-ficha-epi"   onclick="_almShowAba('ficha-epi')"   title="Ficha de EPI do colaborador">📋 Ficha de EPI</button>
       </div>
     </div>
   </div>
@@ -64388,349 +64644,6 @@ function comgasRemoverFoto(ncId, idx) {
 
 
 
-<div id="pg-alm-dashboard" class="hidden">
-  <!-- Barra de abas do Almoxarifado -->
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:6px">
-      <span class="ct">🏭 Almoxarifado e Patrimônio</span>
-      <div style="display:flex;gap:4px;flex-wrap:wrap" id="alm-tabs-bar">
-        <button class="btn btn-sm" id="alm-tab-alm"         onclick="_almShowAba('alm')"         >📦 Movimentações</button>
-        <button class="btn btn-sm" id="alm-tab-itens"       onclick="_almShowAba('itens')"       >🗂 Itens</button>
-        <button class="btn btn-sm" id="alm-tab-estoque"     onclick="_almShowAba('estoque')"     >🗄 Estoque</button>
-        <button class="btn btn-sm" id="alm-tab-epis"        onclick="_almShowAba('epis')"        >🦺 EPIs/EPCs</button>
-        <button class="btn btn-sm" id="alm-tab-ferramentas" onclick="_almShowAba('ferramentas')" >🔧 Ferramentas</button>
-        <button class="btn btn-sm" id="alm-tab-uniformes"   onclick="_almShowAba('uniformes')"   >👕 Uniformes</button>
-        <button class="btn btn-sm" id="alm-tab-lavagem"     onclick="_almShowAba('lavagem')"     >🧺 Lavagem</button>
-        <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    >🏗 Locações</button>
-        <button class="btn btn-sm" id="alm-tab-vales"       onclick="_almShowAba('vales')"       >📄 Vales</button>
-        <button class="btn btn-sm" id="alm-tab-filiais"     onclick="_almShowAba('filiais')"     >🏢 Filiais</button>
-        <button class="btn btn-sm" id="alm-tab-ficha-epi"   onclick="_almShowAba('ficha-epi')"   >📋 Ficha de EPI</button>
-      </div>
-    </div>
-  </div>
-  <!-- Conteúdo dinâmico da aba ativa -->
-  <div id="alm-conteudo">
-
-<div id="pg-sesmt-alm" class="hidden">
-  <!-- FILTROS -->
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">Filtros do almoxarifado</span>
-      <button class="btn btn-pri" onclick="aplicarFiltroAlm()">Aplicar filtros</button>
-    </div>
-    <div style="display:flex;gap:12px;padding:1rem;flex-wrap:wrap;align-items:flex-end">
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Filial</div>
-        <select class="inp" id="alm-fil-filial" style="width:150px" onchange="atualizarDepositos()">
-          <option value="">Todas as filiais</option>
-        </select>
-      </div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Depósito</div>
-        <select class="inp" id="alm-fil-dep" style="width:150px">
-          <option value="">Todos os depósitos</option>
-        </select>
-      </div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Categoria</div>
-        <select class="inp" id="alm-fil-cat" style="width:150px">
-          <option value="">Todas as categorias</option>
-          <option>EPI</option><option>EPC</option><option>Material</option>
-          <option>Uniforme</option><option>Ferramenta</option><option>Consumível</option><option>Outros</option>
-        </select>
-      </div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Data início</div>
-        <input class="inp" type="date" id="alm-fil-ini" style="width:140px"/>
-      </div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Data fim</div>
-        <input class="inp" type="date" id="alm-fil-fim" style="width:140px"/>
-      </div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Buscar produto</div>
-        <input class="inp" id="alm-fil-q" placeholder="Nome do item..." style="width:160px"/>
-      </div>
-    </div>
-  </div>
-
-  <!-- MÉTRICAS RÁPIDAS -->
-  <div id="alm-metricas" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem"></div>
-
-  <!-- TABELA MOVIMENTAÇÃO -->
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch">
-      <span class="ct" id="alm-titulo">Movimentação de estoque — todas as filiais</span>
-      <div style="display:flex;gap:8px">
-        <button class="btn" onclick="toggleVisaoFilial()" id="btn-visao-filial">Ver por filial/depósito</button>
-        <button class="btn" onclick="exportarAlm()">Exportar PDF</button>
-      </div>
-    </div>
-    <div class="scroll-x" style="overflow-x:auto">
-      <table class="tbl tbl-r" id="tbl-alm-mov">
-        <thead><tr>
-          <th>Produto</th><th>Categoria</th><th>Filial/Depósito</th>
-          <th style="text-align:right">Saldo anterior</th>
-          <th style="text-align:right">Entradas</th>
-          <th style="text-align:right">Saídas</th>
-          <th style="text-align:right">Saldo atual</th>
-          <th>Status</th>
-        </tr></thead>
-        <tbody id="tbody-alm-mov"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- VISÃO POR FILIAL (toggle) -->
-  <div id="alm-visao-filial" class="hidden">
-    <div id="alm-cards-filial"></div>
-  </div>
-</div>
-<div id="pg-sesmt-uniformes" class="hidden">
-  <div class="tabs2">
-    <button class="tab2 on" onclick="uniTab('entregues')">Entregues</button>
-    <button class="tab2" onclick="uniTab('catalogo')">Catálogo</button>
-    <button class="tab2" onclick="uniTab('estoque-uni')">Estoque</button>
-  </div>
-  <div id="uni-entregues">
-    <div class="card">
-      <div class="ch"><span class="ct">Uniformes entregues</span>
-        <div style="display:flex;gap:8px">
-          <select class="inp" id="fil-uni-func" style="width:155px" onchange="renderUniformesEntregues()"><option value="">Todos</option></select>
-          <button class="btn btn-pri" onclick="openEntregaUniforme()">+ Entregar</button>
-        </div>
-      </div>
-      <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-        <th>Colaborador</th><th>Tipo</th><th>Modelo</th><th>Tam.</th><th>Condição</th><th>Entrega</th><th>Tipo</th><th>Ações</th>
-      </tr></thead><tbody id="tbody-uni-ent"></tbody></table></div>
-    </div>
-  </div>
-  <div id="uni-catalogo" class="hidden">
-    <div class="card">
-      <div class="ch"><span class="ct">Catálogo</span><button class="btn btn-pri" onclick="openNovoUniforme()">+ Cadastrar</button></div>
-      <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr><th>Código</th><th>Tipo</th><th>Modelo</th><th>Cor</th><th>Tamanho</th></tr></thead><tbody id="tbody-cat"></tbody></table></div>
-    </div>
-  </div>
-  <div id="uni-estoque-uni" class="hidden">
-    <div class="card">
-      <div class="ch"><span class="ct">Estoque por condição</span></div>
-      <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr><th>Tipo</th><th>Modelo</th><th>Tam.</th><th>Novos</th><th>Higienizados</th><th>Reparados</th><th>Total</th></tr></thead><tbody id="tbody-est-uni"></tbody></table></div>
-    </div>
-  </div>
-</div>
-<div id="pg-sesmt-lavagem" class="hidden">
-  <div class="tabs2">
-    <button class="tab2 on" onclick="lavTab('andamento')">Em andamento</button>
-    <button class="tab2" onclick="lavTab('historico')">Histórico</button>
-  </div>
-  <div id="lav-andamento">
-    <div class="card">
-      <div class="ch"><span class="ct">Saídas em andamento</span><button class="btn btn-pri" onclick="openSaidaLavagem()">+ Registrar</button></div>
-      <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-        <th>Colaborador</th><th>Uniforme</th><th>Qtd</th><th>Motivo</th><th>Prestador</th><th>Saída</th><th>Prev.</th><th>Status</th><th>Ação</th>
-      </tr></thead><tbody id="tbody-lav-and"></tbody></table></div>
-    </div>
-  </div>
-  <div id="lav-historico" class="hidden">
-    <div class="card">
-      <div class="ch"><span class="ct">Histórico</span></div>
-      <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-        <th>Colaborador</th><th>Uniforme</th><th>Qtd</th><th>Motivo</th><th>Prestador</th><th>Saída</th><th>Retorno</th><th>Status</th>
-      </tr></thead><tbody id="tbody-lav-hist"></tbody></table></div>
-    </div>
-  </div>
-</div>
-<div id="pg-sesmt-epis" class="hidden">
-  <div class="card">
-    <div class="ch"><span class="ct">EPIs e EPCs</span>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select class="inp" id="fil-epi-tipo" style="width:100px" onchange="renderEpis()"><option value="">Todos</option><option>EPI</option><option>EPC</option></select>
-        <input class="inp" id="fil-epi-q" placeholder="Buscar..." style="width:130px" oninput="renderEpis()"/>
-        <button class="btn btn-pri" onclick="openNovaEntregaEpi()">🦺 Entregar EPI</button>
-        <button class="btn" onclick="openEntradaEstoque()">📥 Entrada no estoque</button>
-      </div>
-    </div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Equipamento</th><th>Tipo</th><th>CA</th><th>Venc. CA</th><th>Responsável</th><th>Contrato</th><th>Validade</th><th>Status</th><th>Ações</th>
-    </tr></thead><tbody id="tbody-epis"></tbody></table></div>
-  </div>
-</div>
-<div id="pg-sesmt-itens" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🗂 Cadastro de Itens</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="itens-fil-tipo" style="width:150px" onchange="renderItens()">
-          <option value="">Todos os tipos</option>
-          <option value="material">Material</option>
-          <option value="ferramenta">Ferramenta</option>
-          <option value="epi">EPI</option>
-          <option value="epc">EPC</option>
-          <option value="vestimenta">Vestimenta/Uniforme</option>
-          <option value="equipamento">Equipamento</option>
-          <option value="consumivel">Consumível</option>
-          <option value="peca">Peça</option>
-          <option value="kit">Kit</option>
-          <option value="outro">Outro</option>
-        </select>
-        <input class="inp" id="itens-fil-busca" placeholder="Buscar item..." style="width:180px" oninput="renderItens()"/>
-        <select class="inp" id="itens-fil-status" style="width:120px" onchange="renderItens()">
-          <option value="">Todos</option><option value="true">Ativo</option><option value="false">Inativo</option>
-        </select>
-        <button class="btn btn-pri" onclick="openCadastroItem(null)">+ Novo item</button>
-      </div>
-    </div>
-  </div>
-  <div class="card">
-    <div style="overflow-x:auto">
-      <table class="tbl tbl-r">
-        <thead><tr>
-          <th>Código</th><th>SKU</th><th>Nome</th><th>Tipo</th><th>Unidade</th>
-          <th style="text-align:center">Série</th><th style="text-align:center">CA</th>
-          <th style="text-align:center">Validade</th><th style="text-align:center">Calib.</th>
-          <th style="text-align:center">Devolução</th><th>Status</th><th></th>
-        </tr></thead>
-        <tbody id="tbody-itens"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<div id="pg-sesmt-ferramentas" class="hidden">
-  <div class="metrics" style="grid-template-columns:repeat(4,1fr);margin-bottom:1rem">
-    <div class="met"><div class="met-l">Total</div><div class="met-v mv-b" id="fer-total">0</div></div>
-    <div class="met"><div class="met-l">Disponíveis</div><div class="met-v mv-g" id="fer-disp">0</div></div>
-    <div class="met"><div class="met-l">Em uso</div><div class="met-v mv-b" id="fer-uso">0</div></div>
-    <div class="met"><div class="met-l">Manutenção</div><div class="met-v mv-r" id="fer-manut">0</div></div>
-  </div>
-  <div class="card">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🔧 Ferramentas</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="fil-fer-status" style="width:130px" onchange="renderFer()">
-          <option value="">Todos</option><option>Disponível</option><option>Em uso</option>
-          <option>Em manutenção</option><option>Baixada</option><option>Perdida</option>
-        </select>
-        <input class="inp" id="fil-fer-q" placeholder="Buscar..." style="width:150px" oninput="renderFer()"/>
-        <button class="btn" onclick="openEntregaItem('ferramenta')">📤 Entregar</button>
-        <button class="btn" onclick="openDevolucaoItem('ferramenta')">📥 Devolver</button>
-        <button class="btn" onclick="openAjusteItem('ferramenta')">⚙ Ajuste</button>
-        <button class="btn btn-pri" onclick="openCadastroItem('ferramenta')">+ Nova ferramenta</button>
-      </div>
-    </div>
-    <div style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Ferramenta</th><th>Código</th><th>Nº Série</th>
-      <th style="text-align:right">Saldo</th><th style="text-align:right">Em uso</th>
-      <th style="text-align:right">Manutenção</th><th>Status</th><th></th>
-    </tr></thead><tbody id="tbody-fer"></tbody></table></div>
-  </div>
-</div>
-<div id="pg-sesmt-locacoes" class="hidden">
-  <div class="metrics" style="grid-template-columns:repeat(5,1fr);margin-bottom:1rem">
-    <div class="met"><div class="met-l">Total contratos</div><div class="met-v mv-b" id="loc-total">0</div></div>
-    <div class="met"><div class="met-l">Em uso</div><div class="met-v mv-g" id="loc-uso">0</div></div>
-    <div class="met"><div class="met-l">Em manutenção</div><div class="met-v mv-w" id="loc-manut">0</div></div>
-    <div class="met"><div class="met-l">Vencendo em 30d</div><div class="met-v mv-r" id="loc-venc">0</div></div>
-    <div class="met"><div class="met-l">Custo mensal</div><div class="met-v mv-p" id="loc-custo">R$ 0</div></div>
-  </div>
-  <div class="card">
-    <div class="ch"><span class="ct">Equipamentos alugados</span>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select class="inp" id="fil-loc-status" style="width:130px" onchange="renderLocacoes()">
-          <option value="">Todos</option><option>Disponível</option><option>Em uso</option><option>Em manutenção</option><option>Devolvido</option><option>Extraviado</option>
-        </select>
-        <input class="inp" id="fil-loc-q" placeholder="Buscar..." style="width:120px" oninput="renderLocacoes()"/>
-        <button class="btn" onclick="openGerirTipos()">Tipos</button>
-        <button class="btn btn-pri" onclick="openNovaLocacao()">+ Novo contrato</button>
-      </div>
-    </div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Equipamento</th><th>Tipo</th><th>Locadora</th><th>Responsável</th><th>Início</th><th>Término</th><th>Prazo</th><th>Vlr/mês</th><th>Seguro</th><th>Status</th><th>Ações</th>
-    </tr></thead><tbody id="tbody-loc"></tbody></table></div>
-  </div>
-</div>
-<div id="pg-sesmt-estoque" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🗄 Estoque — Materiais, EPIs, EPCs e Ferramentas</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="est-fil-tipo" style="width:130px" onchange="renderEstoque()">
-          <option value="">Todos os tipos</option>
-          <option>EPI</option><option>EPC</option><option>Material</option>
-          <option>Ferramenta</option><option>Uniforme</option><option>Consumível</option><option>Outros</option>
-        </select>
-        <select class="inp" id="est-fil-filial" style="width:160px" onchange="renderEstoque()">
-          <option value="">Todas as filiais</option>
-        </select>
-        <select class="inp" id="est-fil-status" style="width:130px" onchange="renderEstoque()">
-          <option value="">Todos os status</option>
-          <option>Normal</option><option>Crítico</option><option>Zerado</option>
-        </select>
-        <input class="inp" id="est-fil-busca" placeholder="Buscar item..." style="width:160px" oninput="renderEstoque()"/>
-        <button class="btn btn-pri" onclick="openEntradaEstoque()">📥 Nova entrada</button>
-      </div>
-    </div>
-    <div id="est-metricas" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div class="card">
-    <div style="overflow-x:auto">
-      <table class="tbl tbl-r">
-        <thead><tr>
-          <th>Item / Produto</th><th>Tipo</th><th>CA</th><th>Val. CA</th>
-          <th>Filial / Depósito</th><th>Fornecedor</th><th>Lote / NF</th>
-          <th style="text-align:right">Saldo</th><th style="text-align:right">Mín.</th>
-          <th style="text-align:right">Custo unit.</th><th>Status</th><th></th>
-        </tr></thead>
-        <tbody id="tbody-est"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-<div id="pg-sesmt-ficha-epi" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">📋 Ficha de EPI</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="fepi-fil-contrato" style="width:200px" onchange="fepiAtualizarColabs()">
-          <option value="">Selecione o contrato...</option>
-        </select>
-        <select class="inp" id="fepi-fil-colab" style="width:200px" onchange="renderFichaEpi()">
-          <option value="">Selecione o colaborador...</option>
-        </select>
-        <input class="inp" id="fepi-fil-item" placeholder="Buscar item específico..." style="width:180px" oninput="renderFichaEpi()"/>
-        <button class="btn" id="fepi-btn-imprimir" style="display:none" onclick="imprimirFichaNR6((document.getElementById('fepi-fil-colab')||{}).value)">🖨 Imprimir ficha</button>
-      </div>
-    </div>
-  </div>
-  <div id="fepi-conteudo">
-    <div style="padding:3rem;text-align:center;color:#aaa">
-      Selecione um contrato e colaborador para visualizar a ficha de EPI.
-    </div>
-  </div>
-</div>
-
-
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">Filtrar por período</span></div>
-    <div style="display:flex;align-items:flex-end;gap:10px;padding:.85rem 1rem;flex-wrap:wrap">
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">De</div><input class="inp" type="date" id="fil-dt-ini" style="width:135px"/></div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Até</div><input class="inp" type="date" id="fil-dt-fim" style="width:135px"/></div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Colaborador</div><select class="inp" id="fil-colab" style="width:145px"></select></div>
-      <div><div style="font-size:11px;color:#888;margin-bottom:3px">Tipo</div>
-        <select class="inp" id="fil-tipo-v" style="width:130px"><option value="">Todos</option><option>Entrega</option><option>Desconto folha</option><option>Substituição</option></select></div>
-      <button class="btn btn-pri" onclick="aplicarFiltro()">Filtrar</button>
-      <button class="btn" onclick="limparFiltro()">Limpar</button>
-    </div>
-    <div style="display:flex;gap:8px;padding:0 1rem .85rem;flex-wrap:wrap" id="resumo-filtro" class="hidden">
-      <div style="background:#EAF3DE;border-radius:8px;padding:.45rem .85rem;font-size:12px;color:#3B6D11"><span id="res-total">0</span> registros</div>
-      <div style="background:#FCEBEB;border-radius:8px;padding:.45rem .85rem;font-size:12px;color:#A32D2D">Descontos: <span id="res-descontos">R$ 0</span></div>
-      <div style="background:#E6F1FB;border-radius:8px;padding:.45rem .85rem;font-size:12px;color:#185FA5">Entregas: <span id="res-entregas">0</span></div>
-      <button class="btn btn-sm btn-pri" style="margin-left:auto" onclick="gerarRelatorioPeriodo()">Gerar PDF</button>
-    </div>
-  </div>
-  <div class="card">
-    <div class="ch"><span class="ct" id="vales-titulo">Todos os registros</span></div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Data</th><th>Colaborador</th><th>Item</th><th>Motivo</th><th>Tipo</th><th>Valor</th><th>Status</th><th></th>
-    </tr></thead><tbody id="tbody-vales"></tbody></table></div>
-    <div id="vales-vazio" class="hidden" style="padding:2rem;text-align:center;font-size:13px;color:#aaa">Nenhum registro.</div>
-  </div>
-</div>
-<div id="pg-sesmt-filiais" class="hidden"><div id="filiais-lista"></div></div>
-</div>
 </div>
 
 <!-- ═══════════ MOBILIZAÇÃO / EVOLUÇÃO / APTIDÃO ═══════════ -->
