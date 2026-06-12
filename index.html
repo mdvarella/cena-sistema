@@ -4403,6 +4403,7 @@ async function sbInsert(table,data){
     }
     var result=await r.json();
     console.log('sbInsert OK ['+table+']',result);
+    _auditAuto('criar', table, data);
     return Array.isArray(result)?result:[result];
   }catch(e){
     console.error('sbInsert exception ['+table+']',e);
@@ -4427,6 +4428,7 @@ async function sbUpsert(table, data, onConflict){
       return null;
     }
     var result=await r.json();
+    _auditAuto('editar', table, data, onConflict?('on_conflict='+onConflict):null);
     return Array.isArray(result)?result:[result];
   }catch(e){
     console.error('sbUpsert exception ['+table+']',e);
@@ -4464,7 +4466,7 @@ async function sbDelete(table, filter){
         body: JSON.stringify({ deleted_at: now })
       });
       if(!r.ok){ var err=await r.text(); console.error('sbDelete(soft) erro ['+table+']', r.status, err); }
-      else{ console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now); }
+      else{ console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now); _auditAuto('excluir', table, null, filter); }
     }catch(e){ console.error('sbDelete(soft) exception', e); }
     return;
   }
@@ -4474,6 +4476,7 @@ async function sbDelete(table, filter){
   try{
     var r2 = await fetch(SB.url+'/rest/v1/'+table+'?'+filter, {method:'DELETE', headers:h});
     if(!r2.ok){ var err2=await r2.text(); console.error('sbDelete erro ['+table+']', r2.status, err2); }
+    else{ _auditAuto('excluir', table, null, filter); }
   }catch(e2){ console.error('sbDelete exception', e2); }
 }
 async function sbUpdate(table,data,filter){
@@ -4485,6 +4488,7 @@ async function sbUpdate(table,data,filter){
   try{
     var r=await fetch(SB.url+'/rest/v1/'+table+'?'+filter,{method:'PATCH',headers:h,body:JSON.stringify(data)});
     if(!r.ok){var err=await r.text();console.error('sbUpdate erro ['+table+']',r.status,err);return false;}
+    _auditAuto('editar', table, data, filter);
     return true;
   }catch(e){console.error('sbUpdate exception',e);return false;}
 }
@@ -27433,10 +27437,22 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.350',
+  numero: '7.9.354',
   data:   '11/06/2026',
   build:  '20260612-0200',
   log: [
+    {v:'7.9.354', d:'12/06/2026', itens:[
+      'Log de Auditoria automatico: sbInsert/sbUpdate/sbUpsert/sbDelete agora registram TODA gravacao (criar/alterar/excluir) com data, hora, usuario, tabela e resumo do que mudou — visivel e filtravel por usuario na tela Log de Auditoria. Tabelas audit_log e ponto_registros excluidas do log',
+    ]},
+    {v:'7.9.353', d:'12/06/2026', itens:[
+      'Programacao PLPT: carrega status do banco (prog_status_diario) e exclui colaboradores em status bloqueante (verificar/falta/ferias/etc.) do seletor de encarregado/membros — antes um colaborador em verificar continuava selecionavel',
+    ]},
+    {v:'7.9.352', d:'12/06/2026', itens:[
+      'Programacao de Projetos: status (verificar/falta/etc.) e observacao agora carregam do banco (prog_status_diario) para _progStatus — colaborador em verificar sai dos disponiveis; novo painel Indisponiveis mostra o nome com a observacao abaixo',
+    ]},
+    {v:'7.9.351', d:'12/06/2026', itens:[
+      'Almoxarifado › Estoque: novo filtro de Depósito (dependente da filial selecionada) ao lado do filtro de Filial',
+    ]},
     {v:'7.9.350', d:'12/06/2026', itens:[
       'Almoxarifado Fase 1 — hub unico: removido pg-alm-dashboard duplicado; nova aba Materiais SAP (integra pg-obras-sap); aba Catalogo (itens) exposta na navegacao; MAIN_CONFIG/SIDEBAR/showPage atualizados; tooltips nas abas; banner nos cadastros (catalogo/estoque) direcionando ao hub',
     ]},
@@ -41886,6 +41902,47 @@ var _auditFlushing = false;
  * descricao: string legível — ex: 'Editou lançamento #123 — R$ 1.500,00'
  * dadosExtra: objeto opcional com campos relevantes
  */
+// ── Log automático de TODAS as gravações (insert/update/delete) ──────────
+// Mapeia tabela → módulo e gera descrição legível. Chamado pelos wrappers sbInsert/sbUpdate/sbDelete.
+var _AUDIT_MODULO_TABELA = {
+  lancamentos:'financeiro', fin_faturamentos:'financeiro', adiantamentos:'financeiro',
+  acord_negociacoes:'financeiro', acord_parcelas:'financeiro', acord_titulos:'financeiro', acord_fornecedores:'financeiro',
+  colaboradores:'sesmt', treinamentos:'sesmt', epis:'sesmt', funcionarios:'sesmt', verificar_tratamentos:'operacional',
+  ferramentas:'almoxarifado', estoque:'almoxarifado', alm_movimentos:'almoxarifado', alm_estoque:'almoxarifado',
+  celulares_empresa:'operacional', uniformes:'almoxarifado', locacoes:'almoxarifado', depositos:'almoxarifado', filiais:'almoxarifado',
+  composicao_dia:'operacional', prog_status_diario:'operacional', sessoes_disponibilidade:'operacional',
+  prog_escala_modelo:'operacional', plpt_prog_dia:'operacional', plpt_equipe_membros:'operacional', plpt_prog_projetos:'operacional',
+  equipes_disp:'cadastros', equipes:'cadastros', escalas_cad:'cadastros', sesmt_cursos:'cadastros',
+  frotas_veiculos:'frotas', frt_manutencoes:'frotas', frt_combustivel:'frotas', frt_documentos:'frotas', frt_multas:'frotas',
+  fornecedores:'cadastros', contratos:'cadastros', categorias_despesa:'cadastros', usuarios_sistema:'sistema'
+};
+function _auditModuloDe(table){ return _AUDIT_MODULO_TABELA[table] || 'sistema'; }
+function _auditResumo(data){
+  if(!data) return '';
+  var obj = Array.isArray(data) ? (data[0]||{}) : data;
+  if(!obj || typeof obj!=='object') return '';
+  var campos=['nome','descricao','razao_social','placa','numero','numero_titulo','titulo','status','re','codigo','data','valor','cor_enquadramento'];
+  var parts=[];
+  campos.forEach(function(k){ if(parts.length<3 && obj[k]!==undefined && obj[k]!==null && obj[k]!=='') parts.push(k+'='+String(obj[k]).substring(0,40)); });
+  if(!parts.length){ Object.keys(obj).slice(0,3).forEach(function(k){ if(obj[k]!=null) parts.push(k+'='+String(obj[k]).substring(0,30)); }); }
+  return parts.join(', ');
+}
+// Tabelas que NÃO geram log (loop do próprio log + sincronizações em massa externas)
+var _AUDIT_SKIP_TABELAS = { 'audit_log':1, 'ponto_registros':1, 'usuarios_online':1 };
+function _auditAuto(acao, table, data, filter){
+  try{
+    if(_AUDIT_SKIP_TABELAS[table]) return;
+    if(typeof auditLog!=='function') return;
+    var n = Array.isArray(data) ? data.length : (data?1:0);
+    var verbo = {criar:'Inseriu em ', editar:'Alterou ', excluir:'Excluiu de '}[acao] || (acao+' ');
+    var desc = verbo + table
+      + (n>1 ? (' ('+n+' registros)') : '')
+      + (filter ? (' ['+String(filter).substring(0,80)+']') : '')
+      + (data ? (': '+_auditResumo(data)) : '');
+    auditLog(acao, _auditModuloDe(table), desc, {tabela:table, filtro:filter||null, dados:data});
+  }catch(e){}
+}
+
 function auditLog(acao, modulo, descricao, dadosExtra){
   try {
     var usuario = usuarioLogado || {};
@@ -43881,8 +43938,10 @@ function progProjInit(){
     if(_cidAtual && selCont) selCont.value = _cidAtual;
   var _dataInit = (selData && selData.value) ? selData.value : _pp.data;
   progCarregarPontoDoSupabase(_dataInit, function(){
-    progProjAtualizarPillsTipo();
-    progProjRenderQuadro();
+    progProjCarregarStatusBanco(_dataInit, function(){
+      progProjAtualizarPillsTipo();
+      progProjRenderQuadro();
+    });
   });
 }
 
@@ -43892,7 +43951,7 @@ function progProjMudarContrato(){
   progProjAtualizarProjLista();
   progProjAtualizarPillsTipo();
   progProjCarregarStatus(progProjGetData());
-  progProjRenderQuadro();
+  progProjCarregarStatusBanco(progProjGetData(), function(){ progProjRenderQuadro(); });
 }
 
 // ── Projetos ─────────────────────────────────────────────────
@@ -44121,6 +44180,27 @@ function progProjSalvarStatus(){
   }catch(e){}
 }
 
+// Carrega o status REAL do banco (prog_status_diario) para _progStatus/_progStatusInfo
+// — fonte usada por ppRenderPainelDisp. Sem isso, status (verificar/falta) e observação
+// salvos pelo menu de status não aparecem na Programação de Projetos.
+function progProjCarregarStatusBanco(data, cb){
+  if(DEMO){ if(cb) cb(); return; }
+  sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}).then(function(rows){
+    if(rows===null){ if(cb) cb(); return; }
+    var localRecente = (window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
+    _progStatus = {}; _progStatusInfo = {};
+    (rows||[]).forEach(function(r){
+      var st = r.status==='faltou' ? 'falta' : r.status;
+      _progStatus[r.colaborador_id] = st==='disponivel' ? undefined : st;
+      if(!_progStatusInfo[r.colaborador_id]) _progStatusInfo[r.colaborador_id]={};
+      if(r.data_retorno) _progStatusInfo[r.colaborador_id].retorno = r.data_retorno;
+      if(r.obs) _progStatusInfo[r.colaborador_id].obs = r.obs;
+    });
+    if(localRecente){ Object.keys(localRecente).forEach(function(id){ if(localRecente[id] && !_progStatus[id]) _progStatus[id]=localRecente[id]; }); }
+    if(cb) cb();
+  }).catch(function(){ if(cb) cb(); });
+}
+
 // ── Render quadro ─────────────────────────────────────────────
 function progProjAtualizarQuadro(){
   var data = progProjGetData();
@@ -44140,7 +44220,7 @@ function progProjAtualizarQuadro(){
     if(sel && _cidAtual) sel.value = _cidAtual;
     if(_pp) { _pp.data = _dataAtual; _pp.cid = _cidAtual; }
     progCarregarPontoDoSupabase(_dataAtual, function(){
-      progProjRenderQuadro();
+      progProjCarregarStatusBanco(_dataAtual, function(){ progProjRenderQuadro(); });
     });
   }, 100);
 }
@@ -45059,6 +45139,32 @@ function ppRenderPainelDisp(eqs, data, cid){
   var disp  = grupos_st['disponivel'];
   var livres = disp.filter(function(c){ return !escalados[c.id]; });
 
+  // Indisponíveis (status bloqueante: verificar, falta, férias, etc.) — exibidos com observação abaixo do nome
+  var INDISP_ST = ['folga','ferias','afastado','treinamento','falta','faltou','integracao','patio','verificar','fraude','demitido'];
+  var indisp = cols.filter(function(c){ return INDISP_ST.indexOf(statusRef[c.id]||'disponivel')>=0; });
+  var indispHtml = indisp.length
+    ? '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">'
+      +'<div style="font-size:13px;font-weight:600;color:#888;margin-bottom:.5rem">Indisponíveis ('+indisp.length+')</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+      +indisp.map(function(c){
+          var st=statusRef[c.id]||'disponivel';
+          var s=PROG_STATUS[st]||{label:st,cor:'#555',bg:'#f5f5f3'};
+          var info=(_progStatusInfo||{})[c.id]||{};
+          var obs=info.obs||info.justificativa||'';
+          var ret=info.retorno?' · retorno '+fmtD(info.retorno):'';
+          return '<div style="display:inline-flex;flex-direction:column;background:'+s.bg+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:4px 8px;font-size:11px;max-width:230px">'
+            +'<div style="display:flex;align-items:center;gap:4px">'
+            +'<span style="color:'+s.cor+';font-weight:500">'+nomeAbrev(c.nome)+'</span>'
+            +'<span style="color:'+s.cor+';font-size:9px;font-weight:600">'+s.label+ret+'</span>'
+            +(st==='verificar'?'<span onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
+            +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
+            +'</div>'
+            +(obs?'<div style="font-size:10px;color:'+s.cor+';opacity:.8;margin-top:2px;font-style:italic;word-break:break-word">💬 '+escHtml(obs)+'</div>':'')
+            +'</div>';
+        }).join('')
+      +'</div></div>'
+    : '';
+
   // Badges de contagem por status
   var countHtml = Object.keys(PROG_STATUS).map(function(k){
     var n = grupos_st[k].length;
@@ -45093,7 +45199,8 @@ function ppRenderPainelDisp(eqs, data, cid){
       }).join('')
     : '<div style="color:#aaa;font-size:12px">Todos escalados</div>';
 
-  return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
+  return indispHtml
+    +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;flex-wrap:wrap;gap:6px">'
     +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados ('+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+')</span>'
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'<select id="pp-filtro-ponto" class="inp" style="font-size:11px;padding:2px 6px;border-radius:6px" onchange="_progProjRenderQuadroInterno(_pp.data,progProjGetCid())"><option value="">👥 Todos</option><option value="presentes">✓ Presentes</option><option value="ausentes">● Ausentes</option></select></div>'
@@ -52893,8 +53000,8 @@ function plptProgInit(){
             membros: membrosTabela
           };
         });
-      plptProgRender();
-    }).catch(function(){ plptProgRender(); });
+      progProjCarregarStatusBanco(_plptProgData, plptProgRender);
+    }).catch(function(){ progProjCarregarStatusBanco(_plptProgData, plptProgRender); });
     }); // fim Promise.all([carregarEquipes, carregarColabs])
   });
 }
@@ -53009,6 +53116,8 @@ function plptProgRender(){
         if(c.contrato_id!==_plptProgCid||c.ativo===false||c.vinculo!=='campo') return false;
         // Mostrar mesmo que esteja ocupado SE for o encarregado atual desta equipe
         if(prog.encarregado_id===c.id) return true;
+        var _stPlpt=(typeof _progStatus!=='undefined'?_progStatus[c.id]:'')||'disponivel';
+        if(['ferias','afastado','treinamento','falta','faltou','verificar','fraude','demitido','integracao','patio'].indexOf(_stPlpt)>=0) return false;
         return !colabsOcupados[c.id];
       }).map(function(c){
         return '<option value="'+c.id+'"'+(prog.encarregado_id===c.id?' selected':'')+'>'+c.nome+(c.re?' ('+c.re+')':'')+'</option>';
@@ -53831,8 +53940,8 @@ function plptProgInit(){
             membros: membrosTabela
           };
         });
-      plptProgRender();
-    }).catch(function(){ plptProgRender(); });
+      progProjCarregarStatusBanco(_plptProgData, plptProgRender);
+    }).catch(function(){ progProjCarregarStatusBanco(_plptProgData, plptProgRender); });
     }); // fim Promise.all([carregarEquipes, carregarColabs])
   });
 }
@@ -53904,6 +54013,8 @@ function plptProgRender(){
         if(c.contrato_id!==_plptProgCid||c.ativo===false||c.vinculo!=='campo') return false;
         // Mostrar mesmo que esteja ocupado SE for o encarregado atual desta equipe
         if(prog.encarregado_id===c.id) return true;
+        var _stPlpt=(typeof _progStatus!=='undefined'?_progStatus[c.id]:'')||'disponivel';
+        if(['ferias','afastado','treinamento','falta','faltou','verificar','fraude','demitido','integracao','patio'].indexOf(_stPlpt)>=0) return false;
         return !colabsOcupados[c.id];
       }).map(function(c){
         return '<option value="'+c.id+'"'+(prog.encarregado_id===c.id?' selected':'')+'>'+c.nome+(c.re?' ('+c.re+')':'')+'</option>';
@@ -57825,6 +57936,17 @@ function renderEstoque(){
       + filiais.map(function(f){ return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>'; }).join('');
   }
 
+  // Popular filtro de depósitos (dependente da filial selecionada)
+  var selDep = document.getElementById('est-fil-deposito');
+  if(selDep && typeof depositos!=='undefined'){
+    var filSelDep = (document.getElementById('est-fil-filial')||{}).value||'';
+    var deps = depositos.filter(function(d){ return !d.deleted_at && (!filSelDep || d.filial_id===filSelDep); });
+    var depAnt = selDep.value;
+    selDep.innerHTML = '<option value="">Todos os depósitos</option>'
+      + deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome)+'</option>'; }).join('');
+    selDep.value = deps.some(function(d){return d.id===depAnt;}) ? depAnt : '';
+  }
+
   // Popular filtro de tipos a partir dos tipos realmente presentes no estoque
   // (garante que as opções batem com os dados — evita mismatch de maiúsc./minúsc. ou valores ausentes)
   var selTipo = document.getElementById('est-fil-tipo');
@@ -57840,14 +57962,16 @@ function renderEstoque(){
     }
   }
 
-  var filtTipo   = (document.getElementById('est-fil-tipo')||{}).value||'';
-  var filtFilial = (document.getElementById('est-fil-filial')||{}).value||'';
-  var filtStatus = (document.getElementById('est-fil-status')||{}).value||'';
-  var filtBusca  = ((document.getElementById('est-fil-busca')||{}).value||'').toLowerCase();
+  var filtTipo     = (document.getElementById('est-fil-tipo')||{}).value||'';
+  var filtFilial   = (document.getElementById('est-fil-filial')||{}).value||'';
+  var filtDeposito = (document.getElementById('est-fil-deposito')||{}).value||'';
+  var filtStatus   = (document.getElementById('est-fil-status')||{}).value||'';
+  var filtBusca    = ((document.getElementById('est-fil-busca')||{}).value||'').toLowerCase();
 
   var lista = (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
-    if(filtTipo   && (e.tipo||'')!==filtTipo)   return false;
-    if(filtFilial && e.filial_id!==filtFilial)  return false;
+    if(filtTipo     && (e.tipo||'')!==filtTipo)        return false;
+    if(filtFilial   && e.filial_id!==filtFilial)       return false;
+    if(filtDeposito && e.deposito_id!==filtDeposito)   return false;
     if(filtBusca  && !(e.nome||'').toLowerCase().includes(filtBusca)) return false;
     var st = (e.saldo||0)<=0?'Zerado':(e.saldo||0)<=(e.saldo_minimo||5)?'Crítico':'Normal';
     if(filtStatus && st!==filtStatus) return false;
@@ -60353,6 +60477,9 @@ async function lcAnalisarContrato(){
         </select>
         <select class="inp" id="est-fil-filial" style="width:160px" onchange="renderEstoque()">
           <option value="">Todas as filiais</option>
+        </select>
+        <select class="inp" id="est-fil-deposito" style="width:170px" onchange="renderEstoque()">
+          <option value="">Todos os depósitos</option>
         </select>
         <select class="inp" id="est-fil-status" style="width:130px" onchange="renderEstoque()">
           <option value="">Todos os status</option>
