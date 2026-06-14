@@ -27573,10 +27573,34 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.395',
+  numero: '7.9.403',
   data:   '11/06/2026',
   build:  '20260612-0200',
   log: [
+    {v:'7.9.403', d:'14/06/2026', itens:[
+      'Programacao TMA: lista Disponiveis nao escalados ganhou o filtro Todos / Presentes / Ausentes (por ponto), igual a Programacao de Projetos. O seletor ja existia mas nao estava aparecendo no cabecalho.',
+    ]},
+    {v:'7.9.402', d:'14/06/2026', itens:[
+      'Fix Programacao TMA: a marcacao de presenca/ausencia (badge de ponto) sumia dos cards a cada re-render/refresh — os badges dos slots vinham por preenchimento assincrono e nao eram recriados. Agora progRenderQuadro re-preenche os badges automaticamente quando ha dados de ponto em cache (sem precisar clicar em Atualizar).',
+    ]},
+    {v:'7.9.401', d:'14/06/2026', itens:[
+      'Log de Auditoria: resolve nomes mesmo de ids TRUNCADOS (logs antigos cortavam o UUID no meio) — agora casa por prefixo. E a gravacao deixou de cortar os ids (limite 40/30 -> 160), entao novos logs guardam o id completo.',
+    ]},
+    {v:'7.9.400', d:'14/06/2026', itens:[
+      'Log de Auditoria: corrigido nomes. Agora [id=eq.<uuid>] vira o NOME do colaborador/equipe (antes era removido) e a tela carrega TODOS os colaboradores e equipes (inclui inativos/historicos) para resolver nomes de qualquer registro, nao so dos ativos em memoria.',
+    ]},
+    {v:'7.9.399', d:'14/06/2026', itens:[
+      'IMPERATIVO: equipe Programada (confirmada) nao pode mais perder membros por NENHUMA acao. Fechado o furo do botao Retirar da equipe (progRetirarDaEquipe), que removia membro de equipe confirmada sem trava. Agora avisa na tela que desmontaria a equipe e exige Desprogramar primeiro. (Demais caminhos - status, drag, limpar escala, auto-escalar - ja respeitavam a trava.)',
+    ]},
+    {v:'7.9.398', d:'14/06/2026', itens:[
+      'Log de Auditoria: descricao agora mostra NOMES no lugar dos UUIDs (colaborador+RE, equipe, contrato, veiculo, celular, escala, cargo, turma). Remove o filtro tecnico [id=eq.<uuid>] e traduz nomes de tabela (composicao_dia -> Escala do dia, etc.). Vale tambem no CSV.',
+    ]},
+    {v:'7.9.397', d:'14/06/2026', itens:[
+      'Programacao TMA: corrigido o pulo de posicao no refresh/auto-refresh do quadro. O scroll agora e restaurado de forma sincrona (antes da pintura) + ajuste no requestAnimationFrame, eliminando o salto que o setTimeout causava.',
+    ]},
+    {v:'7.9.396', d:'14/06/2026', itens:[
+      'Fix status Observacao: no menu de status do colaborador (⋮) o campo de observacao agora abre ao escolher Observacao (e ja aparece preenchido ao reabrir). Motivo obrigatorio. O motivo aparece no card do colaborador (chip dos disponiveis com badge 📝 e no slot da equipe).',
+    ]},
     {v:'7.9.395', d:'14/06/2026', itens:[
       'Fix Gestao de Ponto: campo de busca de colaborador (registros) perdia o foco a cada letra digitada (re-render recriava o input). Agora o foco e o cursor sao mantidos.',
     ]},
@@ -30133,11 +30157,17 @@ function progRenderQuadro(){
   var _scrollEl = document.getElementById('app-content-area');
   var _st = _scrollEl ? _scrollEl.scrollTop : (window.pageYOffset||document.documentElement.scrollTop||0);
   wrap.innerHTML = resumoHtml + quadroHtml + folgaHtml + dispHtml + veicHtml;
-  setTimeout(function(){
+  // Restaura o scroll SINCRONAMENTE (antes da pintura) — evita o "pulo" que o setTimeout causava
+  function _progRestaurarScroll(){
     if(document.querySelector('.modal-bg')) return; // nao mexe no scroll com modal aberto
-    if(_scrollEl && _scrollEl.scrollHeight > _scrollEl.clientHeight) { _scrollEl.scrollTop = _st; }
-    else { window.scrollTo(0, _st); }
-  }, 30);
+    if(_scrollEl && _scrollEl.scrollHeight > _scrollEl.clientHeight){ if(Math.abs(_scrollEl.scrollTop-_st)>1) _scrollEl.scrollTop=_st; }
+    else { if(Math.abs((window.pageYOffset||document.documentElement.scrollTop||0)-_st)>1) window.scrollTo(0,_st); }
+  }
+  _progRestaurarScroll();                                   // imediato (sem flash)
+  if(window.requestAnimationFrame) requestAnimationFrame(_progRestaurarScroll); // corrige micro-ajustes de layout
+  setTimeout(_progRestaurarScroll, 60);                      // fallback p/ conteudo assincrono (badges de ponto)
+  // Re-preenche os badges de presença/ausência nos slots — eles vêm via fill assíncrono e somem a cada re-render
+  if(typeof progCarregarBadgesPonto==='function' && _pontoCache && Object.keys(_pontoCache).length>0){ setTimeout(progCarregarBadgesPonto, 0); }
   setTimeout(progNavBarUpdate, 100);
   // Bindar botões de status e filtro dos veículos
   setTimeout(function(){
@@ -33073,6 +33103,7 @@ function progRenderPainelDisp(eqs, data, cid){
     +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
     +'<span style="font-size:11px;font-weight:600;color:#3B6D11">⚡ Disponíveis ('+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+')</span>'
     +_escalaFiltroHtml
+    +_pontoFiltroHtml
     +'</div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
     +'background:#f9f9f7;border-radius:6px;border:.5px solid #e0dfd8" '
@@ -33720,9 +33751,9 @@ function progMenuSlot(colabId, eqId, pos){
       }).join('')
     +'</div>'
     +retornoHtml
-    +'<div id="obs-status-wrap" style="display:none;margin-top:8px">'
-    +'<label style="font-size:11px;font-weight:600;color:#555;display:block;margin-bottom:4px">📝 Observação</label>'
-    +'<textarea id="obs-status-input" class="inp" style="width:100%;height:60px;font-size:12px" placeholder="O que precisa ser verificado...">'+(info.obs||'')+'</textarea>'
+    +'<div id="obs-status-wrap" style="display:'+(['patio','verificar','integracao','fraude','observacao'].indexOf(st)>=0?'block':'none')+';margin-top:8px">'
+    +'<label style="font-size:11px;font-weight:600;color:#555;display:block;margin-bottom:4px">📝 Observação'+(st==='observacao'?' <span style="color:#A32D2D">*</span>':'')+'</label>'
+    +'<textarea id="obs-status-input" class="inp" style="width:100%;height:60px;font-size:12px" placeholder="'+(st==='observacao'?'Motivo da observação (ex.: restrição médica leve, atenção...)':'O que precisa ser verificado...')+'">'+(info.obs||'')+'</textarea>'
     +'</div>'
     +'<div style="display:flex;gap:6px;margin-top:.75rem">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
@@ -33755,7 +33786,7 @@ function progMenuSlot(colabId, eqId, pos){
 function progSetStatusMenu(colabId, status){
   _progStatus[colabId] = status;
   var stRetorno = ['ferias','afastado','treinamento'];
-  var PEDE_OBS_MENU = ['patio','verificar','integracao','fraude'];
+  var PEDE_OBS_MENU = ['patio','verificar','integracao','fraude','observacao'];
   // Mostrar/ocultar campo de retorno e justificativa
   var rw = document.getElementById('retorno-wrap');
   if(rw) rw.style.display = stRetorno.indexOf(status)>=0 ? 'block' : 'none';
@@ -33767,6 +33798,7 @@ function progSetStatusMenu(colabId, status){
   if(oi){
     var ph = status==='verificar'?'O que precisa ser verificado...'
            : status==='fraude'?'Descreva a ocorrência...'
+           : status==='observacao'?'Motivo da observação (ex.: restrição médica leve, atenção...)'
            : 'Motivo / observação...';
     oi.placeholder = ph;
   }
@@ -33906,6 +33938,7 @@ function progSalvarMenuStatus(colabId){
   var retorno = ((document.getElementById('retorno-data')||{}).value||'').trim();
   var justif  = (document.getElementById('retorno-justif')||{}).value||'';
   var obsInput = (document.getElementById('obs-status-input')||{}).value||'';
+  if(novoSt==='observacao' && !obsInput.trim()){ progShowToast('⚠ Informe o motivo da observação.','erro'); return; }
   if(obsInput && !window._progStatusInfo) window._progStatusInfo={};
   if(obsInput){ if(!_progStatusInfo[colabId])_progStatusInfo[colabId]={}; _progStatusInfo[colabId].obs=obsInput; }
   if(!window._progStatusInfo) window._progStatusInfo={};
@@ -34167,6 +34200,8 @@ var _progRemovidosEq = {};
 function progRetirarDaEquipe(colabId, eqId, pos){
   var data = progGetData();
   var comp = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+  // IMPERATIVO: equipe Programada (confirmada) NÃO pode perder membros por nenhuma ação — desprogramar primeiro.
+  if(!_podeAlterarComposicao(comp,'retirar membro — isso desmontaria a equipe')) return;
   if(!comp){
     comp={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,
       colaborador_ids:'[]',turno:'Manha',confirmada:false,_local:true};
@@ -42486,8 +42521,8 @@ function _auditResumo(data){
   if(!obj || typeof obj!=='object') return '';
   var campos=['nome','descricao','razao_social','placa','numero','numero_titulo','titulo','status','re','codigo','data','valor','cor_enquadramento'];
   var parts=[];
-  campos.forEach(function(k){ if(parts.length<3 && obj[k]!==undefined && obj[k]!==null && obj[k]!=='') parts.push(k+'='+String(obj[k]).substring(0,40)); });
-  if(!parts.length){ Object.keys(obj).slice(0,3).forEach(function(k){ if(obj[k]!=null) parts.push(k+'='+String(obj[k]).substring(0,30)); }); }
+  campos.forEach(function(k){ if(parts.length<3 && obj[k]!==undefined && obj[k]!==null && obj[k]!=='') parts.push(k+'='+String(obj[k]).substring(0,160)); });
+  if(!parts.length){ Object.keys(obj).slice(0,3).forEach(function(k){ if(obj[k]!=null) parts.push(k+'='+String(obj[k]).substring(0,160)); }); }
   return parts.join(', ');
 }
 // Tabelas que NÃO geram log (loop do próprio log + sincronizações em massa externas)
@@ -42500,7 +42535,7 @@ function _auditAuto(acao, table, data, filter){
     var verbo = {criar:'Inseriu em ', editar:'Alterou ', excluir:'Excluiu de '}[acao] || (acao+' ');
     var desc = verbo + table
       + (n>1 ? (' ('+n+' registros)') : '')
-      + (filter ? (' ['+String(filter).substring(0,80)+']') : '')
+      + (filter ? (' ['+String(filter).substring(0,160)+']') : '')
       + (data ? (': '+_auditResumo(data)) : '');
     auditLog(acao, _auditModuloDe(table), desc, {tabela:table, filtro:filter||null, dados:data});
   }catch(e){}
@@ -42573,14 +42608,69 @@ function auditCarregarLogs(filtros, callback){
   });
 }
 
+// ── Humanizador: troca UUIDs (mesmo truncados) por nomes na descrição do log ───
+var _auditLabelMap=null;
+var _auditPrefix={};   // primeiros 8 hex do id → nome (resolve ids cortados em logs antigos)
+function _auditReg(id,label){ if(!id||!label)return; var k=String(id).toLowerCase(); _auditLabelMap[k]=label; _auditPrefix[k.slice(0,8)]=label; }
+function _auditResolve(token){
+  if(!token) return null; var t=String(token).toLowerCase();
+  return _auditLabelMap[t] || _auditPrefix[t.slice(0,8)] || null;
+}
+function _auditBuildLabelMap(){
+  var m={}; _auditLabelMap=m; _auditPrefix={};
+  function add(arr,fn){ if(arr&&arr.length) arr.forEach(function(x){ if(x&&x.id){ var l=fn(x); if(l) _auditReg(x.id,l); } }); }
+  add(typeof colaboradores!=='undefined'?colaboradores:null,function(c){return (c.nome||'').trim()+(c.re?' (RE '+c.re+')':'');});
+  add(typeof funcs!=='undefined'?funcs:null,function(c){return (c.nome||'').trim();});
+  add(typeof equipes_disp!=='undefined'?equipes_disp:null,function(e){return 'equipe '+(e.codigo||e.nome||'');});
+  add(typeof equipes!=='undefined'?equipes:null,function(e){return 'equipe '+(e.codigo||e.nome_equipe||e.nome||'');});
+  add(typeof contratos!=='undefined'?contratos:null,function(c){return 'contrato '+(c.codigo||c.nome||'');});
+  add(typeof frt_veiculos!=='undefined'?frt_veiculos:null,function(v){return 'veículo '+(v.placa||v.modelo||'');});
+  add(typeof veiculos!=='undefined'?veiculos:null,function(v){return 'veículo '+(v.placa||v.modelo||'');});
+  add(typeof _celulares!=='undefined'?_celulares:null,function(c){return 'celular '+(c.numero||c.modelo||'');});
+  add(typeof escalas_cad!=='undefined'?escalas_cad:null,function(e){return 'escala '+(e.tipo||'');});
+  add(typeof _cad_cargos!=='undefined'?_cad_cargos:null,function(c){return 'cargo '+(c.nome||'');});
+  add(typeof _sesmtTurmas!=='undefined'?_sesmtTurmas:null,function(t){return 'turma '+(t.titulo||'');});
+  return m;
+}
+var _AUDIT_TAB={ 'composicao_dia':'Escala do dia','prog_status_diario':'Status do dia','prog_veiculos_dia':'Veículo do dia','colaboradores':'Colaborador','equipes_disp':'Equipe','equipes':'Equipe','sesmt_turma_participantes':'Participante de turma','sesmt_turmas':'Turma','cargos':'Cargo','contratos':'Contrato' };
+function _auditHumanizar(s){
+  if(!s) return s;
+  if(!_auditLabelMap) _auditBuildLabelMap();
+  // token UUID completo OU truncado (logs antigos cortavam o id no meio)
+  var TOK='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{0,12})?';
+  // "[id=eq.<token>]" (o próprio registro): mostra o NOME; senão remove o ruído
+  s=s.replace(new RegExp('\\s*\\[id=eq\\.('+TOK+')\\]','g'),function(m,u){ var n=_auditResolve(u); return n? ' '+n : ''; });
+  // demais tokens (colaborador_ids, equipe_id, celular_id, turma_ativa_id, filtros...) → nome ou prefixo curto
+  s=s.replace(new RegExp(TOK,'g'),function(u){ return _auditResolve(u) || (u.slice(0,8)+'…'); });
+  // nomes de tabela amigáveis (palavra inteira)
+  Object.keys(_AUDIT_TAB).forEach(function(k){ s=s.replace(new RegExp('\\b'+k+'\\b','g'),_AUDIT_TAB[k]); });
+  return s.replace(/\s{2,}/g,' ').trim();
+}
+// Carrega TODOS os colaboradores e equipes (inclui inativos/históricos) p/ resolver nomes no log
+function _auditCarregarNomes(cb){
+  if(DEMO){ if(cb)cb(); return; }
+  Promise.all([
+    sbFetch('colaboradores',{select:'id,nome,re',limit:5000}).catch(function(){return [];}),
+    sbFetch('equipes_disp',{select:'id,codigo,nome',limit:3000}).catch(function(){return [];}),
+    sbFetch('equipes',{select:'id,codigo,nome_equipe',limit:3000}).catch(function(){return [];})
+  ]).then(function(r){
+    if(!_auditLabelMap) _auditBuildLabelMap();
+    (r[0]||[]).forEach(function(c){ if(c.id) _auditReg(c.id,(c.nome||'').trim()+(c.re?' (RE '+c.re+')':'')); });
+    (r[1]||[]).forEach(function(e){ if(e.id) _auditReg(e.id,'equipe '+(e.codigo||e.nome||'')); });
+    (r[2]||[]).forEach(function(e){ if(e.id) _auditReg(e.id,'equipe '+(e.codigo||e.nome_equipe||'')); });
+    if(cb)cb();
+  }).catch(function(){ if(cb)cb(); });
+}
+
 // ── Tela de visualização do log ──────────────────────────────
 function abrirTelaAudit(){
+  _auditLabelMap=null;  // reconstrói o mapa de nomes a cada abertura (dados podem ter carregado)
   var ICONES = {criar:'🟢',editar:'🟡',excluir:'🔴',login:'🔵',logout:'⚪',exportar:'📤',visualizar:'👁'};
   function renderAudit(logs){
     var html = logs.length ? logs.map(function(l){
       var dt = l.data_hora ? new Date(l.data_hora).toLocaleString('pt-BR') : '—';
       var ic = ICONES[l.acao] || '⚙️';
-      return '<tr>'        +'<td style="font-size:11px;white-space:nowrap;color:#888">'+dt+'</td>'        +'<td style="text-align:center">'+ic+'</td>'        +'<td style="font-size:11px;font-weight:600">'+escHtml(l.usuario_nome||'—')+'</td>'        +'<td><span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f0f0ee;color:#555;font-weight:600">'+escHtml(l.modulo||'—')+'</span></td>'        +'<td style="font-size:11px">'+escHtml(l.descricao||'—')+'</td>'        +'</tr>';
+      return '<tr>'        +'<td style="font-size:11px;white-space:nowrap;color:#888">'+dt+'</td>'        +'<td style="text-align:center">'+ic+'</td>'        +'<td style="font-size:11px;font-weight:600">'+escHtml(l.usuario_nome||'—')+'</td>'        +'<td><span style="font-size:10px;padding:2px 7px;border-radius:10px;background:#f0f0ee;color:#555;font-weight:600">'+escHtml(l.modulo||'—')+'</span></td>'        +'<td style="font-size:11px">'+escHtml(_auditHumanizar(l.descricao)||'—')+'</td>'        +'</tr>';
     }).join('') : '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:2rem">Nenhum registro encontrado.</td></tr>';
     var tbody = document.getElementById('audit-tbody');
     if(tbody) tbody.innerHTML = html;
@@ -42591,7 +42681,8 @@ function abrirTelaAudit(){
   setModal('<div class="modal-bg"><div class="modal" style="max-width:900px;max-height:92vh;overflow-y:auto">'    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">'    +'<span style="font-size:18px">📋</span><h3 style="flex:1">Log de Auditoria</h3>'    +'<span id="audit-count" style="font-size:11px;color:#888"></span>'    +'<button class="btn" onclick="closeModal()">Fechar</button></div>'    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem;align-items:flex-end">'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Módulo</label>'    +'<select class="inp" id="af-modulo" style="width:130px"><option value="">Todos</option>'    +['financeiro','sesmt','frotas','almoxarifado','operacional','cadastros','obras','relatorios','campo','sistema'].map(function(m){return '<option value="'+m+'">'+m.charAt(0).toUpperCase()+m.slice(1)+'</option>';}).join('')    +'</select></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Usuário</label>'    +'<input class="inp" id="af-usuario" placeholder="Nome..." style="width:160px"/></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Data início</label>'    +'<input class="inp" type="date" id="af-ini" style="width:140px"/></div>'    +'<div class="fg" style="margin:0"><label style="font-size:10px">Data fim</label>'    +'<input class="inp" type="date" id="af-fim" style="width:140px"/></div>'    +'<button class="btn btn-pri" onclick="_auditBuscar()">🔍 Buscar</button>'    +'<button class="btn" onclick="_auditExportar()">📥 CSV</button>'    +'</div>'    +'<div style="overflow-x:auto">'    +'<table class="tbl" style="font-size:12px"><thead><tr>'    +'<th>Data/Hora</th><th>Ação</th><th>Usuário</th><th>Módulo</th><th>Descrição</th>'    +'</tr></thead><tbody id="audit-tbody"><tr><td colspan="5" style="text-align:center;color:#aaa;padding:1.5rem">Carregando...</td></tr></tbody></table>'    +'</div></div></div>');
 
   setTimeout(function(){
-    auditCarregarLogs({limit:200}, renderAudit);
+    // Carrega nomes (todos os colaboradores/equipes, inclui inativos) ANTES de exibir o log
+    _auditCarregarNomes(function(){ auditCarregarLogs({limit:200}, renderAudit); });
 
     window._auditBuscar = function(){
       var modulo = (document.getElementById('af-modulo')||{}).value||'';
@@ -42615,7 +42706,7 @@ function abrirTelaAudit(){
       var rows = _auditLogs.length ? _auditLogs : _auditBuffer;
       var csv = 'Data/Hora,Acao,Usuario,Perfil,Modulo,Descricao\n'
         + rows.map(function(l){
-          var desc = (l.descricao||'').replace(/"/g,'""');
+          var desc = (_auditHumanizar(l.descricao)||'').replace(/"/g,'""');
           return [l.data_hora,l.acao,l.usuario_nome,l.usuario_perfil,l.modulo,'"'+desc+'"'].join(',');
         }).join('\n');
       var a = document.createElement('a');
@@ -53484,8 +53575,35 @@ function gpCarregar(){
   ]).then(function(res){
     _gp.registros=(res[0]||[]).filter(function(x){ return reSet[String(x.re)]; });
     _gp.limites=res[1]||[];
+    gpAtualizarSyncInfo();
     gpRenderAbaAtual();
   }).catch(function(e){ if(alvo) alvo.innerHTML='<div class="card" style="padding:2rem;text-align:center;color:#A32D2D">Erro: '+escHtml((e&&e.message)||e)+'</div>'; });
+}
+// Indicador: até quando o ponto está sincronizado no período/contrato pesquisado
+function gpAtualizarSyncInfo(){
+  var el=document.getElementById('gp-sync-info'); if(!el) return;
+  if(!_gp.cont){ el.innerHTML=''; return; }
+  var regs=_gp.registros||[];
+  var datas=regs.map(function(r){return (r.data||'').slice(0,10);}).filter(Boolean).sort();
+  var maxData=datas.length?datas[datas.length-1]:null;
+  var dias={}; datas.forEach(function(d){dias[d]=1;}); var nDias=Object.keys(dias).length;
+  var hoje=dataHojeLocal();
+  var fimAlvo=_gp.fim>hoje?hoje:_gp.fim; // só cobra sync até hoje
+  var faltando = maxData ? (maxData<fimAlvo) : true;
+  if(!regs.length){
+    el.innerHTML='⚠ <b>Sem registros de ponto</b> no período/contrato. Clique em <b>📡 Sincronizar período</b> para buscar no relógio (Nexus).';
+  } else {
+    el.innerHTML='📡 Ponto sincronizado até <b>'+(maxData?fmtD(maxData):'—')+'</b> · '+regs.length+' registros · '+nDias+' dia(s) carregados'
+      +(faltando
+        ? ' · <span style="color:#A36A00">⚠ o período vai até '+fmtD(fimAlvo)+'; pode faltar sincronizar — clique em <b>📡 Sincronizar período</b></span>'
+        : ' · <span style="color:#3B6D11">✓ período coberto</span>');
+  }
+}
+// Botão da barra: vai para a aba Sincronizar e dispara a sincronização (com progresso visível)
+function gpSyncAgora(){
+  if(!_gp.cont){ progShowToast('Selecione um contrato primeiro.'); return; }
+  gpSetAba('sync');
+  setTimeout(function(){ if(typeof gpSyncMes==='function') gpSyncMes(); }, 150);
 }
 
 function gpSetAbaBtns(){
@@ -62322,7 +62440,9 @@ async function lcAnalisarContrato(){
         <span style="font-size:11px;color:#888">Até</span>
         <input class="inp" id="gp-fim" type="date" style="width:140px;font-size:12px" onchange="gpOnFiltro()"/>
         <button class="btn btn-pri" onclick="gpInit()" style="font-size:12px">🔄 Atualizar</button>
+        <button class="btn" onclick="gpSyncAgora()" style="font-size:12px;color:#3B6D11;border-color:#3B6D11" title="Buscar/atualizar o ponto deste período no relógio (Nexus)">📡 Sincronizar período</button>
       </div>
+      <div id="gp-sync-info" style="width:100%;font-size:11px;color:#888;padding-top:4px"></div>
     </div>
     <div style="display:flex;border-top:.5px solid #f0efe8;overflow-x:auto">
       <button id="gp-tab-btn-dashboard" onclick="gpSetAba('dashboard')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid #1a1a18;background:none;cursor:pointer;font-size:12px;font-weight:700;color:#1a1a18;white-space:nowrap">📊 Dashboard</button>
