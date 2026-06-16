@@ -27760,10 +27760,19 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.424',
+  numero: '7.9.427',
   data:   '16/06/2026',
-  build:  '20260616-1600',
+  build:  '20260616-1900',
   log: [
+    {v:'7.9.427', d:'16/06/2026', itens:[
+      'Ponto: restaurado auto-sync nos horarios fixos (07:00, 11:00, 17:00, 22:00 etc) via progSyncPonto em lotes — estava desativado desde v7.9.425. Sem sync automatico os badges ficavam travados no primeiro registro do dia (falta). ponto_registros lido com order=consultado_em.desc como seguranca adicional.',
+    ]},
+    {v:'7.9.426', d:'16/06/2026', itens:[
+      'Ponto: ponto_registros lido com order=consultado_em.desc — mesmo com duplicatas na tabela (falta de UNIQUE constraint), o registro mais recente do sync vence. Fix definitivo requer SQL no Supabase (ver nota).',
+    ]},
+    {v:'7.9.425', d:'16/06/2026', itens:[
+      'Performance: timer automatico de ponto (60s) parou de chamar pontoInvalidarCache()+API diretamente — causava N chamadas simultaneas (1 por colaborador escalado) congestionando o navegador. Agora so recarrega do Supabase, que e alimentado pelo Sync manual.',
+    ]},
     {v:'7.9.424', d:'16/06/2026', itens:[
       'Locacoes: corrigido travamento ao abrir modal de edicao e novo contrato. Antes esperava o ERP (1800 fornecedores) carregar antes de abrir — agora abre imediatamente e popula o datalist da Locadora em segundo plano se necessario.',
     ]},
@@ -29023,16 +29032,21 @@ function pontoInvalidarCache(){
 var _pontoTimerNaoEscalados = null;
 
 function pontoIniciarAgendador(){
-  // Timer 1: horários fixos para escalados (verifica a cada 1 minuto)
+  // Timer 1: horários fixos — dispara sync em lote via progSyncPonto (sem N requests simultâneos)
   setInterval(function(){
     if(pontoDeveConsultar()){
       var agora = Date.now();
       if(_pontoUltimaConsulta && (agora - _pontoUltimaConsulta) < 4*60*1000) return;
       _pontoUltimaConsulta = agora;
-      pontoInvalidarCache();
-      if(typeof progCarregarBadgesPonto==='function'){
-        console.log('[Ponto] Consulta agendada — '+new Date().toLocaleTimeString());
-        progCarregarBadgesPonto();
+      // Sync controlado em lotes (igual ao botão manual) — atualiza Supabase e depois os badges
+      if(typeof progSyncPonto==='function' && !window._progSyncPontoAtivo){
+        progSyncPonto();
+      } else {
+        // Se sync já está ativo, apenas recarrega do Supabase
+        var _d = typeof progGetData==='function' ? progGetData() : dataHoje();
+        if(_d) progCarregarPontoDoSupabase(_d, function(){
+          if(typeof progCarregarBadgesPonto==='function') progCarregarBadgesPonto();
+        });
       }
     }
   }, 60000);
@@ -32903,7 +32917,7 @@ function progSyncPonto(){
 
 // Carregar dados de ponto do Supabase (após sincronização ou ao abrir dia anterior)
 function progCarregarPontoDoSupabase(data, callback){
-  sbFetch('ponto_registros', {filters:['data=eq.'+data], limit:2000})
+  sbFetch('ponto_registros', {filters:['data=eq.'+data], order:'consultado_em.desc', limit:2000})
   .then(function(rows){
     if(!rows) { if(callback) callback(); return; }
     // Popular cache local com dados do banco
