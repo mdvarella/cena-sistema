@@ -1196,13 +1196,6 @@ body.perfil-coordenador #mn-plr { display:none !important; }
     <span id="topbar-user"></span>
     <button class="btn btn-pri" onclick="showMain('movimentacao');setTimeout(function(){openNovoLancamento();},100)">+ Lançamento</button>
     <button onclick="cenaAjudaAbrir()" title="Assistente CENA" style="background:#2a2a28;color:#fff;border:.5px solid #444;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;flex-shrink:0" id="btn-ajuda">🤖</button>
-    <form id="form-alm" method="GET" action="https://flourishing-sopapillas-6d2de0.netlify.app" style="display:inline">
-      <input type="hidden" name="auth" id="input-auth-alm"/>
-      <button type="submit" class="btn" style="border-color:#185FA5;background:#1a4a7a;color:#90CAF9"
-        onclick="if(!usuarioLogado){alert('Faça login primeiro');return false;}document.getElementById('input-auth-alm').value=btoa(JSON.stringify({id:usuarioLogado.id,nome:usuarioLogado.nome,email:usuarioLogado.email,perfil:usuarioLogado.perfil,ts:Date.now()}));">
-        📦 Almox.
-      </button>
-    </form>
     <span id="db-status" style="font-size:10px;color:#666;padding:3px 7px;background:#2a2a28;border-radius:6px">●</span>
     <button onclick="mostrarVersao()" title="Ver histórico de versões" style="font-size:12px;font-weight:700;color:#e8e8e8;background:#2a2a28;border:.5px solid #555;border-radius:6px;padding:4px 14px;cursor:pointer;white-space:nowrap;min-width:80px;letter-spacing:.3px" id="btn-versao">v<span id="badge-versao">...</span></button>
     <span id="badge-local" style="display:none;background:#854F0B;color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:5px;letter-spacing:.5px">🔧 LOCAL</span>
@@ -2758,6 +2751,32 @@ body.perfil-coordenador #mn-plr { display:none !important; }
         </div>
       </div>
       <div id="tma-st-resultado"></div>
+    </div>
+
+    <!-- Relatório Histórico do Colaborador -->
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch"><span class="ct">👤 Histórico de Atividades por Colaborador</span></div>
+      <div style="padding:1rem;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:11px;color:#888;margin-bottom:3px">Colaborador</div>
+          <input class="inp" id="hc-colab-busca" placeholder="Nome ou RE..." style="width:100%" oninput="relHcFiltrarColab(this.value)"/>
+          <div id="hc-colab-sugestoes" style="display:none;position:absolute;background:#fff;border:.5px solid #e0dfd8;border-radius:6px;box-shadow:0 4px 12px #0002;z-index:200;min-width:240px;max-height:200px;overflow-y:auto"></div>
+          <input type="hidden" id="hc-colab-id"/>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:3px">De</div>
+          <input class="inp" type="date" id="hc-ini" style="width:135px"/>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888;margin-bottom:3px">Até</div>
+          <input class="inp" type="date" id="hc-fim" style="width:135px"/>
+        </div>
+        <div style="display:flex;gap:6px;align-items:flex-end">
+          <button class="btn btn-pri" onclick="relColaboradorHistorico()">🔍 Gerar</button>
+          <button class="btn" onclick="relColaboradorHistoricoExcel()" id="btn-hc-excel" style="display:none">📊 Excel</button>
+        </div>
+      </div>
+      <div id="hc-resultado"></div>
     </div>
 
     <!-- Relatório Veículos da Frota -->
@@ -4584,6 +4603,7 @@ async function carregarDadosBase(){
       sbFetch('veiculos',{order:'placa'}),
       sbFetch('checklists_templates',{order:'nome'}),
       sbFetch('escalas',{order:'tipo'}).catch(function(){return [];}),
+      sbFetch('celulares_empresa',{order:'numero'}).catch(function(){return [];}),
     ]);
     _usuariosCarregadosDB=true;
     if(resB[0]&&resB[0].length)usuarios_lista=resB[0];
@@ -4594,6 +4614,7 @@ async function carregarDadosBase(){
     if(resB[4]&&resB[4].length)veiculos=resB[4].map(function(v){v.contratos_ids=parseJsonField(v.contratos_ids,[]);return v;});
     if(resB[5]&&resB[5].length)checklists_templates=resB[5].map(function(c){c.itens=parseJsonField(c.itens,[]);return c;});
     if(resB[6]&&resB[6].length)escalas_cad=resB[6]; else escalas_cad=[];
+    if(resB[7]&&resB[7].length)_celulares=resB[7];
     // Ordenações
     colaboradores.sort(function(a,b){return(a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'});});
     equipes.sort(function(a,b){return(a.nome_equipe||'').localeCompare(b.nome_equipe||'','pt-BR',{sensitivity:'base'});});
@@ -6846,6 +6867,149 @@ function relTmaStatusExcel(){
 }
 
 // ── Relatório: Veículos da Frota ───────────────────────────
+// --- Histórico de Atividades por Colaborador ---
+
+function relHcFiltrarColab(q){
+  var sug=document.getElementById('hc-colab-sugestoes');
+  var inp=document.getElementById('hc-colab-id');
+  if(!q||q.length<2){sug.style.display='none';return;}
+  var ql=q.toLowerCase();
+  var matches=(colaboradores||[]).filter(function(c){
+    return (c.nome||'').toLowerCase().indexOf(ql)>=0||(c.re||'').toLowerCase().indexOf(ql)>=0;
+  }).slice(0,10);
+  if(!matches.length){sug.style.display='none';return;}
+  sug.innerHTML=matches.map(function(c){
+    return '<div onclick="relHcSelecionarColab(\''+c.id+'\',\''+escHtml(c.nome)+' (RE '+escHtml(c.re||'')+')'+'\')" '
+      +'style="padding:8px 10px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f0f0ec" '
+      +'onmouseover="this.style.background=\'#f5f5f0\'" onmouseout="this.style.background=\'\'">'
+      +escHtml(c.nome)+' <span style="color:#888;font-size:10px">RE '+escHtml(c.re||'')+'</span>'
+      +'</div>';
+  }).join('');
+  sug.style.display='block';
+}
+
+function relHcSelecionarColab(id,label){
+  document.getElementById('hc-colab-id').value=id;
+  document.getElementById('hc-colab-busca').value=label;
+  document.getElementById('hc-colab-sugestoes').style.display='none';
+}
+
+function relAbrirHistoricoColab(colabId){
+  closeModal();
+  var c=colaboradores.find(function(x){return x.id===colabId;})||{nome:colabId,re:''};
+  relAbaSelecionar('tma');
+  var buscaEl=document.getElementById('hc-colab-busca');
+  var idEl=document.getElementById('hc-colab-id');
+  if(buscaEl) buscaEl.value=c.nome+(c.re?' (RE '+c.re+')':'');
+  if(idEl) idEl.value=colabId;
+  // Data padrão: últimos 30 dias
+  var hoje=new Date();
+  var fmt=function(d){return d.toISOString().slice(0,10);};
+  var ini=new Date(hoje); ini.setDate(ini.getDate()-30);
+  var hcIni=document.getElementById('hc-ini');
+  var hcFim=document.getElementById('hc-fim');
+  if(hcIni&&!hcIni.value) hcIni.value=fmt(ini);
+  if(hcFim&&!hcFim.value) hcFim.value=fmt(hoje);
+  setTimeout(relColaboradorHistorico, 100);
+  var el=document.getElementById('hc-resultado');
+  if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+async function relColaboradorHistorico(){
+  var colabId=(document.getElementById('hc-colab-id')||{}).value||'';
+  var ini=(document.getElementById('hc-ini')||{}).value||'';
+  var fim=(document.getElementById('hc-fim')||{}).value||'';
+  var res=document.getElementById('hc-resultado');
+  if(!colabId){progShowToast('⚠ Selecione um colaborador.');return;}
+  if(!ini||!fim){progShowToast('⚠ Informe o período.');return;}
+  res.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Carregando...</div>';
+
+  var col=colaboradores.find(function(c){return c.id===colabId;})||{nome:colabId,re:'',contrato_id:''};
+  var cont=contratos.find(function(c){return c.id===col.contrato_id;})||{nome:'—'};
+
+  // Buscar composicao_dia no período via banco (pode ter mais dados que o cache)
+  var rows=await sbFetchPaged('composicao_dia',{
+    filters:['data=gte.'+ini,'data=lte.'+fim,'contrato_id=eq.'+_TMA_CID],
+    order:'data.desc'
+  });
+  // Fallback para cache em memória se banco não disponível
+  if(!rows||!rows.length){
+    rows=(composicao_dia||[]).filter(function(c){return c.data>=ini&&c.data<=fim;});
+  }
+
+  var registros=[];
+  (rows||[]).forEach(function(c){
+    var ids=Array.isArray(c.colaborador_ids)?c.colaborador_ids:[];
+    try{if(typeof c.colaborador_ids==='string') ids=JSON.parse(c.colaborador_ids);}catch(e){}
+    if(ids.indexOf(colabId)<0) return;
+    var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;})||{codigo:'—',hora_inicio:'',hora_fim:'',contrato_id:''};
+    var eqCont=contratos.find(function(x){return x.id===eq.contrato_id;})||{nome:cont.nome};
+    registros.push({data:c.data,eq:eq,eqCont:eqCont,confirmada:c.confirmada});
+  });
+
+  var excelData=registros;
+  document.getElementById('btn-hc-excel').style.display=registros.length?'':'none';
+
+  if(!registros.length){
+    res.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Nenhum registro encontrado para o período.</div>';
+    return;
+  }
+
+  var html='<div style="overflow-x:auto"><table class="tbl"><thead><tr>'
+    +'<th>Data</th><th>Dia</th><th>Contrato</th><th>Equipe</th><th>Turno</th><th>Status</th>'
+    +'</tr></thead><tbody>';
+  var DIAS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  registros.forEach(function(r){
+    var d=new Date(r.data+'T12:00:00');
+    var dia=DIAS[d.getDay()]||'';
+    var dataFmt=r.data.split('-').reverse().join('/');
+    var turno=(r.eq.hora_inicio||'')+(r.eq.hora_fim?' – '+r.eq.hora_fim:'') || '—';
+    html+='<tr>'
+      +'<td>'+dataFmt+'</td>'
+      +'<td>'+dia+'</td>'
+      +'<td>'+escHtml(r.eqCont.nome||'—')+'</td>'
+      +'<td><b>'+escHtml(r.eq.codigo||'—')+'</b></td>'
+      +'<td>'+escHtml(turno)+'</td>'
+      +'<td>'+(r.confirmada?'<span style="color:#3B6D11;font-size:11px">✓ Confirmada</span>':'<span style="color:#888;font-size:11px">Programada</span>')+'</td>'
+      +'</tr>';
+  });
+  html+='</tbody></table></div>';
+  html+='<div style="padding:.5rem 1rem;font-size:12px;color:#555;background:#f9f9f7;border-top:.5px solid #e0dfd8">'
+    +'<b>'+registros.length+'</b> dia(s) trabalhado(s) no período · '
+    +'Colaborador: <b>'+escHtml(col.nome)+'</b> (RE '+escHtml(col.re||'—')+') · Contrato: <b>'+escHtml(cont.nome)+'</b>'
+    +'</div>';
+  res.innerHTML=html;
+  document.getElementById('btn-hc-excel').style.display='';
+  window._hcDadosExcel={col:col,cont:cont,registros:registros,ini:ini,fim:fim};
+}
+
+function relColaboradorHistoricoExcel(){
+  var d=window._hcDadosExcel;
+  if(!d||!d.registros.length){progShowToast('⚠ Gere o relatório primeiro.');return;}
+  var DIAS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  var linhas=[['Data','Dia','Contrato','Equipe','Hora Início','Hora Fim','Status']];
+  d.registros.forEach(function(r){
+    var dt=new Date(r.data+'T12:00:00');
+    linhas.push([
+      r.data.split('-').reverse().join('/'),
+      DIAS[dt.getDay()]||'',
+      r.eqCont.nome||'—',
+      r.eq.codigo||'—',
+      r.eq.hora_inicio||'—',
+      r.eq.hora_fim||'—',
+      r.confirmada?'Confirmada':'Programada'
+    ]);
+  });
+  var csv=linhas.map(function(l){return l.map(function(v){return '"'+String(v).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
+  var blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='historico_'+escHtml(d.col.nome).replace(/\s+/g,'_')+'_'+d.ini+'_a_'+d.fim+'.csv';
+  a.click();
+}
+
+// --- fim Histórico Colaborador ---
+
 function relTmaVeiculos(){
   var TMA_CID='04277076-baa5-4ea4-85dc-bddf55541e68';
   var ini=(document.getElementById('tma-vei-ini')||{}).value||'';
@@ -7662,6 +7826,12 @@ function abrirCadastro(id){
 // ══════════════════════════════════════════════════════════════
 
 var _celulares = []; // cache local
+// Categorias internas (departamento/situacao) do seletor "Contrato" no cadastro de celulares,
+// alem dos contratos reais. Salvas como texto em contrato_nome (contrato_id = null).
+var CEL_CATEGORIAS = ['Diretoria','Administrativo','Frota','Portaria','SESMT','DISPONIVEL','PERDIDO'];
+// Categorias cujos celulares NAO aparecem no seletor de celular da escala (ficam so no cadastro).
+// DISPONIVEL fica fora desta lista de proposito: continua escalavel.
+var CEL_CATEGORIAS_OCULTAS_ESCALA = ['Diretoria','Administrativo','Frota','Portaria','SESMT','PERDIDO'];
 
 function cadRenderCelulares(){
   var inner = document.getElementById('cad-conteudo-inner');
@@ -7800,6 +7970,17 @@ function cadAbrirModalCelular(id){
     return '<option value="'+ct.id+'"'+(cel.contrato_id===ct.id?' selected':'')+'>'+escHtml(ct.nome||ct.numero||ct.id)+'</option>';
   }).join('');
 
+  // Categorias internas (departamento/situacao) — salvas como texto em contrato_nome (contrato_id nulo)
+  var _catUpper = CEL_CATEGORIAS.map(function(c){return c.toUpperCase();});
+  var _catSel = (!cel.contrato_id && cel.contrato_nome) ? String(cel.contrato_nome).toUpperCase() : '';
+  var categorias_opts = CEL_CATEGORIAS.map(function(cat){
+    return '<option value="cat:'+escHtml(cat)+'"'+(_catSel===cat.toUpperCase()?' selected':'')+'>'+escHtml(cat)+'</option>';
+  }).join('');
+  // Preserva um valor atual que nao seja contrato nem categoria (ex.: vindo da importacao)
+  var _outroOpt = (_catSel && _catUpper.indexOf(_catSel)<0)
+    ? '<option value="cat:'+escHtml(cel.contrato_nome)+'" selected>'+escHtml(cel.contrato_nome)+' (atual)</option>'
+    : '';
+
   setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
     +'<h3 style="margin-bottom:.75rem">'+(isNew?'📱 Novo Celular':'✎ Editar Celular')+'</h3>'
     +'<div style="display:grid;gap:.6rem">'
@@ -7808,7 +7989,10 @@ function cadAbrirModalCelular(id){
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Modelo *</label>'
     +'<input class="inp" id="cel-mod" value="'+escHtml(cel.modelo||'')+'" placeholder="Ex: iPhone 14, Samsung A54" style="width:100%"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Contrato</label>'
-    +'<select class="inp" id="cel-cont" style="width:100%"><option value="">Sem contrato</option>'+contratos_opts+'</select></div>'
+    +'<select class="inp" id="cel-cont" style="width:100%"><option value="">Sem contrato</option>'+_outroOpt
+    +'<optgroup label="Contratos">'+contratos_opts+'</optgroup>'
+    +'<optgroup label="Departamento / Situação">'+categorias_opts+'</optgroup>'
+    +'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Responsável</label>'
     +'<input class="inp" id="cel-resp" value="'+escHtml(cel.responsavel||'')+'" placeholder="Nome do colaborador responsável" style="width:100%"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Observação</label>'
@@ -7843,11 +8027,14 @@ function cadAbrirModalCelular(id){
         return;
       }
 
-      var contNome = cont ? ((typeof contratos!=='undefined'?contratos:[]).find(function(ct){return ct.id===cont;})||{}).nome||'' : '';
+      // Categoria interna (cat:) salva como texto; senao contrato real (uuid)
+      var contId = null, contNome = '';
+      if(cont.indexOf('cat:')===0){ contNome = cont.slice(4); }
+      else if(cont){ contId = cont; contNome = ((typeof contratos!=='undefined'?contratos:[]).find(function(ct){return ct.id===cont;})||{}).nome||''; }
 
       // Gerar UUID explícito para garantir que o banco aceite mesmo sem DEFAULT
       var _novoId = isNew ? gerarUUID() : id;
-      var payload = {id:_novoId, numero:num, modelo:mod, contrato_id:cont||null,
+      var payload = {id:_novoId, numero:num, modelo:mod, contrato_id:contId,
         contrato_nome:contNome, responsavel:resp, obs:obs};
 
       if(isNew){
@@ -27573,10 +27760,58 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.404',
-  data:   '11/06/2026',
-  build:  '20260612-0200',
+  numero: '7.9.421',
+  data:   '16/06/2026',
+  build:  '20260616-1300',
   log: [
+    {v:'7.9.421', d:'16/06/2026', itens:[
+      'Locacoes/Locadora: campo mudou para input+datalist (digitacao com busca). Corrigida fonte dos fornecedores — agora usa erpCarregarFornecedores() trazendo todos do ERP (1800+) em vez de sbFetch simples (3 registros do Supabase). Aplica em novo contrato e edicao.',
+    ]},
+    {v:'7.9.420', d:'16/06/2026', itens:[
+      'Fix Sync Ponto TMA: lotes reduzidos de 20 para 8, timeout de 2 min por lote com continuacao automatica (nao trava mais em 20/210). Progresso mostra lote X/Y. Bloqueio de duplo clique enquanto sync ativo.',
+    ]},
+    {v:'7.9.418', d:'16/06/2026', itens:[
+      'Locacoes: campo Locadora mudou de digitacao livre para selecao da lista de fornecedores cadastrados (nome fantasia / razao social). Garante padronizacao e evita erros de digitacao.',
+    ]},
+    {v:'7.9.417', d:'15/06/2026', itens:[
+      'Fix Locacoes/Veiculo: o seletor agora CARREGA a frota antes de abrir (busca vinha vazia por falta de carregamento). Busca de placa tolera hifen/espaco (AZG3027 casa com AZG-3027) e traz por proximidade (placa, modelo ou marca).',
+    ]},
+    {v:'7.9.416', d:'15/06/2026', itens:[
+      'Locacoes: Tipo Ferramenta e EPI/EPC agora abrem seletor (igual veiculo) para VINCULAR a um item ja cadastrado (Ferramentas -> tabela ferramentas; EPI/EPC -> epi_catalogo) ou CADASTRAR novo, que ja aparece no cadastro correspondente. Vinculo salvo em equipamento_ref_tipo/id.',
+    ]},
+    {v:'7.9.415', d:'15/06/2026', itens:[
+      'Locacoes > cadastrar veiculo: Modelo agora e selecao dos modelos ja cadastrados na frota (datalist, permite digitar novo). Placa faz check no banco em tempo real: se ja existe, avisa veiculo cadastrado e VINCULA o existente (sem duplicar) amarrando o contrato ao veiculo ja cadastrado.',
+    ]},
+    {v:'7.9.414', d:'15/06/2026', itens:[
+      'Locacoes: ao escolher Tipo Veiculo na linha, abre seletor para VINCULAR a um veiculo da frota (busca por placa/modelo) ou CADASTRAR novo (grava em frotas_veiculos e vincula). Vinculo salvo em equipamento_ref_tipo/equipamento_ref_id.',
+    ]},
+    {v:'7.9.413', d:'15/06/2026', itens:[
+      'Locacoes: o seletor de contratos passou a mostrar o NOME do contrato (antes mostrava o numero/codigo). Regra geral: seletores sempre humanizados (nome), nunca codigo/id.',
+    ]},
+    {v:'7.9.412', d:'15/06/2026', itens:[
+      'Locacoes: campo Contratos que compartilham (multi-selecao). 1 contrato = a quantidade da linha vai toda para ele; 2+ contratos = cada linha mostra Quantidade por contrato (a qtd da linha vira a soma). Salva contrato_id (1) ou contrato_qtds jsonb (2+) por item. SQL sql_locacoes_expand.sql.',
+    ]},
+    {v:'7.9.411', d:'15/06/2026', itens:[
+      'Locacoes: aba movida para logo apos EPIs/EPCs. Campo Responsavel agora e digitacao livre (texto). Tipo do equipamento ganhou EPI e EPC. Cada linha de equipamento tem Quantidade, Valor unitario e Valor total (total = qtd x unit; total geral recalculado). SQL: sql_locacoes_expand.sql (responsavel, quantidade, valor_unitario, valor_total, contrato_id, equipamento_ref_*).',
+    ]},
+    {v:'7.9.410', d:'15/06/2026', itens:[
+      'Almoxarifado: removido o botao 📦 Almox. do topo (link para app externo, ao lado da versao). Corrigido o painel de Vales (Filtrar por periodo / Todos os registros) que aparecia em TODAS as abas — faltava o container pg-sesmt-vales; agora so aparece na aba Vales.',
+    ]},
+    {v:'7.9.409', d:'15/06/2026', itens:[
+      'Frotas > Controle de Manutenção: modal expandido com (1) Oficina Própria — checkbox desabilita o campo fornecedor e preenche automaticamente; (2) Garantia separada por Peças e Serviços, cada um com campo de vencimento independente; (3) Seção Conclusão com data de conclusão e botão "Marcar como Concluída" que seta o status e preenche a data automaticamente. Novos campos salvos no banco: oficina_propria, garantia_tipo, garantia_prazo_pecas, garantia_prazo_servicos, data_conclusao.',
+    ]},
+    {v:'7.9.408', d:'15/06/2026', itens:[
+      'Historico de colaborador: ao clicar no colaborador na programacao (equipes ou projetos), o modal agora mostra as ultimas 3 escalas do colaborador (equipe + data + turno) com link "Ver historico completo". Novo relatorio "Historico de Atividades por Colaborador" na aba TMA OESTE dos Relatorios: seleciona colaborador por nome/RE, define periodo, gera tabela com contrato/equipe/data/hora e exporta CSV.',
+    ]},
+    {v:'7.9.407', d:'15/06/2026', itens:[
+      'Programacao (TMA e Escala Modelo): o seletor de celular agora ESCONDE os aparelhos marcados como Diretoria, Administrativo, Frota, Portaria, SESMT e PERDIDO (categorias internas) - nao devem ser escalados. DISPONIVEL e os celulares de contrato continuam aparecendo. O cadastro de celulares continua mostrando todos. Lista ajustavel em CEL_CATEGORIAS_OCULTAS_ESCALA.',
+    ]},
+    {v:'7.9.406', d:'15/06/2026', itens:[
+      'Cadastro de Celulares: o seletor Contrato agora traz tambem as categorias internas (Diretoria, Administrativo, Frota, Portaria, SESMT, DISPONIVEL, PERDIDO) num grupo separado dos contratos reais. Gravadas como texto (contrato_nome), sem poluir a tabela contratos. Preserva o valor atual ao editar registros importados.',
+    ]},
+    {v:'7.9.405', d:'15/06/2026', itens:[
+      'Fix permissoes: celulares cadastrados agora carregam para TODOS os perfis no login (carregarDadosBase), nao so para quem abre Cadastros. Antes, quem nao tinha acesso a Cadastros via a lista de celulares vazia ao montar a escala e nem enxergava o celular ja vinculado no dia (aparecia "Cel..." em vez do numero). Resolve selecao e visualizacao do telefone da equipe na Programacao TMA.',
+    ]},
     {v:'7.9.404', d:'14/06/2026', itens:[
       'Gestao de Ponto: indicador de sincronismo no cabecalho (Ponto sincronizado ate DD/MM, N registros, dias carregados; avisa se o periodo pode faltar sync) + botao Sincronizar periodo na barra principal (busca no Nexus e recarrega). Ajuda a saber se os dados pesquisados estao atualizados.',
     ]},
@@ -30877,8 +31112,15 @@ function plptSalvarCelularProg(eqId, data, celularId){
 
 // ── Modal de seleção de celular com busca ──────────────────────────
 // Celulares disponíveis para um contrato: os do próprio contrato + os sem contrato (pool compartilhado)
+function _celCatOcultaEscala(nome){
+  var n = String(nome||'').toUpperCase().trim();
+  if(!n) return false;
+  return CEL_CATEGORIAS_OCULTAS_ESCALA.some(function(cat){ return cat.toUpperCase()===n; });
+}
 function celularesDoContrato(cid){
   return (_celulares||[]).filter(function(c){
+    // Celulares com categoria interna oculta (PERDIDO, departamentos) nao entram na escala
+    if(!c.contrato_id && _celCatOcultaEscala(c.contrato_nome)) return false;
     return !cid || !c.contrato_id || c.contrato_id===cid;
   });
 }
@@ -32518,6 +32760,10 @@ function progMobileDesprogramar(eqId){
 
 // ── Sincronização de Ponto ────────────────────────────────────────────────
 function progSyncPonto(){
+  if(window._progSyncPontoAtivo){
+    progShowToast('Sync já em andamento — aguarde ou recarregue a página (F5) se travou.');
+    return;
+  }
   var data = progGetData();
   var cid  = _TMA_CID; // tela TMA = sempre contrato TMA Oeste
   var btn  = document.getElementById('btn-sync-ponto');
@@ -32538,14 +32784,24 @@ function progSyncPonto(){
     return;
   }
 
+  window._progSyncPontoAtivo = true;
   progShowToast('🔄 Sincronizando ponto TMA Oeste ('+matriculas.length+' colaboradores)...');
 
   if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
   var dataSyncInicio = data;
-  var BATCH = 20;
+  var BATCH = 8; // lotes menores — evita timeout do Azure (~230s) quando Nexus demora
+  var BATCH_TIMEOUT_MS = 120000; // 2 min por lote; depois pula e continua
+  var totalLotes = Math.ceil(matriculas.length / BATCH);
+  var loteNum = 0;
   var totalSinc = 0;
   var totalErros = 0;
   var idx = 0;
+
+  function progSyncPontoFinalizar(){
+    window._progSyncPontoAtivo = false;
+    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+    if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+  }
 
   function syncLote(){
     if(idx >= matriculas.length){
@@ -32557,8 +32813,7 @@ function progSyncPonto(){
         var el1 = document.getElementById('sync-ponto-hora');
         if(el1) el1.textContent = 'Último sync: '+hora1;
         progShowToast('✅ Ponto sincronizado — '+dataSyncInicio+' ('+totalSinc+'/'+matriculas.length+')');
-        if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-        if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+        progSyncPontoFinalizar();
         return;
       }
       progCarregarPontoDoSupabase(data, function(){
@@ -32587,26 +32842,34 @@ function progSyncPonto(){
           var el2 = document.getElementById('sync-ponto-hora');
           if(el2) el2.textContent = 'Último sync: '+hora2;
           var msg = '✅ Ponto sincronizado — '+data+' ('+totalSinc+'/'+matriculas.length+')';
-          if(totalErros > 0) msg += ' | '+totalErros+' erro(s)';
+          if(totalErros > 0) msg += ' | '+totalErros+' falha(s) — tente de novo';
           if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
           progShowToast(msg);
-          if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-          if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+          progSyncPontoFinalizar();
           progAjustarEscalaPosSyncPonto(data);
         }, 300);
       });
       return;
     }
 
+    loteNum++;
     var lote = matriculas.slice(idx, idx + BATCH);
-    if(btn) btn.textContent = '⏳ ' + Math.min(idx + lote.length, matriculas.length) + '/' + matriculas.length + '...';
+    var ate = Math.min(idx + lote.length, matriculas.length);
+    if(btn) btn.textContent = '⏳ '+ate+'/'+matriculas.length+' (lote '+loteNum+'/'+totalLotes+')';
+
+    var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function(){
+      if(ctrl) ctrl.abort();
+    }, BATCH_TIMEOUT_MS);
 
     fetch(PONTO_API_URL + '/api/v1/sincronizar-dia', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({matriculas: lote, data: data})
+      body: JSON.stringify({matriculas: lote, data: data}),
+      signal: ctrl ? ctrl.signal : undefined
     })
     .then(function(r){
+      clearTimeout(timer);
       if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+(t?': '+t.substring(0,80):'')); });
       return r.json();
     })
@@ -32617,10 +32880,12 @@ function progSyncPonto(){
       syncLote();
     })
     .catch(function(e){
-      console.error('[Sync Ponto] lote falhou idx='+idx+':', e);
-      progShowToast('❌ Erro ao sincronizar ponto: '+e.message);
-      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-      if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+      clearTimeout(timer);
+      console.error('[Sync Ponto] lote '+loteNum+' falhou idx='+idx+':', e);
+      totalErros += lote.length;
+      idx += BATCH;
+      progShowToast('⚠ Lote '+loteNum+' demorou/falhou — continuando... ('+(e.message||e)+')');
+      setTimeout(syncLote, 500);
     });
   }
 
@@ -33733,11 +33998,37 @@ function progMenuSlot(colabId, eqId, pos){
     +'<input type="text" id="retorno-justif" value="'+(info.justificativa||'')+'" class="inp" placeholder="Opcional..." style="width:100%"/>'
     +'</div>';
 
+  // Últimas escalas do colaborador (últimos 3 registros em composicao_dia)
+  var ultimasEscalas = (composicao_dia||[]).filter(function(c){
+    var ids = Array.isArray(c.colaborador_ids) ? c.colaborador_ids : [];
+    return ids.indexOf(colabId) >= 0;
+  }).sort(function(a,b){ return a.data < b.data ? 1 : a.data > b.data ? -1 : 0; }).slice(0,3);
+  var ultimasHtml = '';
+  if(ultimasEscalas.length){
+    ultimasHtml = '<div style="background:#F5F5F0;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
+      +'<div style="font-size:11px;font-weight:600;color:#555;margin-bottom:5px">📅 Últimas escalas</div>'
+      +ultimasEscalas.map(function(c){
+        var eq = equipes_disp.find(function(e){return e.id===c.equipe_id;});
+        var d = c.data ? c.data.split('-') : [];
+        var dataFmt = d.length===3 ? d[2]+'/'+d[1]+'/'+d[0].slice(2) : (c.data||'');
+        var turno = eq ? ((eq.hora_inicio||'')+(eq.hora_fim?' – '+eq.hora_fim:'')) : '';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#333;padding:3px 0;border-bottom:.5px solid #e0dfd8">'
+          +'<span><b>'+(eq?escHtml(eq.codigo):'—')+'</b>'+(turno?' <span style="color:#888;font-size:10px">'+turno+'</span>':'')+'</span>'
+          +'<span style="color:#555">'+dataFmt+'</span>'
+          +'</div>';
+      }).join('')
+      +'<div style="text-align:right;margin-top:4px">'
+      +'<span onclick="relAbrirHistoricoColab(\''+colabId+'\')" style="font-size:10px;color:#185FA5;cursor:pointer;text-decoration:underline">Ver histórico completo →</span>'
+      +'</div>'
+      +'</div>';
+  }
+
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:310px">'
     +'<div style="font-weight:700;font-size:13px;margin-bottom:.25rem">'+col.nome.split(' ').slice(0,3).join(' ')+'</div>'
     +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">RE '+(col.re||'—')+' · '+(col.cargo||'')+(col.cnh_categoria?' · CNH '+col.cnh_categoria:'')+'</div>'
     +motHtml
+    +ultimasHtml
     +'<div style="display:flex;flex-direction:column;gap:5px">'
     +(!fromPool?'<button onclick="progRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" '
       +'style="background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D1144;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
@@ -52158,6 +52449,52 @@ function frtNegarManutencao(id){
   progShowToast('Solicitação negada. Justificativa registrada.');
 }
 
+function frtToggleOfPropria(checked){
+  var inp=document.getElementById('fc-forn');
+  if(!inp)return;
+  if(checked){
+    inp.value='Oficina Própria';
+    inp.disabled=true;
+    inp.style.background='#f0eff8';
+    inp.style.color='#534AB7';
+    inp.style.fontWeight='600';
+  } else {
+    inp.value='';
+    inp.disabled=false;
+    inp.style.background='';
+    inp.style.color='';
+    inp.style.fontWeight='';
+    inp.focus();
+  }
+}
+
+function frtToggleGarantia(){
+  var p=document.getElementById('fc-gt-pecas');
+  var s=document.getElementById('fc-gt-serv');
+  var pw=document.getElementById('fc-gt-pecas-wrap');
+  var sw=document.getElementById('fc-gt-serv-wrap');
+  if(pw) pw.style.display=p&&p.checked?'block':'none';
+  if(sw) sw.style.display=s&&s.checked?'block':'none';
+}
+
+function frtConcluirManutencao(){
+  var btn=document.getElementById('fc-concluir');
+  var stSel=document.getElementById('fc-status');
+  var dtConcl=document.getElementById('fc-conclusao');
+  if(!stSel)return;
+  var jaConcluida=stSel.value==='Concluída'||stSel.value==='Disponível';
+  if(jaConcluida){
+    // Desfazer conclusão
+    stSel.value='Em Execução';
+    if(dtConcl) dtConcl.value='';
+    if(btn){btn.textContent='☐ Marcar como Concluída';btn.style.background='#fff';btn.style.borderColor='#3B6D1188';}
+  } else {
+    stSel.value='Concluída';
+    if(dtConcl&&!dtConcl.value) dtConcl.value=dataHojeLocal();
+    if(btn){btn.textContent='✅ Concluída';btn.style.background='#EAF3DE';btn.style.borderColor='#3B6D1144';}
+  }
+}
+
 function frtAbrirControleManutencao(id){
   var m=frt_manutencoes.find(function(x){return x.id===id;}); if(!m)return;
   // Aprovar automaticamente ao abrir controle
@@ -52166,29 +52503,87 @@ function frtAbrirControleManutencao(id){
   if(m.data_inicio_reparo){
     dias=Math.floor((Date.now()-new Date(m.data_inicio_reparo).getTime())/(1000*60*60*24));
   }
-  var html='<div class="modal-bg"><div class="modal" style="max-width:500px">'
+  var _ofProp = m.oficina_propria||false;
+  var _gtPecas = m.garantia_tipo==='pecas'||m.garantia_tipo==='ambos';
+  var _gtServ  = m.garantia_tipo==='servicos'||m.garantia_tipo==='ambos';
+  var _concluida = m.status==='Concluída'||m.status==='Disponível';
+
+  var html='<div class="modal-bg"><div class="modal" style="max-width:520px;max-height:92vh;overflow-y:auto">'
     +'<h3>📋 Controle de Manutenção — '+escHtml(m.placa)+'</h3>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Oficina / Fornecedor</label>'
-    +'<input class="inp" id="fc-forn" style="width:100%" value="'+escHtml(m.fornecedor||'')+'"/></div>'
+
+    // Oficina / Fornecedor com opção oficina própria
+    +'<div style="grid-column:span 2">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
+    +'<label style="font-size:11px;font-weight:600">Oficina / Fornecedor</label>'
+    +'<label style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;color:#534AB7">'
+    +'<input type="checkbox" id="fc-of-prop" '+(m.oficina_propria?'checked':'')+' onchange="frtToggleOfPropria(this.checked)" style="width:14px;height:14px"/>'
+    +'🏠 Oficina própria'
+    +'</label></div>'
+    +'<input class="inp" id="fc-forn" style="width:100%" value="'+escHtml(m.oficina_propria?'Oficina Própria':(m.fornecedor||''))+'"'+(m.oficina_propria?' disabled style="width:100%;background:#f0eff8;color:#534AB7;font-weight:600"':' style="width:100%"')+'/>'
+    +'</div>'
+
+    // Defeito real
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Defeito real identificado</label>'
     +'<textarea class="inp" id="fc-defeito" style="width:100%;height:55px">'+escHtml(m.defeito_real||m.descricao||'')+'</textarea></div>'
+
+    // Valor e KM
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Valor estimado (R$)</label>'
     +'<input class="inp" id="fc-valor" type="number" min="0" step="0.01" style="width:100%" value="'+(m.valor||0)+'"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">KM na entrada</label>'
     +'<input class="inp" id="fc-km" type="number" style="width:100%" value="'+(m.km||'')+'"/></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Garantia</label>'
-    +'<select class="inp" id="fc-garantia" data-nosort style="width:100%">'
-    +'<option value="">Não</option><option value="sim"'+(m.garantia?' selected':'')+'>Sim</option></select></div>'
+
+    // Status e Data início
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Status</label>'
     +'<select class="inp" id="fc-status" data-nosort style="width:100%">'
     +FRT_MANUT_STATUS.filter(function(s){return s!=='Solicitada';}).map(function(s){return '<option'+(m.status===s?' selected':'')+'>'+s+'</option>';}).join('')
     +'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data início dos reparos</label>'
     +'<input class="inp" id="fc-inicio" type="date" style="width:100%" value="'+(m.data_inicio_reparo||'')+'"/></div>'
+
+    // Previsão retorno
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Previsão de retorno</label>'
     +'<input class="inp" id="fc-prev" type="date" style="width:100%" value="'+(m.previsao_retorno||'')+'"/></div>'
+
+    // Dias em reparo
     +(dias>0?'<div style="grid-column:span 2"><div style="border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;text-align:center;background:'+(dias>=15?'#FCEBEB':dias>=10?'#FEF0E2':'#FEF9EE')+';color:'+(dias>=15?'#A32D2D':dias>=10?'#C97A1F':'#854F0B')+'">⏱ '+dias+' dias em reparo'+(dias>=15?' — CRÍTICO':dias>=10?' — ALERTA':' — ATENÇÃO')+'</div></div>':'')
+
+    // Separador Garantia
+    +'<div style="grid-column:span 2;border-top:.5px solid #e0dfd8;padding-top:.75rem;margin-top:.25rem">'
+    +'<div style="font-size:12px;font-weight:700;color:#185FA5;margin-bottom:.5rem">🛡 Garantia</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">'
+
+    // Garantia Peças
+    +'<div style="background:#F5F9FF;border:.5px solid #185FA522;border-radius:8px;padding:8px 10px">'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;cursor:pointer;margin-bottom:5px">'
+    +'<input type="checkbox" id="fc-gt-pecas" '+(_gtPecas?'checked':'')+' onchange="frtToggleGarantia()" style="width:14px;height:14px"/>🔩 Peças</label>'
+    +'<div id="fc-gt-pecas-wrap" style="display:'+(_gtPecas?'block':'none')+'">'
+    +'<label style="font-size:10px;color:#888;display:block;margin-bottom:2px">Vencimento da garantia</label>'
+    +'<input class="inp" id="fc-gt-pecas-data" type="date" style="width:100%;font-size:12px" value="'+(m.garantia_prazo_pecas||'')+'"/>'
+    +'</div></div>'
+
+    // Garantia Serviços
+    +'<div style="background:#F5FFF7;border:.5px solid #3B6D1122;border-radius:8px;padding:8px 10px">'
+    +'<label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;cursor:pointer;margin-bottom:5px">'
+    +'<input type="checkbox" id="fc-gt-serv" '+(_gtServ?'checked':'')+' onchange="frtToggleGarantia()" style="width:14px;height:14px"/>🔧 Serviços</label>'
+    +'<div id="fc-gt-serv-wrap" style="display:'+(_gtServ?'block':'none')+'">'
+    +'<label style="font-size:10px;color:#888;display:block;margin-bottom:2px">Vencimento da garantia</label>'
+    +'<input class="inp" id="fc-gt-serv-data" type="date" style="width:100%;font-size:12px" value="'+(m.garantia_prazo_servicos||'')+'"/>'
+    +'</div></div>'
+
+    +'</div></div>'
+
+    // Separador Conclusão
+    +'<div style="grid-column:span 2;border-top:.5px solid #e0dfd8;padding-top:.75rem;margin-top:.25rem">'
+    +'<div style="font-size:12px;font-weight:700;color:#3B6D11;margin-bottom:.5rem">✅ Conclusão</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;align-items:end">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data de conclusão</label>'
+    +'<input class="inp" id="fc-conclusao" type="date" style="width:100%" value="'+(m.data_conclusao||'')+'"/></div>'
+    +'<div><button id="fc-concluir" onclick="frtConcluirManutencao()" '
+    +'style="width:100%;padding:8px;border-radius:6px;border:.5px solid '+((_concluida)?'#3B6D1144':'#3B6D1188')+';background:'+((_concluida)?'#EAF3DE':'#fff')+';color:#3B6D11;font-size:12px;font-weight:600;cursor:pointer">'
+    +(_concluida?'✅ Concluída':'☐ Marcar como Concluída')+'</button></div>'
+    +'</div></div>'
+
     +'</div>'
     +'<div id="fc-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;padding:6px 10px;background:#FCEBEB;border-radius:6px;display:none"></div>'
     +'<div style="display:flex;gap:8px">'
@@ -52200,14 +52595,23 @@ function frtAbrirControleManutencao(id){
     var btn=document.getElementById('fc-salvar');if(!btn)return;
     btn.onclick=function(){
       var g=function(id){return (document.getElementById(id)||{}).value||'';};
-      m.fornecedor=g('fc-forn');
+      var _ofPropChk = document.getElementById('fc-of-prop');
+      m.oficina_propria = _ofPropChk ? _ofPropChk.checked : false;
+      m.fornecedor = m.oficina_propria ? 'Oficina Própria' : g('fc-forn');
       m.defeito_real=g('fc-defeito');
       m.valor=parseFloat(g('fc-valor'))||0;
       m.km=parseInt(g('fc-km'))||m.km;
-      m.garantia=g('fc-garantia')==='sim';
       m.status=g('fc-status')||m.status;
       m.data_inicio_reparo=g('fc-inicio')||null;
       m.previsao_retorno=g('fc-prev')||null;
+      m.data_conclusao=g('fc-conclusao')||null;
+      // Garantia
+      var _gtP = document.getElementById('fc-gt-pecas') && document.getElementById('fc-gt-pecas').checked;
+      var _gtS = document.getElementById('fc-gt-serv') && document.getElementById('fc-gt-serv').checked;
+      m.garantia_tipo = _gtP && _gtS ? 'ambos' : _gtP ? 'pecas' : _gtS ? 'servicos' : 'nao';
+      m.garantia = _gtP || _gtS;
+      m.garantia_prazo_pecas  = _gtP ? g('fc-gt-pecas-data')||null : null;
+      m.garantia_prazo_servicos = _gtS ? g('fc-gt-serv-data')||null : null;
       // Se Disponível: voltar veículo ao status disponível
       if(m.status==='Disponível'){
         var v=frt_veiculos.find(function(x){return x.placa===m.placa;});
@@ -52228,6 +52632,11 @@ function frtAbrirControleManutencao(id){
             km:m.km,garantia:m.garantia,status:m.status,
             data_inicio_reparo:m.data_inicio_reparo||null,
             previsao_retorno:m.previsao_retorno||null,
+            data_conclusao:m.data_conclusao||null,
+            oficina_propria:m.oficina_propria||false,
+            garantia_tipo:m.garantia_tipo||'nao',
+            garantia_prazo_pecas:m.garantia_prazo_pecas||null,
+            garantia_prazo_servicos:m.garantia_prazo_servicos||null,
             justificativa_negativa:m.justificativa_negativa||null
           },'id=eq.'+_id).then(function(ok){
             if(ok===false){
@@ -52627,8 +53036,7 @@ window.addEventListener('load',async function(){
       }
       // Show PWA install banner on tablet/mobile
       if(typeof pwaMostrarSeDisponivel === 'function') pwaMostrarSeDisponivel();
-      // Load celulares for all profiles
-      if(!DEMO) sbFetch('celulares_empresa',{order:'numero'}).then(function(rows){ if(rows) _celulares=rows; });
+      // Celulares: carregados em carregarDadosBase() para todos os perfis (independe de permissao de Cadastros)
       // Kanban banner: only for equipe profile in field diary
       // For admin/gestor: Kanban is in Obras > Materiais tab
       if(usuarioLogado.perfil==='equipe' && usuarioLogado.equipe_id){
@@ -58979,7 +59387,7 @@ function renderLocacoes(){
   rows.forEach(function(l){
     var key = (l.locadora||'') + '|' + (l.inicio||'') + '|' + (l.termino||'') + '|' + (l.observacoes||'').slice(0,40);
     if(!grupos[key]) grupos[key] = { locadora:l.locadora, inicio:l.inicio, termino:l.termino,
-      responsavel_id:l.responsavel_id, observacoes:l.observacoes, itens:[], total:0 };
+      responsavel_id:l.responsavel_id, responsavel:l.responsavel, observacoes:l.observacoes, itens:[], total:0 };
     grupos[key].itens.push(l);
     grupos[key].total += Number(l.valor_locacao||0);
   });
@@ -58999,7 +59407,7 @@ function renderLocacoes(){
     var diff = g.termino ? Math.round((new Date(g.termino+'T00:00:00') - hoje) / 86400000) : null;
     var prazoLabel = diff===null ? '—' : diff<0 ? 'Vencido '+Math.abs(diff)+'d' : diff===0 ? 'Hoje' : diff+' dias';
     var prazoCor   = diff===null ? 'gray' : diff<0 ? 'danger' : diff<=30 ? 'warn' : 'ok';
-    var respNome   = fNome(g.responsavel_id);
+    var respNome   = (g.responsavel||'').trim() || fNome(g.responsavel_id);
 
     // Determinar status geral do contrato
     var statusList = g.itens.map(function(l){ return l.disponibilidade; });
@@ -59086,21 +59494,28 @@ function lcAtualizarDepositos(selectId){
 
 
 function openNovaLocacao(){
-  // Garantir que funcs (funcionarios) está carregado
-  if(!funcs.length && !DEMO){
-    sbFetch('funcionarios',{filters:['ativo=eq.true'],order:'nome'}).then(function(rows){
-      if(rows&&rows.length) funcs=rows;
-      openNovaLocacao();
-    }).catch(function(){ _openNovaLocacaoModal(); });
+  // Garantir lista completa do ERP (1800+); com cache não faz request extra
+  if(!DEMO){
+    erpCarregarFornecedores().then(function(){ _openNovaLocacaoModal(); })
+      .catch(function(){ _openNovaLocacaoModal(); });
     return;
   }
   _openNovaLocacaoModal();
+}
+// Opções de fornecedor (locadora) — nome humanizado, value = nome
+function _lcFornOpts(){
+  var arr=(fornecedores||[]).slice().sort(function(a,b){ return (a.nome_fantasia||a.razao_social||'').localeCompare(b.nome_fantasia||b.razao_social||'','pt-BR'); });
+  var nomes={}, html='';
+  arr.forEach(function(f){ var nm=f.nome_fantasia||f.razao_social||f.nome||''; if(!nm||nomes[nm])return; nomes[nm]=1;
+    html+='<option value="'+escHtml(nm)+'">'; });
+  return html;
 }
 
 function _openNovaLocacaoModal(){
   var fOpts='<option value="">Sem responsável</option>'+funcs.map(function(f){return '<option value="'+f.id+'">'+(typeof escHtml=='function'?escHtml(f.nome):f.nome)+'</option>';}).join('');
   var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>';}).join('');
   var depOpts='<option value="">Selecione a filial primeiro</option>';
+  var lcContratoCks=(contratos||[]).map(function(c){var _nm=c.nome||c.codigo||c.id;return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;background:#fff;border:.5px solid #e0dfd8;border-radius:6px;padding:2px 8px;cursor:pointer"><input type="checkbox" class="lc-contrato-ck" value="'+c.id+'" data-cod="'+escHtml(_nm)+'" onchange="lcAtualizarRateio()" style="width:13px;height:13px;margin:0"/>'+escHtml(_nm)+'</label>';}).join('');
 
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" id="modal-loc-inner" style="max-width:760px;padding:1.25rem">'
@@ -59113,9 +59528,9 @@ function _openNovaLocacaoModal(){
     +'<div style="background:#f9f9f7;border:.5px solid #e0dfd8;border-radius:10px;padding:.85rem;margin-bottom:1rem">'
     +'<div style="font-size:11px;font-weight:700;color:#533AB7;margin-bottom:.6rem">📋 DADOS DO CONTRATO</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'
-    +'<div class="fg"><label style="font-size:11px">Locadora *</label><input class="inp" id="lc-loc" placeholder="Empresa locadora" style="width:100%"/></div>'
+    +'<div class="fg"><label style="font-size:11px">Locadora * <span style="color:#888;font-weight:400">(fornecedor)</span></label><input class="inp" id="lc-loc" list="lc-loc-dl" autocomplete="off" placeholder="Digite para buscar..." style="width:100%"><datalist id="lc-loc-dl">'+_lcFornOpts()+'</datalist></div>'
     +'<div class="fg"><label style="font-size:11px">Nº Contrato</label><input class="inp" id="lc-num" placeholder="Ex: 8543" style="width:100%"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Responsável</label><select class="inp" id="lc-resp" style="width:100%">'+fOpts+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Responsável</label><input class="inp" id="lc-resp" placeholder="Nome do responsável" style="width:100%"/></div>'
     +'<div class="fg"><label style="font-size:11px">Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
     +'<div class="fg"><label style="font-size:11px">Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
     +'<div class="fg" style="display:flex;gap:6px">'
@@ -59129,6 +59544,9 @@ function _openNovaLocacaoModal(){
     +'<div class="fg" id="fg-seg" style="display:none"><label style="font-size:11px">Valor seguro/mês</label><input class="inp" id="lc-vseg" type="number" step="0.01" style="width:100%"/></div>'
     +'<div class="fg" style="grid-column:2/-1"><label style="font-size:11px">Observações</label><input class="inp" id="lc-obs" placeholder="Cliente, NF, remessa..." style="width:100%"/></div>'
     +'</div>'
+    +'<div class="fg" style="margin-top:8px"><label style="font-size:11px">Contratos que compartilham esta locação</label>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:5px;max-height:90px;overflow-y:auto;background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:6px">'+(lcContratoCks||'<span style="font-size:11px;color:#aaa">Sem contratos cadastrados</span>')+'</div>'
+    +'<div style="font-size:10px;color:#888;margin-top:3px">Marque 1 contrato (a quantidade da linha vai toda para ele) ou 2+ (cada linha pede quanto vai para cada contrato).</div></div>'
     +'</div>'
 
     // ── Lista de equipamentos ──
@@ -59138,8 +59556,8 @@ function _openNovaLocacaoModal(){
     +'<button class="btn btn-sm btn-pri" onclick="lcAddLinha()" style="font-size:11px">+ Adicionar equipamento</button>'
     +'</div>'
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;overflow:hidden">'
-    +'<div style="display:grid;grid-template-columns:3fr 1fr 1.2fr 1.2fr 1fr 32px;gap:0;background:#1a1a18;padding:5px 8px;font-size:10px;font-weight:700;color:#aaa">'
-    +'<div>NOME / DESCRIÇÃO</div><div>TIPO</div><div>VALOR/MÊS</div><div>STATUS</div><div>DISPONIB.</div><div></div>'
+    +'<div style="display:grid;grid-template-columns:2.4fr 1fr .6fr 1fr 1fr 1fr 1fr 28px;gap:0;background:#1a1a18;padding:5px 8px;font-size:10px;font-weight:700;color:#aaa">'
+    +'<div>NOME / DESCRIÇÃO</div><div>TIPO</div><div>QTD</div><div>V.UNIT/MÊS</div><div>V.TOTAL</div><div>STATUS</div><div>DISPONIB.</div><div></div>'
     +'</div>'
     +'<div id="lc-eq-lista"></div>'
     +'</div>'
@@ -59190,26 +59608,30 @@ function lcAddLinha(eq){
   eq = eq || {};
   var idx = _lcLinhaIdx++;
   var lista = document.getElementById('lc-eq-lista'); if(!lista) return;
-  var row = document.createElement('div');
-  row.id  = 'lc-eq-row-'+idx;
-  row.style.cssText = 'display:grid;grid-template-columns:3fr 1fr 1.2fr 1.2fr 1fr 32px;gap:0;border-bottom:.5px solid #f0efe8;align-items:center';
-  var tiposOpts = ['Equipamento','Gerador','Compressor','Andaime','Veículo','Ferramenta','Outro']
+  var wrap = document.createElement('div');
+  wrap.id  = 'lc-eq-row-'+idx;
+  var tiposOpts = ['Equipamento','Gerador','Compressor','Andaime','Veículo','Ferramenta','EPI','EPC','Outro']
     .map(function(t){ return '<option'+(t===(eq.tipo||'Equipamento')?' selected':'')+'>'+t+'</option>'; }).join('');
   var statusOpts = ['Funcionando','Em manutenção','Com defeito']
     .map(function(s){ return '<option'+(s===(eq.status||'Funcionando')?' selected':'')+'>'+s+'</option>'; }).join('');
   var dispOpts = ['Disponível','Em uso','Em manutenção']
     .map(function(d){ return '<option'+(d===(eq.disponibilidade||'Em uso')?' selected':'')+'>'+d+'</option>'; }).join('');
-  row.innerHTML =
-    '<div style="padding:4px 6px"><input class="inp lc-eq-nome" placeholder="Descrição do equipamento *" style="width:100%;font-size:11px" value="'+escHtml(eq.nome||'')+'" oninput="lcAtualizarTotal()"/>'
+  wrap.innerHTML =
+    '<div style="display:grid;grid-template-columns:2.4fr 1fr .6fr 1fr 1fr 1fr 1fr 28px;gap:0;border-bottom:.5px solid #f0efe8;align-items:center">'
+    +'<div style="padding:4px 6px"><input class="inp lc-eq-nome" placeholder="Descrição do equipamento *" style="width:100%;font-size:11px" value="'+escHtml(eq.nome||'')+'" oninput="lcAtualizarTotal()"/>'
     +(eq.codigo?'<div style="font-size:10px;color:#aaa;margin-top:1px">Cód: '+escHtml(eq.codigo)+'</div>':'')
     +'</div>'
-    +'<div style="padding:4px 4px"><select class="inp lc-eq-tipo" style="width:100%;font-size:11px;padding:5px 4px">'+tiposOpts+'</select></div>'
-    +'<div style="padding:4px 4px"><input class="inp lc-eq-valor" type="number" step="0.01" min="0" placeholder="0,00" style="width:100%;font-size:11px" value="'+(eq.valor_locacao||'')+'" oninput="lcAtualizarTotal()"/></div>'
+    +'<div style="padding:4px 4px"><select class="inp lc-eq-tipo" onchange="lcTipoMudou(this)" style="width:100%;font-size:11px;padding:5px 4px">'+tiposOpts+'</select></div>'
+    +'<div style="padding:4px 4px"><input class="inp lc-eq-qtd" type="number" step="1" min="1" style="width:100%;font-size:11px" value="'+(eq.quantidade||1)+'" oninput="lcAtualizarTotal()"/></div>'
+    +'<div style="padding:4px 4px"><input class="inp lc-eq-valor" type="number" step="0.01" min="0" placeholder="0,00" style="width:100%;font-size:11px" value="'+(eq.valor_unitario||eq.valor_locacao||'')+'" oninput="lcAtualizarTotal()"/></div>'
+    +'<div style="padding:4px 4px"><input class="inp lc-eq-total" readonly tabindex="-1" placeholder="0,00" style="width:100%;font-size:11px;background:#f5f5f3" value=""/></div>'
     +'<div style="padding:4px 4px"><select class="inp lc-eq-status" style="width:100%;font-size:11px;padding:5px 4px">'+statusOpts+'</select></div>'
     +'<div style="padding:4px 4px"><select class="inp lc-eq-disp" style="width:100%;font-size:11px;padding:5px 4px">'+dispOpts+'</select></div>'
-    +'<div style="padding:4px;text-align:center"><button onclick="lcRemoveLinha(\'lc-eq-row-'+idx+'\')" style="background:none;border:none;color:#A32D2D;cursor:pointer;font-size:14px;line-height:1" title="Remover">✕</button></div>';
-  lista.appendChild(row);
-  lcAtualizarTotal();
+    +'<div style="padding:4px;text-align:center"><button onclick="lcRemoveLinha(\'lc-eq-row-'+idx+'\')" style="background:none;border:none;color:#A32D2D;cursor:pointer;font-size:14px;line-height:1" title="Remover">✕</button></div>'
+    +'</div>'
+    +'<div class="lc-eq-rateio" style="display:none;padding:5px 8px 8px;background:#f9f9f7;border-bottom:.5px solid #f0efe8"></div>';
+  lista.appendChild(wrap);
+  lcAtualizarRateio();
 }
 
 function lcRemoveLinha(rowId){
@@ -59223,13 +59645,248 @@ function lcRemoveLinha(rowId){
 
 function lcAtualizarTotal(){
   var total = 0;
-  document.querySelectorAll('.lc-eq-valor').forEach(function(el){
-    total += parseFloat(el.value)||0;
+  document.querySelectorAll('#lc-eq-lista > div').forEach(function(row){
+    var qtdEl = row.querySelector('.lc-eq-qtd');
+    var rats  = row.querySelectorAll('.lc-rat');
+    var q;
+    if(rats.length){ q=0; rats.forEach(function(i){ q+=parseFloat(i.value)||0; }); if(qtdEl) qtdEl.value=q; }
+    else { q = parseFloat((qtdEl||{}).value)||0; }
+    var u = parseFloat((row.querySelector('.lc-eq-valor')||{}).value)||0;
+    var t = q*u;
+    var tEl = row.querySelector('.lc-eq-total');
+    if(tEl) tEl.value = t? t.toFixed(2).replace('.',',') : '';
+    total += t;
   });
   var el = document.getElementById('lc-total');
   if(el) el.textContent = 'R$ '+total.toFixed(2).replace('.',',');
 }
 
+// Contratos marcados no cabeçalho → [{id,cod}]
+function _lcContratosSel(){
+  return Array.prototype.map.call(document.querySelectorAll('.lc-contrato-ck:checked'),
+    function(ck){ return {id:ck.value, cod:ck.getAttribute('data-cod')||''}; });
+}
+// Mostra/oculta o rateio por contrato em cada linha (só quando 2+ contratos)
+function lcAtualizarRateio(){
+  var sel = _lcContratosSel();
+  document.querySelectorAll('#lc-eq-lista > div').forEach(function(row){
+    var rat = row.querySelector('.lc-eq-rateio');
+    var qtd = row.querySelector('.lc-eq-qtd');
+    if(!rat || !qtd) return;
+    if(sel.length >= 2){
+      var prev={}; rat.querySelectorAll('.lc-rat').forEach(function(i){ prev[i.getAttribute('data-cid')]=i.value; });
+      rat.innerHTML = '<div style="font-size:10px;color:#185FA5;font-weight:600;margin-bottom:3px">Quantidade por contrato:</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:10px">'
+        + sel.map(function(c){ return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#555">'+escHtml(c.cod)
+            +': <input class="lc-rat" data-cid="'+c.id+'" type="number" min="0" step="1" style="width:64px;font-size:11px" value="'+(prev[c.id]||'')+'" oninput="lcAtualizarTotal()"/></label>'; }).join('')
+        + '</div>';
+      rat.style.display='';
+      qtd.readOnly=true; qtd.style.background='#f5f5f3'; qtd.title='Soma das quantidades por contrato';
+    } else {
+      rat.innerHTML=''; rat.style.display='none';
+      qtd.readOnly=false; qtd.style.background=''; qtd.title='';
+    }
+  });
+  lcAtualizarTotal();
+}
+
+
+// ── Equipamento por tipo: vincular ao cadastro existente ou cadastrar novo ──
+function lcTipoMudou(sel){
+  if(!sel) return;
+  var wrap = sel.closest('[id^="lc-eq-row-"]'); if(!wrap) return;
+  var t = sel.value;
+  if(t==='Veículo'){ if(wrap.dataset.refTipo==='veiculo'&&wrap.dataset.refId) return; lcVeiculoChooser(wrap.id); }
+  else if(t==='Ferramenta'){ if(wrap.dataset.refTipo==='ferramenta'&&wrap.dataset.refId) return; lcEquipChooser(wrap.id,'Ferramenta'); }
+  else if(t==='EPI'||t==='EPC'){ var rt=(t==='EPC'?'epc':'epi'); if(wrap.dataset.refTipo===rt&&wrap.dataset.refId) return; lcEquipChooser(wrap.id,t); }
+}
+// Config por tipo de cadastro
+function _lcEquipSrc(tipo){
+  if(tipo==='Ferramenta') return (typeof ferramentas!=='undefined'?ferramentas:[])||[];
+  // EPI/EPC → catálogo, filtrando pelo tipo
+  return ((typeof _epiCatalogo!=='undefined'?_epiCatalogo:[])||[]).filter(function(e){
+    var et=(e.tipo||'').toUpperCase();
+    return tipo==='EPC' ? et==='EPC' : et!=='EPC';  // EPI = tudo que não é EPC
+  });
+}
+function _lcEquipRefTipo(tipo){ return tipo==='Ferramenta'?'ferramenta':(tipo==='EPC'?'epc':'epi'); }
+function lcEquipChooser(rowId, tipo){
+  // garantir dados carregados
+  if(tipo==='Ferramenta' && !(typeof ferramentas!=='undefined'&&ferramentas&&ferramentas.length) && !DEMO){
+    sbFetch('ferramentas',{order:'nome'}).then(function(r){ if(r&&r.length)ferramentas=r; lcEquipChooser(rowId,tipo); }).catch(function(){ lcEquipChooser(rowId,tipo); }); return;
+  }
+  if((tipo==='EPI'||tipo==='EPC') && typeof _epiCatCarregado!=='undefined' && !_epiCatCarregado && !DEMO){
+    epiCarregarCatalogo(function(){ lcEquipChooser(rowId,tipo); }); return;
+  }
+  var ov=document.getElementById('lc-equip-ov'); if(ov) ov.remove();
+  ov=document.createElement('div'); ov.id='lc-equip-ov';
+  ov.style.cssText='position:fixed;inset:0;background:#0006;z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem';
+  var ehFer=tipo==='Ferramenta';
+  var titulo=ehFer?'🔧 Ferramenta':(tipo==='EPC'?'🦺 EPC':'🦺 EPI');
+  var novoCampos = ehFer
+    ? '<input class="inp" id="lc-ne-nome" placeholder="Nome / Descrição *" style="font-size:12px;grid-column:1/-1"/>'
+      +'<input class="inp" id="lc-ne-pat" placeholder="Patrimônio / Código" style="font-size:12px"/>'
+      +'<input class="inp" id="lc-ne-marca" placeholder="Marca" style="font-size:12px"/>'
+      +'<input class="inp" id="lc-ne-modelo" placeholder="Modelo" style="font-size:12px"/>'
+    : '<input class="inp" id="lc-ne-nome" placeholder="Nome do '+(tipo)+' *" style="font-size:12px;grid-column:1/-1"/>'
+      +'<input class="inp" id="lc-ne-ca" placeholder="CA (Certificado de Aprovação)" style="font-size:12px"/>';
+  ov.innerHTML='<div style="background:#fff;border-radius:12px;max-width:540px;width:100%;max-height:86vh;overflow-y:auto;padding:1rem">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem"><h3 style="margin:0;font-size:15px">'+titulo+'</h3><button class="btn btn-sm" onclick="document.getElementById(\'lc-equip-ov\').remove()">✕</button></div>'
+    +'<div style="font-size:12px;color:#888;margin-bottom:.6rem"><b>Vincule a um '+(ehFer?'item já cadastrado':(tipo)+' do cadastro')+'</b> ou cadastre um novo (vai aparecer no cadastro de '+(ehFer?'Ferramentas':'EPIs/EPCs')+').</div>'
+    +'<input class="inp" id="lc-equip-busca" placeholder="🔎 Buscar..." style="width:100%;margin-bottom:.5rem" oninput="lcEquipRenderLista(\''+rowId+'\',\''+tipo+'\')"/>'
+    +'<div id="lc-equip-lista" style="max-height:280px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px"></div>'
+    +'<div style="border-top:.5px solid #eee;margin-top:.75rem;padding-top:.6rem">'
+    +'<div style="font-size:12px;font-weight:600;margin-bottom:.4rem">➕ Cadastrar novo em '+(ehFer?'Ferramentas':'EPIs/EPCs')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'+novoCampos+'</div>'
+    +'<button class="btn btn-pri btn-sm" style="margin-top:.5rem" onclick="lcEquipCadastrarNovo(\''+rowId+'\',\''+tipo+'\')">Salvar e vincular</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  lcEquipRenderLista(rowId, tipo);
+  setTimeout(function(){ var b=document.getElementById('lc-equip-busca'); if(b) b.focus(); },30);
+}
+function lcEquipRenderLista(rowId, tipo){
+  var lista=document.getElementById('lc-equip-lista'); if(!lista) return;
+  var ehFer=tipo==='Ferramenta';
+  var q=((document.getElementById('lc-equip-busca')||{}).value||'').toLowerCase().trim();
+  var src=_lcEquipSrc(tipo).filter(function(it){
+    if(!q) return true;
+    return ((it.nome||'')+' '+(it.patrimonio||'')+' '+(it.marca||'')+' '+(it.ca||'')).toLowerCase().indexOf(q)>=0;
+  }).slice(0,80);
+  lista.innerHTML = src.length ? src.map(function(it){
+    var sub = ehFer ? (it.patrimonio?'Pat: '+escHtml(it.patrimonio):'')+(it.marca?' · '+escHtml(it.marca):'') : (it.ca?'CA: '+escHtml(it.ca):'');
+    return '<div onclick="lcEquipVincular(\''+rowId+'\',\''+tipo+'\',\''+it.id+'\')" style="padding:7px 10px;border-bottom:.5px solid #f0efe8;cursor:pointer;font-size:12px"><b>'+escHtml(it.nome||'—')+'</b>'+(sub?' <span style="color:#888">· '+sub+'</span>':'')+'</div>';
+  }).join('') : '<div style="padding:1rem;text-align:center;color:#aaa;font-size:12px">Nada encontrado. Cadastre um novo abaixo.</div>';
+}
+function lcEquipVincular(rowId, tipo, itemId){
+  var it=_lcEquipSrc(tipo).find(function(x){return String(x.id)===String(itemId);}); if(!it) return;
+  var wrap=document.getElementById(rowId);
+  if(wrap){
+    var nomeEl=wrap.querySelector('.lc-eq-nome'); if(nomeEl) nomeEl.value=it.nome||'';
+    var tipoEl=wrap.querySelector('.lc-eq-tipo'); if(tipoEl) tipoEl.value=tipo;
+    wrap.dataset.refTipo=_lcEquipRefTipo(tipo); wrap.dataset.refId=String(it.id);
+  }
+  var ov=document.getElementById('lc-equip-ov'); if(ov) ov.remove();
+  lcAtualizarTotal();
+  progShowToast('🔗 Vinculado: '+(it.nome||''));
+}
+function lcEquipCadastrarNovo(rowId, tipo){
+  var nome=((document.getElementById('lc-ne-nome')||{}).value||'').trim();
+  if(!nome){ progShowToast('⚠ Informe o nome.','erro'); return; }
+  var ehFer=tipo==='Ferramenta';
+  var tabela = ehFer?'ferramentas':'epi_catalogo';
+  var novo = ehFer
+    ? { nome:nome, patrimonio:((document.getElementById('lc-ne-pat')||{}).value||'').trim()||null,
+        marca:((document.getElementById('lc-ne-marca')||{}).value||'').trim()||null,
+        modelo:((document.getElementById('lc-ne-modelo')||{}).value||'').trim()||null,
+        estado:'Bom', status:'Disponível' }
+    : { nome:nome, tipo:(tipo==='EPC'?'EPC':'EPI'),
+        ca:((document.getElementById('lc-ne-ca')||{}).value||'').trim()||null, ativo:true };
+  function _apos(rec){
+    if(ehFer){ (ferramentas=ferramentas||[]).push(rec); }
+    else { (_epiCatalogo=_epiCatalogo||[]).push(rec); }
+    lcEquipVincular(rowId, tipo, rec.id);
+    progShowToast('✅ Cadastrado em '+(ehFer?'Ferramentas':'EPIs/EPCs')+' e vinculado.');
+  }
+  if(!DEMO){
+    sbInsert(tabela, novo).then(function(r){ _apos((r&&r[0])?r[0]:Object.assign({id:'x'+Date.now()},novo)); })
+      .catch(function(){ progShowToast('❌ Erro ao cadastrar.','erro'); });
+  } else { _apos(Object.assign({id:'x'+Date.now()},novo)); }
+}
+function lcVeiculoChooser(rowId){
+  // Garante a frota carregada (senão a busca/lista vem vazia)
+  if(!(typeof frt_veiculos!=='undefined'&&frt_veiculos&&frt_veiculos.length) && !DEMO){
+    sbFetch('frotas_veiculos',{filters:['ativo=eq.true'],order:'placa'})
+      .then(function(r){ if(r&&r.length)frt_veiculos=r; lcVeiculoChooser(rowId); })
+      .catch(function(){ lcVeiculoChooser(rowId); });
+    return;
+  }
+  var ov=document.getElementById('lc-veic-ov'); if(ov) ov.remove();
+  var _modSet={}; (frt_veiculos||[]).forEach(function(v){ if(v.modelo) _modSet[v.modelo]=true; });
+  var modelosDL=Object.keys(_modSet).sort().map(function(m){return '<option value="'+escHtml(m)+'">';}).join('');
+  ov=document.createElement('div'); ov.id='lc-veic-ov';
+  ov.style.cssText='position:fixed;inset:0;background:#0006;z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem';
+  ov.innerHTML='<div style="background:#fff;border-radius:12px;max-width:540px;width:100%;max-height:86vh;overflow-y:auto;padding:1rem">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem"><h3 style="margin:0;font-size:15px">🚚 Veículo</h3><button class="btn btn-sm" onclick="document.getElementById(\'lc-veic-ov\').remove()">✕</button></div>'
+    +'<div style="font-size:12px;color:#888;margin-bottom:.6rem">A frota já está cadastrada — <b>vincule a um veículo existente</b> ou cadastre um novo.</div>'
+    +'<input class="inp" id="lc-veic-busca" placeholder="🔎 Buscar por placa ou modelo..." style="width:100%;margin-bottom:.5rem" oninput="lcVeicRenderLista(\''+rowId+'\')"/>'
+    +'<div id="lc-veic-lista" style="max-height:280px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:8px"></div>'
+    +'<div style="border-top:.5px solid #eee;margin-top:.75rem;padding-top:.6rem">'
+    +'<div style="font-size:12px;font-weight:600;margin-bottom:.4rem">➕ Cadastrar novo veículo na frota</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+    +'<input class="inp" id="lc-nv-placa" placeholder="Placa *" style="font-size:12px" oninput="lcVeicCheckPlaca()"/>'
+    +'<input class="inp" id="lc-nv-modelo" list="lc-nv-modelos-dl" placeholder="Modelo (selecione ou digite)" style="font-size:12px"/>'
+    +'<datalist id="lc-nv-modelos-dl">'+modelosDL+'</datalist>'
+    +'<input class="inp" id="lc-nv-marca" placeholder="Marca" style="font-size:12px"/>'
+    +'<input class="inp" id="lc-nv-tipo" placeholder="Tipo (ex: Caminhão)" style="font-size:12px"/>'
+    +'</div>'
+    +'<div id="lc-nv-placa-msg" style="font-size:11px;margin-top:4px;min-height:14px"></div>'
+    +'<button class="btn btn-pri btn-sm" style="margin-top:.3rem" onclick="lcVeicCadastrarNovo(\''+rowId+'\')">Salvar e vincular</button>'
+    +'</div></div>';
+  document.body.appendChild(ov);
+  lcVeicRenderLista(rowId);
+  setTimeout(function(){ var b=document.getElementById('lc-veic-busca'); if(b) b.focus(); },30);
+}
+function lcVeicRenderLista(rowId){
+  var lista=document.getElementById('lc-veic-lista'); if(!lista) return;
+  var raw=((document.getElementById('lc-veic-busca')||{}).value||'').trim();
+  var q=raw.toLowerCase();
+  var qn=_lcNormPlaca(raw); // placa sem hifen/espaco p/ casar AZG3027 com AZG-3027
+  var vs=(frt_veiculos||[]).filter(function(v){
+    if(!q) return true;
+    var txt=((v.placa||'')+' '+(v.modelo||'')+' '+(v.marca||'')).toLowerCase();
+    if(txt.indexOf(q)>=0) return true;
+    if(qn && _lcNormPlaca(v.placa).indexOf(qn)>=0) return true;
+    return false;
+  }).slice(0,80);
+  lista.innerHTML = vs.length ? vs.map(function(v){
+    return '<div onclick="lcVeicVincular(\''+rowId+'\',\''+v.id+'\')" style="padding:7px 10px;border-bottom:.5px solid #f0efe8;cursor:pointer;font-size:12px"><b>'+escHtml(v.placa||'—')+'</b> · '+escHtml(v.modelo||v.tipo||'')+(v.marca?' <span style="color:#888">('+escHtml(v.marca)+')</span>':'')+'</div>';
+  }).join('') : '<div style="padding:1rem;text-align:center;color:#aaa;font-size:12px">Nenhum veículo encontrado. Cadastre um novo abaixo.</div>';
+}
+function lcVeicVincular(rowId, vid){
+  var v=(frt_veiculos||[]).find(function(x){return String(x.id)===String(vid);}); if(!v) return;
+  var wrap=document.getElementById(rowId);
+  if(wrap){
+    var nomeEl=wrap.querySelector('.lc-eq-nome');
+    if(nomeEl) nomeEl.value=(v.modelo||v.tipo||'Veículo')+(v.placa?' — '+v.placa:'');
+    var tipoEl=wrap.querySelector('.lc-eq-tipo'); if(tipoEl) tipoEl.value='Veículo';
+    wrap.dataset.refTipo='veiculo'; wrap.dataset.refId=String(v.id);
+  }
+  var ov=document.getElementById('lc-veic-ov'); if(ov) ov.remove();
+  lcAtualizarTotal();
+  progShowToast('🔗 Veículo vinculado: '+(v.placa||v.modelo||''));
+}
+function _lcNormPlaca(p){ return (p||'').toString().toUpperCase().replace(/[^A-Z0-9]/g,''); }
+function lcVeicCheckPlaca(){
+  var msg=document.getElementById('lc-nv-placa-msg'); if(!msg) return;
+  var pn=_lcNormPlaca((document.getElementById('lc-nv-placa')||{}).value);
+  if(pn.length<3){ msg.innerHTML=''; return; }
+  var ex=(frt_veiculos||[]).find(function(v){ return _lcNormPlaca(v.placa)===pn; });
+  msg.innerHTML = ex
+    ? '<span style="color:#3B6D11">✓ Veículo já cadastrado ('+escHtml((ex.modelo||ex.tipo||'')+(ex.placa?' — '+ex.placa:''))+') — será apenas vinculado.</span>'
+    : '<span style="color:#888">Placa nova — será cadastrada na frota.</span>';
+}
+function lcVeicCadastrarNovo(rowId){
+  var placa=((document.getElementById('lc-nv-placa')||{}).value||'').trim();
+  if(!placa){ progShowToast('⚠ Informe a placa do veículo.','erro'); return; }
+  // Check no banco: se a placa já existe, NÃO duplica — apenas vincula
+  var pn=_lcNormPlaca(placa);
+  var ex=(frt_veiculos||[]).find(function(v){ return _lcNormPlaca(v.placa)===pn; });
+  if(ex){ progShowToast('ℹ Veículo já cadastrado — vinculado ao contrato: '+(ex.placa||ex.modelo||'')); lcVeicVincular(rowId, ex.id); return; }
+  var nv={ placa:placa.toUpperCase(),
+    modelo:((document.getElementById('lc-nv-modelo')||{}).value||'').trim()||null,
+    marca:((document.getElementById('lc-nv-marca')||{}).value||'').trim()||null,
+    tipo:((document.getElementById('lc-nv-tipo')||{}).value||'').trim()||null,
+    ativo:true, status:'Disponível' };
+  if(!DEMO){
+    sbInsert('frotas_veiculos', nv).then(function(r){
+      var novo=(r&&r[0])?r[0]:Object.assign({id:'v'+Date.now()},nv);
+      frt_veiculos.push(novo); lcVeicVincular(rowId, novo.id);
+      progShowToast('✅ Veículo cadastrado na frota e vinculado.');
+    }).catch(function(){ progShowToast('❌ Erro ao cadastrar o veículo na frota.','erro'); });
+  } else {
+    var novo=Object.assign({id:'v'+Date.now()},nv); frt_veiculos.push(novo); lcVeicVincular(rowId, novo.id);
+  }
+}
 
 function salvarLocacao(){
   var locadora = (document.getElementById('lc-loc')||{}).value||'';
@@ -59242,10 +59899,26 @@ function salvarLocacao(){
   rows.forEach(function(row){
     var nome = (row.querySelector('.lc-eq-nome')||{}).value||'';
     if(!nome.trim()){ ok = false; return; }
+    var _unit = parseFloat((row.querySelector('.lc-eq-valor')||{}).value)||0;
+    // Rateio por contrato (quando 2+ contratos marcados)
+    var _rats = row.querySelectorAll('.lc-rat');
+    var _qtdMap = null, _qtd;
+    if(_rats.length){
+      _qtdMap = {}; _qtd = 0;
+      _rats.forEach(function(i){ var v=parseFloat(i.value)||0; if(v>0){ _qtdMap[i.getAttribute('data-cid')]=v; _qtd+=v; } });
+    } else {
+      _qtd = parseFloat((row.querySelector('.lc-eq-qtd')||{}).value)||1;
+    }
     equipamentos.push({
       nome:           nome.trim(),
       tipo:           (row.querySelector('.lc-eq-tipo')||{}).value||'Equipamento',
-      valor_locacao:  parseFloat((row.querySelector('.lc-eq-valor')||{}).value)||0,
+      quantidade:     _qtd,
+      contrato_qtds:  _qtdMap,
+      equipamento_ref_tipo: row.dataset.refTipo||null,
+      equipamento_ref_id:   row.dataset.refId||null,
+      valor_unitario: _unit,
+      valor_total:    +(_qtd*_unit).toFixed(2),
+      valor_locacao:  +(_qtd*_unit).toFixed(2),
       status:         (row.querySelector('.lc-eq-status')||{}).value||'Funcionando',
       disponibilidade:(row.querySelector('.lc-eq-disp')||{}).value||'Em uso',
     });
@@ -59262,11 +59935,13 @@ function salvarLocacao(){
   var obsBase     = (document.getElementById('lc-obs')||{}).value||'';
   var obsContrato = (numContrato ? 'Contrato: '+numContrato+' | ' : '') + obsBase;
 
+  var contratosSel = _lcContratosSel();
   var base = {
     locadora:      locadora,
     filial_id:     (document.getElementById('lc-fil')||{}).value||null,
     deposito_id:   (document.getElementById('lc-dep')||{}).value||null,
-    responsavel_id:null, // FK removida via fix_locacoes_fk.sql — ignorar até rodar SQL
+    responsavel:   (document.getElementById('lc-resp')||{}).value.trim()||null,
+    contrato_id:   contratosSel.length===1 ? contratosSel[0].id : null,
     inicio:        (document.getElementById('lc-ini')||{}).value||null,
     termino:       (document.getElementById('lc-fim')||{}).value||null,
     tem_seguro:    (document.getElementById('lc-seg')||{}).value==='true',
@@ -59280,6 +59955,12 @@ function salvarLocacao(){
       id:              'lc'+Date.now()+i,
       nome:            eq.nome,
       tipo:            eq.tipo,
+      quantidade:      eq.quantidade,
+      contrato_qtds:   eq.contrato_qtds ? JSON.stringify(eq.contrato_qtds) : null,
+      equipamento_ref_tipo: eq.equipamento_ref_tipo,
+      equipamento_ref_id:   eq.equipamento_ref_id,
+      valor_unitario:  eq.valor_unitario,
+      valor_total:     eq.valor_total,
       valor_locacao:   eq.valor_locacao,
       valor_aquisicao: null,
       status:          eq.status,
@@ -59300,6 +59981,10 @@ function salvarLocacao(){
 
 function openEditarLocacao(lid){
   var l=locacoes.find(function(x){return x.id===lid;});if(!l)return;
+  if(!DEMO && (!fornecedores||fornecedores.length<10)){
+    erpCarregarFornecedores().then(function(){ openEditarLocacao(lid); }).catch(function(){ openEditarLocacao(lid); });
+    return;
+  }
   var fOpts='<option value="">Sem responsável</option>'+funcs.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.responsavel_id?' selected':'')+'>'+f.nome+'</option>';}).join('');
   var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.filial_id?' selected':'')+'>'+f.codigo+' — '+f.nome+'</option>';}).join('');
   var depOpts='<option value="">Sem depósito</option>'
@@ -59312,8 +59997,8 @@ function openEditarLocacao(lid){
     +'<div class="modal" style="max-width:600px"><h3>Editar — '+l.nome+'</h3>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
     +'<div class="fg" style="grid-column:1/-1"><label>Nome</label><input class="inp" id="lc-nome" value="'+l.nome+'" style="width:100%"/></div>'
-    +'<div class="fg"><label>Locadora</label><input class="inp" id="lc-loc" value="'+(l.locadora||'')+'" style="width:100%"/></div>'
-    +'<div class="fg"><label>Responsável</label><select class="inp" id="lc-resp" style="width:100%">'+fOpts+'</select></div>'
+    +'<div class="fg"><label>Locadora</label><input class="inp" id="lc-loc" list="lc-loc-dl" autocomplete="off" value="'+escHtml(l.locadora||'')+'" placeholder="Digite para buscar..." style="width:100%"><datalist id="lc-loc-dl">'+_lcFornOpts()+'</datalist></div>'
+    +'<div class="fg"><label>Responsável</label><input class="inp" id="lc-resp" value="'+escHtml(l.responsavel||(funcs.find(function(f){return f.id===l.responsavel_id;})||{}).nome||'')+'" placeholder="Nome do responsável" style="width:100%"/></div>'
     +'<div class="fg"><label>Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
     +'<div class="fg"><label>Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
     +'<div class="fg"><label>Início</label><input class="inp" id="lc-ini" type="date" value="'+(l.inicio||'')+'" style="width:100%"/></div>'
@@ -59351,7 +60036,7 @@ function salvarEditarLocacao(lid){
   l.locadora=(document.getElementById('lc-loc')||{}).value||'';
   l.filial_id=(document.getElementById('lc-fil')||{}).value||null;
   l.deposito_id=(document.getElementById('lc-dep')||{}).value||null;
-  l.responsavel_id=(document.getElementById('lc-resp')||{}).value||null;
+  l.responsavel=(document.getElementById('lc-resp')||{}).value.trim()||null;
   l.inicio=(document.getElementById('lc-ini')||{}).value||null;
   l.termino=(document.getElementById('lc-fim')||{}).value||null;
   l.valor_locacao=parseFloat((document.getElementById('lc-vloc')||{}).value)||0;
@@ -62623,11 +63308,11 @@ async function lcAnalisarContrato(){
         <button class="btn btn-sm" id="alm-tab-itens"       onclick="_almShowAba('itens')"       title="Catálogo de itens cadastrados">🗂 Catálogo</button>
         <button class="btn btn-sm" id="alm-tab-estoque"     onclick="_almShowAba('estoque')"     title="Estoque/patrimônio por filial e depósito">🗄 Estoque</button>
         <button class="btn btn-sm" id="alm-tab-epis"        onclick="_almShowAba('epis')"        title="EPIs e EPCs">🦺 EPIs/EPCs</button>
+        <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    title="Equipamentos locados">🏗 Locações</button>
         <button class="btn btn-sm" id="alm-tab-ferramentas" onclick="_almShowAba('ferramentas')" title="Ferramentas (patrimônio)">🔧 Ferramentas</button>
         <button class="btn btn-sm" id="alm-tab-uniformes"   onclick="_almShowAba('uniformes')"   title="Uniformes entregues">👕 Uniformes</button>
         <button class="btn btn-sm" id="alm-tab-lavagem"     onclick="_almShowAba('lavagem')"     title="Controle de lavagem">🧺 Lavagem</button>
         <button class="btn btn-sm" id="alm-tab-sap-obra"    onclick="_almShowAba('sap-obra')"    title="Materiais de obra (SAP): estoque, entradas, saídas e retorno" style="border-color:#185FA5;color:#185FA5">🏭 Materiais SAP</button>
-        <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    title="Equipamentos locados">🏗 Locações</button>
         <button class="btn btn-sm" id="alm-tab-vales"       onclick="_almShowAba('vales')"       title="Vales e relatórios">📄 Vales</button>
         <button class="btn btn-sm" id="alm-tab-filiais"     onclick="_almShowAba('filiais')"     title="Filiais e depósitos">🏢 Filiais</button>
       </div>
@@ -62968,6 +63653,7 @@ async function lcAnalisarContrato(){
 </div>
 
 
+<div id="pg-sesmt-vales" class="hidden">
   <div class="card" style="margin-bottom:1rem">
     <div class="ch"><span class="ct">Filtrar por período</span></div>
     <div style="display:flex;align-items:flex-end;gap:10px;padding:.85rem 1rem;flex-wrap:wrap">
