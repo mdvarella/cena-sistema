@@ -27760,10 +27760,19 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.421',
+  numero: '7.9.424',
   data:   '16/06/2026',
-  build:  '20260616-1300',
+  build:  '20260616-1600',
   log: [
+    {v:'7.9.424', d:'16/06/2026', itens:[
+      'Locacoes: corrigido travamento ao abrir modal de edicao e novo contrato. Antes esperava o ERP (1800 fornecedores) carregar antes de abrir — agora abre imediatamente e popula o datalist da Locadora em segundo plano se necessario.',
+    ]},
+    {v:'7.9.423', d:'16/06/2026', itens:[
+      'Locacoes/Estoque: dedup anti-duplicacao no registro de EPI/EPC. Novo contrato: usa ID real do banco como chave (lote=locid.XXX). Edicao: verifica se lote=locid.lid ja existe no estoque antes de inserir — nunca duplica por multiplas edicoes. Cobre tambem contratos salvos antes da v7.9.422.',
+    ]},
+    {v:'7.9.422', d:'16/06/2026', itens:[
+      'Locacoes: ao salvar contrato com itens EPI ou EPC, registra entrada automatica no estoque (tabela estoque) com saldo=quantidade, fornecedor=locadora, lote=numero do contrato. Toast confirma quantos EPIs foram registrados.',
+    ]},
     {v:'7.9.421', d:'16/06/2026', itens:[
       'Locacoes/Locadora: campo mudou para input+datalist (digitacao com busca). Corrigida fonte dos fornecedores — agora usa erpCarregarFornecedores() trazendo todos do ERP (1800+) em vez de sbFetch simples (3 registros do Supabase). Aplica em novo contrato e edicao.',
     ]},
@@ -59494,13 +59503,12 @@ function lcAtualizarDepositos(selectId){
 
 
 function openNovaLocacao(){
-  // Garantir lista completa do ERP (1800+); com cache não faz request extra
-  if(!DEMO){
-    erpCarregarFornecedores().then(function(){ _openNovaLocacaoModal(); })
-      .catch(function(){ _openNovaLocacaoModal(); });
-    return;
+  _openNovaLocacaoModal(); // abre imediatamente, sem esperar ERP
+  if(!DEMO && (!fornecedores||fornecedores.length<10)){
+    erpCarregarFornecedores().then(function(){
+      var dl=document.getElementById('lc-loc-dl'); if(dl) dl.innerHTML=_lcFornOpts();
+    }).catch(function(){});
   }
-  _openNovaLocacaoModal();
 }
 // Opções de fornecedor (locadora) — nome humanizado, value = nome
 function _lcFornOpts(){
@@ -59970,20 +59978,47 @@ function salvarLocacao(){
     locacoes.push(novo);
     if(!DEMO){
       var payload = Object.assign({}, novo); delete payload.id;
-      sbInsert('locacoes', payload).catch(function(){});
+      // Capturar ID real para usar como chave dedup no estoque
+      (function(_eq, _novo){
+        sbInsert('locacoes', payload).then(function(r){
+          var realId=r&&r[0]&&r[0].id;
+          if(realId){var _i=locacoes.findIndex(function(x){return x.id===_novo.id;});if(_i>=0)locacoes[_i].id=realId;}
+          if(_eq.tipo==='EPI'||_eq.tipo==='EPC'){
+            var _cat=((typeof _epiCatalogo!=='undefined'?_epiCatalogo:[])||[]).find(function(c){return c.id===_eq.equipamento_ref_id;});
+            sbInsert('estoque',{
+              nome:          _eq.nome,
+              tipo:          _eq.tipo,
+              ca:            _cat?(_cat.ca||null):null,
+              saldo:         _eq.quantidade,
+              saldo_minimo:  0,
+              custo_unitario:_eq.valor_unitario||null,
+              fornecedor:    locadora,
+              lote:          realId?'locid.'+realId:(numContrato?'Locação '+numContrato:'Locação '+locadora),
+              filial_id:     base.filial_id,
+              deposito_id:   base.deposito_id,
+              contrato_id:   base.contrato_id,
+              unidade_medida:'UN',
+            }).then(function(r2){if(r2&&r2[0])(estoque=estoque||[]).push(r2[0]);}).catch(function(){});
+          }
+        }).catch(function(){});
+      })(eq, novo);
     }
   });
 
+  var _epiCount=equipamentos.filter(function(e){return e.tipo==='EPI'||e.tipo==='EPC';}).length;
   closeModal();
   renderLocacoes();
-  progShowToast('✅ '+equipamentos.length+' equipamento(s) salvo(s)'+(docs.length?' com '+docs.length+' documento(s)':''));
+  progShowToast('✅ '+equipamentos.length+' equipamento(s) salvo(s)'+(docs.length?' com '+docs.length+' documento(s)':'')
+    +(_epiCount?' · '+_epiCount+' EPI(s) registrado(s) no estoque':''));
 }
 
 function openEditarLocacao(lid){
   var l=locacoes.find(function(x){return x.id===lid;});if(!l)return;
+  // Abre imediatamente; se fornecedores incompleto, carrega em background e atualiza datalist
   if(!DEMO && (!fornecedores||fornecedores.length<10)){
-    erpCarregarFornecedores().then(function(){ openEditarLocacao(lid); }).catch(function(){ openEditarLocacao(lid); });
-    return;
+    erpCarregarFornecedores().then(function(){
+      var dl=document.getElementById('lc-loc-dl'); if(dl) dl.innerHTML=_lcFornOpts();
+    }).catch(function(){});
   }
   var fOpts='<option value="">Sem responsável</option>'+funcs.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.responsavel_id?' selected':'')+'>'+f.nome+'</option>';}).join('');
   var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.filial_id?' selected':'')+'>'+f.codigo+' — '+f.nome+'</option>';}).join('');
@@ -60050,9 +60085,35 @@ function salvarEditarLocacao(lid){
     var novosArqs=Array.from(fileInp.files).map(function(f){return{nome:f.name,tamanho:f.size,tipo:f.type};});
     l.documentos=JSON.stringify([...docsAtual,...novosArqs]);
   }
-  if(!DEMO)sbUpdate('locacoes',l,'id=eq.'+lid);
+  if(!DEMO){
+    sbUpdate('locacoes',l,'id=eq.'+lid);
+    // EPI/EPC → registrar no estoque SE ainda não foi (dedup por lote = 'locid.'+lid)
+    if(l.tipo==='EPI'||l.tipo==='EPC'){
+      sbFetch('estoque',{filters:['lote=eq.locid.'+lid]}).then(function(ex){
+        if(ex&&ex.length) return; // já existe — não duplicar
+        var _cat=((typeof _epiCatalogo!=='undefined'?_epiCatalogo:[])||[]).find(function(c){return c.id===l.equipamento_ref_id;});
+        sbInsert('estoque',{
+          nome:          l.nome,
+          tipo:          l.tipo,
+          ca:            _cat?(_cat.ca||null):null,
+          saldo:         l.quantidade,
+          saldo_minimo:  0,
+          custo_unitario:l.valor_unitario||null,
+          fornecedor:    l.locadora,
+          lote:          'locid.'+lid,
+          filial_id:     l.filial_id,
+          deposito_id:   l.deposito_id,
+          contrato_id:   l.contrato_id,
+          unidade_medida:'UN',
+        }).then(function(r){
+          if(r&&r[0])(estoque=estoque||[]).push(r[0]);
+          progShowToast('✅ Locação atualizada · EPI registrado no estoque');
+        }).catch(function(){});
+      }).catch(function(){});
+    }
+  }
   closeModal();renderLocacoes();
-  progShowToast('✅ Locação atualizada');
+  if(!(l.tipo==='EPI'||l.tipo==='EPC')||DEMO) progShowToast('✅ Locação atualizada');
 }
 function openOcLocacao(lid){
   var l=locacoes.find(function(x){return x.id===lid;});if(!l)return;
