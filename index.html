@@ -4135,7 +4135,7 @@ function erpFetchTodos(){
 }
 
 function erpCarregarFornecedores(forceRefresh){
-  if(!forceRefresh&&erpCacheValido()&&fornecedores.length)
+  if(!forceRefresh&&erpCacheValido()&&fornecedores.length>50)
     return Promise.resolve(fornecedores);
 
   if(forceRefresh) erpInvalidarCache();
@@ -9917,6 +9917,7 @@ async function permSalvarTodas(){
 // ── Ordenação alfabética de selects ─────────────────────────────────────
 function sortarOpts(selectEl, manterPrimeiro){
   if(!selectEl) return;
+  var savedVal = selectEl.value;
   var opts = Array.from(selectEl.options);
   var inicio = (manterPrimeiro!==false && opts.length && !opts[0].value) ? 1 : 0;
   var fixos  = opts.slice(0, inicio);
@@ -9924,9 +9925,12 @@ function sortarOpts(selectEl, manterPrimeiro){
   paraOrdenar.sort(function(a,b){
     return (a.text||'').localeCompare((b.text||''), 'pt-BR', {sensitivity:'base'});
   });
-  // Limpar e repopular
   while(selectEl.options.length) selectEl.remove(0);
   fixos.concat(paraOrdenar).forEach(function(o){ selectEl.appendChild(o); });
+  if(savedVal !== null && savedVal !== undefined){
+    var tem = Array.prototype.some.call(selectEl.options, function(o){ return o.value === savedVal; });
+    if(tem) selectEl.value = savedVal;
+  }
 }
 
 function sortarSelectId(id, manterPrimeiro){
@@ -27760,12 +27764,33 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.427',
-  data:   '16/06/2026',
-  build:  '20260616-1900',
+  numero: '7.9.436',
+  data:   '07/06/2026',
+  build:  '20260607-1430',
   log: [
-    {v:'7.9.427', d:'16/06/2026', itens:[
-      'Ponto: restaurado auto-sync nos horarios fixos (07:00, 11:00, 17:00, 22:00 etc) via progSyncPonto em lotes — estava desativado desde v7.9.425. Sem sync automatico os badges ficavam travados no primeiro registro do dia (falta). ponto_registros lido com order=consultado_em.desc como seguranca adicional.',
+    {v:'7.9.436', d:'07/06/2026', itens:[
+      'Locacoes Editar: corrigido reset de Filial/Deposito — setModal reordenava selects apos 30ms e apagava a selecao (sortarOpts agora preserva value; lc-fil/lc-dep com data-nosort; re-aplicacao pos-sort). Recupera filial/deposito do estoque vinculado em registros legados.',
+    ]},
+    {v:'7.9.435', d:'07/06/2026', itens:[
+      'Locacoes Editar: completa openEditarLocacao (busca Supabase + _lcAplicarFormEdicao pos-modal). Filial inferida pelo deposito em registros legados.',
+    ]},
+    {v:'7.9.434', d:'16/06/2026', itens:[
+      'Fix Locacoes Editar: Filial, Deposito e Nº Contrato agora carregam valores salvos (busca fresh do Supabase + aplicacao pos-modal). Criacao passa a gravar numero_contrato no banco. Legado em observacoes (Contrato: XXX) e extraido ao editar. lcAtualizarDepositos preserva deposito selecionado.',
+    ]},
+    {v:'7.9.432', d:'16/06/2026', itens:[
+      'Locacoes Editar: status e disponibilidade agora preservam valor salvo ao abrir (blank option evita forcamento do primeiro item); save so sobrescreve se usuario escolheu algo. Fornecedores: corrigido threshold do cache ERP (>50) — Supabase retorna 3, nao bloqueava mais o carregamento dos 1800+ do ERP.',
+    ]},
+    {v:'7.9.431', d:'16/06/2026', itens:[
+      'Locacoes: modal Editar agora inclui Nº Contrato (fornecedor), Tem seguro e Valor do seguro — salvos no banco. Header do card corrigido: mostra numero_contrato do registro (nº do fornecedor) e não o nome do contrato interno.',
+    ]},
+    {v:'7.9.430', d:'16/06/2026', itens:[
+      'Locacoes: header do card exibe numero(s) do contrato e badge Seguro entre o nome da locadora e o responsavel.',
+    ]},
+    {v:'7.9.429', d:'16/06/2026', itens:[
+      'Locacoes: card de grupo expandido agora mostra Qtd, V.Unit/Mes, Contratos (badges) e Total por item. Filtro por contrato recalcula quantidade e custo total para o contrato selecionado (usando contrato_qtds para rateio multi-contrato).',
+    ]},
+    {v:'7.9.428', d:'16/06/2026', itens:[
+      'Fix Sync Ponto: badges leem SOMENTE do Supabase (nao chamam Nexus 1 a 1). Toast do sync mostra presentes/faltas/preservados. API 2.4.2: nao rebaixa presente para falta quando Nexus WS vem sem batida (atraso do relogio).',
     ]},
     {v:'7.9.426', d:'16/06/2026', itens:[
       'Ponto: ponto_registros lido com order=consultado_em.desc — mesmo com duplicatas na tabela (falta de UNIQUE constraint), o registro mais recente do sync vence. Fix definitivo requer SQL no Supabase (ver nota).',
@@ -29063,12 +29088,23 @@ function pontoIniciarAgendador(){
   }, 5*60*1000); // a cada 5 minutos
 }
 
-// Buscar dados de ponto de um colaborador (com cache)
-function pontoConsultar(re, data, callback){
+// Ler ponto do cache local (preenchido pelo Supabase via Sync / progCarregarPontoDoSupabase)
+function pontoDoCache(re, data){
+  var key = re + '_' + data;
+  if(_pontoCache[key] !== undefined) return _pontoCache[key];
+  return null;
+}
+
+// Buscar dados de ponto de um colaborador (com cache; API so se cache vazio e allowApi=true)
+function pontoConsultar(re, data, callback, allowApi){
   var key = re + '_' + data;
   // Cache hit — retornar imediatamente
   if(_pontoCache[key] !== undefined){
     callback(_pontoCache[key]);
+    return;
+  }
+  if(allowApi === false){
+    callback(null);
     return;
   }
   // Já está carregando — NÃO fazer loop, só registrar callback
@@ -32818,6 +32854,7 @@ function progSyncPonto(){
   var loteNum = 0;
   var totalSinc = 0;
   var totalErros = 0;
+  var syncStats = {presente:0, falta:0, preservado:0, outros:0};
   var idx = 0;
 
   function progSyncPontoFinalizar(){
@@ -32865,6 +32902,9 @@ function progSyncPonto(){
           var el2 = document.getElementById('sync-ponto-hora');
           if(el2) el2.textContent = 'Último sync: '+hora2;
           var msg = '✅ Ponto sincronizado — '+data+' ('+totalSinc+'/'+matriculas.length+')';
+          if(syncStats.presente > 0) msg += ' | '+syncStats.presente+' presente(s)';
+          if(syncStats.falta > 0) msg += ' | '+syncStats.falta+' falta(s)';
+          if(syncStats.preservado > 0) msg += ' | '+syncStats.preservado+' preservado(s)';
           if(totalErros > 0) msg += ' | '+totalErros+' falha(s) — tente de novo';
           if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
           progShowToast(msg);
@@ -32899,6 +32939,12 @@ function progSyncPonto(){
     .then(function(d){
       totalSinc += (d && d.sincronizados) ? d.sincronizados : lote.length;
       totalErros += (d && d.erros) ? d.erros : 0;
+      if(d && d.stats){
+        syncStats.presente   += d.stats.presente   || 0;
+        syncStats.falta      += d.stats.falta      || 0;
+        syncStats.preservado += d.stats.preservado || 0;
+        syncStats.outros     += d.stats.outros     || 0;
+      }
       idx += BATCH;
       syncLote();
     })
@@ -32924,6 +32970,8 @@ function progCarregarPontoDoSupabase(data, callback){
     rows.forEach(function(r){
       if(!r.re) return;
       var key = r.re + '_' + data;
+      // order consultado_em.desc — manter só o 1º (mais recente) por RE
+      if(_pontoCache[key] !== undefined) return;
       var marcacoes = [];
       // todas_marcacoes vem como array do Supabase (jsonb)
       marcacoes = Array.isArray(r.todas_marcacoes) ? r.todas_marcacoes : [];
@@ -32993,55 +33041,48 @@ function progCarregarBadgesPonto(){
       var stColab = _progStatus[colabId] || 'disponivel';
       if(stColab === 'treinamento') return;
 
-      pontoConsultar(col.re, data, function(ponto){
-        var el = document.getElementById('ponto-badge-'+colabId);
-        if(!el) return;
-        // Ler só do cache — preenchido pelo Supabase via Sync Ponto
-        // pontoConsultar já usa _pontoCache sem chamar API se dados existem
-        if(!ponto) return;
-        var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
-        if(temEntrada){
-          el.innerHTML = '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+(ponto.entrada||'')+'</div>';
-        } else if(ponto.status === 'falta' || ponto.status === 'sem_registro'){
-          var hp = ponto.horario_previsto || {};
-          if(hp && hp.entrada && pontoHorarioPassou(hp, data)){
-            el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">● Ausente</div>';
-          } else {
-            el.innerHTML = '';
-          }
+      var ponto = pontoDoCache(col.re, data);
+      if(!ponto) return;
+      var el = document.getElementById('ponto-badge-'+colabId);
+      if(!el) return;
+      var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
+      if(temEntrada){
+        el.innerHTML = '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+(ponto.entrada||'')+'</div>';
+      } else if(ponto.status === 'falta' || ponto.status === 'sem_registro'){
+        var hp = ponto.horario_previsto || {};
+        if(hp && hp.entrada && pontoHorarioPassou(hp, data)){
+          el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">● Ausente</div>';
+        } else {
+          el.innerHTML = '';
         }
-      });
+      }
     });
   });
 
-  // Verificar colaboradores que bateram ponto mas NÃO foram escalados
+  // Verificar colaboradores que bateram ponto mas NÃO foram escalados (somente cache Supabase)
   if(data === hoje){
     colaboradores.forEach(function(col){
       if(!col.ativo || !col.re) return;
       var stColab = _progStatus[col.id] || 'disponivel';
-      if(stColab === 'treinamento') return; // treinamento não verifica
+      if(stColab === 'treinamento') return;
 
-      // Verificar se está escalado hoje
       var escalado = composicao_dia.some(function(comp){
         if((comp.data||'').slice(0,10) !== data) return false;
         if(comp.deleted_at) return false;
         var ids = parseColabIds(comp.colaborador_ids);
         return ids.indexOf(col.id) >= 0;
       });
-      if(escalado) return; // já tratado acima
+      if(escalado) return;
 
-      pontoConsultar(col.re, data, function(ponto){
-        if(!ponto || ponto.status !== 'presente') return;
-        // Bateu ponto mas não foi escalado — apenas exibir badge Verificar
-        // SEM alterar o status no banco nem mover da programação
-        var el = document.getElementById('ponto-badge-'+col.id);
-        if(el){
-          var obs = 'Bateu ponto sem estar escalado';
-          if(ponto.entrada) obs += ' — Entrada: '+ponto.entrada;
-          if(ponto.saida)   obs += ' / Saída: '+ponto.saida;
-          el.innerHTML = '<div style="margin-top:2px;background:#8B1A6B;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;" title="'+obs+'">🔍 Verificar</div>';
-        }
-      });
+      var ponto = pontoDoCache(col.re, data);
+      if(!ponto || ponto.status !== 'presente') return;
+      var el = document.getElementById('ponto-badge-'+col.id);
+      if(el){
+        var obs = 'Bateu ponto sem estar escalado';
+        if(ponto.entrada) obs += ' — Entrada: '+ponto.entrada;
+        if(ponto.saida)   obs += ' / Saída: '+ponto.saida;
+        el.innerHTML = '<div style="margin-top:2px;background:#8B1A6B;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;" title="'+obs+'">🔍 Verificar</div>';
+      }
     });
   }
 }
@@ -59360,14 +59401,31 @@ function removerTipo(i){
   if(!confirm('Remover este tipo?'))return;
   tiposLocacao.splice(i,1);renderListaTipos();
 }
+function lcDispHasStatus(d, s){
+  if(!d) return false;
+  var p=null; try{p=JSON.parse(d);}catch(e){}
+  if(p&&typeof p==='object') return (Number(p[s])||0)>0;
+  return d===s;
+}
+function lcDispBadges(d, dc){
+  if(!d) return '<span class="bdg gray" style="font-size:10px">—</span>';
+  var p=null; try{p=JSON.parse(d);}catch(e){}
+  if(p&&typeof p==='object'){
+    var parts=Object.keys(p).filter(function(k){return Number(p[k])>0;});
+    if(!parts.length) return '<span class="bdg gray" style="font-size:10px">—</span>';
+    return parts.map(function(k){return '<span class="bdg '+(dc[k]||'gray')+'" style="font-size:9px">'+p[k]+' '+k+'</span>';}).join(' ');
+  }
+  return '<span class="bdg '+(dc[d]||'gray')+'" style="font-size:10px">'+d+'</span>';
+}
+
 function renderLocacoes(){
   var hoje = new Date();
 
   // Métricas gerais
   function se(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
   se('loc-total', locacoes.length);
-  se('loc-uso',   locacoes.filter(function(l){ return l.disponibilidade==='Em uso'; }).length);
-  se('loc-manut', locacoes.filter(function(l){ return l.disponibilidade==='Em manutenção'; }).length);
+  se('loc-uso',   locacoes.filter(function(l){ return lcDispHasStatus(l.disponibilidade,'Em uso'); }).length);
+  se('loc-manut', locacoes.filter(function(l){ return lcDispHasStatus(l.disponibilidade,'Em manutenção'); }).length);
   var venc = locacoes.filter(function(l){
     if(!l.termino) return false;
     var d = Math.round((new Date(l.termino+'T00:00:00') - hoje) / 86400000);
@@ -59401,7 +59459,7 @@ function renderLocacoes(){
     if(qForn && (l.locadora||'') !== qForn) return false;
     if(qResp && l.responsavel_id !== qResp) return false;
     if(qProd && (l.nome||'').toLowerCase().indexOf(qProd) < 0) return false;
-    if(qSt   && l.disponibilidade !== qSt) return false;
+    if(qSt   && !lcDispHasStatus(l.disponibilidade, qSt)) return false;
     return true;
   });
 
@@ -59432,17 +59490,30 @@ function renderLocacoes(){
     var prazoCor   = diff===null ? 'gray' : diff<0 ? 'danger' : diff<=30 ? 'warn' : 'ok';
     var respNome   = (g.responsavel||'').trim() || fNome(g.responsavel_id);
 
-    // Determinar status geral do contrato
-    var statusList = g.itens.map(function(l){ return l.disponibilidade; });
-    var statusGeral = statusList.some(function(s){ return s==='Em uso'; }) ? 'Em uso'
-      : statusList.every(function(s){ return s==='Devolvido'; }) ? 'Devolvido'
-      : statusList.every(function(s){ return s==='Em manutenção'; }) ? 'Em manutenção'
+    // Determinar status geral do contrato (suporta disponibilidade como JSON)
+    var statusGeral = g.itens.some(function(l){ return lcDispHasStatus(l.disponibilidade,'Em uso'); }) ? 'Em uso'
+      : g.itens.every(function(l){ return lcDispHasStatus(l.disponibilidade,'Devolvido'); }) ? 'Devolvido'
+      : g.itens.every(function(l){ return lcDispHasStatus(l.disponibilidade,'Em manutenção'); }) ? 'Em manutenção'
       : 'Disponível';
+
+    // Nº contrato do fornecedor e seguro do grupo
+    var _hdrContratos=[]; var _hdrSeguro=false;
+    g.itens.forEach(function(l){
+      if(l.tem_seguro) _hdrSeguro=true;
+      var num=(l.numero_contrato||'').toString().trim();
+      if(num&&_hdrContratos.indexOf(num)<0) _hdrContratos.push(num);
+    });
 
     // Card header (sempre visível)
     var hdr = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-weight:700;font-size:14px;margin-bottom:2px">'+escHtml(g.locadora||'—')+'</div>'
+      + (_hdrContratos.length||_hdrSeguro
+          ? '<div style="font-size:11px;color:#555;display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:2px">'
+            +(_hdrContratos.length?'<span style="font-weight:600">📋 '+escHtml(_hdrContratos.join(' · '))+'</span>':'')
+            +(_hdrSeguro?'<span class="bdg green" style="font-size:10px">🛡 Seguro</span>':'')
+            +'</div>'
+          : '')
       + '<div style="font-size:11px;color:#888;display:flex;gap:10px;flex-wrap:wrap">'
       + (respNome !== '—' ? '<span>👤 '+escHtml(respNome)+'</span>' : '')
       + (g.inicio ? '<span>📅 '+fmtD(g.inicio)+' → '+fmtD(g.termino)+'</span>' : '')
@@ -59459,27 +59530,94 @@ function renderLocacoes(){
       + '</div>'
       + '</div>';
 
-    // Card body (itens — colapsado por default)
+    // Card body — contratos únicos deste grupo (para filtro)
+    var _cgMap = {};
+    g.itens.forEach(function(l){
+      var cq=null; try{cq=l.contrato_qtds&&typeof l.contrato_qtds==='string'?JSON.parse(l.contrato_qtds):l.contrato_qtds;}catch(e){}
+      if(cq&&typeof cq==='object') Object.keys(cq).forEach(function(cid){
+        if(!_cgMap[cid]){var c=(contratos||[]).find(function(x){return x.id===cid;});_cgMap[cid]=c?(c.nome||c.codigo||cid):cid;}
+      });
+      else if(l.contrato_id&&!_cgMap[l.contrato_id]){var c=(contratos||[]).find(function(x){return x.id===l.contrato_id;});_cgMap[l.contrato_id]=c?(c.nome||c.codigo||l.contrato_id):l.contrato_id;}
+    });
+    var _cids=Object.keys(_cgMap);
+
+    var _filC = _cids.length
+      ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:.6rem;flex-wrap:wrap">'
+        +'<span style="font-size:11px;color:#888;white-space:nowrap">Filtrar por contrato:</span>'
+        +'<select class="inp" style="font-size:11px;padding:2px 8px;min-width:150px" onchange="locFiltrarContrato('+gi+',this.value)">'
+        +'<option value="">Todos</option>'
+        +_cids.map(function(cid){return '<option value="'+cid+'">'+escHtml(_cgMap[cid])+'</option>';}).join('')
+        +'</select>'
+        +'<span id="loc-ctot-'+gi+'" style="font-size:12px;font-weight:700;color:#185FA5"></span>'
+        +'</div>' : '';
+
+    var _colHdr='<div style="display:grid;grid-template-columns:2.5fr 0.6fr 0.6fr 1fr 1.8fr 1fr auto;gap:6px;padding:.2rem 0;font-size:10px;font-weight:700;color:#888;text-transform:uppercase;border-bottom:.5px solid #e0dfd8">'
+      +'<div>Item</div><div>Tipo</div><div style="text-align:center">Qtd</div><div style="text-align:right">V.Unit/Mês</div>'
+      +'<div>Contratos</div><div style="text-align:right">Total</div><div></div></div>';
+
     var body = '<div id="loc-body-'+gi+'" style="display:none;margin-top:.75rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
+      + _filC + _colHdr
       + g.itens.map(function(l){
-          return '<div style="display:grid;grid-template-columns:3fr 1fr 1fr 1fr auto;gap:6px;align-items:center;padding:.3rem 0;border-bottom:.5px solid #f5f5f3;font-size:12px">'
-            + '<div><span style="font-weight:500">'+escHtml(l.nome)+'</span>'
-            + (l.tem_seguro ? '<span style="font-size:10px;color:#3B6D11;margin-left:4px">🛡 Seguro</span>' : '')
-            + '</div>'
-            + '<div><span class="bdg gray" style="font-size:10px">'+(l.tipo||'—')+'</span></div>'
-            + '<div style="font-weight:600;color:#185FA5">R$ '+Number(l.valor_locacao||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'
-            + '<div><span class="bdg '+(dc[l.disponibilidade]||'gray')+'" style="font-size:10px">'+l.disponibilidade+'</span></div>'
-            + '<div style="display:flex;gap:3px">'
-            + '<button class="btn btn-sm" onclick="openEditarLocacao(\''+l.id+'\')">✏</button>'
-            + '<button class="btn btn-sm" onclick="openOcLocacao(\''+l.id+'\')">!</button>'
-            + '</div>'
-            + '</div>';
+          var cq=null; try{cq=l.contrato_qtds&&typeof l.contrato_qtds==='string'?JSON.parse(l.contrato_qtds):l.contrato_qtds;}catch(e){}
+          var qtd=Number(l.quantidade||1), unit=Number(l.valor_unitario||0), tot=qtd*unit;
+          var cHtml='';
+          if(cq&&typeof cq==='object'&&Object.keys(cq).length){
+            cHtml=Object.keys(cq).map(function(cid){
+              var c=(contratos||[]).find(function(x){return x.id===cid;});
+              return '<span style="font-size:10px;background:#EEF2FF;color:#533AB7;border-radius:4px;padding:1px 5px;display:inline-block;margin:1px">'+escHtml(c?(c.nome||c.codigo||cid):cid)+': '+cq[cid]+'</span>';
+            }).join('');
+          } else if(l.contrato_id){
+            var c=(contratos||[]).find(function(x){return x.id===l.contrato_id;});
+            cHtml='<span style="font-size:10px;background:#EEF2FF;color:#533AB7;border-radius:4px;padding:1px 5px">'+escHtml(c?(c.nome||c.codigo||l.contrato_id):l.contrato_id)+'</span>';
+          }
+          return '<div class="lc-item-r" data-cid="'+escHtml(l.contrato_id||'')+'" data-cqtds="'+escHtml(JSON.stringify(cq||null))+'" data-qtd="'+qtd+'" data-unit="'+unit+'" style="display:grid;grid-template-columns:2.5fr 0.6fr 0.6fr 1fr 1.8fr 1fr auto;gap:6px;align-items:center;padding:.3rem 0;border-bottom:.5px solid #f5f5f3;font-size:12px">'
+            +'<div><span style="font-weight:500">'+escHtml(l.nome)+'</span>'+(l.tem_seguro?'<span style="font-size:9px;color:#3B6D11;margin-left:4px">🛡</span>':'')+( l.disponibilidade?'<div style="margin-top:2px">'+lcDispBadges(l.disponibilidade,dc)+'</div>':'' )+'</div>'
+            +'<div><span class="bdg gray" style="font-size:10px">'+(l.tipo||'—')+'</span></div>'
+            +'<div style="text-align:center;font-weight:600" class="lc-qtd-c">'+qtd+'</div>'
+            +'<div style="text-align:right;color:#555">'+unit.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'
+            +'<div>'+cHtml+'</div>'
+            +'<div style="text-align:right;font-weight:600;color:#185FA5" class="lc-tot-c">R$ '+tot.toLocaleString('pt-BR',{minimumFractionDigits:2})+'</div>'
+            +'<div style="display:flex;gap:3px">'
+            +'<button class="btn btn-sm" onclick="openEditarLocacao(\''+l.id+'\')">✏</button>'
+            +'<button class="btn btn-sm" onclick="openOcLocacao(\''+l.id+'\')">!</button>'
+            +'</div></div>';
         }).join('')
       + '</div>';
 
     return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:12px;padding:1rem;margin-bottom:.5rem">'
       + hdr + body + '</div>';
   }).join('');
+}
+
+function locFiltrarContrato(gi, cid){
+  var body = document.getElementById('loc-body-'+gi);
+  if(!body) return;
+  var totalC = 0;
+  body.querySelectorAll('.lc-item-r').forEach(function(row){
+    var itemCid = row.getAttribute('data-cid')||'';
+    var cqtdsStr = row.getAttribute('data-cqtds')||'null';
+    var origQtd = parseFloat(row.getAttribute('data-qtd'))||1;
+    var unit = parseFloat(row.getAttribute('data-unit'))||0;
+    if(!cid){
+      row.style.display='';
+      row.querySelector('.lc-qtd-c').textContent=origQtd;
+      row.querySelector('.lc-tot-c').textContent='R$ '+(origQtd*unit).toLocaleString('pt-BR',{minimumFractionDigits:2});
+      return;
+    }
+    var qtdC=0, cqtds=null;
+    try{cqtds=JSON.parse(cqtdsStr);}catch(e){}
+    if(cqtds&&typeof cqtds==='object') qtdC=Number(cqtds[cid]||0);
+    else if(itemCid===cid) qtdC=origQtd;
+    if(qtdC>0){
+      row.style.display='';
+      row.querySelector('.lc-qtd-c').textContent=qtdC;
+      var tot=qtdC*unit;
+      row.querySelector('.lc-tot-c').textContent='R$ '+tot.toLocaleString('pt-BR',{minimumFractionDigits:2});
+      totalC+=tot;
+    } else { row.style.display='none'; }
+  });
+  var sp=document.getElementById('loc-ctot-'+gi);
+  if(sp) sp.textContent=cid&&totalC>0?'→ R$ '+totalC.toLocaleString('pt-BR',{minimumFractionDigits:2}):'';
 }
 
 function locToggleCard(id){
@@ -59501,18 +59639,104 @@ function locLimparFiltros(){
 }
 
 
-function lcAtualizarDepositos(selectId){
+function lcAtualizarDepositos(selectId, preserveDepId){
   var filSel  = document.getElementById('lc-fil');
   var depSel  = document.getElementById(selectId);
   if(!depSel) return;
-  var filId   = filSel ? filSel.value : '';
+  var filId   = filSel ? String(filSel.value || '') : '';
+  var depId   = preserveDepId !== undefined && preserveDepId !== null
+    ? String(preserveDepId)
+    : String(depSel.value || '');
   var depsFil = filId
-    ? depositos.filter(function(d){ return d.filial_id===filId; })
-    : depositos;
+    ? depositos.filter(function(d){ return String(d.filial_id || '') === filId; })
+    : depositos.slice();
+  if(depId && !depsFil.some(function(d){ return String(d.id) === depId; })){
+    var depSalvo = depositos.find(function(d){ return String(d.id) === depId; });
+    if(depSalvo) depsFil.unshift(depSalvo);
+  }
   depSel.innerHTML = '<option value="">Selecione o depósito</option>'
     + depsFil.map(function(d){
-        return '<option value="'+d.id+'">'+d.nome+'</option>';
+        var sel = depId && String(d.id) === depId ? ' selected' : '';
+        return '<option value="'+d.id+'"'+sel+'>'+d.nome+'</option>';
       }).join('');
+  if(depId && Array.prototype.some.call(depSel.options, function(o){ return o.value === depId; })){
+    depSel.value = depId;
+  }
+}
+
+// Nº contrato legado ficava só em observacoes ("Contrato: XXX | ...")
+function _lcExtrairNumContrato(l){
+  if(!l) return '';
+  if(l.numero_contrato) return String(l.numero_contrato).trim();
+  var obs = String(l.observacoes || '');
+  var m = obs.match(/Contrato:\s*([^|]+)/i);
+  return m ? m[1].trim() : '';
+}
+
+// Garante filial/depósito salvos no cache (inclui inativos ausentes do load inicial)
+function _lcResolverFilialDep(l){
+  if(!l || DEMO) return l;
+  var out = Object.assign({}, l);
+  if(out.filial_id && out.deposito_id) return out;
+  var est = (estoque||[]).find(function(e){ return e.lote === 'locid.'+l.id; });
+  if(est){
+    if(!out.filial_id && est.filial_id) out.filial_id = est.filial_id;
+    if(!out.deposito_id && est.deposito_id) out.deposito_id = est.deposito_id;
+  }
+  return out;
+}
+
+function _lcEnsinarFilialDepNoCache(l, done){
+  if(!l){ done(l); return; }
+  if(DEMO){ done(l); return; }
+  var pending = 0;
+  function finish(){ if(!pending) done(l); }
+  function fetchOne(table, id, pushFn){
+    if(!id) return;
+    pending++;
+    sbFetch(table, {filters:['id=eq.'+id], limit:1}).then(function(rows){
+      if(rows && rows[0]) pushFn(rows[0]);
+    }).catch(function(){}).finally(function(){ if(!--pending) finish(); });
+  }
+  var filId = l.filial_id ? String(l.filial_id) : '';
+  var depId = l.deposito_id ? String(l.deposito_id) : '';
+  if(depId && !(depositos||[]).some(function(d){ return String(d.id) === depId; })){
+    fetchOne('depositos', depId, function(row){ depositos.push(row); });
+  }
+  if(filId && !(filiais||[]).some(function(f){ return String(f.id) === filId; })){
+    fetchOne('filiais', filId, function(row){ filiais.push(row); });
+  }
+  if(!depId && !filId) done(l);
+  else if(!pending) finish();
+}
+
+function _lcAplicarFormEdicao(l){
+  if(!l) return;
+  var fil = document.getElementById('lc-fil');
+  var num = document.getElementById('lc-num');
+  var filId = l.filial_id ? String(l.filial_id) : '';
+  if(!filId && l.deposito_id && typeof depositos !== 'undefined'){
+    var depRef = depositos.find(function(d){ return String(d.id) === String(l.deposito_id); });
+    if(depRef && depRef.filial_id) filId = String(depRef.filial_id);
+  }
+  if(fil){
+    if(filId && Array.prototype.some.call(fil.options, function(o){ return o.value === filId; })){
+      fil.value = filId;
+    } else {
+      fil.value = '';
+    }
+  }
+  lcAtualizarDepositos('lc-dep', l.deposito_id || '');
+  if(num){
+    num.value = _lcExtrairNumContrato(l);
+  }
+}
+
+function _lcAplicarFormEdicaoPosSort(l){
+  setTimeout(function(){
+    if(!document.getElementById('lc-fil')) return;
+    _lcAplicarFormEdicao(l);
+  }, 45);
 }
 
 
@@ -59553,8 +59777,8 @@ function _openNovaLocacaoModal(){
     +'<div class="fg"><label style="font-size:11px">Locadora * <span style="color:#888;font-weight:400">(fornecedor)</span></label><input class="inp" id="lc-loc" list="lc-loc-dl" autocomplete="off" placeholder="Digite para buscar..." style="width:100%"><datalist id="lc-loc-dl">'+_lcFornOpts()+'</datalist></div>'
     +'<div class="fg"><label style="font-size:11px">Nº Contrato</label><input class="inp" id="lc-num" placeholder="Ex: 8543" style="width:100%"/></div>'
     +'<div class="fg"><label style="font-size:11px">Responsável</label><input class="inp" id="lc-resp" placeholder="Nome do responsável" style="width:100%"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
-    +'<div class="fg"><label style="font-size:11px">Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Filial</label><select class="inp" id="lc-fil" data-nosort="1" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
+    +'<div class="fg"><label style="font-size:11px">Depósito</label><select class="inp" id="lc-dep" data-nosort="1" style="width:100%">'+depOpts+'</select></div>'
     +'<div class="fg" style="display:flex;gap:6px">'
     +'<div class="fg" style="flex:1"><label style="font-size:11px">Início</label><input class="inp" id="lc-ini" type="date" style="width:100%"/></div>'
     +'<div class="fg" style="flex:1"><label style="font-size:11px">Término</label><input class="inp" id="lc-fim" type="date" style="width:100%"/></div>'
@@ -59953,7 +60177,7 @@ function salvarLocacao(){
   if(fileInp && fileInp.files.length)
     docs = Array.from(fileInp.files).map(function(f){return {nome:f.name,tamanho:f.size,tipo:f.type};});
 
-  var numContrato = (document.getElementById('lc-num')||{}).value||'';
+  var numContrato = ((document.getElementById('lc-num')||{}).value||'').trim();
   var obsBase     = (document.getElementById('lc-obs')||{}).value||'';
   var obsContrato = (numContrato ? 'Contrato: '+numContrato+' | ' : '') + obsBase;
 
@@ -59963,6 +60187,7 @@ function salvarLocacao(){
     filial_id:     (document.getElementById('lc-fil')||{}).value||null,
     deposito_id:   (document.getElementById('lc-dep')||{}).value||null,
     responsavel:   (document.getElementById('lc-resp')||{}).value.trim()||null,
+    numero_contrato: numContrato || null,
     contrato_id:   contratosSel.length===1 ? contratosSel[0].id : null,
     inicio:        (document.getElementById('lc-ini')||{}).value||null,
     termino:       (document.getElementById('lc-fim')||{}).value||null,
@@ -60027,18 +60252,32 @@ function salvarLocacao(){
 }
 
 function openEditarLocacao(lid){
-  var l=locacoes.find(function(x){return x.id===lid;});if(!l)return;
-  // Abre imediatamente; se fornecedores incompleto, carrega em background e atualiza datalist
-  if(!DEMO && (!fornecedores||fornecedores.length<10)){
-    erpCarregarFornecedores().then(function(){
-      var dl=document.getElementById('lc-loc-dl'); if(dl) dl.innerHTML=_lcFornOpts();
-    }).catch(function(){});
+  var l=locacoes.find(function(x){return x.id===lid;});
+  if(!l) return;
+
+  function abrirEditModal(reg){
+    l = reg;
+    // Abre imediatamente; se fornecedores incompleto, carrega em background e atualiza datalist
+    if(!DEMO && (!fornecedores||fornecedores.length<10)){
+      erpCarregarFornecedores().then(function(){
+        var dl=document.getElementById('lc-loc-dl'); if(dl) dl.innerHTML=_lcFornOpts();
+      }).catch(function(){});
+    }
+    var fOpts='<option value="">Sem responsável</option>'+funcs.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.responsavel_id?' selected':'')+'>'+f.nome+'</option>';}).join('');
+    var filIdReg = l.filial_id ? String(l.filial_id) : '';
+    var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){
+      var sel = filIdReg && String(f.id)===filIdReg ? ' selected' : '';
+      return '<option value="'+f.id+'"'+sel+'>'+f.codigo+' — '+f.nome+'</option>';
+    }).join('');
+    var numContrato = _lcExtrairNumContrato(l);
+  // Parse disponibilidade atual (suporta string legada e JSON {status:qtd})
+  var _dispOpts=['Disponível','Em uso','Em manutenção','Devolvido','Extraviado'];
+  var _dispQtds={}; _dispOpts.forEach(function(s){_dispQtds[s]=0;});
+  if(l.disponibilidade){
+    var _dp=null; try{_dp=JSON.parse(l.disponibilidade);}catch(e){}
+    if(_dp&&typeof _dp==='object') Object.keys(_dp).forEach(function(k){if(_dispQtds.hasOwnProperty(k))_dispQtds[k]=Number(_dp[k])||0;});
+    else if(_dispQtds.hasOwnProperty(l.disponibilidade)) _dispQtds[l.disponibilidade]=Number(l.quantidade||1);
   }
-  var fOpts='<option value="">Sem responsável</option>'+funcs.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.responsavel_id?' selected':'')+'>'+f.nome+'</option>';}).join('');
-  var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'"'+(f.id===l.filial_id?' selected':'')+'>'+f.codigo+' — '+f.nome+'</option>';}).join('');
-  var depOpts='<option value="">Sem depósito</option>'
-    +(typeof depositos!=='undefined' ? depositos.filter(function(d){return !l.filial_id||d.filial_id===l.filial_id;})
-        .map(function(d){return '<option value="'+d.id+'"'+(d.id===l.deposito_id?' selected':'')+'>'+d.nome+'</option>';}).join('') : '');
   var docsAtual=[];
   try{ if(l.documentos) docsAtual=JSON.parse(l.documentos); }catch(e){}
 
@@ -60048,13 +60287,19 @@ function openEditarLocacao(lid){
     +'<div class="fg" style="grid-column:1/-1"><label>Nome</label><input class="inp" id="lc-nome" value="'+l.nome+'" style="width:100%"/></div>'
     +'<div class="fg"><label>Locadora</label><input class="inp" id="lc-loc" list="lc-loc-dl" autocomplete="off" value="'+escHtml(l.locadora||'')+'" placeholder="Digite para buscar..." style="width:100%"><datalist id="lc-loc-dl">'+_lcFornOpts()+'</datalist></div>'
     +'<div class="fg"><label>Responsável</label><input class="inp" id="lc-resp" value="'+escHtml(l.responsavel||(funcs.find(function(f){return f.id===l.responsavel_id;})||{}).nome||'')+'" placeholder="Nome do responsável" style="width:100%"/></div>'
-    +'<div class="fg"><label>Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
-    +'<div class="fg"><label>Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
+    +'<div class="fg"><label>Filial</label><select class="inp" id="lc-fil" data-nosort="1" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
+    +'<div class="fg"><label>Depósito</label><select class="inp" id="lc-dep" data-nosort="1" style="width:100%"><option value="">Selecione o depósito</option></select></div>'
     +'<div class="fg"><label>Início</label><input class="inp" id="lc-ini" type="date" value="'+(l.inicio||'')+'" style="width:100%"/></div>'
     +'<div class="fg"><label>Término</label><input class="inp" id="lc-fim" type="date" value="'+(l.termino||'')+'" style="width:100%"/></div>'
     +'<div class="fg"><label>Valor/mês (R$)</label><input class="inp" id="lc-vloc" type="number" value="'+(l.valor_locacao||'')+'" style="width:100%"/></div>'
-    +'<div class="fg"><label>Status</label><select class="inp" id="lc-status" style="width:100%">'+['Funcionando','Em manutenção','Com defeito'].map(function(s){return '<option'+(l.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
-    +'<div class="fg"><label>Disponibilidade</label><select class="inp" id="lc-disp" style="width:100%">'+['Disponível','Em uso','Em manutenção','Devolvido','Extraviado'].map(function(s){return '<option'+(l.disponibilidade===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
+    +'<div class="fg"><label>Nº Contrato (fornecedor)</label><input class="inp" id="lc-num" value="'+escHtml(numContrato)+'" placeholder="Ex.: CT-2026-001" style="width:100%"/></div>'
+    +'<div class="fg" style="display:flex;align-items:center;gap:10px;padding-top:20px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" id="lc-seg"'+(l.tem_seguro?' checked':'')+' style="width:16px;height:16px"> Tem seguro</label></div>'
+    +'<div class="fg"><label>Valor do seguro (R$/mês)</label><input class="inp" id="lc-vseg" type="number" value="'+(l.valor_seguro||'')+'" style="width:100%"/></div>'
+    +'<div class="fg"><label>Status</label><select class="inp" id="lc-status" style="width:100%"><option value=""></option>'+['Funcionando','Em manutenção','Com defeito'].map(function(s){return '<option value="'+s+'"'+(l.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></div>'
+    +'<div class="fg" style="grid-column:1/-1"><label>Disponibilidade — quantos em cada status</label>'
+    +'<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:4px">'
+    +_dispOpts.map(function(s,i){return '<div style="text-align:center"><div style="font-size:10px;color:#555;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="'+s+'">'+s+'</div><input class="inp" id="lc-disp-'+i+'" type="number" min="0" value="'+(_dispQtds[s]||0)+'" style="width:100%;text-align:center"/></div>';}).join('')
+    +'</div></div>'
     +'<div class="fg" style="grid-column:1/-1"><label>Observações</label><textarea class="inp" id="lc-obs" style="width:100%;height:50px">'+(l.observacoes||'')+'</textarea></div>'
     // Documentos existentes
     +(docsAtual.length?'<div class="fg" style="grid-column:1/-1"><label>📎 Documentos anexados</label>'
@@ -60070,13 +60315,34 @@ function openEditarLocacao(lid){
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" onclick="salvarEditarLocacao(\''+lid+'\')">Salvar</button></div></div></div>');
 
-  var fileInp=document.getElementById('lc-docs');
-  if(fileInp) fileInp.onchange=function(){
-    var lista=document.getElementById('lc-docs-lista');if(!lista)return;
-    lista.innerHTML=Array.from(this.files).map(function(f){
-      return '<span style="background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 6px;font-size:11px">📄 '+f.name+'</span>';
-    }).join('');
-  };
+    _lcAplicarFormEdicao(l);
+    _lcAplicarFormEdicaoPosSort(l);
+
+    var fileInp=document.getElementById('lc-docs');
+    if(fileInp) fileInp.onchange=function(){
+      var lista=document.getElementById('lc-docs-lista');if(!lista)return;
+      lista.innerHTML=Array.from(this.files).map(function(f){
+        return '<span style="background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 6px;font-size:11px">📄 '+f.name+'</span>';
+      }).join('');
+    };
+  }
+
+  if(DEMO){
+    abrirEditModal(l);
+    return;
+  }
+  sbFetch('locacoes',{filters:['id=eq.'+lid],limit:1}).then(function(rows){
+    var fresh = _lcResolverFilialDep(rows && rows[0] ? rows[0] : l);
+    var idx = locacoes.findIndex(function(x){ return x.id===lid; });
+    if(idx >= 0) locacoes[idx] = Object.assign({}, locacoes[idx], fresh);
+    _lcEnsinarFilialDepNoCache(fresh, function(reg){
+      abrirEditModal(reg);
+    });
+  }).catch(function(){
+    _lcEnsinarFilialDepNoCache(_lcResolverFilialDep(l), function(reg){
+      abrirEditModal(reg);
+    });
+  });
 }
 
 function salvarEditarLocacao(lid){
@@ -60089,8 +60355,15 @@ function salvarEditarLocacao(lid){
   l.inicio=(document.getElementById('lc-ini')||{}).value||null;
   l.termino=(document.getElementById('lc-fim')||{}).value||null;
   l.valor_locacao=parseFloat((document.getElementById('lc-vloc')||{}).value)||0;
-  l.status=(document.getElementById('lc-status')||{}).value||l.status;
-  l.disponibilidade=(document.getElementById('lc-disp')||{}).value||l.disponibilidade;
+  l.numero_contrato=((document.getElementById('lc-num')||{}).value||'').trim()||null;
+  l.tem_seguro=!!(document.getElementById('lc-seg')||{}).checked;
+  l.valor_seguro=parseFloat((document.getElementById('lc-vseg')||{}).value)||null;
+  var _stV=(document.getElementById('lc-status')||{}).value; if(_stV) l.status=_stV;
+  var _dispOpts2=['Disponível','Em uso','Em manutenção','Devolvido','Extraviado'];
+  var _dispMap={}; _dispOpts2.forEach(function(s,i){var v=parseInt((document.getElementById('lc-disp-'+i)||{}).value)||0; if(v>0)_dispMap[s]=v;});
+  var _dk=Object.keys(_dispMap);
+  if(_dk.length===1) l.disponibilidade=_dk[0];
+  else if(_dk.length>1) l.disponibilidade=JSON.stringify(_dispMap);
   l.observacoes=(document.getElementById('lc-obs')||{}).value||'';
   // Novos documentos
   var fileInp=document.getElementById('lc-docs');
@@ -60100,7 +60373,13 @@ function salvarEditarLocacao(lid){
     l.documentos=JSON.stringify([...docsAtual,...novosArqs]);
   }
   if(!DEMO){
-    sbUpdate('locacoes',l,'id=eq.'+lid);
+    var payload = {
+      nome: l.nome, locadora: l.locadora, filial_id: l.filial_id || null, deposito_id: l.deposito_id || null,
+      responsavel: l.responsavel, inicio: l.inicio, termino: l.termino, valor_locacao: l.valor_locacao,
+      numero_contrato: l.numero_contrato, tem_seguro: l.tem_seguro, valor_seguro: l.valor_seguro,
+      status: l.status, disponibilidade: l.disponibilidade, observacoes: l.observacoes, documentos: l.documentos
+    };
+    sbUpdate('locacoes', payload, 'id=eq.'+lid);
     // EPI/EPC → registrar no estoque SE ainda não foi (dedup por lote = 'locid.'+lid)
     if(l.tipo==='EPI'||l.tipo==='EPC'){
       sbFetch('estoque',{filters:['lote=eq.locid.'+lid]}).then(function(ex){
