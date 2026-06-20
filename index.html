@@ -1164,6 +1164,7 @@ body.perfil-coordenador #mn-plr { display:none !important; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="erp-items-infinite.js"></script>
 </head>
 <body class="sem-login">
 <div class="app">
@@ -2484,11 +2485,15 @@ body.perfil-coordenador #mn-plr { display:none !important; }
   </div><!-- /prog-aba-escala -->
 
   <!-- Aba Verificar — Tratamento de Ocorrências -->
-  <div id="prog-aba-verificar" style="display:none">
+  <div id="vt-painel-root" style="display:none">
     <div class="card" style="margin-bottom:1rem">
       <div class="ch" style="flex-wrap:wrap;gap:8px">
         <span class="ct">🔍 Tratamento de Ocorrências — Verificar</span>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <div>
+            <div id="vt-contrato-label" style="font-size:10px;color:#888;margin-bottom:2px">Contrato</div>
+            <select class="inp" id="vt-fil-contrato" style="width:220px" onchange="vtOnMudarContrato()"></select>
+          </div>
           <input class="inp" type="date" id="vt-fil-ini" style="width:135px"/>
           <span style="font-size:12px;color:#888">até</span>
           <input class="inp" type="date" id="vt-fil-fim" style="width:135px"/>
@@ -2501,6 +2506,7 @@ body.perfil-coordenador #mn-plr { display:none !important; }
           </select>
           <button class="btn btn-pri" onclick="vtCarregar()">🔍 Buscar</button>
           <button class="btn" onclick="vtGerarLista()" style="background:#3B6D11;color:#fff">+ Gerar da programação</button>
+          <button class="btn" onclick="vtAbrirNovaOcorrencia()" style="background:#8B1A6B;color:#fff;border-color:#8B1A6B">+ Nova Ocorrência</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <div>
@@ -4028,12 +4034,32 @@ try{
 }catch(e){ console.warn('[Auth] Supabase client init falhou:',e); }
 var DEMO=false;
 
-// ── INTEGRAÇÃO ERP CENABR ─────────────────────────────────────────────
+// ── INTEGRAÇÃO ERP CENABR (proxy — token somente no servidor) ─────────────
 var ERP = {
-  url:   'https://erp.cenabr.app/api/external/v1',
-  token: '3ef63343d60c1819dcca665a8731a49f',
+  proxyUrl: null,
   cache: { key:'cena_erp_forn_v5', keyTs:'cena_erp_forn_ts_v5', ttl:30*60*1000 }
 };
+function erpGetProxyBase(){
+  if(ERP.proxyUrl) return ERP.proxyUrl.replace(/\/$/,'');
+  if(typeof PONTO_API_URL!=='undefined'&&PONTO_API_URL)
+    return PONTO_API_URL.replace(/\/$/,'')+'/api/v1/erp';
+  return null;
+}
+function erpProxyFetch(table, params){
+  var base=erpGetProxyBase();
+  if(!base) return Promise.reject(new Error('Proxy ERP indisponível — configure ERP_TOKEN no servidor (main.py).'));
+  var qs=new URLSearchParams();
+  Object.keys(params||{}).forEach(function(k){
+    var v=params[k];
+    if(v!==undefined&&v!==null&&v!=='') qs.set(k,String(v));
+  });
+  return fetch(base+'/tables/'+table+'?'+qs.toString(),{
+    headers:{'Accept':'application/json'}
+  }).then(function(r){
+    if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP '+r.status+(t?': '+t.substring(0,120):'')); });
+    return r.json();
+  });
+}
 
 // Restaurar cache do localStorage ao iniciar
 (function(){
@@ -4072,9 +4098,7 @@ function _erpSetStatus(txt,cor){
 }
 
 function erpFetchPagina(pg){
-  return fetch(ERP.url+'/suppliers?page='+pg,{
-    headers:{'Accept':'application/json','Authorization':'Bearer '+ERP.token}
-  }).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
+  return erpProxyFetch('suppliers',{page:pg,per_page:80});
 }
 
 // Remove duplicados por CNPJ válido — mantém o cadastro matriz (is_root_supplier).
@@ -4733,10 +4757,14 @@ async function carregarModuloSESMT(){
   Promise.all([
     sbFetch('itens_catalogo',{order:'nome'}),
     sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90]}),
+    sbFetch('alm_entradas_nf',{order:'criado_em.desc',filters:['status=eq.pendente_validacao']}).catch(function(){return [];}),
   ]).then(function(res){
     if(res[0]&&res[0].length)itens_catalogo=res[0];
     if(res[1]&&res[1].length)movimentacoes_itens=res[1];
-  }).catch(function(){});
+    if(res[2]&&res[2].length)_almEntradasNf=res[2].map(_almEntNfParseRow);
+    else _almEntNfCarregarLocal();
+    _almEntNfCarregado=true;
+  }).catch(function(){ _almEntNfCarregarLocal(); _almEntNfCarregado=true; });
 }
 
 // ── Helper para garantir módulo carregado antes de renderizar ─────────────
@@ -6022,6 +6050,9 @@ var _vtDados = []; // cache local dos tratamentos
 var _vtColabAberto = null; // colaborador em detalhe (lista de ocorrências)
 var _vtHistCache = {}; // cache histórico por colaborador
 var _vtFiltrarTimer = null;
+var _vtOrigem = ''; // programacao-equipes | programacao-projetos | gestao-ponto
+var _vtContrato = ''; // contrato fixo ou selecionado (vazio = inferir da origem)
+var _vtContratoOverride = null; // contrato vindo de link (colaborador) — consumido em vtAbrir
 
 var VT_ETAPAS = [
   {id:'supervisao',  label:'Supervisão'},
@@ -6032,10 +6063,137 @@ var VT_ETAPAS = [
 var VT_DECISOES = [
   {id:'ajustado',        label:'Ajustado'},
   {id:'advertencia',     label:'Advertência'},
+  {id:'suspensao',       label:'Suspensão'},
+  {id:'vale',            label:'Vale'},
   {id:'demissao',        label:'Demissão'},
   {id:'desconto_folha',  label:'Desconto em Folha'}
 ];
+var VT_ACOES_NOVA = [
+  {id:'advertencia', label:'Advertência'},
+  {id:'suspensao',   label:'Suspensão'},
+  {id:'vale',        label:'Vale'},
+  {id:'demissao',    label:'Demissão'}
+];
+var VT_TIPOS_EVENTO = [
+  'Falta injustificada','Atraso recorrente','Descumprimento de norma','Conduta inadequada',
+  'Acidente / Incidente','Uso indevido de EPI/ferramenta','Desacato / insubordinação','Outros'
+];
 var VT_STATUS_LABEL = {pendente:'🔴 Pendente', em_andamento:'🟡 Em andamento', concluido:'🟢 Concluído'};
+var _vtNovaColabs = [];
+
+function vtNomeContrato(cid){
+  if(!cid || cid==='__todos__') return 'Todos os contratos';
+  var c = (contratos||[]).find(function(x){ return x.id===cid; });
+  return c ? ((c.codigo?c.codigo+' — ':'')+c.nome) : String(cid).substring(0,8)+'…';
+}
+
+function vtGetContratoCtx(){
+  if(_vtOrigem==='gestao-ponto'){
+    var sel = document.getElementById('vt-fil-contrato');
+    if(sel && sel.value) return sel.value;
+    return _vtContrato || '__todos__';
+  }
+  if(_vtContrato) return _vtContrato;
+  if(_vtOrigem==='programacao-equipes') return progGetCont();
+  if(_vtOrigem==='programacao-projetos') return progProjGetCid();
+  return '';
+}
+
+function vtPassaFiltroContrato(colabId){
+  var cid = vtGetContratoCtx();
+  if(!cid || cid==='__todos__') return true;
+  var col = progFindColab(colabId);
+  return !!(col && col.contrato_id===cid);
+}
+
+function vtBadgeContratoHtml(col){
+  if(!col || !col.contrato_id) return '';
+  var nome = vtNomeContrato(col.contrato_id);
+  if(!nome || nome==='Todos os contratos') return '';
+  return ' <span style="background:#F0E8F8;color:#534AB7;border-radius:3px;padding:0 5px;font-size:9px;font-weight:600;white-space:nowrap" title="Contrato">'+escHtml(nome)+'</span>';
+}
+
+function vtAtualizarSelContrato(){
+  var sel = document.getElementById('vt-fil-contrato');
+  if(!sel) return;
+  var cid = vtGetContratoCtx();
+  var lista = (typeof _contratosVisiveis==='function'?_contratosVisiveis():contratos)||[];
+  var lbl = document.getElementById('vt-contrato-label');
+  if(_vtOrigem==='gestao-ponto'){
+    sel.disabled = false;
+    sel.innerHTML = '<option value="__todos__">📊 Todos os contratos</option>'
+      +lista.map(function(c){ return '<option value="'+c.id+'">'+escHtml(c.nome)+'</option>'; }).join('');
+    sel.value = cid || '__todos__';
+    if(lbl) lbl.textContent = 'Contrato (filtrar ocorrências)';
+  } else {
+    sel.disabled = true;
+    if(!cid){
+      sel.innerHTML = '<option value="">— Selecione o contrato na programação —</option>';
+    } else {
+      sel.innerHTML = lista.map(function(c){
+        return '<option value="'+c.id+'">'+escHtml((c.codigo?c.codigo+' — ':'')+c.nome)+'</option>';
+      }).join('');
+      sel.value = cid;
+      if(sel.value!==cid){
+        sel.innerHTML = '<option value="'+cid+'">'+escHtml(vtNomeContrato(cid))+'</option>';
+        sel.value = cid;
+      }
+    }
+    if(lbl) lbl.textContent = 'Contrato (fixo pela tela de origem)';
+  }
+}
+
+function vtOnMudarContrato(){
+  if(_vtOrigem!=='gestao-ponto') return;
+  var sel = document.getElementById('vt-fil-contrato');
+  _vtContrato = sel ? sel.value : '__todos__';
+  vtCarregarDatasPendentes();
+  vtFiltrarColabDebounced();
+}
+
+function vtMontarPainel(mountId){
+  var root = document.getElementById('vt-painel-root');
+  var mount = mountId ? document.getElementById(mountId) : document.getElementById('pg-programacao-equipes');
+  if(!root || !mount) return;
+  if(root.parentElement!==mount) mount.appendChild(root);
+  root.style.display = '';
+}
+
+function vtEsconderPainel(){
+  var root = document.getElementById('vt-painel-root');
+  if(root) root.style.display = 'none';
+}
+
+function vtAbrir(origem, contrato){
+  _vtOrigem = origem || '';
+  if(_vtContratoOverride){
+    _vtContrato = _vtContratoOverride;
+    _vtContratoOverride = null;
+  } else {
+    _vtContrato = contrato || '';
+  }
+  vtAtualizarSelContrato();
+  vtInicializar();
+}
+
+function vtIrParaTratamento(colabId){
+  var col = progFindColab(colabId);
+  if(col && col.contrato_id) _vtContratoOverride = col.contrato_id;
+  var pgGp = document.getElementById('pg-gestao-ponto');
+  var pgPp = document.getElementById('pg-programacao-projetos');
+  if(pgGp && !pgGp.classList.contains('hidden')){
+    gpSetAba('verificar');
+  } else if(pgPp && !pgPp.classList.contains('hidden')){
+    ppSetAba('verificar');
+  } else {
+    progAbaSelecionar('verificar');
+  }
+  if(colabId && col){
+    var colEl = document.getElementById('vt-fil-colab');
+    if(colEl) colEl.value = col.re || col.nome || '';
+    vtFiltrarColabDebounced();
+  }
+}
 
 // ── Carrega datas com pendência para o select ────────────────────────────────
 function vtCarregarDatasPendentes(){
@@ -6043,14 +6201,15 @@ function vtCarregarDatasPendentes(){
   // Buscar todas as ocorrências não concluídas
   sbFetch('verificar_tratamentos',{
     filters:['status=in.(pendente,em_andamento)'],
-    select:'data_ocorrencia',
+    select:'data_ocorrencia,colaborador_id',
     limit:500
   }).then(function(rows){
     var sel = document.getElementById('vt-fil-data-pend');
     if(!sel) return;
-    // Coletar datas únicas e ordenar
+    // Coletar datas únicas e ordenar (respeitando filtro de contrato)
     var datas = [];
     (rows||[]).forEach(function(r){
+      if(!vtPassaFiltroContrato(r.colaborador_id)) return;
       var d = (r.data_ocorrencia||'').split('T')[0];
       if(d && datas.indexOf(d)<0) datas.push(d);
     });
@@ -6096,6 +6255,13 @@ function vtSincronizarDaProgramacao(ini, fim){
     limit:500
   }).then(function(rows){
     if(!rows||!rows.length) return 0;
+    var cid = vtGetContratoCtx();
+    if(cid && cid!=='__todos__'){
+      rows = rows.filter(function(r){
+        return vtPassaFiltroContrato(r.colaborador_id);
+      });
+      if(!rows.length) return 0;
+    }
     var inseridos = 0;
     return Promise.all(rows.map(function(r){
       var dataOcorr = (r.data||'').split('T')[0];
@@ -6127,6 +6293,7 @@ function vtSincronizarDaProgramacao(ini, fim){
 }
 
 function vtInicializar(){
+  vtAtualizarSelContrato();
   var ini = document.getElementById('vt-fil-ini');
   var fim = document.getElementById('vt-fil-fim');
   var hoje = dataHojeLocal();
@@ -6195,7 +6362,7 @@ function vtRenderIndicadores(todos){
   var concluido  = todos.filter(function(t){return t.status==='concluido';}).length;
 
   // Decisões (um registro pode ter múltiplas)
-  var ajustado=0, advertencia=0, demissao=0, desconto=0;
+  var ajustado=0, advertencia=0, suspensao=0, vale=0, demissao=0, desconto=0;
   todos.forEach(function(t){
     if(!t.decisoes) return;
     var dec = t.decisoes.split(',');
@@ -6203,6 +6370,8 @@ function vtRenderIndicadores(todos){
       d = d.trim();
       if(d==='ajustado')       ajustado++;
       if(d==='advertencia')    advertencia++;
+      if(d==='suspensao')      suspensao++;
+      if(d==='vale')           vale++;
       if(d==='demissao')       demissao++;
       if(d==='desconto_folha') desconto++;
     });
@@ -6233,6 +6402,8 @@ function vtRenderIndicadores(todos){
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
     + card(ajustado,    'Ajustados',       '#185FA5','#EEF6FF','✅')
     + card(advertencia, 'Advertências',    '#854F0B','#FFF8EE','⚠️')
+    + card(suspensao,   'Suspensões',      '#534AB7','#F5F4FF','⏸')
+    + card(vale,        'Vales',           '#A32D2D','#FFF5F5','💸')
     + card(demissao,    'Demissões',       '#A32D2D','#FFF5F5','❌')
     + card(desconto,    'Descontos Folha', '#534AB7','#F5F4FF','💸')
     +'</div></div>';
@@ -6250,6 +6421,7 @@ function vtFiltrarColabDebounced(){
 
 function vtFiltrarDados(busca, stFil, setor){
   return (_vtDados||[]).filter(function(t){
+    if(!vtPassaFiltroContrato(t.colaborador_id)) return false;
     var col = progFindColab(t.colaborador_id);
     var nome = col?col.nome:'';
     var re   = col?(col.re||''):'';
@@ -6509,6 +6681,7 @@ function vtRenderDetalheColab(colabId, busca, stFil, setor){
       var dec = VT_DECISOES.find(function(x){return x.id===d.trim();});
       return dec?dec.label:d;
     }).join(', ') : '—';
+    var acoesProp = t.acoes_propostas ? vtLabelAcoes(t.acoes_propostas) : '';
     var pendencias = VT_ETAPAS.filter(function(e){
       return !(t['resp_'+e.id]&&String(t['resp_'+e.id]).trim());
     }).map(function(e){
@@ -6517,11 +6690,14 @@ function vtRenderDetalheColab(colabId, busca, stFil, setor){
     return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fff">'
       +'<div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">'
       +'<div style="min-width:90px"><div style="font-size:10px;color:#888">Data</div><b>'+fmtD(t.data_ocorrencia)+'</b></div>'
-      +'<div style="flex:1;min-width:160px"><div style="font-size:10px;color:#888">Obs. original</div>'
+      +(t.tipo_evento?'<div style="min-width:120px"><div style="font-size:10px;color:#888">Tipo</div><b style="font-size:11px">'+escHtml(t.tipo_evento)+'</b></div>':'')
+      +'<div style="flex:1;min-width:160px"><div style="font-size:10px;color:#888">Descrição</div>'
       +'<div style="font-size:12px;color:#8B1A6B">'+escHtml(t.obs_verificar||'—')+'</div></div>'
       +'<div><div style="font-size:10px;color:#888">Status</div>'+(VT_STATUS_LABEL[t.status]||t.status)+'</div>'
       +'<div style="margin-left:auto"><button class="btn btn-pri" style="font-size:11px;padding:4px 12px" onclick="vtAbrirTratamento(\''+t.id+'\')">✏️ Tratar</button></div>'
       +'</div>'
+      +(t.origem==='manual'?'<div style="margin-top:4px"><span style="background:#F9F4FA;color:#8B1A6B;border-radius:3px;padding:1px 6px;font-size:9px;font-weight:700">📋 Ocorrência manual</span></div>':'')
+      +(acoesProp?'<div style="margin-top:4px;font-size:11px;color:#555">Ações indicadas: <b>'+escHtml(acoesProp)+'</b>'+(t.vale_valor?' · Vale R$ '+Number(t.vale_valor).toLocaleString('pt-BR',{minimumFractionDigits:2}):'')+'</div>':'')
       +'<div style="margin-top:6px;font-size:11px">'+(t.status!=='concluido'?pendencias:'<span style="color:#3B6D11">'+escHtml(decisoes)+'</span>')+'</div>'
       +(t.anexo_advertencia?'<div style="margin-top:4px"><a href="'+escHtml(t.anexo_advertencia)+'" target="_blank" style="font-size:11px;color:#185FA5">📎 Advertência anexada</a></div>':'')
       +'</div>';
@@ -6531,26 +6707,33 @@ function vtRenderDetalheColab(colabId, busca, stFil, setor){
 function vtRenderLista(busca, stFil, setor){
   var wrap = document.getElementById('vt-lista');
   if(!wrap) return;
-  vtRenderIndicadores(_vtDados);
+  var lista = vtFiltrarDados(busca, stFil, setor);
+  vtRenderIndicadores(lista);
   if(_vtColabAberto){
     vtRenderDetalheColab(_vtColabAberto, busca, stFil, setor);
     return;
   }
-  var lista = vtFiltrarDados(busca, stFil, setor);
   var grupos = vtAgruparPorColab(lista);
 
   if(!grupos.length){
-    wrap.innerHTML='<div style="padding:1rem;color:#888">Nenhum colaborador encontrado. Use "Gerar da programação" para importar os colaboradores em Verificar.</div>';
+    var cid = vtGetContratoCtx();
+    var msg = cid && cid!=='__todos__'
+      ? 'Nenhum colaborador em Verificar para '+escHtml(vtNomeContrato(cid))+' no período.'
+      : 'Nenhum colaborador encontrado. Use "Gerar da programação" para importar os colaboradores em Verificar.';
+    wrap.innerHTML='<div style="padding:1rem;color:#888">'+msg+'</div>';
     return;
   }
 
   var totalOcc = lista.length;
+  var cidCtx = vtGetContratoCtx();
+  var ctxLbl = (cidCtx && cidCtx!=='__todos__') ? ' · contrato: '+escHtml(vtNomeContrato(cidCtx)) : '';
   var html = '<div style="padding:.5rem 1rem;font-size:11px;color:#888;margin-bottom:.5rem">'
-    +grupos.length+' colaborador(es) · '+totalOcc+' ocorrência(s) · ordem alfabética</div>';
+    +grupos.length+' colaborador(es) · '+totalOcc+' ocorrência(s)'+ctxLbl+' · ordem alfabética</div>';
   html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
   html += '<thead><tr style="background:#F9F4FA;color:#555">'
     +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">RE</th>'
     +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Colaborador</th>'
+    +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Contrato</th>'
     +'<th style="padding:8px 10px;text-align:center;border-bottom:.5px solid #e0dfd8">Ocorrências</th>'
     +'<th style="padding:8px 10px;text-align:left;border-bottom:.5px solid #e0dfd8">Status das ocorrências</th>'
     +'</tr></thead><tbody>';
@@ -6559,9 +6742,11 @@ function vtRenderLista(busca, stFil, setor){
     var col = progFindColab(g.colabId);
     var bg = i%2===0?'#fff':'#fdf9ff';
     var total = g.ocorrencias.length;
+    var contratoTxt = col ? escHtml(vtNomeContrato(col.contrato_id)) : '—';
     html += '<tr style="background:'+bg+';cursor:pointer" onclick="vtAbrirColaborador(\''+g.colabId+'\')" title="Clique para ver ocorrências e histórico">'
       +'<td style="padding:8px 10px;border-bottom:.5px solid #f0efe8;font-family:monospace">'+escHtml(col?(col.re||'—'):'—')+'</td>'
       +'<td style="padding:8px 10px;border-bottom:.5px solid #f0efe8;font-weight:600;color:#8B1A6B">'+vtNomeColabHtml(col, g.colabId)+'</td>'
+      +'<td style="padding:8px 10px;border-bottom:.5px solid #f0efe8;font-size:11px;color:#534AB7">'+contratoTxt+'</td>'
       +'<td style="padding:8px 10px;border-bottom:.5px solid #f0efe8;text-align:center;font-weight:700;font-size:14px">'+total+'</td>'
       +'<td style="padding:8px 10px;border-bottom:.5px solid #f0efe8">'+vtBadgesStatus(g)+'</td>'
       +'</tr>';
@@ -6580,6 +6765,10 @@ function vtGerarLista(){
   if(wrap) wrap.innerHTML='<div style="padding:1rem;color:#888">⏳ Importando colaboradores em Verificar de '+label+'...</div>';
   sbFetch('prog_status_diario',{filters:['status=eq.verificar','data=gte.'+ini,'data=lte.'+fim,'deleted_at=is.null']})
     .then(function(rows){
+      var cid = vtGetContratoCtx();
+      if(cid && cid!=='__todos__'){
+        rows = (rows||[]).filter(function(r){ return vtPassaFiltroContrato(r.colaborador_id); });
+      }
       if(!rows||!rows.length){
         progShowToast('Nenhum colaborador em Verificar no período.');
         if(wrap) wrap.innerHTML='<div style="padding:1rem;color:#888;font-size:12px">Nenhum colaborador em Verificar no período selecionado.</div>';
@@ -6611,6 +6800,369 @@ function vtGerarLista(){
     });
 }
 
+function vtLabelAcoes(str){
+  if(!str) return '—';
+  return str.split(',').map(function(d){
+    d = d.trim();
+    var a = VT_ACOES_NOVA.find(function(x){return x.id===d;}) || VT_DECISOES.find(function(x){return x.id===d;});
+    return a ? a.label : d;
+  }).join(', ');
+}
+
+function vtExtrairNumeroVale(str){
+  var m = String(str||'').match(/(\d+)\s*$/);
+  return m ? (parseInt(m[1], 10) || 0) : 0;
+}
+
+function vtMaxNumeroValeLocal(){
+  var max = 0;
+  (typeof vales!=='undefined' ? vales : []).forEach(function(v){
+    max = Math.max(max, vtExtrairNumeroVale(v.numero));
+  });
+  return max;
+}
+
+function vtCarregarBaseNumeroVale(){
+  if(DEMO) return Promise.resolve(vtMaxNumeroValeLocal());
+  return sbFetch('vales', { order: 'numero.desc', limit: 50, select: 'numero' })
+    .then(function(rows){
+      var max = vtMaxNumeroValeLocal();
+      (rows||[]).forEach(function(v){
+        max = Math.max(max, vtExtrairNumeroVale(v.numero));
+      });
+      return max;
+    })
+    .catch(function(){ return vtMaxNumeroValeLocal(); });
+}
+
+function vtReservarNumerosVale(qtd){
+  qtd = qtd || 1;
+  return vtCarregarBaseNumeroVale().then(function(base){
+    var out = [];
+    for(var i=1; i<=qtd; i++){
+      out.push('VALE-' + ('0000' + (base + i)).slice(-4));
+    }
+    return out;
+  });
+}
+
+function vtMontarFatoGerador(tipo, data, desc){
+  var resumo = desc || '';
+  if(resumo.length > 320) resumo = resumo.slice(0, 317) + '…';
+  return 'Tipo: ' + tipo + ' · Data: ' + fmtD(data) + ' · ' + resumo;
+}
+
+function vtAbrirNovaOcorrencia(){
+  _vtNovaColabs = [];
+  var hoje = dataHojeLocal();
+  var tiposOpts = VT_TIPOS_EVENTO.map(function(t){
+    return '<option value="'+escHtml(t)+'">'+escHtml(t)+'</option>';
+  }).join('');
+  var acoesHtml = VT_ACOES_NOVA.map(function(a){
+    return '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;padding:6px 10px;border:.5px solid #e0dfd8;border-radius:6px;background:#fff" id="vt-nova-ac-label-'+a.id+'">'
+      +'<input type="checkbox" id="vt-nova-ac-'+a.id+'" onchange="vtNovaAcChange()" style="cursor:pointer"> '+a.label+'</label>';
+  }).join('');
+
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:640px;width:95vw;max-height:92vh;overflow-y:auto">'
+    +'<div class="mh" style="display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff;z-index:2">'
+    +'<span style="font-weight:700;font-size:15px">📋 Nova Ocorrência — Tratamento Verificar</span>'
+    +'<button class="btn" onclick="closeModal()" style="padding:2px 10px;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    +'<div style="padding:1rem">'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Tipo do Evento *</div>'
+    +'<select class="inp" id="vt-nova-tipo" style="width:100%" onchange="vtNovaTipoChange()">'
+    +'<option value="">Selecione...</option>'+tiposOpts+'</select>'
+    +'<input class="inp" id="vt-nova-tipo-outro" placeholder="Descreva o tipo..." style="width:100%;margin-top:6px;display:none"/>'
+    +'</div>'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Data do Evento *</div>'
+    +'<input class="inp" type="date" id="vt-nova-data" style="width:100%" value="'+hoje+'"/></div>'
+    +'</div>'
+    +'<div style="margin-bottom:12px"><div style="font-size:11px;color:#888;margin-bottom:3px">Descrição do Evento *</div>'
+    +'<textarea id="vt-nova-desc" style="width:100%;min-height:70px;border:.5px solid #e0dfd8;border-radius:6px;padding:8px;font-size:12px;resize:vertical;box-sizing:border-box" placeholder="Descreva o que ocorreu..."></textarea></div>'
+    +'<div style="margin-bottom:12px"><div style="font-weight:700;font-size:12px;color:#333;margin-bottom:6px">Ações indicadas * <span style="font-weight:400;color:#888">(pode selecionar mais de uma)</span></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'+acoesHtml+'</div></div>'
+    +'<div id="vt-nova-vales-wrap" style="display:none;margin-bottom:12px;padding:10px;background:#FFF5F5;border:.5px solid #A32D2D33;border-radius:8px">'
+    +'<div style="font-weight:600;font-size:12px;color:#A32D2D;margin-bottom:6px">💸 Valor do vale por colaborador (R$)</div>'
+    +'<div id="vt-nova-vales-lista" style="font-size:12px;color:#888">Selecione os envolvidos abaixo.</div></div>'
+    +'<div style="margin-bottom:12px"><div style="font-weight:700;font-size:12px;color:#333;margin-bottom:6px">Envolvidos * <span style="font-weight:400;color:#888">(RE ou nome — pode incluir mais de um)</span></div>'
+    +'<div style="position:relative">'
+    +'<input class="inp" id="vt-nova-colab-busca" style="width:100%" placeholder="Buscar por nome ou RE..." oninput="vtNovaBuscarColab(this.value)" autocomplete="off"/>'
+    +'<div id="vt-nova-colab-drop" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:.5px solid #e0dfd8;border-radius:0 0 8px 8px;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.1)"></div>'
+    +'</div>'
+    +'<div id="vt-nova-colab-selecionados" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;min-height:10px"></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;padding-top:10px;border-top:.5px solid #e0dfd8">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" style="background:#8B1A6B;border-color:#8B1A6B;padding:8px 20px" onclick="vtSalvarNovaOcorrencia()">💾 Registrar Ocorrência</button>'
+    +'</div></div></div></div>');
+
+  setTimeout(function(){
+    vtNovaRenderColabs();
+    vtNovaAcChange();
+  }, 50);
+}
+
+function vtNovaTipoChange(){
+  var sel = (document.getElementById('vt-nova-tipo')||{}).value||'';
+  var outro = document.getElementById('vt-nova-tipo-outro');
+  if(outro) outro.style.display = sel==='Outros' ? 'block' : 'none';
+}
+
+function vtNovaAcChange(){
+  VT_ACOES_NOVA.forEach(function(a){
+    var cb = document.getElementById('vt-nova-ac-'+a.id);
+    var lbl = document.getElementById('vt-nova-ac-label-'+a.id);
+    if(cb && lbl) lbl.style.background = cb.checked ? '#f9fff5' : '#fff';
+  });
+  var temVale = document.getElementById('vt-nova-ac-vale') && document.getElementById('vt-nova-ac-vale').checked;
+  var wrap = document.getElementById('vt-nova-vales-wrap');
+  if(wrap) wrap.style.display = temVale ? 'block' : 'none';
+  if(temVale) vtNovaRenderValesInputs();
+}
+
+function vtNovaBuscarColab(q){
+  var drop = document.getElementById('vt-nova-colab-drop'); if(!drop) return;
+  q = (q||'').toLowerCase().trim();
+  if(q.length < 2){ drop.style.display='none'; return; }
+  var jaSel = _vtNovaColabs.map(function(x){ return x.id; });
+  var resultados = (colaboradores||[]).filter(function(c){
+    if(c.ativo === false || c.dispensado === true) return false;
+    if(!vtPassaFiltroContrato(c.id)) return false;
+    var nome = (c.nome||'').toLowerCase();
+    var re = String(c.re||c.matricula||'').toLowerCase();
+    return nome.indexOf(q)>=0 || re.indexOf(q)>=0;
+  }).slice(0, 25);
+  drop.style.display = '';
+  var cidCtx = vtGetContratoCtx();
+  var mostraContrato = !cidCtx || cidCtx==='__todos__';
+  drop.innerHTML = resultados.map(function(c){
+    var ja = jaSel.indexOf(c.id)>=0;
+    return '<div onclick="vtNovaAddColab(\''+c.id+'\')" style="display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:'+(ja?'default':'pointer')+';opacity:'+(ja?0.45:1)+';border-bottom:.5px solid #f0efe8"'
+      +' onmouseenter="if(!'+ja+')this.style.background=\'#f9f4fa\'" onmouseleave="this.style.background=\'\'">'
+      +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600">'+escHtml(c.nome)+'</div>'
+      +'<div style="font-size:10px;color:#888;font-family:monospace">RE: '+escHtml(String(c.re||c.matricula||'—'))+(mostraContrato&&c.contrato_id?' · '+escHtml(vtNomeContrato(c.contrato_id)):'')+'</div></div>'
+      +(ja?'<span style="font-size:10px;color:#aaa">Adicionado</span>':'')+'</div>';
+  }).join('') || '<div style="padding:12px;color:#aaa;font-size:12px;text-align:center">Nenhum colaborador encontrado.</div>';
+}
+
+function vtNovaAddColab(id){
+  if(_vtNovaColabs.some(function(x){ return x.id===id; })) return;
+  var c = progFindColab(id) || colaboradores.find(function(x){ return x.id===id; });
+  if(!c) return;
+  _vtNovaColabs.push({ id:c.id, nome:c.nome, re:c.re||c.matricula||'', contrato_id:c.contrato_id||null, valeValor:'' });
+  var drop = document.getElementById('vt-nova-colab-drop');
+  var busca = document.getElementById('vt-nova-colab-busca');
+  if(drop) drop.style.display='none';
+  if(busca){ busca.value=''; busca.focus(); }
+  vtNovaRenderColabs();
+  vtNovaRenderValesInputs();
+}
+
+function vtNovaRemColab(id){
+  _vtNovaColabs = _vtNovaColabs.filter(function(x){ return x.id!==id; });
+  vtNovaRenderColabs();
+  vtNovaRenderValesInputs();
+}
+
+function vtNovaRenderColabs(){
+  var wrap = document.getElementById('vt-nova-colab-selecionados'); if(!wrap) return;
+  if(!_vtNovaColabs.length){
+    wrap.innerHTML = '<span style="font-size:11px;color:#aaa">Nenhum envolvido selecionado.</span>';
+    return;
+  }
+  wrap.innerHTML = _vtNovaColabs.map(function(c){
+    return '<div style="display:flex;align-items:center;gap:5px;background:#F9F4FA;border:.5px solid #8B1A6B33;border-radius:20px;padding:3px 10px;font-size:11px">'
+      +'<span style="font-weight:600;color:#8B1A6B">'+escHtml(nomeAbrev(c.nome,28))+'</span>'
+      +(c.re?'<span style="color:#888;font-size:10px;font-family:monospace">RE '+escHtml(String(c.re))+'</span>':'')
+      +'<span onclick="vtNovaRemColab(\''+c.id+'\')" style="cursor:pointer;color:#888;margin-left:2px;font-size:13px" title="Remover">×</span>'
+      +'</div>';
+  }).join('');
+}
+
+function vtNovaRenderValesInputs(){
+  var box = document.getElementById('vt-nova-vales-lista'); if(!box) return;
+  var temVale = document.getElementById('vt-nova-ac-vale') && document.getElementById('vt-nova-ac-vale').checked;
+  if(!temVale){ box.innerHTML=''; return; }
+  if(!_vtNovaColabs.length){
+    box.innerHTML = '<span style="color:#854F0B">Selecione os envolvidos acima.</span>';
+    return;
+  }
+  box.innerHTML = _vtNovaColabs.map(function(c, i){
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+      +'<span style="flex:1;font-weight:500">'+escHtml(nomeAbrev(c.nome,32))+(c.re?' <span style="color:#888;font-size:10px">RE '+escHtml(String(c.re))+'</span>':'')+'</span>'
+      +'<span style="font-size:11px;color:#888">R$</span>'
+      +'<input class="inp" type="number" min="0.01" step="0.01" id="vt-nova-vale-'+i+'" style="width:110px;text-align:right" placeholder="0,00" value="'+(c.valeValor||'')+'" oninput="_vtNovaColabs['+i+'].valeValor=this.value"/>'
+      +'</div>';
+  }).join('');
+}
+
+function vtSalvarNovaOcorrencia(){
+  var tipoSel = (document.getElementById('vt-nova-tipo')||{}).value||'';
+  var tipoOutro = ((document.getElementById('vt-nova-tipo-outro')||{}).value||'').trim();
+  var tipo = tipoSel==='Outros' ? tipoOutro : tipoSel;
+  var data = (document.getElementById('vt-nova-data')||{}).value||'';
+  var desc = ((document.getElementById('vt-nova-desc')||{}).value||'').trim();
+  var acoes = VT_ACOES_NOVA.filter(function(a){
+    var cb = document.getElementById('vt-nova-ac-'+a.id);
+    return cb && cb.checked;
+  }).map(function(a){ return a.id; });
+
+  if(!tipo){ progShowToast('⚠ Informe o tipo do evento.','erro'); return; }
+  if(!data){ progShowToast('⚠ Informe a data do evento.','erro'); return; }
+  if(!desc){ progShowToast('⚠ Informe a descrição do evento.','erro'); return; }
+  if(!acoes.length){ progShowToast('⚠ Selecione ao menos uma ação.','erro'); return; }
+  if(!_vtNovaColabs.length){ progShowToast('⚠ Adicione ao menos um envolvido.','erro'); return; }
+
+  var temVale = acoes.indexOf('vale')>=0;
+  if(temVale){
+    for(var vi=0; vi<_vtNovaColabs.length; vi++){
+      var vEl = document.getElementById('vt-nova-vale-'+vi);
+      var vv = vEl ? parseFloat(String(vEl.value).replace(',','.')) : parseFloat(_vtNovaColabs[vi].valeValor);
+      if(!vv || vv<=0){ progShowToast('⚠ Informe o valor do vale para cada envolvido.','erro'); return; }
+      _vtNovaColabs[vi].valeValor = vv;
+    }
+  }
+
+  if(DEMO){ progShowToast('DEMO — ocorrência não salva.'); closeModal(); return; }
+
+  var grupoId = (typeof gerarUUID==='function') ? gerarUUID() : ('grp'+Date.now());
+  var obsBase = desc;
+  var fatoGerador = vtMontarFatoGerador(tipo, data, desc);
+  var qtdVales = temVale ? _vtNovaColabs.length : 0;
+
+  closeModal();
+  progShowToast('⏳ Registrando ocorrência...');
+
+  vtReservarNumerosVale(qtdVales).then(function(numerosVale){
+    var criados = 0, valesOk = 0, valesErro = 0;
+    var proms = _vtNovaColabs.map(function(col, idx){
+      var payload = {
+        colaborador_id: col.id,
+        data_ocorrencia: data,
+        obs_verificar: obsBase,
+        tipo_evento: tipo,
+        origem: 'manual',
+        ocorrencia_grupo_id: grupoId,
+        acoes_propostas: acoes.join(','),
+        status: 'pendente'
+      };
+      if(temVale) payload.vale_valor = col.valeValor;
+
+      return sbInsert('verificar_tratamentos', payload).then(function(rows){
+        var t = rows && rows[0] ? rows[0] : null;
+        if(!t) return;
+        _vtDados.unshift(t);
+        criados++;
+        if(!temVale || !col.valeValor) return;
+        var cFull = progFindColab(col.id) || col;
+        var numVale = numerosVale[idx];
+        var valePayload = {
+          numero: numVale,
+          funcionario_id: col.id,
+          contrato_id: cFull.contrato_id || col.contrato_id || null,
+          item: tipo,
+          motivo: fatoGerador,
+          tipo: 'Desconto folha',
+          valor: col.valeValor,
+          valor_unitario: col.valeValor,
+          quantidade: 1,
+          status: 'A aplicar',
+          data_emissao: data,
+          origem: 'Programação / Tratamento Verificar',
+          observacoes: 'Nova ocorrência manual — ação Vale indicada no cadastro da ocorrência'
+        };
+        return sbInsert('vales', valePayload).then(function(vRows){
+          var v = vRows && vRows[0] ? vRows[0] : null;
+          if(!v || !v.id){ valesErro++; return; }
+          valesOk++;
+          t.vale_id = v.id;
+          if(typeof vales!=='undefined') vales.push(v);
+          _gpValesKey = '';
+          return sbUpdate('verificar_tratamentos', { vale_id: v.id }, 'id=eq.'+t.id);
+        });
+      });
+    });
+
+    return Promise.all(proms).then(function(){
+      var msg = '✅ Ocorrência registrada — '+criados+' tratamento(s)';
+      if(temVale){
+        msg += ' · '+valesOk+' vale(s) na aba Gestão de Ponto';
+        if(valesErro) msg += ' · ⚠ '+valesErro+' vale(s) falharam (número duplicado?)';
+      }
+      progShowToast(msg, valesErro ? 'erro' : undefined);
+      vtCarregarDatasPendentes();
+      vtAtualizarAbaAlerta();
+      vtCarregar();
+    });
+  }).catch(function(e){
+    console.error('vtSalvarNovaOcorrencia:', e);
+    progShowToast('⚠ Erro ao salvar. Execute sql_verificar_ocorrencia_manual.sql no Supabase.','erro');
+  });
+}
+
+function vtCriarValeParaTratamento(t, numVale){
+  if(!t || !t.vale_valor) return Promise.resolve(false);
+  var col = progFindColab(t.colaborador_id) || {};
+  var data = (t.data_ocorrencia||'').split('T')[0];
+  var fato = vtMontarFatoGerador(t.tipo_evento||'Ocorrência', data, t.obs_verificar||'');
+  var valePayload = {
+    numero: numVale,
+    funcionario_id: t.colaborador_id,
+    contrato_id: col.contrato_id || null,
+    item: t.tipo_evento || 'Ocorrência disciplinar',
+    motivo: fato,
+    tipo: 'Desconto folha',
+    valor: t.vale_valor,
+    valor_unitario: t.vale_valor,
+    quantidade: 1,
+    status: 'A aplicar',
+    data_emissao: data,
+    origem: 'Programação / Tratamento Verificar',
+    observacoes: 'Nova ocorrência manual — ação Vale indicada no cadastro da ocorrência'
+  };
+  return sbInsert('vales', valePayload).then(function(vRows){
+    var v = vRows && vRows[0] ? vRows[0] : null;
+    if(!v || !v.id) return false;
+    t.vale_id = v.id;
+    if(typeof vales!=='undefined') vales.push(v);
+    _gpValesKey = '';
+    return sbUpdate('verificar_tratamentos', { vale_id: v.id }, 'id=eq.'+t.id).then(function(){ return true; });
+  });
+}
+
+function vtCompletarValesGrupo(grupoId){
+  if(!grupoId || DEMO){ progShowToast('Nada a gerar.'); return; }
+  var faltantes = (_vtDados||[]).filter(function(t){
+    return t.ocorrencia_grupo_id===grupoId
+      && (t.acoes_propostas||'').split(',').some(function(d){ return d.trim()==='vale'; })
+      && !t.vale_id && t.vale_valor;
+  });
+  if(!faltantes.length){ progShowToast('Todos os vales deste grupo já foram gerados.'); return; }
+  if(!confirm('Gerar '+faltantes.length+' vale(s) faltante(s) na Gestão de Ponto?')) return;
+  progShowToast('⏳ Gerando vales...');
+  vtReservarNumerosVale(faltantes.length).then(function(nums){
+    var ok = 0, er = 0;
+    var chain = Promise.resolve();
+    faltantes.forEach(function(t, i){
+      chain = chain.then(function(){
+        return vtCriarValeParaTratamento(t, nums[i]).then(function(s){ if(s) ok++; else er++; });
+      });
+    });
+    return chain.then(function(){
+      progShowToast('✅ '+ok+' vale(s) gerado(s)'+(er?' · ⚠ '+er+' falha(s)':''), er?'erro':undefined);
+      vtCarregar();
+    });
+  });
+}
+
+document.addEventListener('click', function(e){
+  var drop = document.getElementById('vt-nova-colab-drop');
+  var busca = document.getElementById('vt-nova-colab-busca');
+  if(drop && busca && !busca.contains(e.target) && !drop.contains(e.target)) drop.style.display='none';
+});
+
 
 function vtAbrirTratamento(id){
   var t = _vtDados.find(function(x){return x.id===id;});
@@ -6619,7 +7171,20 @@ function vtAbrirTratamento(id){
   var nome = col?col.nome:'Colaborador';
   var re   = col?(col.re||'—'):'—';
   var resp = usuarioLogado?usuarioLogado.nome:'';
-  var decisoesArr = t.decisoes?t.decisoes.split(',').map(function(d){return d.trim();}):[]; 
+  var decisoesArr = t.decisoes?t.decisoes.split(',').map(function(d){return d.trim();}):[];
+  if(!decisoesArr.length && t.acoes_propostas){
+    decisoesArr = t.acoes_propostas.split(',').map(function(d){return d.trim();}).filter(function(d){
+      return VT_DECISOES.some(function(x){return x.id===d;});
+    });
+  }
+  var outrosGrupo = (t.ocorrencia_grupo_id && _vtDados.length)
+    ? _vtDados.filter(function(x){
+        return x.ocorrencia_grupo_id===t.ocorrencia_grupo_id && x.id!==t.id;
+      }).map(function(x){
+        var cx = progFindColab(x.colaborador_id);
+        return cx ? (cx.nome+(cx.re?' (RE '+cx.re+')':'')) : String(x.colaborador_id).slice(0,8);
+      })
+    : [];
 
   var etapasHtml = VT_ETAPAS.map(function(e){
     var campoResp = 'resp_'+e.id;
@@ -6654,11 +7219,24 @@ function vtAbrirTratamento(id){
     +'<div style="font-size:11px;color:#888">Data da ocorrência</div>'
     +'<div style="font-weight:700;font-size:14px">'+fmtD(t.data_ocorrencia)+'</div>'
     +'</div>'
+    +(t.tipo_evento?'<div style="flex:1;min-width:140px;background:#F9F4FA;border-radius:8px;padding:10px">'
+    +'<div style="font-size:11px;color:#888">Tipo do evento</div>'
+    +'<div style="font-weight:700;font-size:13px">'+escHtml(t.tipo_evento)+'</div></div>':'')
     +'<div style="flex:2;min-width:200px;background:#FFF5F9;border-radius:8px;padding:10px">'
-    +'<div style="font-size:11px;color:#888">Observação original</div>'
+    +'<div style="font-size:11px;color:#888">Descrição / observação</div>'
     +'<div style="font-size:12px;color:#8B1A6B;font-style:italic">'+escHtml(t.obs_verificar||'Sem observação')+'</div>'
     +'</div>'
     +'</div>'
+    +(t.acoes_propostas?'<div style="background:#FFFBEB;border:.5px solid #854F0B33;border-radius:8px;padding:8px 12px;margin-bottom:1rem;font-size:12px">'
+    +'<b>Ações indicadas na abertura:</b> '+escHtml(vtLabelAcoes(t.acoes_propostas))
+    +(t.vale_valor?' · <b style="color:#A32D2D">Vale R$ '+Number(t.vale_valor).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b>':'')
+    +(t.vale_id?' · <span style="color:#3B6D11">✓ Vale na Gestão de Ponto</span>'
+      :((t.acoes_propostas||'').indexOf('vale')>=0?' · <span style="color:#A32D2D">⚠ Vale ainda não gerado</span>':''))
+    +(t.ocorrencia_grupo_id && (t.acoes_propostas||'').indexOf('vale')>=0 && !t.vale_id
+      ?' <button class="btn btn-sm" style="margin-left:6px;font-size:10px;padding:2px 8px" onclick="vtCompletarValesGrupo(\''+t.ocorrencia_grupo_id+'\')">💸 Gerar vales faltantes do grupo</button>':'')
+    +'</div>':'')
+    +(outrosGrupo.length?'<div style="background:#F9F4FA;border-radius:8px;padding:8px 12px;margin-bottom:1rem;font-size:12px">'
+    +'<b>Outros envolvidos na mesma ocorrência:</b> '+escHtml(outrosGrupo.join(' · '))+'</div>':'')
 
     +'<div style="margin-bottom:1rem">'
     +'<div style="font-weight:700;font-size:13px;color:#333;margin-bottom:8px;border-bottom:.5px solid #e0dfd8;padding-bottom:4px">📋 Etapas de Resposta</div>'
@@ -28274,10 +28852,34 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.460',
-  data:   '07/06/2026',
-  build:  '20260607-2415',
+  numero: '7.9.468',
+  data:   '20/06/2026',
+  build:  '20260620-1000',
   log: [
+    {v:'7.9.468', d:'20/06/2026', itens:[
+      'Prog Equipes: progSalvarEquipe permite salvar quando slots fisicamente preenchidos (>=2 IDs) mesmo que colaboradores nao passem no filtro de elegibilidade (folguistas do dia, cor_escala). Salva com toast de aviso. Veiculo e celular obrigatorios continuam bloqueando.',
+    ]},
+    {v:'7.9.467', d:'19/06/2026', itens:[
+      'Entrada NF EPI/EPC: SKU interno (nao da NF), match por descricao com sugestoes ou novo cadastro, fornecedor emitente com busca aproximada, pedido compra no cabecalho, NF normalizada, colunas CA e validade CA, filial/depósito apenas no cabecalho.',
+    ]},
+    {v:'7.9.466', d:'19/06/2026', itens:[
+      'Almoxarifado — aba Inventario: contagem fisica por filial/depósito/contrato com historico e responsavel. Tipos EPI, EPC, Materiais (saldo estoque) e Locacoes (qtd contratada vs contada). Ajuste automatico de saldo apos finalizar. SQL: sql_alm_inventario.sql.',
+    ]},
+    {v:'7.9.465', d:'19/06/2026', itens:[
+      'Tratamento Verificar: filtro por contrato (TMA, Projetos e Gestao de Ponto). Aba em Programacao de Projetos e Gestao de Ponto (todos os contratos). Coluna Contrato na lista; badge do contrato nos chips e modais de Verificar.',
+    ]},
+    {v:'7.9.464', d:'19/06/2026', itens:[
+      'Fix: vales em lote (multiplos envolvidos) geravam numero VALE-0001 duplicado — agora reserva sequencia unica consultando o banco antes de inserir. Botao "Gerar vales faltantes do grupo" no tratamento para corrigir ocorrencias ja salvas sem vale.',
+    ]},
+    {v:'7.9.463', d:'19/06/2026', itens:[
+      'Gestao de Ponto / Vales: colunas Origem e Fato gerador separadas. Vales de Tratamento Verificar registram origem "Programacao / Tratamento Verificar" e fato gerador com tipo, data e descricao da ocorrencia.',
+    ]},
+    {v:'7.9.462', d:'19/06/2026', itens:[
+      'Tratamento Verificar: botao + Nova Ocorrencia com tipo, data, descricao, acoes (Advertencia, Suspensao, Vale, Demissao), busca de envolvidos por RE/nome (multiplos). Vale gera registro na aba Vales (Gestao de Ponto). SQL: sql_verificar_ocorrencia_manual.sql.',
+    ]},
+    {v:'7.9.461', d:'07/06/2026', itens:[
+      'Almoxarifado EPI/EPC — Entrada NF: multiplos produtos por lancamento, fotos da NF com leitura por IA, validacao do almoxarife (descricao, qtd, filial, deposito) antes de ir ao estoque; sugestao de cadastro para itens novos; busca SKU/nome anti-duplicata. SQL sql_alm_entrada_nf.sql.',
+    ]},
     {v:'7.9.460', d:'07/06/2026', itens:[
       'Diario de Bordo (supervisao): botao Encerrar todas para equipes com turno em aberto (1 min faturavel). SQL sql_encerrar_turnos_teste.sql para limpeza em massa no Supabase.',
     ]},
@@ -32560,8 +33162,20 @@ function progSalvarEquipe(eqId){
     return;
   }
   var val = progValidarConfirmacaoEquipe(comp, eqId, data);
-  if(!val.ok){ progShowToast(val.msg); return; }
-  var ids = val.ids;
+  var ids;
+  if(!val.ok){
+    var _idsF = parseColabIds(comp.colaborador_ids).filter(Boolean);
+    var _ehElegib = val.msg.indexOf('Selecione') < 0; // veiculo/celular nao sao bypass
+    if(_ehElegib && _idsF.length >= 2){
+      ids = _idsF;
+      progShowToast('⚠ Salvo com ressalvas: '+val.msg.replace(/^⚠\s*/,''), 5000);
+    } else {
+      progShowToast(val.msg);
+      return;
+    }
+  } else {
+    ids = val.ids;
+  }
   comp.colaborador_ids = JSON.stringify(ids);
   comp.confirmada = true;
   delete comp._dirtySince;
@@ -32654,11 +33268,12 @@ function progMostrarListaStatus(statusFiltro){
     var obsTexto = info.obs ? '💬 '+escHtml(info.obs) : '';
     return '<div style="padding:8px 12px;border-bottom:.5px solid #f0efe8;display:flex;align-items:center;justify-content:space-between;gap:8px">'
       +'<div style="flex:1;min-width:0">'
-      +'<div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(c.nome)+'</div>'
+      +'<div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(c.nome)+(statusFiltro==='verificar'?vtBadgeContratoHtml(c):'')+'</div>'
       +'<div style="font-size:11px;color:#888">'+eq.codigo+(c.cargo?' · '+c.cargo:'')+retorno+justif+'</div>'
       +(obsTexto?'<div style="font-size:11px;color:#8B1A6B;margin-top:2px;font-style:italic">'+obsTexto+'</div>':'')
       +'</div>'
       +'<button id="prog-alt-st-'+c.id+'" style="padding:4px 8px;border-radius:6px;border:.5px solid #e0dfd8;font-size:11px;cursor:pointer;background:#f9f9f7;white-space:nowrap;flex-shrink:0">Alterar</button>'
+      +(statusFiltro==='verificar'?'<button onclick="closeModal();vtIrParaTratamento(\''+c.id+'\')" style="padding:4px 8px;border-radius:6px;border:.5px solid #8B1A6B;font-size:11px;cursor:pointer;background:#F7E2F2;color:#8B1A6B;white-space:nowrap;flex-shrink:0">🔍 Tratar</button>':'')
       +'</div>';
   }).join('');
 
@@ -34106,11 +34721,13 @@ function progRenderPainelDisp(eqs, data, cid){
           +';border:.5px solid '+BRD_CHIP+';border-radius:6px;padding:4px 8px;font-size:11px;margin:1px;max-width:220px">'
           +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
           +'<span style="color:'+COR_CHIP+';font-weight:'+(foiEscalado?'700':'500')+'">'+nomeAbrev(c.nome)+'</span>'
+          +(st==='verificar'?vtBadgeContratoHtml(c):'')
           +'<span style="font-size:9px;color:'+COR_CHIP+'">'+label+labelExtra+retornoTexto+'</span>'
           +'<span style="font-size:9px;color:'+stInfo.cor+'">'+label+retornoTexto+'</span>'
           +(podeManual && !isCal
             ? '<span onclick="progRelevarIndisponivel(\''+c.id+'\')" style="cursor:pointer;color:#185FA5;font-size:10px;margin-left:2px" title="Liberar manualmente">↩</span>'
             : '')
+          +(st==='verificar'?'<span onclick="event.stopPropagation();vtIrParaTratamento(\''+c.id+'\')" title="Abrir Tratamento Verificar" style="cursor:pointer;color:#8B1A6B;font-size:10px;margin-left:2px">🔍</span>':'')
           +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto" title="Alterar status">⋮</span>'
           +'</div>'
           +(obsTexto?'<div style="font-size:10px;color:'+stInfo.cor+';opacity:.75;margin-top:2px;font-style:italic;word-break:break-word">💬 '+escHtml(obsTexto)+'</div>':'')
@@ -36541,14 +37158,14 @@ var DIAS_SEMANA = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 function progAbaSelecionar(aba){
   var escala = document.getElementById('prog-aba-escala');
   var cal    = document.getElementById('prog-aba-calendario');
-  var vt     = document.getElementById('prog-aba-verificar');
+  var vt     = document.getElementById('vt-painel-root');
   var btnE   = document.getElementById('tab-prog-escala');
   var btnC   = document.getElementById('tab-prog-calendario');
   var btnV   = document.getElementById('tab-prog-verificar');
   // Ocultar tudo
   if(escala) escala.style.display='none';
   if(cal)    cal.style.display='none';
-  if(vt)     vt.style.display='none';
+  vtEsconderPainel();
   [btnE,btnC,btnV].forEach(function(b){ if(b){b.style.borderBottomColor='transparent';b.style.color='#888';b.style.fontWeight='500';} });
   if(aba==='escala'){
     if(escala) escala.style.display='';
@@ -36561,9 +37178,9 @@ function progAbaSelecionar(aba){
       if(cal) cal.scrollIntoView({behavior:'smooth', block:'start'});
     }, 80);
   } else if(aba==='verificar'){
-    if(vt) vt.style.display='';
+    vtAbrir('programacao-equipes', progGetCont());
+    vtMontarPainel('pg-programacao-equipes');
     if(btnV){btnV.style.borderBottomColor='#8B1A6B';btnV.style.color='#8B1A6B';btnV.style.fontWeight='600';}
-    vtInicializar();
     setTimeout(function(){
       if(vt) vt.scrollIntoView({behavior:'smooth', block:'start'});
     }, 80);
@@ -43512,6 +44129,7 @@ var MAIN_CONFIG = {
     {id:'sesmt-alm',          label:'📦 Movimentações'},
     {id:'sesmt-itens',        label:'🗂 Catálogo'},
     {id:'sesmt-estoque',      label:'🗄 Estoque'},
+    {id:'sesmt-inventario',   label:'📋 Inventário'},
     {id:'sesmt-epis',         label:'🦺 EPIs / EPCs'},
     {id:'sesmt-ferramentas',  label:'🔧 Ferramentas'},
     {id:'sesmt-uniformes',    label:'👕 Uniformes'},
@@ -43546,7 +44164,7 @@ var ALL_PAGES = ['dashboard','contratos-lista','adiantamentos',
   'obras-projetos','obras-sap','obras-execucao','obras-movSAP',
   'relatorios','cadastros','campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestao-ponto','gestor-painel','plpt-programacao','alm-dashboard',
   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
-  'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
+  'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-inventario','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','obras-requisicao','obras-medicao','plr','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
 
 // ── SIDEBAR RENDER ─────────────────────────────────────────
@@ -43606,6 +44224,7 @@ var SIDEBAR_GROUPS = {
       {id:'sesmt-alm',        icon:'📦', label:'Movimentações'},
       {id:'sesmt-itens',      icon:'🗂', label:'Catálogo de itens'},
       {id:'sesmt-estoque',    icon:'🗄', label:'Estoque'},
+      {id:'sesmt-inventario', icon:'📋', label:'Inventário'},
       {id:'sesmt-epis',       icon:'🦺', label:'EPIs / EPCs'},
     ]},
     {label:'Patrimônio', items:[
@@ -43727,7 +44346,7 @@ function _navPageToMain(pageId){
   if(map[pageId]) return map[pageId];
   if(pageId.indexOf('frotas-')===0) return 'frotas';
   if(pageId.indexOf('sesmt-')===0){
-    var alm = ['sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-vales','sesmt-filiais'];
+    var alm = ['sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-inventario','sesmt-vales','sesmt-filiais'];
     return alm.indexOf(pageId)>=0 ? 'almoxarifado' : 'sesmt';
   }
   if(pageId.indexOf('enel-')===0 || pageId.indexOf('comgas-')===0) return 'sesmt';
@@ -44215,7 +44834,7 @@ function ocultarPaginasSESMTAlmoxarifado(){
     'pg-sesmt-mobilizacao','pg-sesmt-evolucao','pg-sesmt-aptidao',
     'pg-sesmt-dashboard','pg-sesmt-alm','pg-sesmt-itens','pg-sesmt-epis',
     'pg-sesmt-uniformes','pg-sesmt-lavagem','pg-sesmt-ferramentas',
-    'pg-sesmt-locacoes','pg-sesmt-estoque','pg-sesmt-treinamentos','pg-sesmt-turmas',
+    'pg-sesmt-locacoes','pg-sesmt-estoque','pg-sesmt-inventario','pg-sesmt-treinamentos','pg-sesmt-turmas',
     'pg-sesmt-nr6','pg-sesmt-ocorrencias','pg-sesmt-aprovacoes','pg-sesmt-inspecoes',
     'pg-sesmt-vales','pg-sesmt-filiais','pg-sesmt-ficha-epi','pg-alm-dashboard'
     ,'pg-comgas-dashboard','pg-comgas-inspecoes','pg-comgas-checklist',
@@ -44336,7 +44955,7 @@ function showPage(pageId){
    'verbas','lancamentos','aprovacao','obras','relatorios','cadastros',
    'campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
    'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
-   'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
+   'sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-inventario','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
    'obras-projetos','obras-sap','obras-execucao','obras-movSAP','obras-requisicao',
    'obras-medicao','plr','sugestoes',
    'frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao',
@@ -44418,6 +45037,7 @@ function showPage(pageId){
   else if(pageId==='sesmt-itens')      { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('itens'); }); }
   else if(pageId==='sesmt-sap-obra')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('sap-obra'); }); }
   else if(pageId==='sesmt-estoque')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('estoque'); }); }
+  else if(pageId==='sesmt-inventario') { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('inventario'); }); }
   else if(pageId==='sesmt-epis')       { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('epis'); }); }
   else if(pageId==='sesmt-uniformes')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('uniformes'); }); }
   else if(pageId==='sesmt-lavagem')    { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('lavagem'); }); }
@@ -45583,16 +46203,19 @@ var _ppAba = 'programacao';
 
 function ppSetAba(aba){
   _ppAba = aba;
+  vtEsconderPainel();
   // Usar style.display diretamente — mais confiável que classList
   var paineis = {
     'dashboard':   document.getElementById('pp-painel-dashboard'),
     'programacao': document.getElementById('pp-painel-programacao'),
+    'verificar':   document.getElementById('pp-painel-verificar'),
     'requisicoes': document.getElementById('pp-painel-requisicoes'),
     'obras':       document.getElementById('pp-painel-obras')
   };
   var tabs = {
     'dashboard':   document.getElementById('pp-tab-dashboard'),
     'programacao': document.getElementById('pp-tab-programacao'),
+    'verificar':   document.getElementById('pp-tab-verificar'),
     'requisicoes': document.getElementById('pp-tab-requisicoes'),
     'obras':       document.getElementById('pp-tab-obras')
   };
@@ -45609,14 +46232,26 @@ function ppSetAba(aba){
     }
   });
   // Mostrar o selecionado
-  if(paineis[aba]){
+  if(aba==='verificar'){
+    vtAbrir('programacao-projetos', progProjGetCid());
+    vtMontarPainel('pp-painel-verificar');
+    if(paineis.verificar){
+      paineis.verificar.style.display = 'block';
+      paineis.verificar.classList.remove('hidden');
+    }
+    if(tabs.verificar){
+      tabs.verificar.style.borderBottomColor = '#8B1A6B';
+      tabs.verificar.style.color = '#8B1A6B';
+      tabs.verificar.style.fontWeight = '700';
+    }
+  } else if(paineis[aba]){
     paineis[aba].style.display = 'block';
     paineis[aba].classList.remove('hidden');
-  }
-  if(tabs[aba]){
-    tabs[aba].style.borderBottomColor = '#1a1a18';
-    tabs[aba].style.color = '#1a1a18';
-    tabs[aba].style.fontWeight = '700';
+    if(tabs[aba]){
+      tabs[aba].style.borderBottomColor = '#1a1a18';
+      tabs[aba].style.color = '#1a1a18';
+      tabs[aba].style.fontWeight = '700';
+    }
   }
   var tbWrap = document.getElementById('pp-toolbar-wrap');
   if(tbWrap) tbWrap.style.display = (aba === 'programacao') ? 'block' : 'none';
@@ -47176,8 +47811,9 @@ function ppRenderPainelDisp(eqs, data, cid){
           return '<div style="display:inline-flex;flex-direction:column;background:'+s.bg+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:4px 8px;font-size:11px;max-width:230px">'
             +'<div style="display:flex;align-items:center;gap:4px">'
             +'<span style="color:'+s.cor+';font-weight:500">'+nomeAbrev(c.nome)+'</span>'
+            +(st==='verificar'?vtBadgeContratoHtml(c):'')
             +'<span style="color:'+s.cor+';font-size:9px;font-weight:600">'+s.label+ret+'</span>'
-            +(st==='verificar'?'<span onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
+            +(st==='verificar'?'<span onclick="event.stopPropagation();vtIrParaTratamento(\''+c.id+'\')" title="Abrir Tratamento Verificar" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
             +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
             +'</div>'
             +(obs?'<div style="font-size:10px;color:'+s.cor+';opacity:.8;margin-top:2px;font-style:italic;word-break:break-word">💬 '+escHtml(obs)+'</div>':'')
@@ -47261,12 +47897,13 @@ function ppMostrarListaStatus(status){
       var info = (_ppStatusInfo||{})[c.id]||{};
       return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;'
         +'background:'+s.bg+';border-radius:6px;font-size:12px">'
-        +'<div style="flex:1"><div style="font-weight:600;color:'+s.cor+'">'+c.nome+'</div>'
+        +'<div style="flex:1"><div style="font-weight:600;color:'+s.cor+'">'+escHtml(c.nome)+(status==='verificar'?vtBadgeContratoHtml(c):'')+'</div>'
         +(function(){ var _pk=(c.re||'')+'_'+(progProjGetData()||dataHojeLocal()); var _p=_pontoCache[_pk]; if(!_p) return ''; var _e=_p.entrada||(_p.todas_marcacoes&&_p.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})); if(_e) return '<span style="background:#3B6D11;color:#fff;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700">✓ '+(_p.entrada||'')+'</span> '; return ''; }())
         +'<div style="font-size:10px;color:#888">RE '+(c.re||'—')+' · '+(c.cargo||'')+' · Retorno: '+(info.retorno||'—')+'</div></div>'
         +'<button onclick="ppDefinirStatus(\''+c.id+'\',\'disponivel\',null)" '
         +'style="font-size:10px;padding:2px 6px;border-radius:4px;border:.5px solid #3B6D11;'
         +'background:#EAF3DE;color:#3B6D11;cursor:pointer">Liberado</button>'
+        +(status==='verificar'?'<button onclick="closeModal();vtIrParaTratamento(\''+c.id+'\')" style="font-size:10px;padding:2px 6px;border-radius:4px;border:.5px solid #8B1A6B;background:#F7E2F2;color:#8B1A6B;cursor:pointer">🔍</button>':'')
         +'</div>';
     }).join('')
     +'</div><button class="btn" onclick="closeModal()" style="width:100%;margin-top:.75rem">Fechar</button>'
@@ -55084,23 +55721,44 @@ function gpSyncAgora(){
 }
 
 function gpSetAbaBtns(){
-  ['dashboard','registros','limites','ajuste','vales','sync'].forEach(function(a){
+  ['dashboard','registros','limites','ajuste','vales','verificar','sync'].forEach(function(a){
     var el=document.getElementById('gp-tab-'+a); if(el) el.style.display=(a===_gp.aba?'':'none');
     var b=document.getElementById('gp-tab-btn-'+a);
-    if(b){ b.style.color=a===_gp.aba?'#1a1a18':'#888'; b.style.fontWeight=a===_gp.aba?'700':'600'; b.style.borderBottomColor=a===_gp.aba?'#1a1a18':'transparent'; }
+    if(b){ b.style.color=a===_gp.aba?'#1a1a18':'#888'; b.style.fontWeight=a===_gp.aba?'700':'600'; b.style.borderBottomColor=a===_gp.aba?(a==='verificar'?'#8B1A6B':'#1a1a18'):'transparent'; }
   });
 }
 function gpSetAba(aba){ _gp.aba=aba; gpSetAbaBtns(); gpRenderAbaAtual(); }
+function gpRenderVerificar(){
+  vtAbrir('gestao-ponto', _gp.cont || '__todos__');
+  vtMontarPainel('gp-tab-verificar');
+}
 function gpRenderAbaAtual(){
   if(_gp.aba==='dashboard') gpRenderDashboard();
   else if(_gp.aba==='registros') gpRenderRegistros();
   else if(_gp.aba==='limites') gpRenderLimitesHE();
   else if(_gp.aba==='ajuste') gpRenderAjuste();
   else if(_gp.aba==='vales') gpRenderVales();
+  else if(_gp.aba==='verificar') gpRenderVerificar();
   else if(_gp.aba==='sync') gpRenderSync();
 }
 // ── Vales (descontos em folha — origem mau uso de EPI etc.) ─────
 var _gpVales=null, _gpValesKey='';
+function gpValeOrigemTxt(v){
+  return (v && v.origem) ? v.origem : 'Manual';
+}
+function gpValeFatoTxt(v){
+  if(!v) return '—';
+  if(v.fato_gerador) return v.fato_gerador;
+  var o = (v.origem||'').toLowerCase();
+  if(o.indexOf('tratamento verificar')>=0 || o.indexOf('verificar')>=0){
+    return v.motivo || v.observacoes || '—';
+  }
+  var p = [];
+  if(v.motivo) p.push(v.motivo);
+  if(v.item && String(v.item).toLowerCase() !== String(v.motivo||'').toLowerCase()) p.push('Item: '+v.item);
+  if(v.observacoes) p.push(v.observacoes);
+  return p.join(' · ') || '—';
+}
 function gpCarregarValesEpi(cb){
   var key=_gp.ini+'_'+_gp.fim;
   if(_gpValesKey===key && _gpVales){ if(cb)cb(); return; }
@@ -55123,7 +55781,9 @@ function gpRenderVales(){
   function colab(v){ return (colaboradores||[]).find(function(c){return c.id===v.funcionario_id;})||{}; }
   function linhaAplicar(v){ var c=colab(v);
     return '<tr><td style="font-weight:600">'+escHtml(String(c.re||'—'))+'</td><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td>'
-      +'<td>'+escHtml(v.item||'—')+'</td><td style="font-size:11px;color:#888">'+escHtml(v.motivo||'')+(v.origem?' · '+escHtml(v.origem):'')+'</td>'
+      +'<td>'+escHtml(v.item||'—')+'</td>'
+      +'<td style="font-size:11px;white-space:nowrap"><span style="background:#F9F4FA;color:#8B1A6B;border-radius:4px;padding:2px 7px;font-weight:600">'+escHtml(gpValeOrigemTxt(v))+'</span></td>'
+      +'<td style="font-size:11px;color:#555;max-width:240px">'+escHtml(gpValeFatoTxt(v))+'</td>'
       +'<td style="text-align:right;font-weight:700;color:#A32D2D">R$ '+Number(v.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</td>'
       +'<td style="text-align:center">'+(v.assinatura_url?'<a onclick="gpVerAssinaturaVale(\''+v.id+'\')" style="cursor:pointer;color:#185FA5;font-size:11px">✍ ver</a>':'<span style="font-size:10px;color:#854F0B">sem assin.</span>')+'</td>'
       +'<td style="text-align:center"><button class="btn btn-sm btn-pri" onclick="gpValeAplicar(\''+v.id+'\')">Aplicar</button></td></tr>';
@@ -55131,6 +55791,8 @@ function gpRenderVales(){
   function linhaAplicado(v){ var c=colab(v);
     return '<tr><td style="font-weight:600">'+escHtml(String(c.re||'—'))+'</td><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td>'
       +'<td>'+escHtml(v.item||'—')+'</td>'
+      +'<td style="font-size:11px;white-space:nowrap"><span style="background:#F9F4FA;color:#8B1A6B;border-radius:4px;padding:2px 7px;font-weight:600">'+escHtml(gpValeOrigemTxt(v))+'</span></td>'
+      +'<td style="font-size:11px;color:#555;max-width:200px">'+escHtml(gpValeFatoTxt(v))+'</td>'
       +'<td style="text-align:right;font-weight:600">R$ '+Number(v.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</td>'
       +'<td style="text-align:center">'+(v.parcelado?(v.parcelas||1)+'x':'à vista')+'</td>'
       +'<td style="text-align:center;font-weight:600;color:#3B6D11">'+escHtml(_gpMesLabel(v.mes_aplicado))+'</td>'
@@ -55138,9 +55800,9 @@ function gpRenderVales(){
   }
   var totAplicar=aAplicar.reduce(function(s,v){return s+Number(v.valor||0);},0);
   el.innerHTML='<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">💸 Vales a aplicar (descontar) — '+escHtml(gpPeriodoLabel())+' ('+aAplicar.length+' · R$ '+totAplicar.toLocaleString('pt-BR',{minimumFractionDigits:2})+')</span></div>'
-    +(aAplicar.length?'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>RE</th><th>Colaborador</th><th>Item</th><th>Motivo/Origem</th><th style="text-align:right">Valor</th><th style="text-align:center">Assin.</th><th></th></tr></thead><tbody>'+aAplicar.map(linhaAplicar).join('')+'</tbody></table></div>':'<div style="padding:1.5rem;text-align:center;color:#3B6D11">Nenhum vale pendente de aplicação.</div>')+'</div>'
+    +(aAplicar.length?'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>RE</th><th>Colaborador</th><th>Item</th><th>Origem</th><th>Fato gerador</th><th style="text-align:right">Valor</th><th style="text-align:center">Assin.</th><th></th></tr></thead><tbody>'+aAplicar.map(linhaAplicar).join('')+'</tbody></table></div>':'<div style="padding:1.5rem;text-align:center;color:#3B6D11">Nenhum vale pendente de aplicação.</div>')+'</div>'
     +'<div class="card"><div class="ch"><span class="ct">✅ Vales aplicados ('+aplicados.length+')</span></div>'
-    +(aplicados.length?'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>RE</th><th>Colaborador</th><th>Item</th><th style="text-align:right">Valor</th><th style="text-align:center">Forma</th><th style="text-align:center">Mês aplicado</th><th></th></tr></thead><tbody>'+aplicados.map(linhaAplicado).join('')+'</tbody></table></div>':'<div style="padding:1rem;text-align:center;color:#aaa">Nenhum vale aplicado no período.</div>')+'</div>';
+    +(aplicados.length?'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>RE</th><th>Colaborador</th><th>Item</th><th>Origem</th><th>Fato gerador</th><th style="text-align:right">Valor</th><th style="text-align:center">Forma</th><th style="text-align:center">Mês aplicado</th><th></th></tr></thead><tbody>'+aplicados.map(linhaAplicado).join('')+'</tbody></table></div>':'<div style="padding:1rem;text-align:center;color:#aaa">Nenhum vale aplicado no período.</div>')+'</div>';
 }
 function _gpMesLabel(m){ if(!m) return '—'; var p=String(m).split('-'); return p.length>=2?(p[1]+'/'+p[0]):m; }
 function gpVerAssinaturaVale(id){ var v=(_gpVales||[]).find(function(x){return x.id===id;}); if(v&&v.assinatura_url&&typeof inspAbrirFotoFull==='function') inspAbrirFotoFull(v.assinatura_url); else progShowToast('Sem assinatura.'); }
@@ -55151,6 +55813,9 @@ function gpValeAplicar(id){
   setModal('<div class="modal-bg"><div class="modal" style="max-width:430px">'
     +'<h3 style="margin-bottom:.5rem">💸 Aplicar vale na folha</h3>'
     +'<div style="font-size:12px;color:#555;margin-bottom:.6rem"><b>'+escHtml(c.nome||'—')+'</b> · '+escHtml(v.item||'')+'<br>Valor: <b style="color:#A32D2D">R$ '+Number(v.valor||0).toLocaleString('pt-BR',{minimumFractionDigits:2})+'</b></div>'
+    +'<div style="background:#F9F4FA;border-radius:8px;padding:.5rem .65rem;margin-bottom:.6rem;font-size:11px">'
+    +'<div><b>Origem:</b> '+escHtml(gpValeOrigemTxt(v))+'</div>'
+    +'<div style="margin-top:4px"><b>Fato gerador:</b> '+escHtml(gpValeFatoTxt(v))+'</div></div>'
     +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px;font-weight:600">Mês de aplicação na folha *</label><input class="inp" id="gpval-mes" type="month" style="width:100%" value="'+mesAtual+'"/></div>'
     +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px;font-weight:600">Forma de desconto</label><select class="inp" id="gpval-forma" style="width:100%" onchange="document.getElementById(\'gpval-parc-wrap\').style.display=this.value===\'parcelado\'?\'\':\'none\'"><option value="avista">À vista (1x)</option><option value="parcelado">Parcelado</option></select></div>'
     +'<div class="fg" id="gpval-parc-wrap" style="margin-bottom:.6rem;display:none"><label style="font-size:11px;font-weight:600">Nº de parcelas</label><input class="inp" id="gpval-parc" type="number" min="2" value="2" style="width:100%"/></div>'
@@ -59297,7 +59962,7 @@ function _almShowAbaInterna(aba){
     : [];
 
   // Atualizar botões de aba
-  ['alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','vales','filiais','ficha-epi','sap-obra'].forEach(function(a){
+  ['alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','inventario','vales','filiais','ficha-epi','sap-obra'].forEach(function(a){
     var btn = document.getElementById('alm-tab-'+a);
     if(!btn) return;
     btn.style.background  = a===aba ? '#1a1a18' : '';
@@ -59307,7 +59972,7 @@ function _almShowAbaInterna(aba){
 
   // Mostrar só pg-sesmt-[aba] ou pg-sesmt-ficha-epi
   var sesmt_abas = ['alm','itens','uniformes','lavagem','epis','ferramentas','locacoes',
-                    'estoque','vales','filiais'];
+                    'estoque','inventario','vales','filiais'];
   sesmt_abas.forEach(function(a){
     var el = document.getElementById('pg-sesmt-'+a);
     if(el) el.classList[a===aba ? 'remove' : 'add']('hidden');
@@ -59348,6 +60013,7 @@ function _almShowAbaInterna(aba){
     else if(aba==='ferramentas') { if(typeof renderFer==='function')                renderFer(); }
     else if(aba==='locacoes')    { if(typeof renderLocacoes==='function')            renderLocacoes(); }
     else if(aba==='estoque')     { if(typeof renderEstoque==='function')             renderEstoque(); }
+    else if(aba==='inventario')  { if(typeof invInit==='function')                   invInit(); }
     else if(aba==='vales')       { if(typeof renderVales==='function')               renderVales(); }
     else if(aba==='filiais')     { if(typeof renderFiliais==='function')             renderFiliais(); }
     else if(aba==='ficha-epi')   { iniciarFichaEpi(); }
@@ -59719,6 +60385,7 @@ function showAlm(fid){
   sesmtShowTab('alm');
 }
 function renderEpis(){
+  if(typeof almEntNfGarantirCarregado==='function') almEntNfGarantirCarregado(_almEntNfAtualizarBadge);
   var q=(document.getElementById('fil-epi-q')||{}).value||'';
   var t=(document.getElementById('fil-epi-tipo')||{}).value||'';
   var rows=filtrarFilial(epis).filter(function(e){return(!q||e.nome.toLowerCase().indexOf(q.toLowerCase())>=0||fNome(e.responsavel_id).toLowerCase().indexOf(q.toLowerCase())>=0)&&(!t||e.tipo===t);});
@@ -60296,6 +60963,501 @@ function openAjusteItem(tipoFiltro){
     progShowToast('✅ Ajuste registrado: '+tipoAj+(it?' — '+it.nome:''));
     renderEstoque(); renderFer();
   };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// INVENTÁRIO — contagem física por depósito / contrato
+// ═══════════════════════════════════════════════════════════════
+var _invSessoes = [];
+var _invLinhasCache = {};
+var _invSessaoAtual = null;
+var _invView = 'lista';
+
+var INV_TIPOS = [
+  {id:'epi',       label:'EPI',       icon:'🦺'},
+  {id:'epc',       label:'EPC',       icon:'🛡'},
+  {id:'material',  label:'Materiais', icon:'📦'},
+  {id:'locacao',   label:'Locações',  icon:'🏗'},
+  {id:'ferramenta',label:'Ferramentas',icon:'🔧', emBreve:true},
+  {id:'veiculo',   label:'Veículos',  icon:'🚗', emBreve:true}
+];
+var INV_ST_LABEL = {rascunho:'📝 Rascunho', finalizado:'✅ Finalizado', ajustado:'⚙ Ajustado', cancelado:'❌ Cancelado'};
+
+function invLocQtdContrato(l, contratoId){
+  if(!l) return 0;
+  if(!contratoId) return Number(l.quantidade)||1;
+  if(l.contrato_id===contratoId) return Number(l.quantidade)||1;
+  var cq = l.contrato_qtds;
+  if(typeof cq==='string'){ try{ cq=JSON.parse(cq); }catch(e){ cq=null; } }
+  if(cq && cq[contratoId]!=null) return Number(cq[contratoId])||0;
+  return 0;
+}
+
+function invResponsavelColabId(){
+  if(!usuarioLogado || !usuarioLogado.id) return null;
+  var uid = usuarioLogado.id;
+  if((typeof colaboradores!=='undefined'?colaboradores:[]).some(function(c){ return c.id===uid; })) return uid;
+  if((typeof funcs!=='undefined'?funcs:[]).some(function(c){ return c.id===uid; })) return uid;
+  return null;
+}
+
+function invDiff(l){
+  if(l.qtd_contada==null || l.qtd_contada==='') return null;
+  return Number(l.qtd_contada) - Number(l.qtd_sistema||0);
+}
+
+function invNomeFilial(fid){
+  var f = (filiais||[]).find(function(x){ return x.id===fid; });
+  return f ? (f.codigo||'')+' — '+f.nome : '—';
+}
+function invNomeDep(did){
+  var d = (depositos||[]).find(function(x){ return x.id===did; });
+  return d ? d.nome : '—';
+}
+function invNomeCont(cid){
+  if(!cid) return '—';
+  var c = (contratos||[]).find(function(x){ return x.id===cid; });
+  return c ? (c.codigo?c.codigo+' — ':'')+(c.nome||'') : cid.substring(0,8)+'…';
+}
+
+function invGerarNumero(){
+  var ano = new Date().getFullYear();
+  var max = 0;
+  (_invSessoes||[]).forEach(function(s){
+    var m = String(s.numero||'').match(new RegExp('^INV-'+ano+'-(\\d+)$'));
+    if(m) max = Math.max(max, parseInt(m[1],10)||0);
+  });
+  return 'INV-'+ano+'-'+String(max+1).padStart(4,'0');
+}
+
+function invCarregar(cb){
+  if(DEMO){ if(cb) cb(); return; }
+  Promise.all([
+    sbFetch('alm_inventario_sessao',{order:'data_contagem.desc,criado_em.desc',limit:300}),
+    sbFetch('alm_inventario_linha',{order:'nome',limit:8000})
+  ]).then(function(res){
+    _invSessoes = res[0]||[];
+    _invLinhasCache = {};
+    (res[1]||[]).forEach(function(l){
+      if(!_invLinhasCache[l.sessao_id]) _invLinhasCache[l.sessao_id]=[];
+      _invLinhasCache[l.sessao_id].push(l);
+    });
+    if(cb) cb();
+  }).catch(function(e){
+    console.warn('invCarregar:', e);
+    if(cb) cb();
+  });
+}
+
+function invLinhas(sessaoId){
+  return _invLinhasCache[sessaoId] || [];
+}
+
+function invInit(){
+  invCarregar(function(){ invRender(); });
+}
+
+function invRender(){
+  if(_invView==='contagem' && _invSessaoAtual) invRenderContagem();
+  else if(_invView==='resultado' && _invSessaoAtual) invRenderResultado();
+  else invRenderLista();
+}
+
+function invRenderLista(){
+  _invView = 'lista';
+  _invSessaoAtual = null;
+  var el = document.getElementById('inv-conteudo'); if(!el) return;
+  var stF = (document.getElementById('inv-fil-status')||{}).value||'';
+  var lista = (_invSessoes||[]).slice().filter(function(s){
+    if(stF && s.status!==stF) return false;
+    return true;
+  });
+  var rows = lista.map(function(s){
+    var lin = invLinhas(s.id);
+    var divs = lin.filter(function(l){ var d=invDiff(l); return d!==null && d!==0; }).length;
+    var tipos = (s.tipos||[]).map(function(t){
+      var o = INV_TIPOS.find(function(x){return x.id===t;});
+      return o ? o.icon : t;
+    }).join(' ');
+    return '<tr style="cursor:pointer" onclick="invAbrirSessao(\''+s.id+'\')">'
+      +'<td style="font-family:monospace;font-weight:600">'+escHtml(s.numero||'—')+'</td>'
+      +'<td>'+fmtD(s.data_contagem)+'</td>'
+      +'<td style="font-size:11px">'+escHtml(invNomeDep(s.deposito_id))+'</td>'
+      +'<td style="font-size:11px">'+escHtml(invNomeCont(s.contrato_id))+'</td>'
+      +'<td>'+tipos+'</td>'
+      +'<td style="font-size:11px">'+escHtml(s.responsavel_nome||'—')+'</td>'
+      +'<td>'+(INV_ST_LABEL[s.status]||s.status)+'</td>'
+      +'<td style="text-align:center">'+(divs?'<span style="color:#A32D2D;font-weight:700">'+divs+'</span>':'<span style="color:#3B6D11">0</span>')+'</td>'
+      +'<td style="text-align:center;font-size:11px">'+lin.length+'</td>'
+      +'</tr>';
+  }).join('');
+  el.innerHTML = '<div class="card" style="margin-bottom:1rem">'
+    +'<div class="ch" style="flex-wrap:wrap;gap:8px">'
+    +'<span class="ct">📋 Inventário físico</span>'
+    +'<select class="inp" id="inv-fil-status" style="width:140px" onchange="invRenderLista()">'
+    +'<option value="">Todos status</option>'
+    +'<option value="rascunho">Rascunho</option><option value="finalizado">Finalizado</option>'
+    +'<option value="ajustado">Ajustado</option><option value="cancelado">Cancelado</option>'
+    +'</select>'
+    +'<button class="btn btn-pri" onclick="invAbrirNova()">+ Nova contagem</button>'
+    +'</div></div>'
+    +'<div class="card"><div style="overflow-x:auto"><table class="tbl tbl-r" style="font-size:12px">'
+    +'<thead><tr><th>Nº</th><th>Data</th><th>Depósito</th><th>Contrato</th><th>Tipos</th><th>Responsável</th><th>Status</th><th>Diverg.</th><th>Itens</th></tr></thead>'
+    +'<tbody>'+(rows||'<tr><td colspan="9" style="padding:2rem;text-align:center;color:#aaa">Nenhuma contagem registrada. Clique em "+ Nova contagem".</td></tr>')+'</tbody>'
+    +'</table></div></div>';
+  if(stF){ var sf=document.getElementById('inv-fil-status'); if(sf) sf.value=stF; }
+}
+
+function invPopularFiliaisDep(selectFilId, selectDepId, filVal, depVal){
+  var sf = document.getElementById(selectFilId);
+  var sd = document.getElementById(selectDepId);
+  if(sf){
+    sf.innerHTML = '<option value="">Selecione a filial...</option>'
+      +(filiais||[]).map(function(f){ return '<option value="'+f.id+'">'+escHtml(f.codigo+' — '+f.nome)+'</option>'; }).join('');
+    if(filVal) sf.value = filVal;
+  }
+  invAtualizarDep(selectFilId, selectDepId, depVal);
+}
+
+function invAtualizarDep(selectFilId, selectDepId, depVal){
+  var sf = document.getElementById(selectFilId);
+  var sd = document.getElementById(selectDepId);
+  if(!sd) return;
+  var fid = sf ? sf.value : '';
+  var deps = (depositos||[]).filter(function(d){ return d.ativo!==false && (!fid || d.filial_id===fid); });
+  sd.innerHTML = '<option value="">Selecione o depósito...</option>'
+    +deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome)+'</option>'; }).join('');
+  if(depVal && deps.some(function(d){return d.id===depVal;})) sd.value = depVal;
+}
+
+function invAbrirNova(){
+  var hoje = dataHoje();
+  var respNome = usuarioLogado ? (usuarioLogado.nome||usuarioLogado.email||'') : '';
+  var tiposHtml = INV_TIPOS.map(function(t){
+    var dis = t.emBreve ? ' disabled title="Próxima fase"' : '';
+    return '<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border:.5px solid #e0dfd8;border-radius:6px;cursor:'+(t.emBreve?'not-allowed':'pointer')+';opacity:'+(t.emBreve?0.5:1)+'">'
+      +'<input type="checkbox" class="inv-nova-tipo" value="'+t.id+'"'+dis+'/> '+t.icon+' '+t.label+(t.emBreve?' (em breve)':'')+'</label>';
+  }).join('');
+  var contOpts = '<option value="">— Opcional —</option>'
+    +(contratos||[]).filter(function(c){return c.status!=='Cancelado';}).map(function(c){
+      return '<option value="'+c.id+'">'+escHtml((c.codigo?c.codigo+' — ':'')+(c.nome||''))+'</option>';
+    }).join('');
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">'
+    +'<h3 style="margin-bottom:.75rem">📋 Nova contagem de inventário</h3>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Data da contagem *</div>'
+    +'<input class="inp" type="date" id="inv-nova-data" value="'+hoje+'" style="width:100%"/></div>'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Responsável</div>'
+    +'<input class="inp" id="inv-nova-resp" value="'+escHtml(respNome)+'" style="width:100%" placeholder="Nome do responsável"/></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Filial *</div>'
+    +'<select class="inp" id="inv-nova-filial" style="width:100%" onchange="invAtualizarDep(\'inv-nova-filial\',\'inv-nova-dep\')"></select></div>'
+    +'<div><div style="font-size:11px;color:#888;margin-bottom:3px">Depósito *</div>'
+    +'<select class="inp" id="inv-nova-dep" style="width:100%"></select></div>'
+    +'</div>'
+    +'<div style="margin-bottom:10px"><div style="font-size:11px;color:#888;margin-bottom:3px">Contrato CENA (obrigatório se incluir Locações)</div>'
+    +'<select class="inp" id="inv-nova-cont" style="width:100%">'+contOpts+'</select></div>'
+    +'<div style="margin-bottom:10px"><div style="font-weight:600;font-size:12px;margin-bottom:6px">O que inventariar *</div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px">'+tiposHtml+'</div></div>'
+    +'<div style="margin-bottom:10px"><div style="font-size:11px;color:#888;margin-bottom:3px">Observações</div>'
+    +'<textarea class="inp" id="inv-nova-obs" style="width:100%;height:50px"></textarea></div>'
+    +'<div style="display:flex;gap:8px"><button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="inv-nova-btn" style="flex:1.5">▶ Iniciar contagem</button></div>'
+    +'</div></div>');
+  setTimeout(function(){
+    invPopularFiliaisDep('inv-nova-filial','inv-nova-dep');
+    var btn = document.getElementById('inv-nova-btn');
+    if(btn) btn.onclick = invSalvarNova;
+  }, 50);
+}
+
+function invTiposSelecionados(){
+  var out = [];
+  document.querySelectorAll('.inv-nova-tipo:checked').forEach(function(el){ out.push(el.value); });
+  return out;
+}
+
+function invMontarLinhas(sessao){
+  var tipos = sessao.tipos || [];
+  var filialId = sessao.filial_id;
+  var depId = sessao.deposito_id;
+  var contratoId = sessao.contrato_id || '';
+  var linhas = [];
+  var wantEpi = tipos.indexOf('epi')>=0;
+  var wantEpc = tipos.indexOf('epc')>=0;
+  var wantMat = tipos.indexOf('material')>=0;
+
+  if(wantEpi || wantEpc || wantMat){
+    (estoque||[]).forEach(function(e){
+      if(filialId && e.filial_id && e.filial_id!==filialId) return;
+      if(depId && e.deposito_id && e.deposito_id!==depId) return;
+      if(contratoId && e.contrato_id && e.contrato_id!==contratoId) return;
+      var t = (e.tipo||'').trim();
+      var invTipo = null;
+      if(t==='EPI' && wantEpi) invTipo = 'epi';
+      else if(t==='EPC' && wantEpc) invTipo = 'epc';
+      else if((t==='Material'||t==='Consumível') && wantMat) invTipo = 'material';
+      if(!invTipo) return;
+      linhas.push({
+        sessao_id: sessao.id, tipo_inventario: invTipo, origem_tabela: 'estoque', origem_id: e.id,
+        codigo: e.codigo||e.sku||'', nome: e.nome||'—', unidade: e.unidade_medida||'UN',
+        filial_id: e.filial_id, deposito_id: e.deposito_id, contrato_id: e.contrato_id||contratoId||null,
+        qtd_sistema: Number(e.saldo)||0, qtd_contada: null, obs: '', ajuste_aplicado: false
+      });
+    });
+  }
+
+  if(tipos.indexOf('locacao')>=0){
+    (locacoes||[]).forEach(function(l){
+      if(depId && l.deposito_id && l.deposito_id!==depId) return;
+      if(filialId && l.filial_id && l.filial_id!==filialId) return;
+      var qtd = contratoId ? invLocQtdContrato(l, contratoId) : (Number(l.quantidade)||1);
+      if(contratoId && qtd<=0) return;
+      linhas.push({
+        sessao_id: sessao.id, tipo_inventario: 'locacao', origem_tabela: 'locacoes', origem_id: l.id,
+        codigo: l.numero_contrato||'', nome: l.nome||'—', unidade: 'UN',
+        filial_id: l.filial_id, deposito_id: l.deposito_id,
+        contrato_id: contratoId || l.contrato_id || null,
+        locadora: l.locadora||'', numero_contrato: l.numero_contrato||'',
+        qtd_sistema: qtd, qtd_contada: null, obs: '', ajuste_aplicado: false
+      });
+    });
+  }
+  return linhas;
+}
+
+function invSalvarNova(){
+  var data = (document.getElementById('inv-nova-data')||{}).value||'';
+  var resp = (document.getElementById('inv-nova-resp')||{}).value||'';
+  var filialId = (document.getElementById('inv-nova-filial')||{}).value||'';
+  var depId = (document.getElementById('inv-nova-dep')||{}).value||'';
+  var contratoId = (document.getElementById('inv-nova-cont')||{}).value||'';
+  var obs = (document.getElementById('inv-nova-obs')||{}).value||'';
+  var tipos = invTiposSelecionados();
+  if(!data||!filialId||!depId){ progShowToast('⚠ Preencha data, filial e depósito.'); return; }
+  if(!tipos.length){ progShowToast('⚠ Selecione ao menos um tipo para inventariar.'); return; }
+  if(tipos.indexOf('locacao')>=0 && !contratoId){ progShowToast('⚠ Para Locações, selecione o contrato CENA.'); return; }
+
+  var payload = {
+    numero: invGerarNumero(),
+    data_contagem: data,
+    responsavel_id: invResponsavelColabId(),
+    responsavel_nome: resp.trim() || (usuarioLogado?usuarioLogado.nome:''),
+    filial_id: filialId, deposito_id: depId,
+    contrato_id: contratoId || null,
+    tipos: tipos, status: 'rascunho', obs: obs
+  };
+
+  var btn = document.getElementById('inv-nova-btn');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Criando...'; }
+
+  function continuar(sessao){
+    var linhas = invMontarLinhas(sessao);
+    if(!linhas.length){
+      progShowToast('⚠ Nenhum item encontrado para os filtros selecionados.');
+      if(btn){ btn.disabled=false; btn.textContent='▶ Iniciar contagem'; }
+      return;
+    }
+    _invLinhasCache[sessao.id] = linhas;
+    if(DEMO){
+      linhas.forEach(function(l,i){ l.id='invl'+Date.now()+i; });
+      closeModal();
+      invAbrirSessao(sessao.id);
+      progShowToast('✅ Contagem iniciada — '+linhas.length+' itens.');
+      return;
+    }
+    sbInsert('alm_inventario_linha', linhas).then(function(res){
+      if(res) res.forEach(function(row,i){ if(linhas[i]) linhas[i].id = row.id; });
+      closeModal();
+      invAbrirSessao(sessao.id);
+      progShowToast('✅ Contagem iniciada — '+linhas.length+' itens.');
+    }).catch(function(e){
+      console.error(e);
+      progShowToast('⚠ Erro ao gravar linhas.','erro');
+      if(btn){ btn.disabled=false; btn.textContent='▶ Iniciar contagem'; }
+    });
+  }
+
+  if(DEMO){
+    var sess = Object.assign({id:'invs'+Date.now()}, payload);
+    _invSessoes.unshift(sess);
+    continuar(sess);
+    return;
+  }
+  sbInsert('alm_inventario_sessao', payload).then(function(r){
+    var id = r && r[0] && r[0].id;
+    if(!id){ progShowToast('⚠ Erro ao criar sessão.','erro'); if(btn){ btn.disabled=false; btn.textContent='▶ Iniciar contagem'; } return; }
+    var sess = Object.assign({id:id}, payload);
+    _invSessoes.unshift(sess);
+    continuar(sess);
+  }).catch(function(e){
+    console.error(e);
+    progShowToast('⚠ Erro ao criar sessão. Execute sql_alm_inventario.sql no Supabase.','erro');
+    if(btn){ btn.disabled=false; btn.textContent='▶ Iniciar contagem'; }
+  });
+}
+
+function invAbrirSessao(sessaoId){
+  var s = (_invSessoes||[]).find(function(x){ return x.id===sessaoId; });
+  if(!s) return;
+  _invSessaoAtual = s;
+  if(s.status==='rascunho'){ _invView='contagem'; invRenderContagem(); }
+  else { _invView='resultado'; invRenderResultado(); }
+}
+
+function invRenderContagem(){
+  var s = _invSessaoAtual; if(!s) return;
+  var el = document.getElementById('inv-conteudo'); if(!el) return;
+  var linhas = invLinhas(s.id);
+  var mostrarZero = (document.getElementById('inv-mostrar-zero')||{}).checked;
+  if(!mostrarZero) linhas = linhas.filter(function(l){ return Number(l.qtd_sistema||0)>0; });
+  var porTipo = {};
+  linhas.forEach(function(l){
+    if(!porTipo[l.tipo_inventario]) porTipo[l.tipo_inventario]=[];
+    porTipo[l.tipo_inventario].push(l);
+  });
+  var html = '<div class="card" style="margin-bottom:1rem"><div class="ch" style="flex-wrap:wrap;gap:8px">'
+    +'<button class="btn" onclick="invRenderLista()" style="font-size:11px">← Voltar</button>'
+    +'<span class="ct">📋 '+escHtml(s.numero||'')+' · '+fmtD(s.data_contagem)+'</span>'
+    +'<span style="font-size:11px;color:#888">'+escHtml(invNomeDep(s.deposito_id))+'</span>'
+    +'<label style="font-size:11px;display:flex;align-items:center;gap:4px;margin-left:auto">'
+    +'<input type="checkbox" id="inv-mostrar-zero" onchange="invRenderContagem()" '+(mostrarZero?'checked':'')+'/> Mostrar saldo zero</label>'
+    +'<button class="btn btn-pri" onclick="invFinalizar()">✅ Finalizar contagem</button>'
+    +'</div></div>';
+
+  Object.keys(porTipo).sort().forEach(function(tipo){
+    var lbl = (INV_TIPOS.find(function(x){return x.id===tipo;})||{label:tipo}).label;
+    html += '<div class="card" style="margin-bottom:1rem"><div style="padding:.6rem 1rem;font-weight:700;border-bottom:.5px solid #f0efe8;background:#f9f9f7">'
+      +escHtml(lbl)+' ('+porTipo[tipo].length+')</div><div style="overflow-x:auto"><table class="tbl tbl-r" style="font-size:12px">'
+      +'<thead><tr><th>Código</th><th>Item</th>'+(tipo==='locacao'?'<th>Locadora</th>':'')
+      +'<th style="text-align:right">Sistema</th><th style="text-align:right;width:100px">Contado</th><th>Obs</th></tr></thead><tbody>';
+    porTipo[tipo].forEach(function(l){
+      html += '<tr><td style="font-family:monospace;font-size:11px">'+escHtml(l.codigo||'—')+'</td>'
+        +'<td style="font-weight:500">'+escHtml(l.nome)+'</td>'
+        +(tipo==='locacao'?'<td style="font-size:11px">'+escHtml(l.locadora||'—')+'</td>':'')
+        +'<td style="text-align:right;font-weight:600">'+Number(l.qtd_sistema||0)+'</td>'
+        +'<td style="text-align:right"><input class="inp inv-qtd" data-lid="'+l.id+'" type="number" min="0" step="1" '
+        +'value="'+(l.qtd_contada!=null?l.qtd_contada:'')+'" style="width:80px;text-align:right;padding:4px 6px" onchange="invSalvarQtdLinha(\''+l.id+'\',this.value)"/></td>'
+        +'<td><input class="inp inv-obs" data-lid="'+l.id+'" value="'+escHtml(l.obs||'')+'" style="width:100%;min-width:120px;font-size:11px;padding:4px 6px" onchange="invSalvarObsLinha(\''+l.id+'\',this.value)"/></td></tr>';
+    });
+    html += '</tbody></table></div></div>';
+  });
+  if(!linhas.length) html += '<div class="card" style="padding:2rem;text-align:center;color:#aaa">Nenhum item nesta contagem.</div>';
+  el.innerHTML = html;
+}
+
+function invSalvarQtdLinha(linhaId, val){
+  var s = _invSessaoAtual; if(!s || s.status!=='rascunho') return;
+  var linhas = _invLinhasCache[s.id]||[];
+  var l = linhas.find(function(x){ return x.id===linhaId; });
+  if(!l) return;
+  l.qtd_contada = val===''?null:Number(val);
+  if(!DEMO) sbUpdate('alm_inventario_linha',{qtd_contada:l.qtd_contada},'id=eq.'+linhaId);
+}
+
+function invSalvarObsLinha(linhaId, val){
+  var s = _invSessaoAtual; if(!s) return;
+  var linhas = _invLinhasCache[s.id]||[];
+  var l = linhas.find(function(x){ return x.id===linhaId; });
+  if(!l) return;
+  l.obs = val||'';
+  if(!DEMO) sbUpdate('alm_inventario_linha',{obs:l.obs},'id=eq.'+linhaId);
+}
+
+function invFinalizar(){
+  var s = _invSessaoAtual; if(!s || s.status!=='rascunho') return;
+  var linhas = invLinhas(s.id);
+  var semCont = linhas.filter(function(l){ return l.qtd_contada==null || l.qtd_contada===''; }).length;
+  if(semCont && !confirm('Ainda há '+semCont+' item(ns) sem quantidade contada. Finalizar mesmo assim?')) return;
+  s.status = 'finalizado';
+  s.finalizado_em = new Date().toISOString();
+  s.finalizado_por = usuarioLogado ? (usuarioLogado.nome||usuarioLogado.email||'') : '';
+  if(!DEMO){
+    sbUpdate('alm_inventario_sessao',{
+      status:'finalizado', finalizado_em:s.finalizado_em, finalizado_por:s.finalizado_por
+    },'id=eq.'+s.id).then(function(){ _invView='resultado'; invRenderResultado(); progShowToast('✅ Contagem finalizada.'); });
+  } else {
+    _invView='resultado'; invRenderResultado(); progShowToast('✅ Contagem finalizada.');
+  }
+}
+
+function invRenderResultado(){
+  var s = _invSessaoAtual; if(!s) return;
+  var el = document.getElementById('inv-conteudo'); if(!el) return;
+  var linhas = invLinhas(s.id);
+  var divs = linhas.filter(function(l){ var d=invDiff(l); return d!==null && d!==0; });
+  var ok = linhas.filter(function(l){ var d=invDiff(l); return d!==null && d===0; });
+  var pend = linhas.filter(function(l){ return l.qtd_contada==null || l.qtd_contada===''; });
+
+  function row(l){
+    var d = invDiff(l);
+    var cor = d===null?'#888':d===0?'#3B6D11':d>0?'#185FA5':'#A32D2D';
+    var tipoLbl = (INV_TIPOS.find(function(x){return x.id===l.tipo_inventario;})||{label:l.tipo_inventario}).label;
+    return '<tr><td style="font-size:10px">'+escHtml(tipoLbl)+'</td>'
+      +'<td style="font-weight:500">'+escHtml(l.nome)+'</td>'
+      +(l.tipo_inventario==='locacao'?'<td style="font-size:11px">'+escHtml(l.locadora||'—')+'</td>':'')
+      +'<td style="text-align:right">'+Number(l.qtd_sistema||0)+'</td>'
+      +'<td style="text-align:right">'+(l.qtd_contada!=null?l.qtd_contada:'—')+'</td>'
+      +'<td style="text-align:right;font-weight:700;color:'+cor+'">'+(d!=null?(d>0?'+':'')+d:'—')+'</td>'
+      +'<td style="font-size:11px;color:#666">'+escHtml(l.obs||'')+'</td></tr>';
+  }
+
+  var temLoc = linhas.some(function(l){ return l.tipo_inventario==='locacao'; });
+  el.innerHTML = '<div class="card" style="margin-bottom:1rem"><div class="ch" style="flex-wrap:wrap;gap:8px">'
+    +'<button class="btn" onclick="invRenderLista()" style="font-size:11px">← Lista</button>'
+    +'<span class="ct">📊 Resultado — '+escHtml(s.numero||'')+'</span>'
+    +'<span style="font-size:11px">'+(INV_ST_LABEL[s.status]||s.status)+'</span>'
+    +(s.status==='finalizado'?'<button class="btn btn-pri" onclick="invAplicarAjustes()" style="margin-left:auto;background:#3B6D11">⚙ Aplicar ajustes de estoque</button>':'')
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8;font-size:12px">'
+    +'<div style="text-align:center"><div style="font-size:20px;font-weight:800">'+linhas.length+'</div><div style="color:#888">Itens</div></div>'
+    +'<div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#3B6D11">'+ok.length+'</div><div style="color:#888">Conferidos OK</div></div>'
+    +'<div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#A32D2D">'+divs.length+'</div><div style="color:#888">Divergências</div></div>'
+    +'<div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#854F0B">'+pend.length+'</div><div style="color:#888">Sem contagem</div></div>'
+    +'</div></div>'
+    +(temLoc?'<div style="padding:0 1rem 8px;font-size:11px;color:#534AB7">🏗 <b>Locações:</b> divergência compara quantidade contada vs contratada (locadora/contrato). Não altera saldo automaticamente.</div>':'')
+    +'<div class="card"><div style="padding:.6rem 1rem;font-weight:700;border-bottom:.5px solid #f0efe8">Divergências ('+divs.length+')</div>'
+    +'<div style="overflow-x:auto"><table class="tbl tbl-r" style="font-size:12px"><thead><tr>'
+    +'<th>Tipo</th><th>Item</th>'+(temLoc?'<th>Locadora</th>':'')
+    +'<th style="text-align:right">Sistema</th><th style="text-align:right">Contado</th><th style="text-align:right">Δ</th><th>Obs</th></tr></thead><tbody>'
+    +(divs.length?divs.map(row).join(''):'<tr><td colspan="7" style="padding:1rem;text-align:center;color:#3B6D11">Nenhuma divergência 🎉</td></tr>')
+    +'</tbody></table></div></div>';
+}
+
+function invAplicarAjustes(){
+  var s = _invSessaoAtual;
+  if(!s || s.status!=='finalizado'){ progShowToast('⚠ Só é possível ajustar contagem finalizada.'); return; }
+  var linhas = invLinhas(s.id).filter(function(l){
+    return l.tipo_inventario!=='locacao' && l.origem_tabela==='estoque' && !l.ajuste_aplicado
+      && l.qtd_contada!=null && Number(l.qtd_contada)!==Number(l.qtd_sistema||0);
+  });
+  if(!linhas.length){ progShowToast('Nenhum ajuste de estoque pendente (locações não alteram saldo).'); return; }
+  if(!confirm('Aplicar '+linhas.length+' ajuste(s) de saldo no estoque?')) return;
+
+  var done = 0;
+  function prox(i){
+    if(i>=linhas.length){
+      s.status = 'ajustado';
+      if(!DEMO) sbUpdate('alm_inventario_sessao',{status:'ajustado'},'id=eq.'+s.id);
+      if(typeof renderEstoque==='function') renderEstoque();
+      invRenderResultado();
+      progShowToast('✅ '+done+' saldo(s) atualizado(s).');
+      return;
+    }
+    var l = linhas[i];
+    var novoSaldo = Number(l.qtd_contada);
+    var e = (estoque||[]).find(function(x){ return x.id===l.origem_id; });
+    if(e) e.saldo = novoSaldo;
+    if(DEMO){
+      l.ajuste_aplicado = true; done++; prox(i+1); return;
+    }
+    sbUpdate('estoque',{saldo:novoSaldo},'id=eq.'+l.origem_id).then(function(){
+      return sbUpdate('alm_inventario_linha',{ajuste_aplicado:true},'id=eq.'+l.id);
+    }).then(function(){ l.ajuste_aplicado=true; done++; prox(i+1); })
+    .catch(function(e){ console.error(e); prox(i+1); });
+  }
+  prox(0);
 }
 
 function renderFer(){
@@ -63664,11 +64826,12 @@ function getContratoColaborador(colab){
 
 // ══ EPIs/EPCs — sub-abas (lista / ficha / cadastro) ════════════
 function epiTabView(v){
-  ['lista','ficha','cad','fichas'].forEach(function(x){
+  ['lista','entrada','ficha','cad','fichas'].forEach(function(x){
     var d=document.getElementById('epi-view-'+x); if(d) d.style.display=(x===v?'':'none');
     var b=document.getElementById('epiv-btn-'+x); if(b){ if(x===v) b.classList.add('btn-pri'); else b.classList.remove('btn-pri'); }
   });
   if(v==='lista'){ if(typeof renderEpis==='function') renderEpis(); }
+  else if(v==='entrada'){ almEntNfGarantirCarregado(renderAlmEntradaNf); }
   else if(v==='ficha'){ if(typeof iniciarFichaEpi==='function') iniciarFichaEpi(); }
   else if(v==='cad'){ renderEpiCatalogo(); }
   else if(v==='fichas'){ renderEpiFichas(); }
@@ -64389,6 +65552,620 @@ function salvarEntrada(){
     progShowToast('✅ Item cadastrado no estoque: '+nome+' ('+qtd+' un)');
   }
   closeModal(); renderEstoque();
+}
+
+// ══ ENTRADA NF — múltiplos itens, OCR e validação almoxarife ═══════════════
+var _almEntradasNf = [], _almEntNfCarregado = false, _almEntNfDraft = null;
+var _almEntNfBuscaTimer = null;
+
+function _almEntNfParseRow(r){
+  var row = Object.assign({}, r);
+  try{ row.fotos = Array.isArray(row.fotos) ? row.fotos : JSON.parse(row.fotos || '[]'); }catch(e){ row.fotos = []; }
+  try{ row.itens = Array.isArray(row.itens) ? row.itens : JSON.parse(row.itens || '[]'); }catch(e){ row.itens = []; }
+  return row;
+}
+function _almEntNfCarregarLocal(){
+  try{
+    var raw = localStorage.getItem('alm_entradas_nf');
+    if(raw) _almEntradasNf = JSON.parse(raw).map(_almEntNfParseRow);
+  }catch(e){ _almEntradasNf = []; }
+}
+function _almEntNfSalvarLocal(){
+  try{ localStorage.setItem('alm_entradas_nf', JSON.stringify(_almEntradasNf)); }catch(e){}
+}
+function almEntNfGarantirCarregado(cb){
+  if(_almEntNfCarregado){ if(cb) cb(); return; }
+  if(DEMO){ _almEntNfCarregarLocal(); _almEntNfCarregado = true; if(cb) cb(); return; }
+  sbFetch('alm_entradas_nf', {order:'criado_em.desc'}).then(function(r){
+    _almEntradasNf = (r || []).map(_almEntNfParseRow);
+    _almEntNfCarregado = true;
+    if(cb) cb();
+  }).catch(function(){
+    _almEntNfCarregarLocal();
+    _almEntNfCarregado = true;
+    if(cb) cb();
+  });
+}
+function _almEntNfPendentes(){
+  return _almEntradasNf.filter(function(e){ return e.status === 'pendente_validacao'; });
+}
+function _almEntNfAtualizarBadge(){
+  var n = _almEntNfPendentes().length;
+  var b = document.getElementById('epiv-pend-badge');
+  if(b){ b.style.display = n ? '' : 'none'; b.textContent = String(n); }
+}
+function _almEntNfNovaLinha(partial){
+  return Object.assign({
+    _key: 'ln' + Date.now() + Math.random().toString(36).slice(2, 6),
+    sku: '', codigo: '', descricao: '', quantidade: 1, valor_unitario: 0,
+    ca: '', ca_validade: '', unidade: 'UN', tipo_item: 'epi',
+    item_id: null, novo_item: false, aguardando_escolha: false, match_msg: '',
+    filial_id: '', deposito_id: ''
+  }, partial || {});
+}
+function _almEntNfNorm(s){ return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function _almEntNfNormChave(s){
+  return String(s || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+function almEntNfNormNfNum(s){
+  var t = String(s || '').replace(/[.\-\/\\,\s]/g, '').replace(/\D/g, '');
+  t = t.replace(/^0+/, '') || '';
+  return t;
+}
+function almEntNfSepararCaDescricao(desc, caInformado){
+  var ca = String(caInformado || '').replace(/\D/g, '');
+  var descricao = String(desc || '').trim();
+  if(!ca){
+    var m = descricao.match(/\bC\.?\s*A\.?\s*[:\-]?\s*(\d{4,8})\b/i) || descricao.match(/\bCA\s*(\d{4,8})\b/i);
+    if(m){ ca = m[1]; descricao = descricao.replace(m[0], '').replace(/\s{2,}/g, ' ').trim(); }
+  } else {
+    descricao = descricao.replace(new RegExp('\\bC\\.?\\s*A\\.?\\s*[:\\-]?\\s*' + ca + '\\b', 'i'), '').replace(/\s{2,}/g, ' ').trim();
+  }
+  return { ca: ca, descricao: descricao };
+}
+function _almEntNfScoreNome(a, b){
+  var na = _almEntNfNormChave(a), nb = _almEntNfNormChave(b);
+  if(!na || !nb) return 0;
+  if(na === nb) return 100;
+  if(na.indexOf(nb) >= 0 || nb.indexOf(na) >= 0) return 82;
+  var wa = na.length > 4 ? na.substring(0, Math.min(12, na.length)) : na;
+  var wb = nb.length > 4 ? nb.substring(0, Math.min(12, nb.length)) : nb;
+  if(wa === wb) return 75;
+  return 0;
+}
+function almEntNfBuscarItens(term, somenteDescricao){
+  var q = _almEntNfNorm(term);
+  if(!q || q.length < 2) return [];
+  var out = [], seen = {};
+  function add(it, fonte, score){
+    if(!it || seen[it.id]) return;
+    seen[it.id] = true;
+    out.push({ id: it.id, nome: it.nome, sku: it.sku || '', codigo: it.codigo || '', tipo_item: it.tipo_item || (fonte === 'epi' ? 'epi' : 'material'), fonte: fonte, score: score || 50 });
+  }
+  (itens_catalogo || []).filter(function(i){ return i.ativo !== false; }).forEach(function(it){
+    var sc = _almEntNfScoreNome(q, it.nome);
+    if(!somenteDescricao){
+      var sk = _almEntNfNorm(it.sku), cd = _almEntNfNorm(it.codigo);
+      if((sk && sk.indexOf(_almEntNfNormChave(term)) >= 0) || (cd && cd.indexOf(_almEntNfNormChave(term)) >= 0)) sc = Math.max(sc, 70);
+    }
+    if(sc >= 50 || _almEntNfNorm(it.nome).indexOf(q) >= 0) add(it, 'catalogo', sc);
+  });
+  if(!somenteDescricao){
+    (_epiCatalogo || []).filter(function(i){ return i.ativo !== false; }).forEach(function(it){
+      var sc = _almEntNfScoreNome(q, it.nome);
+      if(sc >= 50 || _almEntNfNorm(it.nome).indexOf(q) >= 0)
+        add({ id: 'epicat_' + it.id, nome: it.nome, sku: '', codigo: '', tipo_item: (it.tipo || 'EPI').toLowerCase() === 'epc' ? 'epc' : 'epi' }, 'epi', sc);
+    });
+  }
+  return out.sort(function(a, b){ return (b.score || 0) - (a.score || 0); }).slice(0, 8);
+}
+function almEntNfBuscarFornecedor(nome){
+  var q = _almEntNfNormChave(nome);
+  if(!q || q.length < 3) return [];
+  var lista = (fornecedores || []).concat(_fornDB || []);
+  var vistos = {}, out = [];
+  lista.forEach(function(f){
+    if(!f || vistos[f.id]) return;
+    var sc = Math.max(_almEntNfScoreNome(nome, f.razao_social), _almEntNfScoreNome(nome, f.nome_fantasia));
+    if(sc >= 50) { vistos[f.id] = true; out.push({ f: f, score: sc }); }
+  });
+  return out.sort(function(a, b){ return b.score - a.score; }).slice(0, 6);
+}
+function almEntNfMatchLinha(ln){
+  var nome = _almEntNfNorm(ln.descricao);
+  if(!nome){ ln.item_id = null; ln.novo_item = false; ln.aguardando_escolha = false; ln.match_msg = ''; return ln; }
+  if(ln.novo_item && ln.item_id){ return ln; }
+  var exato = (itens_catalogo || []).find(function(it){
+    return it.ativo !== false && _almEntNfNorm(it.nome) === nome;
+  });
+  if(exato){
+    ln.item_id = exato.id; ln.novo_item = false; ln.aguardando_escolha = false;
+    ln.sku = exato.sku || ln.sku || '';
+    ln.codigo = ln.codigo || exato.codigo || '';
+    ln.tipo_item = exato.tipo_item || ln.tipo_item || 'epi';
+    ln.match_msg = '✓ Cadastrado: ' + exato.nome;
+    return ln;
+  }
+  var similares = almEntNfBuscarItens(ln.descricao, true);
+  if(similares.length){
+    ln.item_id = null; ln.novo_item = false; ln.aguardando_escolha = true;
+    ln.sku = '';
+    ln.match_msg = '⚠ Descrição não confere — escolha um item cadastrado ou marque novo cadastro.';
+    return ln;
+  }
+  ln.item_id = null; ln.novo_item = false; ln.aguardando_escolha = true;
+  ln.sku = '';
+  ln.match_msg = '⚠ Sem correspondência — vincule a um cadastrado ou confirme novo item.';
+  return ln;
+}
+function almEntNfMarcarNovoItem(idx){
+  if(!_almEntNfDraft || !_almEntNfDraft.itens[idx]) return;
+  var ln = _almEntNfDraft.itens[idx];
+  ln.item_id = null; ln.novo_item = true; ln.aguardando_escolha = false; ln.sku = '';
+  ln.match_msg = '➕ Será criado novo cadastro na validação.';
+  almEntNfRenderModal();
+}
+function almEntNfPropagarFilialDep(){
+  if(!_almEntNfDraft) return;
+  var fid = (document.getElementById('alm-nf-filial') || {}).value || _almEntNfDraft.filial_id || '';
+  var dep = (document.getElementById('alm-nf-dep') || {}).value || _almEntNfDraft.deposito_id || '';
+  _almEntNfDraft.filial_id = fid; _almEntNfDraft.deposito_id = dep;
+  (_almEntNfDraft.itens || []).forEach(function(ln){ ln.filial_id = fid; ln.deposito_id = dep; });
+}
+function almEntNfSugestoesFornHtml(lista){
+  if(!lista || !lista.length) return '';
+  return '<div style="margin-top:4px;font-size:10px">Fornecedor cadastrado? '
+    + lista.map(function(x){
+        var lbl = (x.f.razao_social || x.f.nome_fantasia || '').trim();
+        return '<a href="#" style="color:#185FA5;margin-right:8px" onclick="event.preventDefault();almEntNfAplicarForn(\'' + String(x.f.id).replace(/'/g, '') + '\')">' + escHtml(lbl) + '</a>';
+      }).join('')
+    + '</div>';
+}
+function almEntNfAplicarForn(id){
+  if(!_almEntNfDraft) return;
+  var f = (fornecedores || []).concat(_fornDB || []).find(function(x){ return x.id === id; });
+  if(!f) return;
+  _almEntNfDraft.fornecedor_id = f.id;
+  _almEntNfDraft.fornecedor = f.razao_social || f.nome_fantasia || '';
+  var inp = document.getElementById('alm-nf-forn'); if(inp) inp.value = _almEntNfDraft.fornecedor;
+  almEntNfRenderModal();
+}
+function almEntNfOnFornInput(){
+  if(!_almEntNfDraft) return;
+  var v = ((document.getElementById('alm-nf-forn') || {}).value || '').trim();
+  _almEntNfDraft.fornecedor = v;
+  _almEntNfDraft.fornecedor_id = null;
+  clearTimeout(_almEntNfBuscaTimer);
+  _almEntNfBuscaTimer = setTimeout(function(){
+    var el = document.getElementById('alm-nf-forn-sug'); if(!el) return;
+    var sug = almEntNfBuscarFornecedor(v);
+    el.innerHTML = sug.length ? almEntNfSugestoesFornHtml(sug) : (v.length >= 3 ? '<div style="margin-top:4px;font-size:10px;color:#854F0B">Fornecedor não encontrado no cadastro — será mantido o nome da NF.</div>' : '');
+  }, 400);
+}
+function almEntNfProcessarFornecedorIA(nomeNF){
+  var n = String(nomeNF || '').trim();
+  if(!n) return { fornecedor: '', fornecedor_id: null };
+  var cenaChaves = ['cena', 'cenabr', 'cena br', 'cena brasil'];
+  var nn = _almEntNfNorm(n);
+  if(cenaChaves.some(function(c){ return nn.indexOf(c) >= 0; })) return { fornecedor: '', fornecedor_id: null, ignorado_emitente_errado: true };
+  var sug = almEntNfBuscarFornecedor(n);
+  if(sug.length && sug[0].score >= 82) return { fornecedor: sug[0].f.razao_social || n, fornecedor_id: sug[0].f.id };
+  return { fornecedor: n, fornecedor_id: null };
+}
+function renderAlmEntradaNf(){
+  var box = document.getElementById('epi-view-entrada'); if(!box) return;
+  _almEntNfAtualizarBadge();
+  var pends = _almEntNfPendentes();
+  var linhas = pends.map(function(e){
+    var nIt = (e.itens || []).length;
+    var fil = (filiais || []).find(function(f){ return f.id === e.filial_id; });
+    return '<tr>'
+      +'<td>' + fmtD((e.data_nf || e.criado_em || '').slice(0, 10)) + '</td>'
+      +'<td style="font-weight:600">' + escHtml(e.nota_fiscal || '—') + '</td>'
+      +'<td>' + escHtml(e.fornecedor || '—') + '</td>'
+      +'<td>' + escHtml(fil ? (fil.codigo || fil.nome) : '—') + '</td>'
+      +'<td style="text-align:center">' + nIt + '</td>'
+      +'<td><span class="bdg warn" style="font-size:10px">Aguardando validação</span></td>'
+      +'<td style="white-space:nowrap">'
+      +'<button class="btn btn-sm btn-pri" onclick="openEntradaEstoqueNf(\'' + e.id + '\')">✓ Validar</button> '
+      +'<button class="btn btn-sm" onclick="almEntNfCancelar(\'' + e.id + '\')">✕</button>'
+      +'</td></tr>';
+  }).join('');
+  box.innerHTML = '<div class="card"><div class="ch"><span class="ct">📥 Entradas por NF — aguardando validação (' + pends.length + ')</span>'
+    +'<button class="btn btn-pri" onclick="openEntradaEstoqueNf()">+ Nova entrada NF</button></div>'
+    +'<div style="padding:.4rem .9rem;font-size:11px;color:#666;border-bottom:.5px solid #f0efe8">'
+    + 'Fotografe a NF, o sistema lê os itens automaticamente. Revise descrição, quantidade, filial e depósito antes de confirmar no estoque.'
+    +'</div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
+    +'<th>Data</th><th>NF</th><th>Fornecedor</th><th>Filial</th><th style="text-align:center">Itens</th><th>Status</th><th></th>'
+    +'</tr></thead><tbody>' + (linhas || '<tr><td colspan="7" style="text-align:center;color:#aaa;padding:1.5rem">Nenhuma entrada pendente. Use <b>+ Nova entrada NF</b>.</td></tr>') + '</tbody></table></div></div>';
+}
+function openEntradaEstoqueNf(entradaId){
+  almEntNfGarantirCarregado(function(){
+    if(typeof epiCarregarCatalogo === 'function' && !_epiCatCarregado) epiCarregarCatalogo();
+    if(typeof erpCarregarFornecedores === 'function' && (!fornecedores || !fornecedores.length)) erpCarregarFornecedores();
+    var exist = entradaId ? _almEntradasNf.find(function(e){ return e.id === entradaId; }) : null;
+    _almEntNfDraft = exist ? JSON.parse(JSON.stringify(exist)) : {
+      id: null, nota_fiscal: '', fornecedor: '', fornecedor_id: null, pedido_compra: '',
+      data_nf: dataHoje(), filial_id: '', deposito_id: '', contrato_id: '', status: 'pendente_validacao',
+      fotos: [], itens: [], obs: ''
+    };
+    if(!_almEntNfDraft.itens.length) _almEntNfDraft.itens.push(_almEntNfNovaLinha());
+    almEntNfPropagarFilialDep();
+    almEntNfRenderModal();
+  });
+}
+function almEntNfFilOpts(sel){
+  return '<option value="">Filial...</option>' + (filiais || []).map(function(f){
+    return '<option value="' + f.id + '"' + (sel === f.id ? ' selected' : '') + '>' + escHtml(f.codigo + ' — ' + f.nome) + '</option>';
+  }).join('');
+}
+function almEntNfDepOpts(filId, sel){
+  var lista = filId ? (depositos || []).filter(function(d){ return d.filial_id === filId && d.ativo; }) : [];
+  return '<option value="">Depósito...</option>' + lista.map(function(d){
+    return '<option value="' + d.id + '"' + (sel === d.id ? ' selected' : '') + '>' + escHtml(d.nome) + '</option>';
+  }).join('');
+}
+function almEntNfTipoOpts(sel){
+  return ['epi', 'epc', 'material', 'ferramenta', 'vestimenta', 'consumivel'].map(function(t){
+    return '<option value="' + t + '"' + (sel === t ? ' selected' : '') + '>' + tipoItemLabel(t) + '</option>';
+  }).join('');
+}
+function almEntNfRenderLinhasTabela(){
+  var d = _almEntNfDraft; if(!d) return '';
+  return (d.itens || []).map(function(ln, idx){
+    var msgCls = ln.novo_item ? 'color:#A32D2D' : (ln.item_id ? 'color:#3B6D11' : 'color:#854F0B');
+    var sug = (!ln.item_id && !ln.novo_item && ln.descricao) ? almEntNfBuscarItens(ln.descricao, true).slice(0, 3) : [];
+    var sugHtml = sug.map(function(s){
+      return '<a href="#" style="color:#185FA5;margin-right:6px" onclick="event.preventDefault();almEntNfAplicarMatch(' + idx + ',\'' + String(s.id).replace(/'/g, '') + '\')">' + escHtml(s.nome) + '</a>';
+    }).join('');
+    var acoesNovo = (!ln.item_id && ln.aguardando_escolha) ? ' <button type="button" class="btn btn-sm" style="font-size:9px;padding:1px 5px;margin-top:2px" onclick="almEntNfMarcarNovoItem(' + idx + ')">+ Novo cadastro</button>' : '';
+    return '<tr data-ln="' + idx + '">'
+      +'<td><input class="inp" style="width:88px;font-size:11px" type="date" value="' + escHtml((ln.ca_validade || '').slice(0, 10)) + '" onchange="almEntNfOnCampo(' + idx + ',\'ca_validade\',this.value)"/></td>'
+      +'<td><input class="inp" style="width:64px;font-size:11px" value="' + escHtml(ln.ca || '') + '" placeholder="CA" oninput="almEntNfOnCampo(' + idx + ',\'ca\',this.value)"/></td>'
+      +'<td><input class="inp" style="width:72px;font-size:11px;background:#f7f7f5" value="' + escHtml(ln.sku || '') + '" placeholder="SKU interno" title="Preenchido pelo cadastro ou manualmente" oninput="almEntNfOnCampo(' + idx + ',\'sku\',this.value)"/></td>'
+      +'<td><input class="inp alm-nf-cod" data-idx="' + idx + '" style="width:72px;font-size:11px" value="' + escHtml(ln.codigo || '') + '" placeholder="Cód. NF" oninput="almEntNfOnCampo(' + idx + ',\'codigo\',this.value)"/></td>'
+      +'<td><input class="inp alm-nf-desc" data-idx="' + idx + '" style="min-width:150px;font-size:11px" value="' + escHtml(ln.descricao || '') + '" placeholder="Descrição *" oninput="almEntNfOnCampo(' + idx + ',\'descricao\',this.value)"/>'
+      +'<div id="alm-nf-sug-' + idx + '" style="font-size:10px;margin-top:2px;' + msgCls + '">' + escHtml(ln.match_msg || '') + (sugHtml ? '<div style="margin-top:2px">' + sugHtml + '</div>' : '') + acoesNovo + '</div></td>'
+      +'<td><input class="inp" style="width:52px;font-size:11px" type="number" min="1" value="' + (ln.quantidade || 1) + '" onchange="almEntNfOnCampo(' + idx + ',\'quantidade\',this.value)"/></td>'
+      +'<td><select class="inp" style="width:72px;font-size:11px" onchange="almEntNfOnCampo(' + idx + ',\'tipo_item\',this.value)">' + almEntNfTipoOpts(ln.tipo_item || 'epi') + '</select></td>'
+      +'<td style="text-align:center"><button class="btn btn-sm" style="padding:2px 6px" onclick="almEntNfRemLinha(' + idx + ')">✕</button></td>'
+      +'</tr>';
+  }).join('');
+}
+function almEntNfRenderModal(){
+  var d = _almEntNfDraft; if(!d) return;
+  var contOpts = '<option value="">Sem contrato</option>' + (contratos || []).map(function(c){
+    return '<option value="' + c.id + '"' + (d.contrato_id === c.id ? ' selected' : '') + '>' + escHtml(c.codigo) + '</option>';
+  }).join('');
+  var fotosHtml = (d.fotos || []).map(function(f, i){
+    return '<div style="position:relative;display:inline-block"><img src="' + (f.dataUrl || f.url || '') + '" style="height:56px;border-radius:6px;border:1px solid #ddd"/>'
+      +'<button onclick="almEntNfRemFoto(' + i + ')" style="position:absolute;top:-4px;right:-4px;background:#A32D2D;color:#fff;border:none;border-radius:50%;width:16px;height:16px;font-size:10px;cursor:pointer">✕</button></div>';
+  }).join('');
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:960px;max-height:92vh;overflow:auto">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
+    +'<h3 style="margin:0">📥 Entrada NF — múltiplos itens' + (d.id ? ' (validação)' : '') + '</h3>'
+    +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:.55rem;margin-bottom:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Nota fiscal</label><input class="inp" id="alm-nf-num" style="width:100%" value="' + escHtml(d.nota_fiscal || '') + '" onblur="this.value=almEntNfNormNfNum(this.value)||this.value"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Fornecedor (emitente da NF)</label>'
+    +'<input class="inp" id="alm-nf-forn" style="width:100%" value="' + escHtml(d.fornecedor || '') + '" oninput="almEntNfOnFornInput()"/>'
+    +'<div id="alm-nf-forn-sug"></div></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Pedido de compra / RC</label>'
+    +'<input class="inp" id="alm-nf-pedido" style="width:100%" value="' + escHtml(d.pedido_compra || '') + '" placeholder="Pedido, Requisição, RC..."/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Data NF</label><input class="inp" id="alm-nf-data" type="date" style="width:100%" value="' + (d.data_nf || dataHoje()).slice(0, 10) + '"/></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.55rem;margin-bottom:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Filial *</label>'
+    +'<select class="inp" id="alm-nf-filial" style="width:100%" onchange="almEntNfAtualizarDepPadrao();almEntNfPropagarFilialDep()">' + almEntNfFilOpts(d.filial_id) + '</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Depósito *</label>'
+    +'<select class="inp" id="alm-nf-dep" style="width:100%" onchange="almEntNfPropagarFilialDep()">' + almEntNfDepOpts(d.filial_id, d.deposito_id) + '</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato</label>'
+    +'<select class="inp" id="alm-nf-cont" style="width:100%">' + contOpts + '</select></div>'
+    +'</div>'
+    +'<div style="border:1px dashed #ccc;border-radius:8px;padding:.65rem;margin-bottom:.6rem;background:#fafaf8">'
+    +'<div style="font-size:11px;font-weight:600;margin-bottom:6px">📷 Fotos da NF</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">' + (fotosHtml || '<span style="font-size:11px;color:#888">Nenhuma foto</span>') + '</div>'
+    +'<input type="file" id="alm-nf-file" accept="image/*" multiple style="display:none" onchange="almEntNfAddFotos(this)"/>'
+    +'<button class="btn btn-sm" onclick="document.getElementById(\'alm-nf-file\').click()">+ Adicionar foto(s)</button> '
+    +'<button class="btn btn-sm btn-pri" id="alm-nf-btn-ia" onclick="almEntNfLerIA()" ' + ((d.fotos || []).length ? '' : 'disabled') + '>🤖 Ler NF com IA</button>'
+    +'<span id="alm-nf-ia-status" style="font-size:11px;color:#666;margin-left:8px"></span></div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+    +'<span style="font-size:11px;font-weight:600">Itens da nota (' + (d.itens || []).length + ')</span>'
+    +'<button class="btn btn-sm" onclick="almEntNfAddLinha()">+ Linha</button></div>'
+    +'<div style="overflow-x:auto;max-height:280px;overflow-y:auto;border:.5px solid #eee;border-radius:6px">'
+    +'<table class="tbl" style="font-size:11px"><thead><tr>'
+    +'<th>Val. CA</th><th>CA</th><th>SKU interno</th><th>Cód. NF</th><th>Descrição</th><th>Qtd</th><th>Tipo</th><th></th>'
+    +'</tr></thead><tbody id="alm-nf-linhas">' + almEntNfRenderLinhasTabela() + '</tbody></table></div>'
+    +'<div style="font-size:10px;color:#888;margin-top:4px">Filial e depósito valem para todos os itens (cabeçalho). SKU interno vem do cadastro — não use o código da NF como SKU.</div>'
+    +'<div style="margin-top:.6rem"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Observações</label>'
+    +'<input class="inp" id="alm-nf-obs" style="width:100%" value="' + escHtml(d.obs || '') + '" placeholder="Opcional"/></div>'
+    +'<div style="display:flex;gap:8px;margin-top:.85rem;flex-wrap:wrap">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1;min-width:100px">Cancelar</button>'
+    +'<button class="btn" onclick="almEntNfSalvarPendente()" style="flex:1;min-width:120px">💾 Salvar rascunho</button>'
+    +'<button class="btn btn-pri" onclick="almEntNfConfirmar()" style="flex:1;min-width:140px">✓ Validar e lançar no estoque</button>'
+    +'</div></div></div>');
+  setTimeout(function(){ if(d.fornecedor) almEntNfOnFornInput(); }, 60);
+}
+function almEntNfAtualizarDepPadrao(){
+  var fid = (document.getElementById('alm-nf-filial') || {}).value || '';
+  var sel = document.getElementById('alm-nf-dep'); if(!sel) return;
+  var depAtual = (document.getElementById('alm-nf-dep') || {}).value || (_almEntNfDraft && _almEntNfDraft.deposito_id) || '';
+  sel.innerHTML = almEntNfDepOpts(fid, depAtual);
+  if(_almEntNfDraft) _almEntNfDraft.filial_id = fid;
+}
+function almEntNfOnCampo(idx, campo, val){
+  if(!_almEntNfDraft || !_almEntNfDraft.itens[idx]) return;
+  var ln = _almEntNfDraft.itens[idx];
+  if(campo === 'quantidade') ln.quantidade = Math.max(1, parseInt(val) || 1);
+  else ln[campo] = val;
+  if(campo === 'descricao'){
+    if(ln.item_id && !_almEntNfNorm(ln.descricao)) { ln.item_id = null; ln.sku = ''; }
+    clearTimeout(_almEntNfBuscaTimer);
+    _almEntNfBuscaTimer = setTimeout(function(){
+      if(ln.item_id && !ln.novo_item) return;
+      ln.novo_item = false;
+      almEntNfMatchLinha(ln);
+      almEntNfRenderLinhasOnly();
+    }, 350);
+  }
+}
+function almEntNfRenderLinhasOnly(){
+  var tb = document.getElementById('alm-nf-linhas');
+  if(tb) tb.innerHTML = almEntNfRenderLinhasTabela();
+}
+function almEntNfAplicarMatch(idx, itemId){
+  if(!_almEntNfDraft) return;
+  var it = (itens_catalogo || []).find(function(x){ return x.id === itemId; });
+  if(!it) return;
+  var ln = _almEntNfDraft.itens[idx];
+  ln.item_id = it.id; ln.novo_item = false; ln.aguardando_escolha = false;
+  ln.descricao = it.nome; ln.sku = it.sku || ''; ln.codigo = ln.codigo || it.codigo || '';
+  ln.tipo_item = it.tipo_item || 'epi';
+  ln.match_msg = '✓ Vinculado: ' + it.nome;
+  almEntNfRenderLinhasOnly();
+}
+function almEntNfAddLinha(){
+  if(!_almEntNfDraft) return;
+  almEntNfPropagarFilialDep();
+  _almEntNfDraft.itens.push(_almEntNfNovaLinha({ filial_id: _almEntNfDraft.filial_id, deposito_id: _almEntNfDraft.deposito_id }));
+  almEntNfRenderLinhasOnly();
+}
+function almEntNfRemLinha(idx){
+  if(!_almEntNfDraft || _almEntNfDraft.itens.length <= 1) return;
+  _almEntNfDraft.itens.splice(idx, 1);
+  almEntNfRenderModal();
+}
+function almEntNfAddFotos(inp){
+  if(!inp || !inp.files || !_almEntNfDraft) return;
+  Array.prototype.forEach.call(inp.files, function(file){
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      _almEntNfDraft.fotos.push({ nome: file.name, mime: file.type || 'image/jpeg', dataUrl: ev.target.result, base64: (ev.target.result.split(',')[1] || '') });
+      almEntNfRenderModal();
+    };
+    reader.readAsDataURL(file);
+  });
+  inp.value = '';
+}
+function almEntNfRemFoto(i){
+  if(!_almEntNfDraft) return;
+  _almEntNfDraft.fotos.splice(i, 1);
+  almEntNfRenderModal();
+}
+function almEntNfLerIA(){
+  if(!_almEntNfDraft || !_almEntNfDraft.fotos.length){ progShowToast('Adicione ao menos uma foto da NF.', 'erro'); return; }
+  var btn = document.getElementById('alm-nf-btn-ia');
+  var st = document.getElementById('alm-nf-ia-status');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Lendo...'; }
+  if(st) st.textContent = 'Analisando imagem(ns)...';
+  var blocks = [];
+  (_almEntNfDraft.fotos || []).slice(0, 4).forEach(function(f){
+    var mime = (f.mime && f.mime.indexOf('image') >= 0) ? f.mime : 'image/jpeg';
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: mime, data: f.base64 || (f.dataUrl || '').split(',')[1] } });
+  });
+  blocks.push({ type: 'text', text: 'Você é especialista em notas fiscais brasileiras de EPI/EPC e materiais.\n\nREGRAS CRÍTICAS:\n1) fornecedor = EMITENTE/REMETENTE/VENDEDOR da NF (quem vendeu). NUNCA use destinatário/tomador/cliente (empresa compradora, ex. CENA).\n2) pedido_compra = número de Pedido de Compra, Requisição de Compra, RC, OC, pedido — procure no corpo, observações, dados adicionais ou rodapé da NF.\n3) numero_nf = apenas dígitos, sem zeros à esquerda desnecessários.\n4) Em cada item: codigo = código do produto NA NF (não é SKU interno do comprador). NÃO preencha campo sku.\n5) Separe CA (Certificado de Aprovação, 4-8 dígitos) da descrição — descricao SEM o texto do CA.\n6) ca_validade = data de validade do CA em YYYY-MM-DD se você souber pela base CA/ePI ou se estiver na NF; senão null.\n7) Não invente itens que não estejam na tabela de produtos.\n\nExtraia JSON:\n{"numero_nf":"12345","fornecedor":"Razão social do EMITENTE","pedido_compra":"RC-123","data_emissao":"2026-01-15","itens":[{"codigo":"REF-NF","descricao":"Capacete classe B","quantidade":10,"valor_unitario":25.5,"unidade":"UN","ca":"12345","ca_validade":"2028-06-30"}]}\n\nResponda SOMENTE JSON válido, sem markdown.' });
+  var apiUrl = (window.location.hostname === 'localhost' || window.location.protocol === 'file:') ? 'https://api.anthropic.com/v1/messages' : 'https://cena-proxy.marcos-afe.workers.dev';
+  var headers = { 'Content-Type': 'application/json' };
+  if(apiUrl.indexOf('anthropic.com') >= 0) headers['anthropic-dangerous-direct-browser-access'] = 'true';
+  fetch(apiUrl, { method: 'POST', headers: headers, body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 3000, messages: [{ role: 'user', content: blocks }] }) })
+    .then(function(r){ if(!r.ok) return r.text().then(function(t){ throw new Error('HTTP ' + r.status); }); return r.json(); })
+    .then(function(data){
+      var text = (data.content || []).find(function(c){ return c.type === 'text'; }) || {};
+      var raw = (text.text || '').replace(/```json|```/g, '').trim();
+      var parsed; try{ parsed = JSON.parse(raw); }catch(e){ var m = raw.match(/\{[\s\S]*\}/); parsed = m ? JSON.parse(m[0]) : null; }
+      if(!parsed) throw new Error('JSON inválido');
+      if(parsed.numero_nf) _almEntNfDraft.nota_fiscal = almEntNfNormNfNum(parsed.numero_nf);
+      var fornIA = parsed.fornecedor || parsed.emitente || parsed.emitente_fornecedor || '';
+      var fornProc = almEntNfProcessarFornecedorIA(fornIA);
+      if(fornProc.fornecedor){
+        _almEntNfDraft.fornecedor = fornProc.fornecedor;
+        _almEntNfDraft.fornecedor_id = fornProc.fornecedor_id || null;
+      } else if(fornIA && !fornProc.ignorado_emitente_errado){
+        _almEntNfDraft.fornecedor = fornIA;
+        _almEntNfDraft.fornecedor_id = null;
+      }
+      if(parsed.pedido_compra) _almEntNfDraft.pedido_compra = String(parsed.pedido_compra).trim();
+      if(parsed.data_emissao) _almEntNfDraft.data_nf = parsed.data_emissao;
+      almEntNfPropagarFilialDep();
+      var filPad = _almEntNfDraft.filial_id, depPad = _almEntNfDraft.deposito_id;
+      _almEntNfDraft.itens = (parsed.itens || []).map(function(it){
+        var sep = almEntNfSepararCaDescricao(it.descricao || it.nome || '', it.ca);
+        var ln = _almEntNfNovaLinha({
+          sku: '', codigo: it.codigo || '', descricao: sep.descricao,
+          quantidade: Math.max(1, parseInt(it.quantidade) || 1),
+          valor_unitario: parseFloat(it.valor_unitario) || 0,
+          unidade: it.unidade || 'UN', ca: sep.ca, ca_validade: it.ca_validade || '',
+          filial_id: filPad, deposito_id: depPad, tipo_item: 'epi'
+        });
+        return almEntNfMatchLinha(ln);
+      });
+      if(!_almEntNfDraft.itens.length) _almEntNfDraft.itens.push(_almEntNfNovaLinha());
+      if(fornProc.ignorado_emitente_errado) progShowToast('⚠ IA trouxe destinatário (CENA) — informe o fornecedor emitente manualmente.', 'erro');
+      progShowToast('✅ NF lida — ' + _almEntNfDraft.itens.length + ' item(ns). Revise antes de validar.');
+      almEntNfRenderModal();
+    })
+    .catch(function(e){
+      progShowToast('❌ Erro ao ler NF: ' + (e.message || e), 'erro');
+      if(st) st.textContent = 'Falha na leitura — preencha manualmente.';
+    })
+    .finally(function(){
+      if(btn){ btn.disabled = false; btn.textContent = '🤖 Ler NF com IA'; }
+      if(st && st.textContent.indexOf('Falha') < 0) st.textContent = '';
+    });
+}
+function almEntNfColetarCab(){
+  var g = function(id){ return (document.getElementById(id) || {}).value || ''; };
+  return {
+    nota_fiscal: almEntNfNormNfNum(g('alm-nf-num').trim()) || g('alm-nf-num').trim(),
+    fornecedor: g('alm-nf-forn').trim(),
+    fornecedor_id: (_almEntNfDraft && _almEntNfDraft.fornecedor_id) || null,
+    pedido_compra: g('alm-nf-pedido').trim(),
+    data_nf: g('alm-nf-data') || dataHoje(),
+    filial_id: g('alm-nf-filial') || null,
+    deposito_id: g('alm-nf-dep') || null,
+    contrato_id: g('alm-nf-cont') || null,
+    obs: g('alm-nf-obs').trim()
+  };
+}
+function almEntNfSalvarPendente(){
+  if(!_almEntNfDraft) return;
+  var cab = almEntNfColetarCab();
+  if(!cab.filial_id || !cab.deposito_id){ progShowToast('Informe filial e depósito padrão.', 'erro'); return; }
+  Object.assign(_almEntNfDraft, cab, { status: 'pendente_validacao', criado_por: usuarioLogado ? usuarioLogado.id : null });
+  almEntNfPropagarFilialDep();
+  (_almEntNfDraft.itens || []).forEach(function(ln){ almEntNfMatchLinha(ln); });
+  var payload = {
+    nota_fiscal: _almEntNfDraft.nota_fiscal, fornecedor: _almEntNfDraft.fornecedor,
+    fornecedor_id: _almEntNfDraft.fornecedor_id, pedido_compra: _almEntNfDraft.pedido_compra,
+    data_nf: _almEntNfDraft.data_nf, filial_id: _almEntNfDraft.filial_id,
+    deposito_id: _almEntNfDraft.deposito_id, contrato_id: _almEntNfDraft.contrato_id,
+    status: 'pendente_validacao', fotos: _almEntNfDraft.fotos, itens: _almEntNfDraft.itens,
+    obs: _almEntNfDraft.obs, criado_por: _almEntNfDraft.criado_por
+  };
+  if(_almEntNfDraft.id){
+    var idx = _almEntradasNf.findIndex(function(e){ return e.id === _almEntNfDraft.id; });
+    if(idx >= 0) Object.assign(_almEntradasNf[idx], _almEntNfDraft, payload);
+    if(!DEMO) sbUpdate('alm_entradas_nf', payload, 'id=eq.' + _almEntNfDraft.id);
+  } else {
+    var novo = Object.assign({ id: 'enf' + Date.now(), criado_em: new Date().toISOString() }, payload);
+    _almEntradasNf.unshift(novo);
+    _almEntNfDraft.id = novo.id;
+    if(!DEMO) sbInsert('alm_entradas_nf', payload).then(function(r){ if(r && r[0] && r[0].id) novo.id = r[0].id; });
+  }
+  if(DEMO) _almEntNfSalvarLocal();
+  progShowToast('💾 Entrada salva — aguardando validação.');
+  closeModal(); renderAlmEntradaNf(); _almEntNfAtualizarBadge();
+}
+function almEntNfConfirmar(){
+  if(!_almEntNfDraft) return;
+  var cab = almEntNfColetarCab();
+  if(!cab.filial_id || !cab.deposito_id){ progShowToast('Informe filial e depósito padrão.', 'erro'); return; }
+  Object.assign(_almEntNfDraft, cab);
+  almEntNfPropagarFilialDep();
+  var itens = (_almEntNfDraft.itens || []).filter(function(ln){ return (ln.descricao || '').trim(); });
+  if(!itens.length){ progShowToast('Adicione ao menos um item com descrição.', 'erro'); return; }
+  for(var i = 0; i < itens.length; i++){
+    var ln = itens[i];
+    if(!ln.filial_id || !ln.deposito_id){ progShowToast('Informe filial e depósito no cabeçalho.', 'erro'); return; }
+    if(!ln.quantidade || ln.quantidade < 1){ progShowToast('Linha ' + (i + 1) + ': quantidade inválida.', 'erro'); return; }
+    almEntNfMatchLinha(ln);
+    if(ln.aguardando_escolha && !ln.item_id && !ln.novo_item){
+      progShowToast('Linha ' + (i + 1) + ': escolha um item cadastrado ou marque "Novo cadastro".', 'erro'); return;
+    }
+  }
+  var novos = itens.filter(function(ln){ return ln.novo_item && !ln.item_id; });
+  if(novos.length && !confirm('Há ' + novos.length + ' item(ns) para NOVO cadastro. Confirma cadastro e entrada no estoque?')) return;
+
+  function criarMov(itemId, ln){
+    var payload = {
+      item_id: itemId, tipo_mov: 'entrada', quantidade: ln.quantidade,
+      deposito_id: ln.deposito_id || _almEntNfDraft.deposito_id,
+      filial_id: ln.filial_id || _almEntNfDraft.filial_id,
+      contrato_id: _almEntNfDraft.contrato_id || null,
+      fornecedor: _almEntNfDraft.fornecedor, nota_fiscal: _almEntNfDraft.nota_fiscal,
+      valor_unitario: parseFloat(ln.valor_unitario) || 0,
+      data_mov: (_almEntNfDraft.data_nf || dataHoje()).slice(0, 10),
+      motivo: 'Entrada NF', obs: _almEntNfDraft.obs || '',
+      responsavel_id: usuarioLogado ? usuarioLogado.id : null,
+      status: 'Disponível'
+    };
+    movimentacoes_itens.push(Object.assign({ id: 'mov' + Date.now() + Math.random().toString(36).slice(2, 5) }, payload));
+    if(payload.valor_unitario > 0){
+      var ix = itens_catalogo.findIndex(function(x){ return x.id === itemId; });
+      if(ix >= 0) itens_catalogo[ix].preco_unitario = payload.valor_unitario;
+      if(!DEMO) sbUpdate('itens_catalogo', { preco_unitario: payload.valor_unitario }, 'id=eq.' + itemId);
+    }
+    return DEMO ? Promise.resolve() : sbInsert('movimentacoes_itens', payload);
+  }
+  function criarItemCatalogo(ln){
+    var catPayload = {
+      codigo: ln.codigo || null, sku: ln.sku || null, nome: (ln.descricao || '').trim(),
+      tipo_item: ln.tipo_item || 'epi', unidade_medida: ln.unidade || 'UN',
+      preco_unitario: parseFloat(ln.valor_unitario) || 0,
+      controla_estoque: true, controla_ca: !!(ln.ca), ativo: true,
+      observacoes: (ln.ca ? 'CA ' + ln.ca : '') + (ln.ca_validade ? ' val.' + ln.ca_validade : '')
+    };
+    if(DEMO){
+      var novoItem = Object.assign({ id: 'itm' + Date.now() + Math.random().toString(36).slice(2, 5) }, catPayload);
+      itens_catalogo.push(novoItem);
+      ln.item_id = novoItem.id;
+      return Promise.resolve(novoItem.id);
+    }
+    return sbInsert('itens_catalogo', catPayload).then(function(r){
+      var id = r && r[0] && r[0].id;
+      if(id){
+        itens_catalogo.push(Object.assign({ id: id }, catPayload));
+        ln.item_id = id;
+      }
+      return id;
+    });
+  }
+
+  var jobs = itens.reduce(function(chain, ln){
+    return chain.then(function(){
+      if(ln.item_id) return criarMov(ln.item_id, ln);
+      return criarItemCatalogo(ln).then(function(id){ return id ? criarMov(id, ln) : null; });
+    });
+  }, Promise.resolve());
+
+  var valPayload = {
+    status: 'validada', validado_por: usuarioLogado ? usuarioLogado.id : null,
+    validado_em: new Date().toISOString(), itens: itens,
+    nota_fiscal: _almEntNfDraft.nota_fiscal, fornecedor: _almEntNfDraft.fornecedor,
+    fornecedor_id: _almEntNfDraft.fornecedor_id, pedido_compra: _almEntNfDraft.pedido_compra,
+    data_nf: _almEntNfDraft.data_nf, filial_id: _almEntNfDraft.filial_id,
+    deposito_id: _almEntNfDraft.deposito_id, contrato_id: _almEntNfDraft.contrato_id,
+    fotos: _almEntNfDraft.fotos, obs: _almEntNfDraft.obs
+  };
+  if(_almEntNfDraft.id){
+    var idx = _almEntradasNf.findIndex(function(e){ return e.id === _almEntNfDraft.id; });
+    if(idx >= 0) Object.assign(_almEntradasNf[idx], valPayload);
+    if(!DEMO) sbUpdate('alm_entradas_nf', valPayload, 'id=eq.' + _almEntNfDraft.id);
+  } else {
+    _almEntradasNf.unshift(Object.assign({ id: 'enf' + Date.now(), criado_em: new Date().toISOString(), criado_por: usuarioLogado ? usuarioLogado.id : null }, valPayload));
+    if(!DEMO) sbInsert('alm_entradas_nf', valPayload);
+  }
+  if(DEMO) _almEntNfSalvarLocal();
+
+  jobs.then(function(){
+    progShowToast('✅ Entrada validada — ' + itens.length + ' item(ns) no estoque.');
+    closeModal();
+    renderAlmEntradaNf(); renderEstoque(); renderItens(); _almEntNfAtualizarBadge();
+  }).catch(function(){
+    progShowToast('⚠ Lançado com avisos — verifique sincronização.', 'erro');
+    closeModal(); renderAlmEntradaNf(); renderEstoque(); renderItens(); _almEntNfAtualizarBadge();
+  });
+}
+function almEntNfCancelar(id){
+  if(!confirm('Cancelar esta entrada pendente?')) return;
+  var e = _almEntradasNf.find(function(x){ return x.id === id; });
+  if(e) e.status = 'cancelada';
+  if(!DEMO) sbUpdate('alm_entradas_nf', { status: 'cancelada' }, 'id=eq.' + id);
+  if(DEMO) _almEntNfSalvarLocal();
+  renderAlmEntradaNf(); _almEntNfAtualizarBadge();
 }
 
 // ── NOVA FERRAMENTA ────────────────────────────────────────────────
@@ -65225,6 +67002,7 @@ async function lcAnalisarContrato(){
       <button id="gp-tab-btn-limites" onclick="gpSetAba('limites')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">⚙️ Limites HE</button>
       <button id="gp-tab-btn-ajuste" onclick="gpSetAba('ajuste')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">✏️ Ajuste Ponto (RH)</button>
       <button id="gp-tab-btn-vales" onclick="gpSetAba('vales')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">💸 Vales</button>
+      <button id="gp-tab-btn-verificar" onclick="gpSetAba('verificar')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">🔍 Tratamento Verificar</button>
       <button id="gp-tab-btn-sync" onclick="gpSetAba('sync')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">🔄 Sincronizar</button>
     </div>
   </div>
@@ -65233,6 +67011,7 @@ async function lcAnalisarContrato(){
   <div id="gp-tab-limites" style="display:none"></div>
   <div id="gp-tab-ajuste" style="display:none"></div>
   <div id="gp-tab-vales" style="display:none"></div>
+  <div id="gp-tab-verificar" style="display:none"></div>
   <div id="gp-tab-sync" style="display:none"></div>
 </div>
 
@@ -65244,6 +67023,7 @@ async function lcAnalisarContrato(){
   <div id="pp-tab-bar" style="display:flex;gap:0;border-bottom:2px solid #e0dfd8;margin-bottom:0;background:#fff;border-radius:10px 10px 0 0;padding:0 .5rem">
     <button id="pp-tab-dashboard"    onclick="ppSetAba('dashboard')"   style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#aaa;transition:all .15s">📊 Dashboard</button>
     <button id="pp-tab-programacao"  onclick="ppSetAba('programacao')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18;transition:all .15s">📅 Programação</button>
+    <button id="pp-tab-verificar" onclick="ppSetAba('verificar')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888;transition:all .15s">🔍 Tratamento Verificar</button>
     <button id="pp-tab-requisicoes" onclick="ppSetAba('requisicoes')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">🧰 Requisições</button>
     <button id="pp-tab-obras" onclick="ppSetAba('obras')" style="padding:.6rem 1.4rem;border:none;border-bottom:3px solid transparent;background:none;cursor:pointer;font-size:13px;font-weight:600;color:#888">📋 Projetos de Obras</button>
   </div>
@@ -65316,6 +67096,8 @@ async function lcAnalisarContrato(){
   </div>
 
   </div><!-- /pp-painel-programacao -->
+
+  <div id="pp-painel-verificar" class="hidden" style="display:none"></div>
 
 <div id="pp-painel-requisicoes" class="hidden" style="padding:1rem"><div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;margin-bottom:.75rem"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end"><div class="fg"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="req-fil-contrato" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Filial</label><select class="inp" id="req-fil-filial" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todas</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Status</label><select class="inp" id="req-fil-status" style="width:100%" onchange="plptRenderRequisicoes()"><option value="">Todos</option><option>Aguardando aprovação</option><option>Aprovada</option><option>Separação</option><option>Em campo</option><option>Devolvida</option><option>Reprovada</option></select></div><div class="fg"><label style="font-size:11px;font-weight:600">Data início</label><input class="inp" type="date" id="req-fil-de" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg"><label style="font-size:11px;font-weight:600">Data fim</label><input class="inp" type="date" id="req-fil-ate" style="width:100%" onchange="plptRenderRequisicoes()"/></div><div class="fg" style="display:flex;align-items:flex-end"><button class="btn" onclick="plptLimparFiltrosReq()" style="width:100%">✕ Limpar</button></div></div></div><div id="plpt-req-tbl"><div style="padding:2rem;text-align:center;color:#aaa">Clique na aba Requisições para carregar.</div></div></div>
 <div id="pp-painel-obras" class="hidden" style="display:none;padding:1rem;min-height:400px"><div id="pp-obras-inner"><div style="padding:2rem;text-align:center;color:#aaa">Carregando Projetos de Obras...</div></div></div>
@@ -65394,6 +67176,7 @@ async function lcAnalisarContrato(){
         <button class="btn btn-sm" id="alm-tab-alm"         onclick="_almShowAba('alm')"         title="Entradas, saídas e movimentações">📦 Movimentações</button>
         <button class="btn btn-sm" id="alm-tab-itens"       onclick="_almShowAba('itens')"       title="Catálogo de itens cadastrados">🗂 Catálogo</button>
         <button class="btn btn-sm" id="alm-tab-estoque"     onclick="_almShowAba('estoque')"     title="Estoque/patrimônio por filial e depósito">🗄 Estoque</button>
+        <button class="btn btn-sm" id="alm-tab-inventario"  onclick="_almShowAba('inventario')"  title="Contagem física e inventário por depósito">📋 Inventário</button>
         <button class="btn btn-sm" id="alm-tab-epis"        onclick="_almShowAba('epis')"        title="EPIs e EPCs">🦺 EPIs/EPCs</button>
         <button class="btn btn-sm" id="alm-tab-locacoes"    onclick="_almShowAba('locacoes')"    title="Equipamentos locados">🏗 Locações</button>
         <button class="btn btn-sm" id="alm-tab-ferramentas" onclick="_almShowAba('ferramentas')" title="Ferramentas (patrimônio)">🔧 Ferramentas</button>
@@ -65533,6 +67316,7 @@ async function lcAnalisarContrato(){
 <div id="pg-sesmt-epis" class="hidden">
   <div style="display:flex;gap:6px;margin-bottom:.6rem;flex-wrap:wrap">
     <button id="epiv-btn-lista" class="btn btn-sm btn-pri" onclick="epiTabView('lista')">📋 Entregas</button>
+    <button id="epiv-btn-entrada" class="btn btn-sm" onclick="epiTabView('entrada')">📥 Entrada NF <span id="epiv-pend-badge" style="display:none;background:#A32D2D;color:#fff;border-radius:8px;padding:0 5px;font-size:9px;margin-left:2px"></span></button>
     <button id="epiv-btn-ficha" class="btn btn-sm" onclick="epiTabView('ficha')">👤 Ficha por colaborador</button>
     <button id="epiv-btn-cad" class="btn btn-sm" onclick="epiTabView('cad')">🗂 Cadastro EPI/EPC</button>
     <button id="epiv-btn-fichas" class="btn btn-sm" onclick="epiTabView('fichas')">📄 Fichas assinadas</button>
@@ -65544,7 +67328,7 @@ async function lcAnalisarContrato(){
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <select class="inp" id="fil-epi-tipo" style="width:100px" onchange="renderEpis()"><option value="">Todos</option><option>EPI</option><option>EPC</option></select>
           <input class="inp" id="fil-epi-q" placeholder="Buscar..." style="width:130px" oninput="renderEpis()"/>
-          <button class="btn" onclick="openEntradaEstoque()">📥 Entrada no estoque</button>
+          <button class="btn btn-pri" onclick="epiTabView('entrada');setTimeout(function(){openEntradaEstoqueNf();},80)">📥 Entrada NF</button>
         </div>
       </div>
       <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
@@ -65552,6 +67336,8 @@ async function lcAnalisarContrato(){
       </tr></thead><tbody id="tbody-epis"></tbody></table></div>
     </div>
   </div>
+
+  <div id="epi-view-entrada" style="display:none"></div>
 
   <div id="epi-view-ficha" style="display:none">
     <div class="card" style="margin-bottom:1rem">
@@ -65737,6 +67523,11 @@ async function lcAnalisarContrato(){
         <tbody id="tbody-est"></tbody>
       </table>
     </div>
+  </div>
+</div>
+<div id="pg-sesmt-inventario" class="hidden">
+  <div id="inv-conteudo">
+    <div style="padding:2rem;text-align:center;color:#aaa">Carregando inventários...</div>
   </div>
 </div>
 <div id="pg-sesmt-ficha-epi" class="hidden">
