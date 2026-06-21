@@ -27845,10 +27845,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.499',
+  numero: '7.9.500',
   data:   '21/06/2026',
-  build:  '20260621-1600',
+  build:  '20260621-1630',
   log: [
+    {v:'7.9.500', d:'21/06/2026', itens:[
+      'Ponto TMA: badge Ausente/Presente após sync — status falta do Nexus sem horario_entrada agora exibe ● Ausente; cache com RE normalizado.',
+    ]},
     {v:'7.9.499', d:'21/06/2026', itens:[
       'Ponto: corrigido crash em progSyncPontoColetarMatriculas quando todos=true (retornava array em vez de {matriculas:[]}); sync automático agora atualiza a tela corretamente.',
       'Ponto: adicionado ping automático a cada 10 minutos para evitar cold start do Azure App Service.',
@@ -28737,6 +28740,53 @@ function pontoDeveConsultar(){
   });
 }
 
+// Normalizar RE para chave de cache (463 === "0463")
+function pontoReNorm(re){
+  if(re==null||re==='') return '';
+  var s=String(re).trim();
+  if(/^\d+$/.test(s)) return String(parseInt(s,10));
+  return s;
+}
+function pontoCacheKey(re, data){ return pontoReNorm(re)+'_'+(data||''); }
+function pontoCacheGet(re, data){
+  var k=pontoCacheKey(re,data);
+  if(_pontoCache[k]!==undefined) return _pontoCache[k];
+  var raw=String(re==null?'':re).trim()+'_'+(data||'');
+  if(raw!==k&&_pontoCache[raw]!==undefined) return _pontoCache[raw];
+  return undefined;
+}
+function pontoCacheSet(re, data, val){ _pontoCache[pontoCacheKey(re,data)]=val; }
+function _pontoTemEntrada(p){
+  return !!(p&&(p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))||p.status==='presente'));
+}
+function _pontoDeveMostrarAusente(p, data){
+  if(!p||_pontoTemEntrada(p)) return false;
+  if(p.status==='falta'){
+    var hoje=dataHoje();
+    if(data&&data>hoje) return false;
+    var hp=p.horario_previsto||{};
+    return !hp.entrada||pontoHorarioPassou(hp,data);
+  }
+  if(p.status==='sem_registro'){
+    var hp2=p.horario_previsto||{};
+    return !!(hp2.entrada&&pontoHorarioPassou(hp2,data));
+  }
+  return false;
+}
+function _pontoBadgeHtml(p, data, compact){
+  if(!p) return '';
+  if(_pontoTemEntrada(p)){
+    var lbl=compact?('✓ '+(p.entrada||'')):('✓ Presente '+(p.entrada||''));
+    var st=compact?'margin-left:2px;background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700':'margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block';
+    return (compact?'<span':'<div')+' style="'+st+'">'+lbl+(compact?'</span>':'</div>');
+  }
+  if(_pontoDeveMostrarAusente(p,data)){
+    var st2=compact?'margin-left:2px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700':'margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block';
+    return (compact?'<span':'<div')+' style="'+st2+'">'+(compact?'● Aus':'● Ausente')+(compact?'</span>':'</div>');
+  }
+  return '';
+}
+
 // Invalidar cache para forçar nova consulta
 function pontoInvalidarCache(){
   _pontoCache = {};
@@ -28788,7 +28838,7 @@ function pontoIniciarAgendador(){
 
 // Buscar dados de ponto de um colaborador (com cache)
 function pontoConsultar(re, data, callback){
-  var key = re + '_' + data;
+  var key = pontoCacheKey(re, data);
   // Cache hit — retornar imediatamente
   if(_pontoCache[key] !== undefined){
     callback(_pontoCache[key]);
@@ -28806,14 +28856,14 @@ function pontoConsultar(re, data, callback){
     body: JSON.stringify({matricula: String(re), data: data})
   })
   .then(function(d){
-    _pontoCache[key] = d;
+    pontoCacheSet(re, data, d);
     var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
     cbs.forEach(function(cb){ try{ cb(d); }catch(e){} });
   })
   .catch(function(e){
     console.warn('[Ponto] consulta RE', re, e&&e.message||e);
-    _pontoCache[key] = null;
+    pontoCacheSet(re, data, null);
     var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
     cbs.forEach(function(cb){ try{ cb(null); }catch(ex){} });
@@ -32398,8 +32448,7 @@ function progSyncPonto(opts){
         if(!col.ativo || !col.re) return;
         var st = _progStatus[col.id] || 'disponivel';
         if(st !== 'falta') return;
-        var key = col.re + '_' + data;
-        var ponto = _pontoCache[key];
+        var ponto = pontoCacheGet(col.re, data);
         if(!ponto) return;
         var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
         if(!temEntrada) return;
@@ -32463,12 +32512,10 @@ function progCarregarPontoDoSupabase(data, callback){
     // Popular cache local com dados do banco
     rows.forEach(function(r){
       if(!r.re) return;
-      var key = r.re + '_' + data;
       var marcacoes = [];
-      // todas_marcacoes vem como array do Supabase (jsonb)
       marcacoes = Array.isArray(r.todas_marcacoes) ? r.todas_marcacoes : [];
       try { if(typeof r.todas_marcacoes==='string') marcacoes=JSON.parse(r.todas_marcacoes); } catch(e){}
-      _pontoCache[key] = {
+      pontoCacheSet(r.re, data, {
         matricula:  r.re,
         data:       data,
         status:     r.status,
@@ -32483,11 +32530,11 @@ function progCarregarPontoDoSupabase(data, callback){
           retorno:   null,
           total:     null
         }
-      };
+      });
     });
-    // Atualizar badges no DOM sem re-renderizar
+    console.log('[Ponto] Cache carregado do Supabase:', rows.length, 'registro(s) —', data);
     rows.forEach(function(r){
-      var col = colaboradores.find(function(c){ return String(c.re)===String(r.re); });
+      var col = colaboradores.find(function(c){ return pontoReNorm(c.re)===pontoReNorm(r.re); });
       if(col) _pontoAtualizarBadge(col.id, r.re, data);
     });
     if(callback) callback();
@@ -32499,20 +32546,9 @@ function progCarregarPontoDoSupabase(data, callback){
 function _pontoAtualizarBadge(colabId, re, data){
   var el = document.getElementById('ponto-badge-'+colabId);
   if(!el) return;
-  var key = re + '_' + data;
-  var p = _pontoCache[key];
-  if(!p) return;
-  var temEntrada = p.entrada || (p.todas_marcacoes && p.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
-  if(temEntrada){
-    el.innerHTML = '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+(p.entrada||'')+'</div>';
-  } else {
-    var hp = p.horario_previsto || {};
-    if(hp && hp.entrada && pontoHorarioPassou(hp, data)){
-      el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">● Ausente</div>';
-    } else {
-      el.innerHTML = '';
-    }
-  }
+  var p = pontoCacheGet(re, data);
+  if(p===undefined) return;
+  el.innerHTML = _pontoBadgeHtml(p, data, false);
 }
 
 // ── Badges de ponto nos slots ─────────────────────────────────────────────
@@ -32533,24 +32569,20 @@ function progCarregarBadgesPonto(){
       var stColab = _progStatus[colabId] || 'disponivel';
       if(stColab === 'treinamento' || stColab === 'inapto') return;
 
-      pontoConsultar(col.re, data, function(ponto){
+      (function(colabId, re){
         var el = document.getElementById('ponto-badge-'+colabId);
         if(!el) return;
-        // Ler só do cache — preenchido pelo Supabase via Sync Ponto
-        // pontoConsultar já usa _pontoCache sem chamar API se dados existem
-        if(!ponto) return;
-        var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
-        if(temEntrada){
-          el.innerHTML = '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+(ponto.entrada||'')+'</div>';
-        } else if(ponto.status === 'falta' || ponto.status === 'sem_registro'){
-          var hp = ponto.horario_previsto || {};
-          if(hp && hp.entrada && pontoHorarioPassou(hp, data)){
-            el.innerHTML = '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">● Ausente</div>';
-          } else {
-            el.innerHTML = '';
-          }
+        var cached = pontoCacheGet(re, data);
+        if(cached !== undefined){
+          el.innerHTML = _pontoBadgeHtml(cached, data, false);
+          return;
         }
-      });
+        pontoConsultar(re, data, function(ponto){
+          var el2 = document.getElementById('ponto-badge-'+colabId);
+          if(!el2||!ponto) return;
+          el2.innerHTML = _pontoBadgeHtml(ponto, data, false);
+        });
+      })(colabId, col.re);
     });
   });
 
@@ -32786,13 +32818,9 @@ function progRenderPainelDisp(eqs, data, cid){
           +(obsTexto?'<div style="font-size:10px;color:'+stInfo.cor+';opacity:.75;margin-top:2px;font-style:italic;word-break:break-word">💬 '+escHtml(obsTexto)+'</div>':'')
           +(function(){
             if((c.vinculo||'campo')!=='campo') return '';
-            var key=c.re+'_'+data;
-            var p=_pontoCache[key];
-            if(!p) return '<div id="ponto-badge-'+c.id+'" style="margin-top:2px"></div>';
-            var temEnt=p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}));
-            if(temEnt) return '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700">✓ Presente '+(p.entrada||'')+'</div>';
-            var hp=p.horario_previsto||{};
-            if(hp&&hp.entrada&&pontoHorarioPassou(hp)) return '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">● Ausente</div>';
+            var p=pontoCacheGet(c.re,data);
+            var html=_pontoBadgeHtml(p,data,false);
+            if(html) return html;
             return '<div id="ponto-badge-'+c.id+'" style="margin-top:2px"></div>';
           }())
           +'</div>';
@@ -32814,9 +32842,9 @@ function progRenderPainelDisp(eqs, data, cid){
     +'</select>';
   var livresFiltrados = livres;
   if(window._progFiltroPontoLivres === 'presentes'){
-    livresFiltrados = livres.filter(function(c){ var key=c.re+'_'+data; var p=_pontoCache[key]; return p&&(p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))); });
+    livresFiltrados = livres.filter(function(c){ var p=pontoCacheGet(c.re,data); return _pontoTemEntrada(p); });
   } else if(window._progFiltroPontoLivres === 'ausentes'){
-    livresFiltrados = livres.filter(function(c){ var key=c.re+'_'+data; var p=_pontoCache[key]; return !p||(!p.entrada&&!(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))); });
+    livresFiltrados = livres.filter(function(c){ var p=pontoCacheGet(c.re,data); return _pontoDeveMostrarAusente(p,data); });
   }
   var livresHtml = livresFiltrados.length
     ? livresFiltrados.map(function(c){
@@ -32836,7 +32864,7 @@ function progRenderPainelDisp(eqs, data, cid){
           +(_sObs?'<span title="'+escHtml(_obs)+'" style="background:'+_stI.cor+';color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;cursor:help">📝 '+escHtml((_obs||'Obs').slice(0,22))+((_obs||'').length>22?'…':'')+'</span>':'')
           +'<span style="color:#aaa;font-size:9px">'+(c.equipe_codigo||'')+'</span>'
           
-          +(c.escala_id&&getEscala(c.escala_id)?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+getEscala(c.escala_id).tipo+'</span>':'')+(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')+(function(){            if((c.vinculo||'campo')!=='campo') return '';            var key=c.re+'_'+data;            var p=_pontoCache[key];            if(!p) return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';            var temEnt=p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}));            if(temEnt) return '<span style="margin-left:2px;background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">✓ '+( p.entrada||'')+'</span>';            var hp=p.horario_previsto||{};            if(hp.entrada&&pontoHorarioPassou(hp)) return '<span style="margin-left:2px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;">● Aus</span>';            return '<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>';          }())
+          +(c.escala_id&&getEscala(c.escala_id)?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+getEscala(c.escala_id).tipo+'</span>':'')+(_progStatus[c.id]==='verificar'?'<button onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="background:#F7E2F2;color:#8B1A6B;border:.5px solid #8B1A6B44;border-radius:4px;padding:0 5px;cursor:pointer;font-size:10px;margin-left:2px">🔍</button>':'')+(function(){if((c.vinculo||'campo')!=='campo')return'';var p=pontoCacheGet(c.re,data);var h=_pontoBadgeHtml(p,data,true);return h||('<span id="ponto-badge-'+c.id+'" style="margin-left:2px"></span>');}())
           +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
           +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
           +'ondragstart="event.stopPropagation()">⋮</span>'
@@ -60337,7 +60365,7 @@ function sesmtCarregarTurmas(cb){
     sbFetch('sesmt_trilha_cargo',{}).catch(function(){ return []; })
   ]).then(function(r){
     _sesmtTurmas=r[0]||[]; _sesmtTurmaPart=r[1]||[]; _trilhas=r[2]||[]; _trilhasCarregado=true; _sesmtTurmasCarregado=true;
-    _carregarAdmissoes(function(){ if(cb)cb(); });
+    if(cb) cb();
   }).catch(function(e){ console.warn('turmas:',e); _sesmtTurmasCarregado=true; if(cb)cb(); });
 }
 
