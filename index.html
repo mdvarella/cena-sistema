@@ -65615,15 +65615,48 @@ function almEntNfNormNfNum(s){
   return t;
 }
 function almEntNfSepararCaDescricao(desc, caInformado){
-  var ca = String(caInformado || '').replace(/\D/g, '');
+  var ca = almEntNfNormalizarCa(caInformado);
   var descricao = String(desc || '').trim();
   if(!ca){
-    var m = descricao.match(/\bC\.?\s*A\.?\s*[:\-]?\s*(\d{4,8})\b/i) || descricao.match(/\bCA\s*(\d{4,8})\b/i);
-    if(m){ ca = m[1]; descricao = descricao.replace(m[0], '').replace(/\s{2,}/g, ' ').trim(); }
+    var m = descricao.match(/\bC\.?\s*A\.?\s*(?:n[ºo°.]?\s*)?[:\-]?\s*([0-9][0-9.\-\/\s]{2,14}[0-9])\b/i);
+    if(m){
+      ca = almEntNfNormalizarCa(m[1]);
+      descricao = descricao.replace(m[0], '').replace(/\s{2,}/g, ' ').trim();
+    }
   } else {
-    descricao = descricao.replace(new RegExp('\\bC\\.?\\s*A\\.?\\s*[:\\-]?\\s*' + ca + '\\b', 'i'), '').replace(/\s{2,}/g, ' ').trim();
+    descricao = descricao.replace(new RegExp('\\bC\\.?\\s*A\\.?\\s*(?:n[ºo°.]?\\s*)?[:\\-]?\\s*' + almEntNfRegexCaDigits(ca) + '\\b', 'i'), '').replace(/\s{2,}/g, ' ').trim();
   }
   return { ca: ca, descricao: descricao };
+}
+function almEntNfNormalizarCa(ca){
+  return String(ca || '').replace(/\D/g, '');
+}
+function almEntNfRegexCaDigits(ca){
+  return almEntNfNormalizarCa(ca).split('').join('[^0-9]*');
+}
+function almEntNfCaValido(ca){
+  return /^\d{4,8}$/.test(almEntNfNormalizarCa(ca));
+}
+function almEntNfTipoExigeCa(tipo){
+  var t = String(tipo || '').toLowerCase();
+  return t === 'epi' || t === 'epc';
+}
+function almEntNfTipoEpiCat(tipo){
+  return String(tipo || '').toLowerCase() === 'epc' ? 'EPC' : 'EPI';
+}
+function almEntNfPrepararCaLinha(ln){
+  if(!ln) return '';
+  var sep = almEntNfSepararCaDescricao(ln.descricao || '', ln.ca);
+  ln.ca = almEntNfNormalizarCa(sep.ca);
+  ln.descricao = (sep.descricao || ln.descricao || '').trim();
+  ln.ca_validade = (ln.ca_validade || '').slice(0, 10);
+  return ln.ca;
+}
+function almEntNfObsCa(ln){
+  var partes = [];
+  if(ln && ln.ca) partes.push('CA ' + almEntNfNormalizarCa(ln.ca));
+  if(ln && ln.ca_validade) partes.push('validade CA ' + ln.ca_validade);
+  return partes.join(' - ');
 }
 function _almEntNfScoreNome(a, b){
   var na = _almEntNfNormChave(a), nb = _almEntNfNormChave(b);
@@ -65900,8 +65933,12 @@ function almEntNfOnCampo(idx, campo, val){
   if(!_almEntNfDraft || !_almEntNfDraft.itens[idx]) return;
   var ln = _almEntNfDraft.itens[idx];
   if(campo === 'quantidade') ln.quantidade = Math.max(1, parseInt(val) || 1);
+  else if(campo === 'ca') ln.ca = almEntNfNormalizarCa(val);
   else ln[campo] = val;
   if(campo === 'descricao'){
+    var sep = almEntNfSepararCaDescricao(ln.descricao || '', ln.ca);
+    if(sep.ca && !ln.ca) ln.ca = sep.ca;
+    ln.descricao = sep.descricao || ln.descricao;
     if(ln.item_id && !_almEntNfNorm(ln.descricao)) { ln.item_id = null; ln.sku = ''; }
     clearTimeout(_almEntNfBuscaTimer);
     _almEntNfBuscaTimer = setTimeout(function(){
@@ -65924,6 +65961,7 @@ function almEntNfAplicarMatch(idx, itemId){
   ln.item_id = it.id; ln.novo_item = false; ln.aguardando_escolha = false;
   ln.descricao = it.nome; ln.sku = it.sku || ''; ln.codigo = ln.codigo || it.codigo || '';
   ln.tipo_item = it.tipo_item || 'epi';
+  if(!ln.ca && it.ca) ln.ca = almEntNfNormalizarCa(it.ca);
   ln.match_msg = '✓ Vinculado: ' + it.nome;
   almEntNfRenderLinhasOnly();
 }
@@ -66036,7 +66074,7 @@ function almEntNfSalvarPendente(){
   if(!cab.filial_id || !cab.deposito_id){ progShowToast('Informe filial e depósito padrão.', 'erro'); return; }
   Object.assign(_almEntNfDraft, cab, { status: 'pendente_validacao', criado_por: usuarioLogado ? usuarioLogado.id : null });
   almEntNfPropagarFilialDep();
-  (_almEntNfDraft.itens || []).forEach(function(ln){ almEntNfMatchLinha(ln); });
+  (_almEntNfDraft.itens || []).forEach(function(ln){ almEntNfPrepararCaLinha(ln); almEntNfMatchLinha(ln); });
   var payload = {
     nota_fiscal: _almEntNfDraft.nota_fiscal, fornecedor: _almEntNfDraft.fornecedor,
     fornecedor_id: _almEntNfDraft.fornecedor_id, pedido_compra: _almEntNfDraft.pedido_compra,
@@ -66059,6 +66097,41 @@ function almEntNfSalvarPendente(){
   progShowToast('💾 Entrada salva — aguardando validação.');
   closeModal(); renderAlmEntradaNf(); _almEntNfAtualizarBadge();
 }
+function almEntNfSincronizarEpiCatalogo(ln){
+  if(!ln || !almEntNfTipoExigeCa(ln.tipo_item) || !ln.ca) return Promise.resolve();
+  var nome = (ln.descricao || '').trim();
+  if(!nome || typeof _epiCatalogo === 'undefined') return Promise.resolve();
+  if(!_epiCatCarregado && !DEMO && typeof epiCarregarCatalogo === 'function'){
+    return new Promise(function(resolve, reject){
+      epiCarregarCatalogo(function(){
+        almEntNfSincronizarEpiCatalogo(ln).then(resolve).catch(reject);
+      });
+    });
+  }
+  var tipo = almEntNfTipoEpiCat(ln.tipo_item);
+  var ca = almEntNfNormalizarCa(ln.ca);
+  var nomeNorm = _almEntNfNorm(nome);
+  var existente = (_epiCatalogo || []).find(function(x){
+    return _almEntNfNorm(x.nome) === nomeNorm && String(x.tipo || 'EPI').toUpperCase() === tipo;
+  }) || (_epiCatalogo || []).find(function(x){
+    return ca && almEntNfNormalizarCa(x.ca) === ca && String(x.tipo || 'EPI').toUpperCase() === tipo;
+  });
+  var payload = { nome: nome, tipo: tipo, ca: ca, ativo: true };
+  if(existente){
+    var mudou = (existente.nome !== nome) || (String(existente.tipo || 'EPI').toUpperCase() !== tipo)
+      || (almEntNfNormalizarCa(existente.ca) !== ca) || existente.ativo === false;
+    if(!mudou) return Promise.resolve(existente.id);
+    Object.assign(existente, payload);
+    return DEMO ? Promise.resolve(existente.id) : sbUpdate('epi_catalogo', payload, 'id=eq.' + existente.id).then(function(){ return existente.id; });
+  }
+  var novo = Object.assign({ id: 'epicat' + Date.now() + Math.random().toString(36).slice(2, 5) }, payload);
+  _epiCatalogo.push(novo);
+  if(DEMO) return Promise.resolve(novo.id);
+  return sbInsert('epi_catalogo', payload).then(function(r){
+    if(r && r[0] && r[0].id) novo.id = r[0].id;
+    return novo.id;
+  });
+}
 function almEntNfConfirmar(){
   if(!_almEntNfDraft) return;
   var cab = almEntNfColetarCab();
@@ -66069,9 +66142,12 @@ function almEntNfConfirmar(){
   if(!itens.length){ progShowToast('Adicione ao menos um item com descrição.', 'erro'); return; }
   for(var i = 0; i < itens.length; i++){
     var ln = itens[i];
+    almEntNfPrepararCaLinha(ln);
     if(!ln.filial_id || !ln.deposito_id){ progShowToast('Informe filial e depósito no cabeçalho.', 'erro'); return; }
     if(!ln.quantidade || ln.quantidade < 1){ progShowToast('Linha ' + (i + 1) + ': quantidade inválida.', 'erro'); return; }
     almEntNfMatchLinha(ln);
+    if(almEntNfTipoExigeCa(ln.tipo_item) && !ln.ca){ progShowToast('Linha ' + (i + 1) + ': informe o Nº do CA para ' + tipoItemLabel(ln.tipo_item) + '.', 'erro'); return; }
+    if(ln.ca && !almEntNfCaValido(ln.ca)){ progShowToast('Linha ' + (i + 1) + ': CA deve ter de 4 a 8 dígitos.', 'erro'); return; }
     if(ln.aguardando_escolha && !ln.item_id && !ln.novo_item){
       progShowToast('Linha ' + (i + 1) + ': escolha um item cadastrado ou marque "Novo cadastro".', 'erro'); return;
     }
@@ -66088,7 +66164,7 @@ function almEntNfConfirmar(){
       fornecedor: _almEntNfDraft.fornecedor, nota_fiscal: _almEntNfDraft.nota_fiscal,
       valor_unitario: parseFloat(ln.valor_unitario) || 0,
       data_mov: (_almEntNfDraft.data_nf || dataHoje()).slice(0, 10),
-      motivo: 'Entrada NF', obs: _almEntNfDraft.obs || '',
+      motivo: 'Entrada NF', obs: [_almEntNfDraft.obs || '', almEntNfObsCa(ln)].filter(Boolean).join(' | '),
       responsavel_id: usuarioLogado ? usuarioLogado.id : null,
       status: 'Disponível'
     };
@@ -66101,12 +66177,13 @@ function almEntNfConfirmar(){
     return DEMO ? Promise.resolve() : sbInsert('movimentacoes_itens', payload);
   }
   function criarItemCatalogo(ln){
+    var obsCa = almEntNfObsCa(ln);
     var catPayload = {
       codigo: ln.codigo || null, sku: ln.sku || null, nome: (ln.descricao || '').trim(),
       tipo_item: ln.tipo_item || 'epi', unidade_medida: ln.unidade || 'UN',
       preco_unitario: parseFloat(ln.valor_unitario) || 0,
-      controla_estoque: true, controla_ca: !!(ln.ca), ativo: true,
-      observacoes: (ln.ca ? 'CA ' + ln.ca : '') + (ln.ca_validade ? ' val.' + ln.ca_validade : '')
+      controla_estoque: true, controla_ca: almEntNfTipoExigeCa(ln.tipo_item) || !!(ln.ca), ativo: true,
+      observacoes: obsCa
     };
     if(DEMO){
       var novoItem = Object.assign({ id: 'itm' + Date.now() + Math.random().toString(36).slice(2, 5) }, catPayload);
@@ -66126,8 +66203,10 @@ function almEntNfConfirmar(){
 
   var jobs = itens.reduce(function(chain, ln){
     return chain.then(function(){
-      if(ln.item_id) return criarMov(ln.item_id, ln);
-      return criarItemCatalogo(ln).then(function(id){ return id ? criarMov(id, ln) : null; });
+      return almEntNfSincronizarEpiCatalogo(ln).then(function(){
+        if(ln.item_id) return criarMov(ln.item_id, ln);
+        return criarItemCatalogo(ln).then(function(id){ return id ? criarMov(id, ln) : null; });
+      });
     });
   }, Promise.resolve());
 
