@@ -2416,6 +2416,7 @@ body.perfil-coordenador #mn-plr { display:none !important; }
         <button class="btn" onclick="progNavData(7)" title="Próxima semana" style="padding:3px 6px;font-size:12px">▶▶</button>
         <button class="btn" onclick="progNavHoje()" style="padding:3px 6px;font-size:11px;color:#185FA5;border-color:#185FA5">Hoje</button>
       </div>
+      <div id="prog-cont-tma-wrap" style="flex-shrink:0"></div>
       <!-- Separador -->
       <div style="width:.5px;height:24px;background:#e0dfd8;flex-shrink:0"></div>
       <!-- Ações -->
@@ -20645,6 +20646,7 @@ function coAbrirContrato(contrato_id){
   if(!cont) return;
   _coContratoAtual = contrato_id;
   window._filtroContrato = contrato_id;
+  _progContrato = contrato_id;
   coPopularSeletor(); // atualiza seletor de contratos no topo
 
   // Atualizar header
@@ -27843,10 +27845,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.495',
+  numero: '7.9.497',
   data:   '21/06/2026',
-  build:  '20260621-1315',
+  build:  '20260621-1410',
   log: [
+    {v:'7.9.497', d:'21/06/2026', itens:[
+      'Sync Ponto TMA: usa o contrato do contexto da tela (sem seletor extra); badge só informativo.',
+    ]},
+    {v:'7.9.496', d:'21/06/2026', itens:[
+      'Sync Ponto TMA: manual só do contrato selecionado; automático (horários) sincroniza a folha inteira.',
+    ]},
     {v:'7.9.495', d:'21/06/2026', itens:[
       'Sync Ponto TMA: lotes de 15 com progresso no botão (evita timeout e tela travada em Sincronizando).',
     ]},
@@ -28742,7 +28750,7 @@ function pontoIniciarAgendador(){
       _pontoUltimaConsulta = agora;
       // Sync controlado em lotes (igual ao botão manual) — atualiza Supabase e depois os badges
       if(typeof progSyncPonto==='function' && !window._progSyncPontoAtivo){
-        progSyncPonto();
+        progSyncPonto({todos:true, automatico:true});
       } else {
         // Se sync já está ativo, apenas recarrega do Supabase
         var _d = typeof progGetData==='function' ? progGetData() : dataHoje();
@@ -29091,6 +29099,8 @@ function progLimparFiltros(){
 
 function progInit(){
   _progData = dataHojeLocal();
+  if(window._filtroContrato) _progContrato = window._filtroContrato;
+  progAtualizarBadgeContTma();
   var _dataInit = _progData;
   vtAtualizarAbaAlerta(); // Verificar se há pendências de tratamento
   // Fixar cabeçalho via scroll listener
@@ -29224,10 +29234,43 @@ function progNavHoje(){
 var _TMA_CID = '04277076-baa5-4ea4-85dc-bddf55541e68';
 
 function progGetCont(){
-  // Verificar se há seletor interno (caso múltiplos contratos TMA)
-  var selEl = document.getElementById('prog-av-cont-interno');
-  if(selEl && selEl.value) return selEl.value;
+  // Contrato do contexto de navegação (operacional, gestor, contrato aberto)
+  var ctx = window._filtroContrato || _coContratoAtual || _gestorContAtivo || _progContrato;
+  if(ctx) return ctx;
+  var fil = (document.getElementById('fil-prog-cont')||{}).value;
+  if(fil) return fil;
+  // Único contrato com equipes TMA ativas
+  var cids = {};
+  (equipes_disp||[]).filter(function(e){ return e.status==='Ativo' && !e.deleted_at && e.contrato_id; })
+    .forEach(function(e){ cids[e.contrato_id] = true; });
+  var unicos = Object.keys(cids);
+  if(unicos.length === 1) return unicos[0];
   return _TMA_CID;
+}
+
+function progContratoAtualObj(){
+  var cid = progGetCont();
+  return cid ? (contratos||[]).find(function(c){ return c.id===cid; }) : null;
+}
+
+function progAtualizarBadgeContTma(){
+  var wrap = document.getElementById('prog-cont-tma-wrap');
+  if(!wrap) return;
+  var cont = progContratoAtualObj();
+  if(!cont){ wrap.innerHTML = ''; return; }
+  wrap.innerHTML = '<span style="font-size:11px;color:#666;white-space:nowrap;padding:0 6px;background:#f5f5f3;border-radius:6px" title="Sync Ponto manual usa este contrato">📋 '+escHtml(cont.codigo||cont.nome)+'</span>';
+}
+
+function progSyncPontoColetarMatriculas(opts){
+  opts = opts || {};
+  var base = colaboradores.filter(function(c){
+    return c.ativo && !c.dispensado && (c.vinculo||'campo')==='campo' && c.re;
+  });
+  if(opts.todos) return base.map(function(c){ return String(c.re); });
+  var cid = opts.contratoId || progGetCont();
+  if(!cid) return {erro:'Contrato não identificado nesta tela.'};
+  var mats = base.filter(function(c){ return c.contrato_id === cid; }).map(function(c){ return String(c.re); });
+  return {contratoId: cid, matriculas: mats};
 }
 function progGetTipo(){
   return _progTipoFiltro;
@@ -29723,6 +29766,7 @@ function progAplicarTreinoTurmas(statusMap, infoMap, data){
 }
 
 function progRenderQuadro(){
+  progAtualizarBadgeContTma();
   var data = progGetData();
   var cid  = progGetCont();
   var tipo = progGetTipo();
@@ -32284,7 +32328,10 @@ function progMobileDesprogramar(eqId){
 }
 
 // ── Sincronização de Ponto ────────────────────────────────────────────────
-function progSyncPonto(){
+// opts.todos=true → folha inteira (agendador nos horários fixos)
+// manual (botão) → só colaboradores do contrato selecionado
+function progSyncPonto(opts){
+  opts = opts || {};
   if(window._progSyncPontoAtivo){
     progShowToast('Sync Ponto já em andamento ('+(window._progSyncPontoProgress||'?')+')...');
     return;
@@ -32293,18 +32340,18 @@ function progSyncPonto(){
   var btn  = document.getElementById('btn-sync-ponto');
   var horaEl = document.getElementById('sync-ponto-hora');
 
-  var matriculas = colaboradores
-    .filter(function(c){ return c.ativo && !c.dispensado && (c.vinculo||'campo')==='campo' && c.re; })
-    .map(function(c){ return String(c.re); });
-
-  var filCont = (document.getElementById('fil-prog-cont')||{}).value;
-  if(filCont){
-    var resCont = new Set(colaboradores.filter(function(c){ return c.contrato_id===filCont && c.re; }).map(function(c){ return String(c.re); }));
-    matriculas = matriculas.filter(function(re){ return resCont.has(re); });
+  var coleta = progSyncPontoColetarMatriculas({todos: !!opts.todos});
+  if(coleta.erro){
+    progShowToast('⚠ '+coleta.erro);
+    return;
   }
+  var matriculas = coleta.matriculas;
+  var contratoId = coleta.contratoId || null;
+  var contObj = contratoId ? (contratos||[]).find(function(c){ return c.id===contratoId; }) : null;
+  var rotuloCont = opts.todos ? 'folha inteira' : ((contObj&&(contObj.codigo||contObj.nome)) || 'contrato');
 
   if(!matriculas.length){
-    progShowToast('Nenhum colaborador de campo encontrado.');
+    progShowToast('Nenhum colaborador de campo com RE'+(opts.todos?'':' neste contrato')+'.');
     return;
   }
 
@@ -32318,8 +32365,8 @@ function progSyncPonto(){
   window._progSyncPontoAtivo = true;
   window._progSyncPontoProgress = '0/'+total;
   if(btn){ btn.textContent='⏳ 0/'+total+'...'; btn.disabled=true; }
-  if(horaEl) horaEl.textContent = 'iniciando...';
-  progShowToast('🔄 Sync Ponto: 0/'+total+' colaboradores...');
+  if(horaEl) horaEl.textContent = (opts.automatico ? 'auto ' : '') + rotuloCont;
+  progShowToast('🔄 Sync Ponto ('+rotuloCont+'): 0/'+total+'...');
   if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
 
   function progSyncPontoFinalizar(msg){
@@ -32357,6 +32404,7 @@ function progSyncPonto(){
       setTimeout(function(){
         progCarregarBadgesPonto();
         var msg = '✅ Ponto sincronizado — '+data+' ('+totSinc+'/'+total+')';
+        if(!opts.todos && rotuloCont) msg += ' ['+rotuloCont+']';
         if(totErr > 0) msg += ' | '+totErr+' erro(s)';
         if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
         progSyncPontoFinalizar(msg);
@@ -35239,6 +35287,7 @@ function showTMA(aba){
   _tmaAba = aba || _tmaAba || 'dashboard';
 
   if(_tmaAba === 'programacao'){
+    if(window._filtroContrato) _progContrato = window._filtroContrato;
     // Ocultar pg-tma, mostrar pg-programacao-equipes diretamente
     var pg = document.getElementById('pg-tma');
     if(pg){ pg.classList.add('hidden'); pg.style.display='none'; }
@@ -35679,7 +35728,7 @@ function renderTMADashboard(){
 }
 
 function tmaDashSetData(val){ _progData=val; renderTMADashboard(); }
-function tmaDashSetCont(val){ _progContrato=val; renderTMADashboard(); }
+function tmaDashSetCont(val){ _progContrato=val; window._filtroContrato=val||null; progAtualizarBadgeContTma(); renderTMADashboard(); }
 
 // ══════════════════════════════════════════════════════════
 // EQUIPES EM CAMPO — visão geral de todos os contratos
@@ -35893,25 +35942,12 @@ function renderProgEquipes(){
   });
   var cidsDisp = contsDisp.map(function(c){return c.id;});
 
-  // Se múltiplos contratos TMA, mostrar seletor
-  var wrapCont = document.getElementById('prog-cont-tma-wrap');
-  if(wrapCont){
-    if(contsDisp.length > 1 && !document.getElementById('prog-av-cont-interno')){
-      wrapCont.innerHTML = '<select class="inp" id="prog-av-cont-interno" style="width:200px" onchange="progRenderQuadro()">'
-        +'<option value="">Todos TMA</option>'
-        +contsDisp.map(function(c){return '<option value="'+c.id+'">'+escHtml(c.nome)+'</option>';}).join('')
-        +'</select>';
-    } else if(contsDisp.length <= 1){
-      wrapCont.innerHTML = '';
-    }
-  }
-
-  var data = progGetData();
-
   // Equipes filtradas — só contratos Disponibilidade
   var eqs = equipes_disp.filter(function(e){
     return e.status==='Ativo' && (!cidsDisp.length || cidsDisp.indexOf(e.contrato_id)>=0);
   });
+
+  progAtualizarBadgeContTma();
 
   // Garantir colaboradores carregados
   if(!DEMO && cidsDisp.length){
