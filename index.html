@@ -27843,10 +27843,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.494',
+  numero: '7.9.495',
   data:   '21/06/2026',
-  build:  '20260621-1000',
+  build:  '20260621-1315',
   log: [
+    {v:'7.9.495', d:'21/06/2026', itens:[
+      'Sync Ponto TMA: lotes de 15 com progresso no botão (evita timeout e tela travada em Sincronizando).',
+    ]},
     {v:'7.9.494', d:'21/06/2026', itens:[
       'Almox Fase 4.1: entrada com item do catálogo atualiza tabela estoque (almAtualizarSaldoEstoquePatrimonio); salvar com await e sem sucesso falso.',
     ]},
@@ -28673,7 +28676,9 @@ function pontoFetchApi(path, opts){
   opts = opts || {};
   opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
   return fetch(pontoApiBase() + path, opts).then(function(r){
-    return r.json().then(function(d){
+    return r.text().then(function(txt){
+      var d = null;
+      try { d = txt ? JSON.parse(txt) : null; } catch(parseErr) { d = {detail: txt || ('HTTP '+r.status)}; }
       if(!r.ok){
         var err = new Error((d&&d.detail)||(d&&d.mensagem)||('HTTP '+r.status));
         err.status = r.status;
@@ -28684,9 +28689,13 @@ function pontoFetchApi(path, opts){
     });
   }).catch(function(e){
     if(e && e.message && e.message.indexOf('file://')>=0) throw e;
+    if(e && e.status) throw e;
     if(!window.navigator.onLine) throw new Error('Sem conexão com a internet');
+    var o = (typeof window!=='undefined' && window.location) ? (window.location.origin||'') : '';
+    var emLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
     if(String(e.message||e).indexOf('Failed to fetch')>=0 || String(e.name)==='TypeError'){
-      throw new Error('Bloqueio CORS/rede — use python serve_erp.py e abra http://127.0.0.1:8000/index.html');
+      if(emLocal) throw new Error('Erro de rede/CORS — use: python serve_erp.py e abra http://127.0.0.1:8000/index.html');
+      throw new Error('Falha na API de ponto (erro de servidor ou rede) — verifique /health no Azure');
     }
     throw e;
   });
@@ -32276,84 +32285,119 @@ function progMobileDesprogramar(eqId){
 
 // ── Sincronização de Ponto ────────────────────────────────────────────────
 function progSyncPonto(){
+  if(window._progSyncPontoAtivo){
+    progShowToast('Sync Ponto já em andamento ('+(window._progSyncPontoProgress||'?')+')...');
+    return;
+  }
   var data = progGetData();
   var btn  = document.getElementById('btn-sync-ponto');
-  if(btn){ btn.textContent='⏳ Sincronizando...'; btn.disabled=true; }
+  var horaEl = document.getElementById('sync-ponto-hora');
 
-  // Coletar todos os REs dos colaboradores ativos de campo
   var matriculas = colaboradores
     .filter(function(c){ return c.ativo && !c.dispensado && (c.vinculo||'campo')==='campo' && c.re; })
     .map(function(c){ return String(c.re); });
 
+  var filCont = (document.getElementById('fil-prog-cont')||{}).value;
+  if(filCont){
+    var resCont = new Set(colaboradores.filter(function(c){ return c.contrato_id===filCont && c.re; }).map(function(c){ return String(c.re); }));
+    matriculas = matriculas.filter(function(re){ return resCont.has(re); });
+  }
+
   if(!matriculas.length){
     progShowToast('Nenhum colaborador de campo encontrado.');
-    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
     return;
   }
 
-  progShowToast('🔄 Sincronizando ponto de '+matriculas.length+' colaboradores...');
+  var total = matriculas.length;
+  var BATCH = 15;
+  var idx = 0;
+  var totSinc = 0;
+  var totErr = 0;
+  var dataSyncInicio = data;
 
-  // Pausar auto-refresh durante sincronização
+  window._progSyncPontoAtivo = true;
+  window._progSyncPontoProgress = '0/'+total;
+  if(btn){ btn.textContent='⏳ 0/'+total+'...'; btn.disabled=true; }
+  if(horaEl) horaEl.textContent = 'iniciando...';
+  progShowToast('🔄 Sync Ponto: 0/'+total+' colaboradores...');
   if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
-  var dataSyncInicio = data; // guardar dia do início do sync
 
-  pontoFetchApi('/api/v1/sincronizar-dia', {
-    method: 'POST',
-    body: JSON.stringify({matriculas: matriculas, data: data})
-  })
-  .then(function(d){
+  function progSyncPontoFinalizar(msg){
+    window._progSyncPontoAtivo = false;
+    window._progSyncPontoProgress = '';
+    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
+    if(horaEl) horaEl.textContent = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+    if(msg) progShowToast(msg);
+  }
+
+  function progSyncPontoPosSync(){
     pontoInvalidarCache();
-    // Só atualizar badges se o usuário ainda está no mesmo dia
     var dataAtual = progGetData();
     if(dataAtual !== dataSyncInicio){
-      progShowToast('✅ Ponto sincronizado — '+dataSyncInicio+' ('+d.sincronizados+'/'+d.total+')');
-      if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-      if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+      progSyncPontoFinalizar('✅ Ponto sincronizado — '+dataSyncInicio+' ('+totSinc+'/'+total+')');
       return;
     }
     progCarregarPontoDoSupabase(data, function(){
-      // Corrigir status de colaboradores que bateram ponto mas estavam como falta
       var corrigidos = 0;
       colaboradores.forEach(function(col){
         if(!col.ativo || !col.re) return;
         var st = _progStatus[col.id] || 'disponivel';
-        // Só corrigir se estava como falta
         if(st !== 'falta') return;
         var key = col.re + '_' + data;
         var ponto = _pontoCache[key];
         if(!ponto) return;
         var temEntrada = ponto.entrada || (ponto.todas_marcacoes && ponto.todas_marcacoes.some(function(m){ return m.tipo==='Entrada'; }));
         if(!temEntrada) return;
-        // Bateu ponto mas estava como falta — corrigir para disponivel
         _progStatus[col.id] = 'disponivel';
-        if(!DEMO){
-          sbDelete('prog_status_diario', 'colaborador_id=eq.'+col.id+'&data=eq.'+data)
-            .catch(function(){});
-        }
+        if(!DEMO) sbDelete('prog_status_diario', 'colaborador_id=eq.'+col.id+'&data=eq.'+data).catch(function(){});
         corrigidos++;
       });
-      if(corrigidos > 0){
-        console.log('[Sync Ponto] '+corrigidos+' status de falta corrigidos para disponivel');
-      }
-      // Renderizar quadro com dados atualizados
       progRenderQuadro();
       setTimeout(function(){
         progCarregarBadgesPonto();
-        var msg = '✅ Ponto sincronizado — '+data+' ('+d.sincronizados+'/'+d.total+')';
+        var msg = '✅ Ponto sincronizado — '+data+' ('+totSinc+'/'+total+')';
+        if(totErr > 0) msg += ' | '+totErr+' erro(s)';
         if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
-        progShowToast(msg);
-        if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-        if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
+        progSyncPontoFinalizar(msg);
       }, 300);
     });
-  })
-  .catch(function(e){
-    var msg = e && e.message ? e.message : String(e);
-    if(e && e.status === 503) msg = 'Nexus indisponível (503) — tente novamente em instantes';
-    progShowToast('❌ Erro ao sincronizar ponto: '+msg);
-    if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
-    if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
-  });
+  }
+
+  function proximoLote(){
+    if(idx >= total){
+      progSyncPontoPosSync();
+      return;
+    }
+    var ate = Math.min(idx + BATCH, total);
+    var lote = matriculas.slice(idx, ate);
+    var progTxt = idx + 1 + '–' + ate + '/' + total;
+    window._progSyncPontoProgress = progTxt;
+    if(btn) btn.textContent = '⏳ ' + progTxt + '...';
+    if(horaEl) horaEl.textContent = progTxt + ' (Nexus)';
+
+    pontoFetchApi('/api/v1/sincronizar-dia', {
+      method: 'POST',
+      body: JSON.stringify({matriculas: lote, data: data})
+    })
+    .then(function(d){
+      totSinc += (d && d.sincronizados) || lote.length;
+      totErr  += (d && d.erros) || 0;
+      idx = ate;
+      setTimeout(proximoLote, 200);
+    })
+    .catch(function(e){
+      totErr += lote.length;
+      idx = ate;
+      var msg = e && e.message ? e.message : String(e);
+      if(e && e.status === 503) msg = 'Nexus indisponível (503)';
+      console.warn('[Sync Ponto] lote', progTxt, msg);
+      if(horaEl) horaEl.textContent = '⚠ lote com erro, continuando...';
+      setTimeout(proximoLote, 500);
+    });
+  }
+
+  proximoLote();
 }
 
 // Carregar dados de ponto do Supabase (após sincronização ou ao abrir dia anterior)
