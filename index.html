@@ -27843,10 +27843,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.493',
-  data:   '07/06/2026',
-  build:  '20260607-2355',
+  numero: '7.9.494',
+  data:   '21/06/2026',
+  build:  '20260621-1000',
   log: [
+    {v:'7.9.494', d:'21/06/2026', itens:[
+      'Almox Fase 4.1: entrada com item do catálogo atualiza tabela estoque (almAtualizarSaldoEstoquePatrimonio); salvar com await e sem sucesso falso.',
+    ]},
     {v:'7.9.493', d:'07/06/2026', itens:[
       'Locações editar: evita modal com dados de outra locação (token anti-corrida async) e recarrega registro do Supabase ao abrir.',
     ]},
@@ -28648,7 +28651,46 @@ var _progStatusDateCache = null; // data da última carga do banco
 var _progStatusPorDia = {};    // cache por data: {data: {status:{}, info:{}}}
 
 // ── API de Ponto (Nexusweb) ───────────────────────────────────────────────
-var PONTO_API_URL = 'https://cena-ponto-api-ecbnckaufzdqgxf5.brazilsouth-01.azurewebsites.net';
+var PONTO_API_URL_AZURE = 'https://cena-ponto-api-ecbnckaufzdqgxf5.brazilsouth-01.azurewebsites.net';
+function pontoApiBase(){
+  if(typeof window!=='undefined' && window.location){
+    if(window.location.protocol==='file:') return PONTO_API_URL_AZURE;
+    var o = window.location.origin||'';
+    if(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o)) return o + '/api-ponto';
+    if(/^https:\/\/(www\.)?landtec\.com\.br$/i.test(o)) return PONTO_API_URL_AZURE;
+  }
+  return PONTO_API_URL_AZURE;
+}
+function pontoAvisoOrigem(){
+  if(typeof window!=='undefined' && window.location && window.location.protocol==='file:'){
+    progShowToast('⚠ Abra via http://127.0.0.1:8000/index.html (python serve_erp.py) — arquivo local bloqueia API de ponto (CORS).', 'erro');
+    return true;
+  }
+  return false;
+}
+function pontoFetchApi(path, opts){
+  if(pontoAvisoOrigem()) return Promise.reject(new Error('ERP aberto como arquivo local (file://) — use serve_erp.py'));
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
+  return fetch(pontoApiBase() + path, opts).then(function(r){
+    return r.json().then(function(d){
+      if(!r.ok){
+        var err = new Error((d&&d.detail)||(d&&d.mensagem)||('HTTP '+r.status));
+        err.status = r.status;
+        err.body = d;
+        throw err;
+      }
+      return d;
+    });
+  }).catch(function(e){
+    if(e && e.message && e.message.indexOf('file://')>=0) throw e;
+    if(!window.navigator.onLine) throw new Error('Sem conexão com a internet');
+    if(String(e.message||e).indexOf('Failed to fetch')>=0 || String(e.name)==='TypeError'){
+      throw new Error('Bloqueio CORS/rede — use python serve_erp.py e abra http://127.0.0.1:8000/index.html');
+    }
+    throw e;
+  });
+}
 var _pontoCache   = {};  // cache: {re_data: {status, entrada, saida, ...}}
 var _pontoLoading = {};  // evitar chamadas duplicadas
 
@@ -28712,6 +28754,12 @@ function pontoIniciarAgendador(){
       }
     });
   }, 5*60*1000); // a cada 5 minutos
+
+  // Timer 3: ping a cada 10 minutos para evitar cold start do Azure App Service
+  setInterval(function(){
+    if(window.location.protocol==='file:') return;
+    fetch(pontoApiBase()).catch(function(){});
+  }, 10*60*1000);
 }
 
 // Buscar dados de ponto de um colaborador (com cache)
@@ -28729,23 +28777,22 @@ function pontoConsultar(re, data, callback){
   }
   // Iniciar consulta
   _pontoLoading[key] = [callback];
-  fetch(PONTO_API_URL + '/api/v1/ponto', {
+  pontoFetchApi('/api/v1/ponto', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({matricula: String(re), data: data})
   })
-  .then(function(r){ return r.json(); })
   .then(function(d){
     _pontoCache[key] = d;
     var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
     cbs.forEach(function(cb){ try{ cb(d); }catch(e){} });
   })
-  .catch(function(){
+  .catch(function(e){
+    console.warn('[Ponto] consulta RE', re, e&&e.message||e);
     _pontoCache[key] = null;
     var cbs = _pontoLoading[key] || [];
     delete _pontoLoading[key];
-    cbs.forEach(function(cb){ try{ cb(null); }catch(e){} });
+    cbs.forEach(function(cb){ try{ cb(null); }catch(ex){} });
   });
 }
 
@@ -32250,12 +32297,10 @@ function progSyncPonto(){
   if(typeof _autoRefresh !== 'undefined') _autoRefresh.pausar();
   var dataSyncInicio = data; // guardar dia do início do sync
 
-  fetch(PONTO_API_URL + '/api/v1/sincronizar-dia', {
+  pontoFetchApi('/api/v1/sincronizar-dia', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({matriculas: matriculas, data: data})
   })
-  .then(function(r){ return r.json(); })
   .then(function(d){
     pontoInvalidarCache();
     // Só atualizar badges se o usuário ainda está no mesmo dia
@@ -32303,7 +32348,9 @@ function progSyncPonto(){
     });
   })
   .catch(function(e){
-    progShowToast('❌ Erro ao sincronizar ponto: '+e.message);
+    var msg = e && e.message ? e.message : String(e);
+    if(e && e.status === 503) msg = 'Nexus indisponível (503) — tente novamente em instantes';
+    progShowToast('❌ Erro ao sincronizar ponto: '+msg);
     if(btn){ btn.textContent='🔄 Sync Ponto'; btn.disabled=false; }
     if(typeof _autoRefresh !== 'undefined') _autoRefresh.retomar();
   });
@@ -53732,9 +53779,8 @@ function gpSyncMes(){
     var ate=Math.min(idx+lote.length, mats.length);
     if(btn) btn.textContent='⏳ '+ate+'/'+mats.length+'...';
     if(st) st.textContent='Sincronizando '+(idx+1)+'–'+ate+' de '+mats.length+' (Nexus)...';
-    fetch(PONTO_API_URL+'/api/v1/sincronizar-mes',{method:'POST',headers:{'Content-Type':'application/json'},
+    pontoFetchApi('/api/v1/sincronizar-mes',{method:'POST',
       body:JSON.stringify({matriculas:lote,data_inicio:r.ini,data_fim:r.fim})})
-      .then(function(resp){ if(!resp.ok) throw new Error('HTTP '+resp.status); return resp.json(); })
       .then(function(j){ totDias+=(j.dias_gravados||0); totSinc+=(j.sincronizados||0); totErr+=(j.erros||0); idx+=BATCH; proximo(); })
       .catch(function(e){ totErr+=lote.length; idx+=BATCH; if(st) st.textContent='⚠ lote com erro ('+(e.message||e)+'), continuando...'; setTimeout(proximo, 300); });
   }
@@ -58169,7 +58215,7 @@ function openEntradaItem(itemId){
   }
 
   var btnE = document.getElementById('ei-btn-salvar');
-  if(btnE) btnE.onclick = function(){
+  if(btnE) btnE.onclick = async function(){
     var g  = function(id){ return (document.getElementById(id)||{}).value||''; };
     var qtd = parseInt(g('ei-qtd'))||1;
     var dep = g('ei-dep');
@@ -58182,31 +58228,29 @@ function openEntradaItem(itemId){
       if(series.length < qtd){ alert('Preencha todos os números de série.'); return; }
     }
 
-    var payload = {
-      item_id: it.id, tipo_mov: 'entrada', quantidade: qtd,
-      deposito_id: dep, contrato_id: g('ei-cont')||null,
-      fornecedor: g('ei-forn'), nota_fiscal: g('ei-nf'),
+    var depObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(dep); });
+    var filId = depObj ? depObj.filial_id : null;
+    btnE.disabled = true;
+    btnE.textContent = 'Salvando...';
+
+    var r = await almRegistrarEntradaPatrimonio({
+      item_id: it.id,
+      quantidade: qtd,
+      deposito_id: dep,
+      filial_id: filId,
+      contrato_id: g('ei-cont')||null,
+      fornecedor: g('ei-forn'),
+      nota_fiscal: g('ei-nf'),
       valor_unitario: parseFloat(g('ei-valor'))||0,
       data_mov: g('ei-data')||dataHoje(),
-      motivo: g('ei-motivo'), obs: g('ei-obs'),
-      numeros_serie: series.length ? JSON.stringify(series) : null,
-      responsavel_id: usuarioLogado?usuarioLogado.id:null,
-      status: 'Disponível'
-    };
-
-    var novo = Object.assign({id:'mov'+Date.now()}, payload);
-    movimentacoes_itens.push(novo);
-    if(!DEMO) sbInsert('movimentacoes_itens', payload).then(function(r){
-      if(r&&r[0]&&r[0].id) novo.id=r[0].id;
+      motivo: g('ei-motivo'),
+      obs: g('ei-obs'),
+      numeros_serie: series.length ? JSON.stringify(series) : null
     });
 
-    // Atualizar preço do item se valor informado (pedido de compra → preço vigente)
-    var valorUnit = parseFloat(g('ei-valor'))||0;
-    if(valorUnit > 0){
-      var idxIt = itens_catalogo.findIndex(function(x){return x.id===it.id;});
-      if(idxIt>=0) itens_catalogo[idxIt].preco_unitario = valorUnit;
-      if(!DEMO) sbUpdate('itens_catalogo', {preco_unitario: valorUnit}, 'id=eq.'+it.id);
-    }
+    btnE.disabled = false;
+    btnE.textContent = '💾 Registrar entrada';
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro ao registrar entrada'), 'erro'); return; }
 
     closeModal();
     progShowToast('✅ Entrada registrada: '+qtd+'x '+it.nome);
@@ -62238,8 +62282,144 @@ function almAtualizarDepEntrada(){
     + lista.map(function(d){ return '<option value="'+d.id+'">'+d.nome+'</option>'; }).join('');
 }
 
-function eeRegistrarMovObsEntrada(ctx, linha, extra){
-  if(!ctx.obs && !ctx.numero_rc) return;
+function almBuscarLinhaEstoquePatrimonio(ref, filId, depId, contId){
+  var nome = String((ref&&ref.nome)||'').trim().toLowerCase();
+  var cod = String((ref&&ref.codigo)||'').trim();
+  return (typeof estoque!=='undefined'?estoque:[]).find(function(e){
+    if(String(e.filial_id||'')!==String(filId||'')) return false;
+    if(String(e.deposito_id||'')!==String(depId||'')) return false;
+    if(String(e.contrato_id||'')!==String(contId||'')) return false;
+    if(cod && e.codigo && String(e.codigo).trim()===cod) return true;
+    return nome && String(e.nome||'').trim().toLowerCase()===nome;
+  })||null;
+}
+
+async function almAtualizarSaldoEstoquePatrimonio(p){
+  var qtd = Number(p.qtd)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida para estoque'};
+  var itemCat = p.itemCat||null;
+  var nome = String(p.nome||(itemCat&&itemCat.nome)||'').trim();
+  if(!nome) return {ok:false, msg:'Nome do item obrigatório para estoque'};
+  var tipo = eeNormalizaTipo(p.tipo||(itemCat&&itemCat.tipo_item)||'material');
+  var codigo = p.codigo!=null ? p.codigo : (itemCat&&itemCat.codigo);
+  var sku = p.sku!=null ? p.sku : (itemCat&&itemCat.sku);
+  var unidade = p.unidade||(itemCat&&itemCat.unidade_medida)||'UN';
+  var filId = p.filId||null, depId = p.depId||null, contId = p.contId||null;
+  var custo = Number(p.custo)||0;
+  var existente = almBuscarLinhaEstoquePatrimonio({nome:nome, codigo:codigo}, filId, depId, contId);
+
+  if(existente){
+    var novoSaldo = (Number(existente.saldo)||0)+qtd;
+    var patch = {saldo:novoSaldo};
+    if(custo>0) patch.custo_unitario = custo;
+    if(p.forn) patch.fornecedor = p.forn;
+    if(p.lote) patch.lote = p.lote;
+    if(p.ca) patch.ca = p.ca;
+    if(DEMO){
+      Object.assign(existente, patch);
+      return {ok:true, row:existente, criado:false};
+    }
+    var okUp = await sbUpdate('estoque', patch, 'id=eq.'+existente.id);
+    if(!okUp) return {ok:false, msg:nome+': falha ao atualizar saldo no estoque'};
+    Object.assign(existente, patch);
+    return {ok:true, row:existente, criado:false};
+  }
+
+  var novoLocal = {
+    id:'est'+(Date.now())+(p.seq!=null?p.seq:''),
+    nome:nome,
+    codigo:codigo||null,
+    sku:sku||null,
+    tipo:tipo,
+    ca:p.ca||null,
+    ca_validade:p.ca_validade||null,
+    saldo:qtd,
+    saldo_minimo:5,
+    custo_unitario:custo,
+    unidade_medida:unidade,
+    fornecedor:p.forn||null,
+    lote:p.lote||null,
+    filial_id:filId||null,
+    deposito_id:depId||null,
+    contrato_id:contId||null
+  };
+  if(DEMO){
+    if(typeof estoque==='undefined') estoque=[];
+    estoque.push(novoLocal);
+    return {ok:true, row:novoLocal, criado:true};
+  }
+  var insPayload = Object.assign({}, novoLocal);
+  delete insPayload.id;
+  var ins = await sbInsert('estoque', insPayload);
+  if(!ins||!ins[0]) return {ok:false, msg:nome+': falha ao criar linha no estoque'};
+  var row = Object.assign({}, insPayload, ins[0]);
+  if(typeof estoque!=='undefined') estoque.push(row);
+  return {ok:true, row:row, criado:true};
+}
+
+async function almRegistrarEntradaPatrimonio(opts){
+  var itemId = opts.item_id;
+  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
+  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
+  var qtd = Number(opts.quantidade)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
+  var depId = opts.deposito_id||null;
+  var filId = opts.filial_id||null;
+  if(!filId && depId){
+    var depObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depId); });
+    if(depObj) filId = depObj.filial_id;
+  }
+  var custo = Number(opts.valor_unitario)||0;
+  var payload = {
+    item_id: itemId,
+    tipo_mov: 'entrada',
+    quantidade: qtd,
+    deposito_id: depId,
+    filial_id: filId||null,
+    contrato_id: opts.contrato_id||null,
+    fornecedor: opts.fornecedor||null,
+    nota_fiscal: opts.nota_fiscal||null,
+    valor_unitario: custo,
+    data_mov: opts.data_mov||dataHoje(),
+    motivo: opts.motivo||'Entrada de estoque',
+    obs: opts.obs||null,
+    numeros_serie: opts.numeros_serie||null,
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: 'Disponível'
+  };
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+  }
+  if(custo>0 || opts.ca){
+    var catPatch = {};
+    if(custo>0) catPatch.preco_unitario = custo;
+    if(opts.ca) catPatch.ca = opts.ca;
+    if(DEMO){
+      var idx = itens_catalogo.findIndex(function(x){ return String(x.id)===String(itemId); });
+      if(idx>=0) Object.assign(itens_catalogo[idx], catPatch);
+    } else {
+      var okCat = await sbUpdate('itens_catalogo', catPatch, 'id=eq.'+itemId);
+      if(!okCat) return {ok:false, msg:itemCat.nome+': falha ao atualizar catálogo'};
+      var idx2 = itens_catalogo.findIndex(function(x){ return String(x.id)===String(itemId); });
+      if(idx2>=0) Object.assign(itens_catalogo[idx2], catPatch);
+    }
+  }
+  var saldo = await almAtualizarSaldoEstoquePatrimonio({
+    itemCat:itemCat, qtd:qtd, custo:custo,
+    filId:filId, depId:depId, contId:opts.contrato_id||null,
+    forn:opts.fornecedor, lote:opts.nota_fiscal,
+    ca:opts.ca||null
+  });
+  if(!saldo.ok) return saldo;
+  return {ok:true, nome:itemCat.nome, qtd:qtd};
+}
+
+async function eeRegistrarMovObsEntrada(ctx, linha, extra){
+  if(!ctx.obs && !ctx.numero_rc) return true;
   var payload = {
     item_id: (extra&&extra.item_id)||null,
     tipo_mov: 'entrada',
@@ -62259,12 +62439,17 @@ function eeRegistrarMovObsEntrada(ctx, linha, extra){
   if(extra&&extra.estoque_id){
     payload.obs = (payload.obs||'')+(payload.obs?' | ':'')+'estoque_id:'+extra.estoque_id;
   }
-  var uid = 'mov'+(Date.now())+'-obs-'+(extra&&extra.seq!=null?extra.seq:0);
-  movimentacoes_itens.push(Object.assign({id:uid}, payload));
-  if(!DEMO) sbInsert('movimentacoes_itens', payload).catch(function(e){ console.warn('mov obs entrada:', e); });
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:'mov'+(Date.now())+'-obs-'+(extra&&extra.seq!=null?extra.seq:0)}, payload));
+    return true;
+  }
+  var ins = await sbInsert('movimentacoes_itens', payload);
+  if(!ins) return false;
+  movimentacoes_itens.push(Object.assign({}, payload, ins[0]));
+  return true;
 }
 
-function eeProcessarEntradaLinha(linha, ctx, seq){
+async function eeProcessarEntradaLinha(linha, ctx, seq){
   var itemId = linha.item_id || '';
   var qtd = parseFloat(linha.qtd) || 0;
   if(qtd <= 0) return {ok:false, msg:(linha.nome||'Item')+': quantidade inválida'};
@@ -62289,15 +62474,23 @@ function eeProcessarEntradaLinha(linha, ctx, seq){
     var eid = itemId.slice(4);
     var est = estoque.find(function(e){return e.id===eid;});
     if(!est) return {ok:false, msg:(linha.nome||'Item')+': estoque não encontrado'};
-    est.saldo = (est.saldo||0) + qtd;
-    if(custo > 0) est.custo_unitario = custo;
-    if(forn) est.fornecedor = forn;
-    if(lote) est.lote = lote;
-    if(linha.ca) est.ca = linha.ca;
-    if(filId) est.filial_id = filId;
-    if(depId) est.deposito_id = depId;
-    if(!DEMO) sbUpdate('estoque', est, 'id=eq.'+eid);
-    eeRegistrarMovObsEntrada(ctx, linha, {estoque_id:eid, seq:seq});
+    var novoSaldo = (Number(est.saldo)||0)+qtd;
+    var patch = {saldo:novoSaldo};
+    if(custo>0) patch.custo_unitario = custo;
+    if(forn) patch.fornecedor = forn;
+    if(lote) patch.lote = lote;
+    if(linha.ca) patch.ca = linha.ca;
+    if(filId) patch.filial_id = filId;
+    if(depId) patch.deposito_id = depId;
+    if(DEMO){
+      Object.assign(est, patch);
+    } else {
+      var okEst = await sbUpdate('estoque', patch, 'id=eq.'+eid);
+      if(!okEst) return {ok:false, msg:(linha.nome||est.nome)+': falha ao atualizar estoque'};
+      Object.assign(est, patch);
+    }
+    var okObs = await eeRegistrarMovObsEntrada(ctx, linha, {estoque_id:eid, item_id:est.item_id, seq:seq});
+    if(!okObs) return {ok:false, msg:(linha.nome||est.nome)+': falha ao registrar observação da entrada'};
     return {ok:true, nome:est.nome, qtd:qtd};
   }
 
@@ -62314,51 +62507,59 @@ function eeProcessarEntradaLinha(linha, ctx, seq){
       responsavel_id: usuarioLogado?usuarioLogado.id:null,
       status: 'Disponível'
     };
-    movimentacoes_itens.push(Object.assign({id:uid}, payload));
-    if(!DEMO){
-      sbInsert('movimentacoes_itens', payload);
-      if(custo > 0){
-        var idx = itens_catalogo.findIndex(function(x){return x.id===itemId;});
-        if(idx>=0) itens_catalogo[idx].preco_unitario = custo;
-        sbUpdate('itens_catalogo', {preco_unitario: custo}, 'id=eq.'+itemId);
-      }
-      if(linha.ca){
-        var idxCa = itens_catalogo.findIndex(function(x){return x.id===itemId;});
-        if(idxCa>=0) itens_catalogo[idxCa].ca = linha.ca;
-        sbUpdate('itens_catalogo', {ca: linha.ca}, 'id=eq.'+itemId);
+    if(DEMO){
+      movimentacoes_itens.push(Object.assign({id:uid}, payload));
+    } else {
+      var insMov = await sbInsert('movimentacoes_itens', payload);
+      if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
+      movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+    }
+    if(custo>0 || linha.ca){
+      var catPatch = {};
+      if(custo>0) catPatch.preco_unitario = custo;
+      if(linha.ca) catPatch.ca = linha.ca;
+      if(DEMO){
+        var idxD = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+        if(idxD>=0) Object.assign(itens_catalogo[idxD], catPatch);
+      } else {
+        var okCat = await sbUpdate('itens_catalogo', catPatch, 'id=eq.'+itemId);
+        if(!okCat) return {ok:false, msg:itemCat.nome+': falha ao atualizar catálogo'};
+        var idxC = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+        if(idxC>=0) Object.assign(itens_catalogo[idxC], catPatch);
       }
     }
+    var saldoRes = await almAtualizarSaldoEstoquePatrimonio({
+      itemCat:itemCat, qtd:qtd, custo:custo, seq:seq,
+      filId:filId, depId:depId, contId:contId,
+      forn:forn, lote:lote, ca:linha.ca||null
+    });
+    if(!saldoRes.ok) return {ok:false, msg:saldoRes.msg||itemCat.nome+': falha no estoque'};
     return {ok:true, nome:itemCat.nome, qtd:qtd};
   }
 
   var nome = (linha.nome||'').trim();
   if(!nome) return {ok:false, msg:'Linha sem nome de item'};
-  var novo = {
-    id:'est'+(Date.now())+(seq||0), nome:nome,
-    codigo:linha.codigo||null, sku:linha.sku||null,
-    tipo:linha.tipo||'material', ca:linha.ca||null,
+  var saldoLivre = await almAtualizarSaldoEstoquePatrimonio({
+    nome:nome,
+    codigo:linha.codigo||null,
+    sku:linha.sku||null,
+    tipo:linha.tipo||'material',
+    ca:linha.ca||null,
     ca_validade:linha.ca_validade||null,
-    saldo:qtd, saldo_minimo:5, custo_unitario:custo,
-    unidade_medida:linha.unidade||'UN',
-    fornecedor:forn, lote:lote, filial_id:filId||null, deposito_id:depId||null,
-    contrato_id:contId||null
-  };
-  estoque.push(novo);
-  if(!DEMO){
-    var payload=Object.assign({},novo,{id:undefined});
-    sbInsert('estoque',payload).then(function(r){
-      if(r&&r[0]&&r[0].id){
-        novo.id=r[0].id;
-        eeRegistrarMovObsEntrada(ctx, linha, {estoque_id:r[0].id, seq:seq});
-      }
-    }).catch(function(e){console.error('estoque:',e);});
-  } else if(ctx.obs||ctx.numero_rc){
-    eeRegistrarMovObsEntrada(ctx, linha, {estoque_id:novo.id, seq:seq});
+    unidade:linha.unidade||'UN',
+    qtd:qtd, custo:custo, seq:seq,
+    filId:filId, depId:depId, contId:contId,
+    forn:forn, lote:lote
+  });
+  if(!saldoLivre.ok) return {ok:false, msg:saldoLivre.msg||nome+': falha no estoque'};
+  if(ctx.obs||ctx.numero_rc){
+    var okObs2 = await eeRegistrarMovObsEntrada(ctx, linha, {estoque_id:saldoLivre.row.id, seq:seq});
+    if(!okObs2) return {ok:false, msg:nome+': falha ao registrar observação da entrada'};
   }
-  return {ok:true, nome:nome, qtd:qtd, novo:true};
+  return {ok:true, nome:nome, qtd:qtd, novo:!!saldoLivre.criado};
 }
 
-function salvarEntrada(){
+async function salvarEntrada(){
   eeSyncLinhasFromDOM();
   var linhas = eeColetarLinhas().filter(function(l){ return (l.nome||'').trim() && (parseFloat(l.qtd)||0)>0; });
   if(!linhas.length){ alert('Adicione ao menos um item com nome e quantidade.'); return; }
@@ -62378,13 +62579,26 @@ function salvarEntrada(){
   };
 
   var ok=0, erros=[], nomes=[];
-  linhas.forEach(function(l, i){
-    var r = eeProcessarEntradaLinha(l, ctx, i);
-    if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); }
-    else erros.push(r.msg);
-  });
+  var btn = document.getElementById('ee-btn-salvar');
+  if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+  try {
+    for(var i=0;i<linhas.length;i++){
+      var r = await eeProcessarEntradaLinha(linhas[i], ctx, i);
+      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); }
+      else erros.push(r.msg);
+    }
+  } catch(e){
+    console.error('salvarEntrada:', e);
+    erros.push((e&&e.message)||String(e));
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+  }
 
-  if(!ok){ alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.')); return; }
+  if(!ok){
+    alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.'));
+    if(erros.length) progShowToast('❌ Entrada não registrada', 'erro');
+    return;
+  }
 
   closeModal(); renderEstoque();
   if(_sesmtAbaAtiva==='entradas' && typeof almRenderDashboard==='function') almRenderDashboard();
@@ -62392,7 +62606,10 @@ function salvarEntrada(){
   var msg = '✅ '+ok+' item(ns) registrados na NF'+(ctx.lote?' '+ctx.lote:'');
   if(erros.length) msg += ' · '+erros.length+' falha(s)';
   progShowToast(msg);
-  if(erros.length) console.warn('Entrada parcial:', erros);
+  if(erros.length){
+    console.warn('Entrada parcial:', erros);
+    alert('Alguns itens falharam:\n\n'+erros.join('\n'));
+  }
 }
 
 // ── NOVA FERRAMENTA ────────────────────────────────────────────────
