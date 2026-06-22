@@ -19841,7 +19841,7 @@ function sotEnviarParaProgramacao(projetoId, resultado){
 
   if(tudoOk){
     // Saldo ok — programar direto
-    _sotProgramarProjeto(projetoId, resultado, null);
+    void _sotProgramarProjeto(projetoId, resultado, null);
   } else {
     // Saldo insuficiente — pedir justificativa
     var listaFalta = faltando.map(function(r){
@@ -19869,17 +19869,17 @@ function sotEnviarParaProgramacao(projetoId, resultado){
     setModal(html);
     setTimeout(function(){
       var btn=document.getElementById('btn-forcar-prog');if(!btn)return;
-      btn.onclick=function(){
+      btn.onclick=async function(){
         var justif=(document.getElementById('prog-justif')||{}).value.trim();
         if(!justif){alert('Informe a justificativa.');return;}
         closeModal();
-        _sotProgramarProjeto(projetoId, resultado, justif);
+        await _sotProgramarProjeto(projetoId, resultado, justif);
       };
     },50);
   }
 }
 
-function _sotProgramarProjeto(projetoId, resultado, justificativa){
+async function _sotProgramarProjeto(projetoId, resultado, justificativa){
   var proj = sot_projetos.find(function(p){return p.id===projetoId;});
   if(!proj)return;
 
@@ -19896,16 +19896,18 @@ function _sotProgramarProjeto(projetoId, resultado, justificativa){
   }
 
   // Reservar TODOS os materiais do projeto no almoxarifado
+  var totalReservados = 0;
+  var totalPendentes = 0;
   if(resultado && resultado.length){
-    resultado.forEach(function(r){
-      if(!r.qtdNec || r.qtdNec <= 0) return; // ignorar sem quantidade
+    for(var r of resultado){
+      if(!r.qtdNec || r.qtdNec <= 0) continue; // ignorar sem quantidade
 
       // Verificar se já existe reserva para este material/projeto
       var jaReservado = alm_movimentos.some(function(m){
         return m.status==='reservado' && m.projeto_id===projetoId
           && (m.material_id===r.mat.material_id || m.material_desc===r.mat.descricao);
       });
-      if(jaReservado) return;
+      if(jaReservado) continue;
 
       var temSaldo = r.ok; // true = saldo disponível, false = faltando
       var reserva = {
@@ -19931,15 +19933,14 @@ function _sotProgramarProjeto(projetoId, resultado, justificativa){
         registrado_por:usuarioLogado?usuarioLogado.nome:'',
         criado_em:new Date().toISOString()
       };
-      alm_reservas.push(reserva);
-      alm_movimentos.unshift(reserva);
-      if(!DEMO) sbInsert('alm_movimentos',_semId(reserva));
-    });
+      var okReserva = await almSalvarMovimentoSeguro(reserva);
+      if(!okReserva) continue;
+      if(temSaldo) totalReservados++;
+      else totalPendentes++;
+    }
   }
 
   // Toast de confirmação
-  var totalReservados = resultado ? resultado.filter(function(r){return r.ok&&r.qtdNec>0;}).length : 0;
-  var totalPendentes  = resultado ? resultado.filter(function(r){return !r.ok&&r.qtdNec>0;}).length : 0;
   var msg = '✅ Projeto programado — '
     +totalReservados+' material(is) reservado(s)'
     +(totalPendentes>0?' | '+totalPendentes+' pendente(s) sem saldo':'')
@@ -42909,37 +42910,21 @@ function showPage(pageId){
   var bm=document.getElementById('bloco-metricas');
   if(bm)bm.style.display=(pageId==='dashboard')?'':'none';
 
-  // Esconder TODAS as páginas reais (usando IDs reais do HTML)
-  // Esconder todas as páginas de nível raiz
-  // (sub-páginas de campo são filhas de pg-campo — escondem junto com o pai)
   // Ao navegar, desativar layout especial da ociosidade
   var _pgOcio = document.getElementById('pg-frotas-ociosidade');
   var _aca    = document.getElementById('app-content-area');
   if(_pgOcio) _pgOcio.classList.remove('ocio-ativa');
   if(_aca)    _aca.style.overflow = '';
 
-  ['dashboard','contratos','adiantamentos','operacional','produtividade',
-   'verbas','lancamentos','aprovacao','obras','relatorios','cadastros',
-   'campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestor-painel','plpt-programacao','alm-dashboard',
-   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-aptidao',
-   'sesmt-entradas','sesmt-alm','sesmt-itens','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
-   'obras-projetos','obras-sap','obras-execucao','obras-movSAP','obras-requisicao',
-   'obras-medicao','plr','sugestoes',
-   'frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao',
-   'frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias',
-   'frotas-documentos','frotas-ociosidade','frotas-custos','frotas-auditoria',
-   'frotas-integracoes','frotas-relatorios','contrato-obras',
-   'comgas-dashboard','comgas-inspecoes','comgas-checklist','comgas-nc','comgas-pa','comgas-cdi','comgas-rem',
-   'enel-dashboard','enel-inspecoes','enel-checklist','enel-nc','enel-pa','enel-cdi','enel-rem'
-  ].forEach(function(p){
-    var el=document.getElementById('pg-'+p);
-    if(el)el.classList.add('hidden');
-  });
-  // Esconder sub-páginas de campo individualmente também
-  ['campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field'].forEach(function(p){
-    var el=document.getElementById('pg-'+p);
-    if(el)el.classList.add('hidden');
-  });
+  // Esconder TODAS as páginas do app (lista manual era incompleta — ex.: gestao-ponto ficava visível)
+  var _pgApp = document.getElementById('pg-app');
+  if(_pgApp){
+    _pgApp.querySelectorAll('[id^="pg-"]').forEach(function(el){
+      if(el.id==='pg-app'||el.id==='pg-app-content') return;
+      el.classList.add('hidden');
+      el.style.display = '';
+    });
+  }
 
   // Garantir que a página de destino está dentro do app-content-area (para páginas fora do aca)
   (function(){
@@ -59375,9 +59360,9 @@ function _lcEhResponsavelValido(f){
   return false;
 }
 function _lcListaResponsaveis(selectedId){
-  var base=(typeof colaboradores!=='undefined'&&colaboradores.length)
-    ? colaboradores.filter(function(c){ return c.ativo!==false; })
-    : (funcs||[]).filter(function(f){ return f.ativo!==false; });
+  var base=(typeof funcs!=='undefined'&&funcs&&funcs.length)
+    ? funcs.filter(function(f){ return f.ativo!==false; })
+    : (colaboradores||[]).filter(function(c){ return c.ativo!==false; });
   var lista=base.filter(_lcEhResponsavelValido);
   if(selectedId){
     var sid=String(selectedId);
