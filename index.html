@@ -4544,7 +4544,10 @@ async function sbUpsert(table, data, onConflict){
 async function sbInsert(table,data){
   if(DEMO)return null;
   var _schemaCols={'treinamentos':['funcionario_id','nr','titulo','validade','data','instituicao','criado_em'],
-    'estoque':['nome','codigo','sku','tipo','ca','ca_validade','saldo','saldo_minimo','custo_unitario','unidade_medida','fornecedor','lote','filial_id','deposito_id','contrato_id']};
+    'estoque':['nome','codigo','sku','tipo','ca','ca_validade','saldo','saldo_minimo','custo_unitario','unidade_medida','fornecedor','lote','filial_id','deposito_id','contrato_id'],
+    'movimentacoes_itens':['item_id','tipo_mov','quantidade','deposito_id','filial_id','contrato_id','fornecedor','nota_fiscal',
+      'valor_unitario','data_mov','responsavel_id','destino_tipo','destino_id','numeros_serie','condicao','motivo','obs','status',
+      'movimentacao_origem_id','tipo_ajuste']};
   if(_schemaCols[table]){
     var _cols=_schemaCols[table];
     var _san=function(obj){var r={};_cols.forEach(function(k){if(obj[k]!==undefined&&obj[k]!==null&&obj[k]!=='')r[k]=obj[k];});return r;};
@@ -4673,7 +4676,15 @@ function dataHojeLocal(){return dataHoje();}
 function mesHojeLocal(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
 function dataHojeISO(){return dataHoje();} // alias
 function fmtR(v){return'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2});}
-function fNomeCont(id){var c=contratos.find(function(x){return x.id===id;});return c?c.nome:'—';}
+function almContratoLabel(c, inclCod){
+  if(!c) return '—';
+  var nome=String(c.nome||'').trim();
+  var cod=String(c.codigo||'').trim();
+  if(!nome) return cod||'—';
+  if(inclCod && cod && cod!==nome) return nome+' ('+cod+')';
+  return nome;
+}
+function fNomeCont(id){var c=contratos.find(function(x){return x.id===id;});return almContratoLabel(c,false);}
 function fNomeCat(id){var c=categorias.find(function(x){return x.id===id;});return c?c.nome:'—';}
 function fNomeForn(id){var f=fornecedores.find(function(x){return x.id===id;})||_fornFindById(id);return f?(f.razao_social+(f.status==='Inativo'?' (inativo)':'')):'—';}
 
@@ -4683,6 +4694,11 @@ function setModal(html){
   ma.innerHTML=html;
   ma.style.pointerEvents=html?'auto':'none';
   if(html){
+    if(typeof _autoRefresh !== 'undefined'){
+      _autoRefresh._pausadoAntesModal = _autoRefresh._pausado;
+      if(!_autoRefresh._pausado) _autoRefresh.pausar();
+      _autoRefresh._modalAberto = true;
+    }
     // Ordenar selects do modal alfabeticamente
     setTimeout(function(){
       ma.querySelectorAll('select:not([data-nosort])').forEach(function(sel){
@@ -4707,6 +4723,10 @@ function closeModal(){
   ma.style.pointerEvents='none';
   ma.innerHTML='';
   ma.style.pointerEvents='none';
+  if(typeof _autoRefresh !== 'undefined' && _autoRefresh._modalAberto){
+    _autoRefresh._modalAberto = false;
+    if(!_autoRefresh._pausadoAntesModal) _autoRefresh.retomar();
+  }
 }
 
 // ── Helpers de data e flags de módulos lazy ───────────────────────────────
@@ -19970,21 +19990,17 @@ function almRenderReservas(cid, busca){
   setTimeout(function(){
     rows.forEach(function(m){
       var bs=tb.querySelector('[data-rid="'+m.id+'"][data-act="separar"]');
-      if(bs)bs.onclick=function(){
-        m.status='separacao';
-        if(!DEMO)sbUpdate('alm_movimentos',{status:'separacao'},'id=eq.'+m.id);
-        almRender();
+      if(bs)bs.onclick=async function(){
+        await almAtualizarMovimentoSeguro(m.id,{status:'separacao'});
       };
       var bag=tb.querySelector('[data-rid="'+m.id+'"][data-act="aguardar"]');
       if(bag)bag.onclick=function(){
         alert('Material marcado como aguardando chegada. Quando chegar, registre uma entrada e a reserva será atendida automaticamente.');
       };
       var bc=tb.querySelector('[data-rid="'+m.id+'"][data-act="cancelar"]');
-      if(bc)bc.onclick=function(){
+      if(bc)bc.onclick=async function(){
         if(!confirm('Cancelar esta reserva?'))return;
-        m.status='cancelado';
-        if(!DEMO)sbUpdate('alm_movimentos',{status:'cancelado'},'id=eq.'+m.id);
-        almRender();
+        await almAtualizarMovimentoSeguro(m.id,{status:'cancelado'});
       };
     });
   },50);
@@ -20041,6 +20057,89 @@ function almCarregarMovimentos(){
     .catch(function(){ alm_movimentos=[]; });
 }
 
+async function almSalvarMovimentoSeguro(mov){
+  if(DEMO){
+    alm_movimentos.unshift(mov);
+    if(mov.status==='reservado'||mov.status==='separacao'||mov.status==='reservado_pendente'){
+      alm_reservas.push(mov);
+    }
+    almCalcularSaldo();
+    almRenderMetricas();
+    almRender();
+    return true;
+  }
+  try{
+    var r=await sbInsert('alm_movimentos',_semId(mov));
+    if(!r||!r.length){
+      alert('Não foi possível salvar o movimento. Tente novamente.');
+      return false;
+    }
+    if(r[0]&&r[0].id) mov.id=r[0].id;
+    var saved=Object.assign({},mov,r[0]||{});
+    alm_movimentos.unshift(saved);
+    if(saved.status==='reservado'||saved.status==='separacao'||saved.status==='reservado_pendente'){
+      alm_reservas.push(saved);
+    }
+    almCalcularSaldo();
+    almRenderMetricas();
+    almRender();
+    return true;
+  }catch(e){
+    console.error('almSalvarMovimentoSeguro:',e);
+    alert('Erro ao salvar movimento: '+(e.message||e));
+    return false;
+  }
+}
+
+async function almAtualizarMovimentoSeguro(movId,patch){
+  var mov=alm_movimentos.find(function(m){return m.id===movId;});
+  if(!mov){
+    alert('Movimento não encontrado.');
+    return false;
+  }
+  if(DEMO){
+    Object.assign(mov,patch);
+    var rsv=alm_reservas.find(function(r){return r.id===movId;});
+    if(rsv){
+      if(patch.status==='cancelado'){
+        var idx=alm_reservas.indexOf(rsv);
+        if(idx>=0) alm_reservas.splice(idx,1);
+      }else{
+        Object.assign(rsv,patch);
+      }
+    }
+    almCalcularSaldo();
+    almRenderMetricas();
+    almRender();
+    return true;
+  }
+  try{
+    var ok=await sbUpdate('alm_movimentos',patch,'id=eq.'+movId);
+    if(!ok){
+      alert('Não foi possível atualizar o movimento. Tente novamente.');
+      return false;
+    }
+    Object.assign(mov,patch);
+    var rsv2=alm_reservas.find(function(r){return r.id===movId;});
+    if(rsv2){
+      if(patch.status==='cancelado'){
+        var idx2=alm_reservas.indexOf(rsv2);
+        if(idx2>=0) alm_reservas.splice(idx2,1);
+      }else{
+        Object.assign(rsv2,patch);
+      }
+    }
+    almCalcularSaldo();
+    almRenderMetricas();
+    almRender();
+    return true;
+  }catch(e){
+    console.error('almAtualizarMovimentoSeguro:',e);
+    alert('Erro ao atualizar movimento: '+(e.message||e));
+    return false;
+  }
+}
+
 // ── Calcular saldo ───────────────────────────────────────────
 function almCalcularSaldo(){
   var mapa = {}; // chave: material_id+contrato_id
@@ -20059,10 +20158,11 @@ function almCalcularSaldo(){
       };
     }
     // Update valor_unitario with most recent entry value (last entry wins)
-    if(m.tipo==='entrada' && (m.valor_unitario||0)>0){
-      mapa[chave].valor_unitario = parseFloat(m.valor_unitario)||0;
+    var vUnit = Number(m.valor_unitario)||0;
+    if(m.tipo==='entrada' && vUnit>0){
+      mapa[chave].valor_unitario = vUnit;
     }
-    var qtd = Number(m.qtd||0);
+    var qtd = Number(m.qtd)||0;
     if(m.tipo==='entrada')   mapa[chave].entradas   += qtd;
     if(m.tipo==='saida')     mapa[chave].saidas      += qtd;
     if(m.tipo==='aplicacao') mapa[chave].aplicacoes  += qtd;
@@ -20072,7 +20172,10 @@ function almCalcularSaldo(){
   alm_estoque = Object.values(mapa).map(function(e){
     e.em_campo   = e.saidas - e.aplicacoes - e.devolucoes;
     e.saldo      = e.entradas - e.saidas + e.devolucoes;
-    e.valor_total = Math.round((e.saldo * e.valor_unitario)*100)/100;
+    e.valor_total = Math.round((e.saldo * (Number(e.valor_unitario)||0))*100)/100;
+    if(!isFinite(e.em_campo)) e.em_campo = 0;
+    if(!isFinite(e.saldo)) e.saldo = 0;
+    if(!isFinite(e.valor_total)) e.valor_total = 0;
     return e;
   });
 }
@@ -20349,7 +20452,7 @@ function almAbrirEntrada(){
   setModal(html);
   setTimeout(function(){
     var btn=document.getElementById('alm-salvar-entrada');if(!btn)return;
-    btn.onclick=function(){
+    btn.onclick=async function(){
       var g=function(id){return (document.getElementById(id)||{}).value||'';};
       var desc=g('alm-e-desc').trim();
       var qtd=parseFloat(g('alm-e-qtd'))||0;
@@ -20367,10 +20470,11 @@ function almAbrirEntrada(){
         registrado_por:usuarioLogado?usuarioLogado.nome:'',
         criado_em:new Date().toISOString(),status:'concluido'
       };
-      alm_movimentos.unshift(mov);
-      if(!DEMO) sbInsert('alm_movimentos',_semId(mov)).then(function(r){if(r&&r[0]&&r[0].id)mov.id=r[0].id;});
-      closeModal();
-      almCalcularSaldo();almRenderMetricas();almRender();
+      btn.disabled=true;
+      btn.textContent='Salvando...';
+      var ok=await almSalvarMovimentoSeguro(mov);
+      if(ok) closeModal();
+      else{ btn.disabled=false; btn.textContent='Registrar entrada'; }
     };
   },50);
 }
@@ -20435,7 +20539,7 @@ function almAbrirSaida(){
   setModal(html);
   setTimeout(function(){
     var btn=document.getElementById('alm-salvar-saida');if(!btn)return;
-    btn.onclick=function(){
+    btn.onclick=async function(){
       var g=function(id){return (document.getElementById(id)||{}).value||'';};
       var desc=g('alm-s-desc').trim();
       var qtd=parseFloat(g('alm-s-qtd'))||0;
@@ -20456,10 +20560,11 @@ function almAbrirSaida(){
         registrado_por:usuarioLogado?usuarioLogado.nome:'',
         criado_em:new Date().toISOString()
       };
-      alm_movimentos.unshift(mov);
-      if(!DEMO) sbInsert('alm_movimentos',_semId(mov)).then(function(r){if(r&&r[0]&&r[0].id)mov.id=r[0].id;});
-      closeModal();
-      almCalcularSaldo();almRenderMetricas();almRender();
+      btn.disabled=true;
+      btn.textContent='Salvando...';
+      var ok=await almSalvarMovimentoSeguro(mov);
+      if(ok) closeModal();
+      else{ btn.disabled=false; btn.textContent='Registrar saída'; }
     };
   },50);
 }
@@ -20498,29 +20603,33 @@ function almAbrirBaixa(movId, soDevolucao){
   setModal(html);
   setTimeout(function(){
     var btn=document.getElementById('alm-confirmar-baixa');if(!btn)return;
-    btn.onclick=function(){
+    btn.onclick=async function(){
       var aplic=parseFloat((document.getElementById('alm-b-aplic')||{}).value)||0;
       var devol=parseFloat((document.getElementById('alm-b-devol')||{}).value)||0;
       var obs=(document.getElementById('alm-b-obs')||{}).value||'';
       if(aplic+devol>qtdCampo){alert('A soma não pode ser maior que a quantidade em campo ('+qtdCampo+').');return;}
-      mov.qtd_aplicada=(mov.qtd_aplicada||0)+aplic;
-      mov.qtd_devolvida=(mov.qtd_devolvida||0)+devol;
-      var novoStatus=((mov.qtd_aplicada+mov.qtd_devolvida)>=mov.qtd)?'concluido':'em_campo';
-      mov.status=novoStatus;
-      if(!DEMO) sbUpdate('alm_movimentos',{qtd_aplicada:mov.qtd_aplicada,qtd_devolvida:mov.qtd_devolvida,status:novoStatus},'id=eq.'+movId);
-      // Registrar devolução separada se houver
+      var novaQtdAplicada=(mov.qtd_aplicada||0)+aplic;
+      var novaQtdDevolvida=(mov.qtd_devolvida||0)+devol;
+      var novoStatus=(novaQtdAplicada+novaQtdDevolvida)>=mov.qtd?'concluido':'em_campo';
+      var patch={qtd_aplicada:novaQtdAplicada,qtd_devolvida:novaQtdDevolvida,status:novoStatus};
+      btn.disabled=true;
+      btn.textContent='Salvando...';
+      var ok=await almAtualizarMovimentoSeguro(movId,patch);
+      if(!ok){ btn.disabled=false; btn.textContent='Confirmar'; return; }
       if(devol>0){
-        var movDevol={tipo:'devolucao',material_id:mov.material_id,material_desc:mov.material_desc,
+        var movDevol={
+          id:'alm'+Date.now(),tipo:'devolucao',
+          material_id:mov.material_id,material_desc:mov.material_desc,
           codigo_sap:mov.codigo_sap,unidade:mov.unidade,contrato_id:mov.contrato_id,qtd:devol,
           data:dataHojeLocal(),saida_ref:movId,
           projeto_id:mov.projeto_id,projeto_nome:mov.projeto_nome,
           obs:obs,registrado_por:usuarioLogado?usuarioLogado.nome:'',
-          criado_em:new Date().toISOString(),status:'concluido'};
-        alm_movimentos.unshift(movDevol);
-        if(!DEMO) sbInsert('alm_movimentos',_semId(movDevol));
+          criado_em:new Date().toISOString(),status:'concluido'
+        };
+        ok=await almSalvarMovimentoSeguro(movDevol);
+        if(!ok){ btn.disabled=false; btn.textContent='Confirmar'; return; }
       }
       closeModal();
-      almCalcularSaldo();almRenderMetricas();almRender();
     };
   },50);
 }
@@ -27845,10 +27954,45 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.500',
-  data:   '21/06/2026',
-  build:  '20260621-1630',
+  numero: '7.9.511',
+  data:   '22/06/2026',
+  build:  '20260622-1000',
   log: [
+    {v:'7.9.511', d:'22/06/2026', itens:[
+      'Ponto: corrigido crash em progSyncPontoColetarMatriculas (todos=true retornava array em vez de {matriculas:[]}); sync automático agora atualiza a tela corretamente.',
+      'Ponto: adicionado ping automático a cada 10 minutos para evitar cold start do Azure App Service.',
+      'Programação: filtro Presentes/Ausentes restaurado na seção de Indisponíveis.',
+    ]},
+    {v:'7.9.510', d:'07/06/2026', itens:[
+      'Almox: entrada, devolução e transferência exigem local de saída e local de entrada; modal de transferência entre depósitos.',
+    ]},
+    {v:'7.9.509', d:'07/06/2026', itens:[
+      'Almox: consolida linhas duplicadas no estoque; na carga corrige saldo excedente; entrega não infla saldo na reconciliação.',
+    ]},
+    {v:'7.9.508', d:'07/06/2026', itens:[
+      'Entrega/saída: painel de saldo do depósito + lista de outros depósitos com estoque (Usar este / pedir emprestado).',
+    ]},
+    {v:'7.9.507', d:'07/06/2026', itens:[
+      'Almox entrega: saldo por depósito (tabela estoque); reconciliação e exibição alinhadas; legado sem depósito vinculado automaticamente.',
+    ]},
+    {v:'7.9.506', d:'07/06/2026', itens:[
+      'Almox devolução: corrigida dupla contagem (entrega devolvida + mov devolução); reconciliação também reduz saldo excedente.',
+    ]},
+    {v:'7.9.505', d:'07/06/2026', itens:[
+      'Almox: estoque por depósito (compartilhado); entrada sem contrato; saída/entrega exige depósito + contrato.',
+    ]},
+    {v:'7.9.504', d:'07/06/2026', itens:[
+      'Almox entrega: reconcilia saldo da tabela estoque com movimentações; contrato da entrega não bloqueia saldo de entrada sem contrato.',
+    ]},
+    {v:'7.9.503', d:'07/06/2026', itens:[
+      'Almox entregas: select e cabeçalhos de contrato exibem nome (não só código) em ferramentas, EPI/EPC e entrada de estoque.',
+    ]},
+    {v:'7.9.502', d:'21/06/2026', itens:[
+      'Almox Fase 4.2: entrega, devolução e ajuste atualizam tabela estoque (almBaixarSaldo / almRegistrarEntrega|Devolucao|AjustePatrimonio); await e erro explícito.',
+    ]},
+    {v:'7.9.501', d:'21/06/2026', itens:[
+      'Ponto TMA: badge embutido no render do slot (não depende só do async); progRenderQuadro recarrega cache do Supabase se vazio.',
+    ]},
     {v:'7.9.500', d:'21/06/2026', itens:[
       'Ponto TMA: badge Ausente/Presente após sync — status falta do Nexus sem horario_entrada agora exibe ● Ausente; cache com RE normalizado.',
     ]},
@@ -28756,6 +28900,17 @@ function pontoCacheGet(re, data){
   return undefined;
 }
 function pontoCacheSet(re, data, val){ _pontoCache[pontoCacheKey(re,data)]=val; }
+function _pontoCacheTemDia(data){
+  if(!_pontoCache||!data) return false;
+  var suf='_'+data;
+  return Object.keys(_pontoCache).some(function(k){ return k.slice(-suf.length)===suf && _pontoCache[k]!=null; });
+}
+function _pontoBadgeSlotHtml(col, data){
+  if(!col) return '';
+  if((col.vinculo||'campo')!=='campo') return '<div id="ponto-badge-'+col.id+'" style="margin-top:2px"></div>';
+  var h=_pontoBadgeHtml(pontoCacheGet(col.re,data),data,false);
+  return h||('<div id="ponto-badge-'+col.id+'" style="margin-top:2px"></div>');
+}
 function _pontoTemEntrada(p){
   return !!(p&&(p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(m){return m.tipo==='Entrada';}))||p.status==='presente'));
 }
@@ -30039,8 +30194,19 @@ function progRenderQuadro(){
   _progRestaurarScroll();                                   // imediato (sem flash)
   if(window.requestAnimationFrame) requestAnimationFrame(_progRestaurarScroll); // corrige micro-ajustes de layout
   setTimeout(_progRestaurarScroll, 60);                      // fallback p/ conteudo assincrono (badges de ponto)
-  // Re-preenche os badges de presença/ausência nos slots — eles vêm via fill assíncrono e somem a cada re-render
-  if(typeof progCarregarBadgesPonto==='function' && _pontoCache && Object.keys(_pontoCache).length>0){ setTimeout(progCarregarBadgesPonto, 0); }
+  // Badges de ponto: carregar cache do Supabase se necessário e preencher slots
+  (function(){
+    var _dataBadge = progGetData();
+    function _progRefreshBadgesPonto(){
+      if(typeof progCarregarBadgesPonto==='function') progCarregarBadgesPonto();
+    }
+    if(typeof progCarregarPontoDoSupabase!=='function') return;
+    if(_pontoCacheTemDia(_dataBadge)){
+      setTimeout(_progRefreshBadgesPonto, 0);
+    } else {
+      progCarregarPontoDoSupabase(_dataBadge, _progRefreshBadgesPonto);
+    }
+  })();
   setTimeout(progNavBarUpdate, 100);
   // Bindar botões de status e filtro dos veículos
   setTimeout(function(){
@@ -31089,7 +31255,7 @@ function progRenderEquipeRow(eq, data){
         ?'<div style="margin-top:3px;background:#FFF0E0;border:.5px solid #E65C0055;color:#854F0B;border-radius:4px;padding:2px 5px;font-size:9px;line-height:1.3;word-break:break-word">📝 '+escHtml(_progStatusInfo[col.id].just_folga)+'</div>':'')
       +((_progStatusInfo[col.id]||{}).emprestimo_obs
         ?'<div style="margin-top:3px;background:#EBF4FF;border:.5px solid #185FA555;color:#185FA5;border-radius:4px;padding:2px 5px;font-size:9px;line-height:1.3;word-break:break-word">🔄 '+escHtml(_progStatusInfo[col.id].emprestimo_obs)+'</div>':'')
-      +'<div id="ponto-badge-'+col.id+'" style="margin-top:2px"></div>'
+      +_pontoBadgeSlotHtml(col, data)
       +(confirmada
         ? '<div style="position:absolute;top:2px;right:3px;font-size:10px;color:#3B6D11" title="Programada">🔒</div>'
         : '<div style="position:absolute;top:2px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#555;line-height:1;user-select:none" '
@@ -32775,10 +32941,24 @@ function progRenderPainelDisp(eqs, data, cid){
       integracao:'🔄 Em Integração', patio:'🏗 Pátio', verificar:'🔍 Verificar'
     };
     var _filtroIndisp = window._progFiltroIndisp || 'todos';
+    var _filtroIndispPonto = window._progFiltroIndispPonto || 'todos';
     var indispFiltrados = _filtroIndisp === 'todos' ? indisponiveis : indisponiveis.filter(function(c){ var st = _progStatus[c.id]||'folga'; return st === _filtroIndisp; });
+    if(_filtroIndispPonto === 'presentes'){
+      indispFiltrados = indispFiltrados.filter(function(c){ var p=pontoCacheGet(c.re,data); return _pontoTemEntrada(p); });
+    } else if(_filtroIndispPonto === 'ausentes'){
+      indispFiltrados = indispFiltrados.filter(function(c){ var p=pontoCacheGet(c.re,data); return _pontoDeveMostrarAusente(p,data); });
+    }
     var INDISP_BTNS = [{v:'todos',l:'Todos'},{v:'falta',l:'Faltou'},{v:'ferias',l:'Férias'},{v:'afastado',l:'Afastado'},{v:'folga',l:'Folga'},{v:'treinamento',l:'Treinamento'},{v:'integracao',l:'Integração'},{v:'patio',l:'Pátio'},{v:'verificar',l:'Verificar'},{v:'fraude',l:'Fraude'},{v:'demitido',l:'Demitido'}];
+    var _indispPontoFiltroHtml = '<select class="inp" style="font-size:10px;padding:2px 6px;border-radius:5px" onchange="window._progFiltroIndispPonto=this.value;progRenderQuadro()">'
+      +'<option value="todos"'+(_filtroIndispPonto==='todos'?' selected':'')+'>👥 Todos</option>'
+      +'<option value="presentes"'+(_filtroIndispPonto==='presentes'?' selected':'')+'>✓ Presentes</option>'
+      +'<option value="ausentes"'+(_filtroIndispPonto==='ausentes'?' selected':'')+'>● Ausentes</option>'
+      +'</select>';
     indispHtml = '<div id="prog-sec-indisp" style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
-      +'<div style="font-size:12px;font-weight:600;margin-bottom:.5rem;color:#888">Indisponíveis hoje ('+indispFiltrados.length+'/'+indisponiveis.length+')</div>'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">'
+      +'<span style="font-size:12px;font-weight:600;color:#888">Indisponíveis hoje ('+indispFiltrados.length+'/'+indisponiveis.length+')</span>'
+      +_indispPontoFiltroHtml
+      +'</div>'
       +'<div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:4px">'+INDISP_BTNS.map(function(f){var a=_filtroIndisp===f.v;return '<button onclick="window._progFiltroIndisp=\''+f.v+'\';progRenderQuadro()" style="font-size:9px;padding:1px 5px;border-radius:3px;border:.5px solid '+(a?'#185FA5':'#e0dfd8')+';background:'+(a?'#185FA5':'#fff')+';color:'+(a?'#fff':'#888')+';cursor:pointer">'+f.l+'</button>';}).join('')+'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +indispFiltrados.map(function(c){
@@ -45169,10 +45349,7 @@ function ppRenderEquipeRow(eq, data, cid, maxSlots){
     if(confirmada){
       if(!col)return '<td style="padding:4px 8px"><div style="border:1.5px solid #e0dfd8;border-radius:6px;padding:5px 8px;min-width:80px;color:#bbb;font-size:11px;text-align:center;background:#f5f5f3">'+lbl+'</div></td>';
       var si2=PROG_STATUS[_ppStatus[col.id]||'disponivel']||PROG_STATUS.disponivel;
-      var _pk2=(col.re||'')+'_'+data;
-      var _p2=_pontoCache[_pk2];
-      var _e2=_p2&&(_p2.entrada||(_p2.todas_marcacoes&&_p2.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})));
-      var _pontoBadge2=_e2?'<div style="margin-top:1px;background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;display:inline-block">✓ Presente '+(_p2.entrada||'')+'</div>':(_p2&&_p2.status==='falta'&&pontoHorarioPassou(_p2.horario_previsto||{},data)?'<div style="margin-top:1px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;display:inline-block">● Ausente</div>':'');
+      var _pontoBadge2=_pontoBadgeHtml(pontoCacheGet(col.re,data),data,false);
       return '<td style="padding:4px 8px"><div style="background:'+si2.bg+';border:.5px solid '+si2.cor+'44;border-radius:6px;padding:4px 8px;min-width:90px;font-size:11px;opacity:.85;position:relative" title="'+escHtml(col.nome)+'"><div style="position:absolute;top:2px;right:3px;font-size:10px">🔒</div><div style="font-weight:600;color:'+si2.cor+';font-size:11px;padding-right:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(col.nome)+'</div><div style="font-size:9px;color:#888">RE '+(col.re||'—')+'</div><div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">'+(col.cargo||'')+'</div><div style="font-size:9px;color:'+si2.cor+';margin-top:1px">'+si2.label+'</div>'+_pontoBadge2+'</div></td>';
     }
     if(!col){
@@ -45199,7 +45376,7 @@ function ppRenderEquipeRow(eq, data, cid, maxSlots){
       +'<div style="font-size:9px;color:#888;margin-top:1px">RE '+(col.re||'—')+'</div>'
       +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">'+(col.cargo||'')+'</div>'
       +'<div style="font-size:9px;color:'+(isFolg2?COR_F2:stI.cor)+';margin-top:2px">'+stI.label+'</div>'
-      +(function(){ var _pk=(col.re||'')+'_'+data; var _p2=_pontoCache[_pk]; if(!_p2) return ''; var _e=_p2.entrada||(_p2.todas_marcacoes&&_p2.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})); if(_e) return '<div style="margin-top:2px;background:#3B6D11;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">✓ Presente '+(_p2.entrada||'')+'</div>'; if(_p2.status==='falta'){var _hp=_p2.horario_previsto||{};if(_hp.entrada&&pontoHorarioPassou(_hp,data))return '<div style="margin-top:2px;background:#A32D2D;color:#fff;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;display:inline-block">● Ausente</div>';}return ''; }())
+      +_pontoBadgeSlotHtml(col, data)
       +'<div style="position:absolute;top:1px;right:3px;cursor:pointer;font-size:14px;font-weight:900;color:#333;line-height:1;user-select:none" '
       +'onclick="ppMenuSlot(\''+col.id+'\',\''+eqId+'\','+pos+')">⋮</div>'
       +'</div></td>';
@@ -53212,6 +53389,49 @@ window.addEventListener('load',async function(){
 
 </div>
 
+<div id="pg-gestao-ponto" class="hidden">
+  <div class="card" style="margin-bottom:1rem">
+    <div class="ch">
+      <span class="ct">⏱ Gestão de Ponto</span>
+      <button class="btn btn-pri" onclick="gpOnFiltro()">🔄 Atualizar</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:.5rem 1rem;border-top:.5px solid #f0efe8">
+      <select class="inp" id="gp-cont" style="min-width:200px" onchange="gpOnFiltro()">
+        <option value="">Selecione o contrato...</option>
+      </select>
+      <label style="font-size:12px;color:#888">De</label>
+      <input class="inp" type="date" id="gp-ini" style="width:140px">
+      <label style="font-size:12px;color:#888">Até</label>
+      <input class="inp" type="date" id="gp-fim" style="width:140px">
+    </div>
+    <div id="gp-sync-info" style="padding:.4rem 1rem;font-size:12px;color:#888;border-top:.5px solid #f0efe8"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:1rem;padding:0">
+    <div style="display:flex;gap:0;border-bottom:.5px solid #f0efe8;overflow-x:auto">
+      <button id="gp-tab-btn-dashboard"  onclick="gpSetAba('dashboard')"  style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap">📊 Dashboard</button>
+      <button id="gp-tab-btn-registros"  onclick="gpSetAba('registros')"  style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:#888">📋 Registros</button>
+      <button id="gp-tab-btn-limites"    onclick="gpSetAba('limites')"    style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:#888">⚙️ Limites HE</button>
+      <button id="gp-tab-btn-ajuste"     onclick="gpSetAba('ajuste')"     style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:#888">✏️ Ajustes</button>
+      <button id="gp-tab-btn-vales"      onclick="gpSetAba('vales')"      style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:#888">🎫 Vales/EPI</button>
+      <button id="gp-tab-btn-sync"       onclick="gpSetAba('sync')"       style="padding:10px 16px;border:none;background:none;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;color:#888">📡 Sync</button>
+    </div>
+    <div style="padding:1rem">
+      <div id="gp-tab-dashboard"></div>
+      <div id="gp-tab-registros"  style="display:none"></div>
+      <div id="gp-tab-limites"   style="display:none"></div>
+      <div id="gp-tab-ajuste"    style="display:none"></div>
+      <div id="gp-tab-vales"     style="display:none"></div>
+      <div id="gp-tab-sync"      style="display:none">
+        <div style="margin-bottom:1rem">
+          <button id="gp-btn-sync" class="btn btn-pri" onclick="gpSincronizarPeriodo()">📡 Sincronizar período</button>
+          <span id="gp-sync-status" style="margin-left:12px;font-size:12px;color:#888"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Referências globais do Script 0 ──────────────────────────
 var dataHoje = window.dataHoje || function(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
@@ -57813,6 +58033,11 @@ async function sesmtCarregarDados(){
     uniformesCat=res[9]||[];uniformesEnt=res[10]||[];uniformesMov=res[11]||[];estoqueUni=res[12]||[];
     filiais=res[13]||[];depositos=res[14]||[];locacoes=res[15]||[];
   }
+  window._almEstoqueConsolidado = false;
+  try{
+    await almConsolidarEstoqueTodos();
+    window._almEstoqueConsolidado = true;
+  }catch(e){ console.warn('Consolidação estoque:', e); }
   try{ if(typeof atualizarMetricas==='function') atualizarMetricas(); }catch(e){ console.warn('atualizarMetricas erro:',e); }
   try{ if(typeof popularSelectFuncs==='function') popularSelectFuncs(); }catch(e){}
   try{ if(typeof renderSeletorFilial==='function') renderSeletorFilial(); }catch(e){}
@@ -58237,14 +58462,10 @@ function openEntradaItem(itemId){
   var it = itens_catalogo.find(function(x){return x.id===itemId;});
   if(!it){ alert('Item não encontrado.'); return; }
 
-  var depOpts = '<option value="">Selecione o depósito...</option>'
-    + (typeof depositos!=='undefined' ? depositos.map(function(d){
-        return '<option value="'+d.id+'">'+d.nome+'</option>';
-      }).join('') : '');
-  var contOpts = '<option value="">Sem contrato</option>'
-    + (typeof contratos!=='undefined' ? contratos.map(function(c){
-        return '<option value="'+c.id+'">'+c.nome+'</option>';
-      }).join('') : '');
+  var depOpts = almBuildDepositoOpts('', 'Selecione o depósito de entrada...');
+  var depOrigOpts = almBuildDepositoOpts('', 'Selecione o depósito de saída...');
+  var contOrigOpts = '<option value="">Selecione o contrato de origem...</option>'
+    + contratos.map(function(c){ return '<option value="'+c.id+'">'+escHtml(almContratoLabel(c,true))+'</option>'; }).join('');
 
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:520px">'
@@ -58256,6 +58477,8 @@ function openEntradaItem(itemId){
     +'<span style="color:#888">Tipo:</span> <strong>'+tipoItemLabel(it.tipo_item)+'</strong>'
     +(it.controla_numero_serie?' &nbsp;·&nbsp; <span style="color:#185FA5">Controla nº de série</span>':'')
     +'</div>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.45rem .75rem;margin-bottom:.6rem;font-size:11px;color:#185FA5">'
+    +'ℹ️ Informe sempre o <b>local de saída (origem)</b> e o <b>local de entrada (depósito destino)</b>.</div>'
     +'<div style="display:flex;flex-direction:column;gap:.6rem">'
 
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
@@ -58279,22 +58502,33 @@ function openEntradaItem(itemId){
         +'<input class="inp" id="ei-valor" type="number" step="0.01" value="0" style="width:100%"/></div>'
         +'</div>')
 
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Depósito *</label>'
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:.55rem .65rem;border:.5px solid #e8e7e0;margin-bottom:.15rem">'
+    +'<div style="font-size:11px;font-weight:700;color:#534AB7;margin-bottom:6px">Locais da movimentação</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de saída (origem) *</label>'
+    +'<select class="inp" id="ei-orig-tipo" style="width:100%" onchange="eiToggleOrigDep()">'
+    +'<option value="externo">Externo / Fornecedor</option>'
+    +'<option value="deposito">Outro depósito</option>'
+    +'<option value="contrato">Contrato / Obra</option>'
+    +'</select></div>'
+    +'<div id="ei-orig-dep-wrap" style="display:none"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Depósito de saída *</label>'
+    +'<select class="inp" id="ei-dep-orig" style="width:100%">'+depOrigOpts+'</select></div>'
+    +'<div id="ei-orig-cont-wrap" style="display:none"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato de origem</label>'
+    +'<select class="inp" id="ei-cont-orig" style="width:100%">'+contOrigOpts+'</select></div>'
+    +'</div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de entrada (depósito destino) *</label>'
     +'<select class="inp" id="ei-dep" style="width:100%">'+depOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato</label>'
-    +'<select class="inp" id="ei-cont" style="width:100%">'+contOpts+'</select></div>'
     +'</div>'
 
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Fornecedor</label>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Fornecedor / origem externa</label>'
     +'<input class="inp" id="ei-forn" style="width:100%" placeholder="Opcional"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Nota fiscal</label>'
     +'<input class="inp" id="ei-nf" style="width:100%" placeholder="Opcional"/></div>'
     +'</div>'
 
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Motivo</label>'
-    +'<select class="inp" id="ei-motivo" style="width:100%">'
+    +'<select class="inp" id="ei-motivo" style="width:100%" onchange="eiToggleOrigDep()">'
     +'<option>Compra</option><option>Reposição</option><option>Transferência</option>'
     +'<option>Devolução de colaborador</option><option>Outro</option>'
     +'</select></div>'
@@ -58309,6 +58543,19 @@ function openEntradaItem(itemId){
     +'</div></div></div>';
 
   setModal(html);
+
+  window.eiToggleOrigDep = function(){
+    var t = (document.getElementById('ei-orig-tipo')||{}).value||'externo';
+    var motivo = (document.getElementById('ei-motivo')||{}).value||'';
+    if(motivo==='Transferência') t = 'deposito';
+    var dw = document.getElementById('ei-orig-dep-wrap');
+    var cw = document.getElementById('ei-orig-cont-wrap');
+    var selTipo = document.getElementById('ei-orig-tipo');
+    if(motivo==='Transferência' && selTipo) selTipo.value = 'deposito';
+    if(dw) dw.style.display = (t==='deposito'?'block':'none');
+    if(cw) cw.style.display = (t==='contrato'?'block':'none');
+  };
+  eiToggleOrigDep();
 
   // Botão série dinâmico
   if(it.controla_numero_serie){
@@ -58334,7 +58581,16 @@ function openEntradaItem(itemId){
     var g  = function(id){ return (document.getElementById(id)||{}).value||''; };
     var qtd = parseInt(g('ei-qtd'))||1;
     var dep = g('ei-dep');
-    if(!dep){ alert('Selecione o depósito.'); return; }
+    if(!dep){ alert('Selecione o local de entrada (depósito destino).'); return; }
+    var origTipo = g('ei-orig-tipo')||'externo';
+    var depOrig = g('ei-dep-orig');
+    var contOrig = g('ei-cont-orig');
+    var motivo = g('ei-motivo');
+    if(motivo==='Transferência' || origTipo==='deposito'){
+      if(!depOrig){ alert('Selecione o depósito de saída (origem).'); return; }
+      if(String(depOrig)===String(dep)){ alert('Depósito de saída e entrada devem ser diferentes.'); return; }
+    }
+    if(origTipo==='contrato' && !contOrig){ alert('Selecione o contrato de origem (local de saída).'); return; }
 
     var series = [];
     if(it.controla_numero_serie){
@@ -58348,75 +58604,103 @@ function openEntradaItem(itemId){
     btnE.disabled = true;
     btnE.textContent = 'Salvando...';
 
-    var r = await almRegistrarEntradaPatrimonio({
-      item_id: it.id,
-      quantidade: qtd,
-      deposito_id: dep,
-      filial_id: filId,
-      contrato_id: g('ei-cont')||null,
-      fornecedor: g('ei-forn'),
-      nota_fiscal: g('ei-nf'),
-      valor_unitario: parseFloat(g('ei-valor'))||0,
-      data_mov: g('ei-data')||dataHoje(),
-      motivo: g('ei-motivo'),
-      obs: g('ei-obs'),
-      numeros_serie: series.length ? JSON.stringify(series) : null
-    });
+    var r;
+    if(motivo==='Transferência' || origTipo==='deposito'){
+      r = await almRegistrarTransferenciaPatrimonio({
+        item_id: it.id,
+        quantidade: qtd,
+        deposito_origem_id: depOrig,
+        deposito_destino_id: dep,
+        data_mov: g('ei-data')||dataHoje(),
+        obs: g('ei-obs')
+      });
+    } else {
+      r = await almRegistrarEntradaPatrimonio({
+        item_id: it.id,
+        quantidade: qtd,
+        deposito_id: dep,
+        filial_id: filId,
+        fornecedor: g('ei-forn'),
+        nota_fiscal: g('ei-nf'),
+        valor_unitario: parseFloat(g('ei-valor'))||0,
+        data_mov: g('ei-data')||dataHoje(),
+        motivo: motivo,
+        obs: g('ei-obs'),
+        numeros_serie: series.length ? JSON.stringify(series) : null,
+        origem_tipo: origTipo,
+        contrato_origem_id: contOrig||null
+      });
+    }
 
     btnE.disabled = false;
     btnE.textContent = '💾 Registrar entrada';
-    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro ao registrar entrada'), 'erro'); return; }
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro ao registrar'), 'erro'); return; }
 
     closeModal();
-    progShowToast('✅ Entrada registrada: '+qtd+'x '+it.nome);
+    progShowToast('✅ '+(motivo==='Transferência'||origTipo==='deposito'?'Transferência':'Entrada')+' registrada: '+qtd+'x '+it.nome);
     renderEstoque();
     renderFer();
     renderItens();
   };
 }
 
-function openEntregaItem(tipoFiltro){
+function openEntregaItem(tipoFiltro, itemIdPre){
   var itsFiltro = tipoFiltro
     ? itens_catalogo.filter(function(i){return i.tipo_item===tipoFiltro&&i.ativo!==false;})
     : itens_catalogo.filter(function(i){return i.ativo!==false;});
   var itemOpts = '<option value="">Selecione o item...</option>'
-    + itsFiltro.map(function(i){ return '<option value="'+i.id+'">'+i.nome+'</option>'; }).join('');
-  var colabOpts = '<option value="">Sem colaborador</option>'
-    + funcs.map(function(f){ return '<option value="'+f.id+'">'+f.nome+'</option>'; }).join('');
+    + itsFiltro.map(function(i){
+        return '<option value="'+i.id+'"'+(itemIdPre&&String(i.id)===String(itemIdPre)?' selected':'')+'>'+escHtml(i.nome)+'</option>';
+      }).join('');
   var eqOpts = '<option value="">Sem equipe</option>'
     + (typeof equipes!=='undefined' ? equipes.map(function(e){
         return '<option value="'+e.id+'">'+(e.nome_equipe||e.nome||e.codigo)+'</option>';
       }).join('') : '');
-  var contOpts = '<option value="">Sem contrato</option>'
-    + contratos.map(function(c){ return '<option value="'+c.id+'">'+c.codigo+'</option>'; }).join('');
+  var depOpts = '<option value="">Selecione o depósito...</option>'
+    + (typeof depositos!=='undefined' ? depositos.filter(function(d){ return d.ativo!==false && !d.deleted_at; }).map(function(d){
+        var fil = (typeof filiais!=='undefined'?filiais:[]).find(function(f){ return f.id===d.filial_id; });
+        return '<option value="'+d.id+'">'+escHtml(d.nome+(fil?' ('+(fil.codigo||fil.nome)+')':''))+'</option>';
+      }).join('') : '');
+  var contOpts = '<option value="">Selecione o contrato...</option>'
+    + contratos.map(function(c){ return '<option value="'+c.id+'">'+escHtml(almContratoLabel(c,true))+'</option>'; }).join('');
 
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:500px">'
+    +'<div class="modal" style="max-width:540px">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
     +'<h3 style="margin:0">📤 Entrega de '+(tipoFiltro?tipoItemLabel(tipoFiltro):'item')+'</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>'
     +'</div>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.5rem .75rem;margin-bottom:.6rem;font-size:11px;color:#185FA5">'
+    +'ℹ️ Informe o <b>local de saída (depósito)</b> e o <b>local de destino (contrato)</b> da entrega.</div>'
     +'<div style="display:flex;flex-direction:column;gap:.6rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Item *</label>'
-    +'<select class="inp" id="ent-item" style="width:100%">'+itemOpts+'</select></div>'
+    +'<select class="inp" id="ent-item" style="width:100%" onchange="entAtualizarSaldoEntrega()">'+itemOpts+'</select></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de saída (depósito) *</label>'
+    +'<select class="inp" id="ent-dep" style="width:100%" onchange="entAtualizarSaldoEntrega()">'+depOpts+'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de destino (contrato) *</label>'
+    +'<select class="inp" id="ent-cont" style="width:100%">'+contOpts+'</select></div>'
+    +'</div>'
+    +'<div id="ent-saldo-panel" style="font-size:11px;color:#555;background:#f9f9f7;border-radius:8px;padding:.55rem .65rem;border:.5px solid #e8e7e0"></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Quantidade *</label>'
-    +'<input class="inp" id="ent-qtd" type="number" min="1" value="1" style="width:100%"/></div>'
+    +'<input class="inp" id="ent-qtd" type="number" min="1" value="1" style="width:100%" oninput="entAtualizarSaldoEntrega()"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Data entrega</label>'
     +'<input class="inp" id="ent-data" type="date" value="'+dataHoje()+'" style="width:100%"/></div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Colaborador</label>'
-    +'<select class="inp" id="ent-colab" style="width:100%">'+colabOpts+'</select></div>'
+    +'<input type="hidden" id="ent-colab-id" value=""/>'
+    +'<input class="inp" id="ent-colab-q" style="width:100%" placeholder="Digite nome ou RE..." autocomplete="off"'
+    +' oninput="entFiltrarColaboradores()" onfocus="entFiltrarColaboradores()"'
+    +' onkeydown="if(event.key===\'Enter\'){event.preventDefault();var m=almFiltrarColaboradoresEntrega(this.value,1)[0];if(m)entSelecionarColaborador(m.id,m.nome,m.contrato_id);}"/>'
+    +'<div id="ent-colab-sug" style="display:none;border:.5px solid #D4D0F0;border-radius:6px;margin-top:2px;max-height:150px;overflow-y:auto;background:#fff"></div>'
+    +'<div id="ent-colab-hint" style="font-size:10px;color:#888;margin-top:2px">Digite nome ou RE — clique na sugestão</div></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Equipe</label>'
     +'<select class="inp" id="ent-eq" style="width:100%">'+eqOpts+'</select></div>'
     +'</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato</label>'
-    +'<select class="inp" id="ent-cont" style="width:100%">'+contOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Previsão devolução</label>'
     +'<input class="inp" id="ent-prev" type="date" style="width:100%"/></div>'
-    +'</div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Observações</label>'
     +'<input class="inp" id="ent-obs" style="width:100%" placeholder="Opcional"/></div>'
     +'</div>'
@@ -58426,25 +58710,47 @@ function openEntregaItem(tipoFiltro){
     +'</div></div></div>';
 
   setModal(html);
+  if(itemIdPre){
+    var selItem = document.getElementById('ent-item');
+    if(selItem) selItem.value = itemIdPre;
+  }
+  entAtualizarSaldoEntrega();
 
   var btn = document.getElementById('ent-btn-salvar');
-  if(btn) btn.onclick = function(){
+  if(btn) btn.onclick = async function(){
     var g = function(id){ return (document.getElementById(id)||{}).value||''; };
     var itemId = g('ent-item'); var qtd = parseInt(g('ent-qtd'))||1;
+    var depId = g('ent-dep'); var contId = g('ent-cont');
     if(!itemId){ alert('Selecione o item.'); return; }
-    var it = itens_catalogo.find(function(x){return x.id===itemId;});
-    var payload = {
-      item_id:itemId, tipo_mov:'entrega', quantidade:qtd,
-      colaborador_id:g('ent-colab')||null, equipe_id:g('ent-eq')||null,
-      contrato_id:g('ent-cont')||null, previsao_devolucao:g('ent-prev')||null,
-      data_mov:g('ent-data')||dataHoje(), obs:g('ent-obs'),
-      responsavel_id:usuarioLogado?usuarioLogado.id:null, status:'Em uso'
-    };
-    var novo = Object.assign({id:'mov'+Date.now()}, payload);
-    movimentacoes_itens.push(novo);
-    if(!DEMO) sbInsert('movimentacoes_itens', payload);
+    if(!depId){ alert('Selecione o depósito de origem.'); return; }
+    if(!contId){ alert('Selecione o contrato da saída.'); return; }
+    var colabId = entObterColaboradorEntrega();
+    var colabTxt = ((document.getElementById('ent-colab-q')||{}).value||'').trim();
+    if(colabTxt && !colabId){
+      alert('Colaborador não identificado. Selecione na lista ou digite RE/nome mais específico.');
+      entFiltrarColaboradores();
+      return;
+    }
+    var depObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depId); });
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    var r = await almRegistrarEntregaPatrimonio({
+      item_id: itemId,
+      quantidade: qtd,
+      deposito_id: depId,
+      filial_id: depObj ? depObj.filial_id : null,
+      colaborador_id: colabId||null,
+      equipe_id: g('ent-eq')||null,
+      contrato_id: contId,
+      previsao_devolucao: g('ent-prev')||null,
+      data_mov: g('ent-data')||dataHoje(),
+      obs: g('ent-obs')
+    });
+    btn.disabled = false;
+    btn.textContent = '📤 Confirmar entrega';
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro na entrega'), 'erro'); return; }
     closeModal();
-    progShowToast('✅ Entrega registrada: '+(it?it.nome:itemId));
+    progShowToast('✅ Entrega registrada: '+r.qtd+'x '+r.nome);
     renderEstoque(); renderFer();
   };
 }
@@ -58458,18 +58764,30 @@ function openDevolucaoItem(tipoFiltro){
       var it = itens_catalogo.find(function(x){return x.id===m.item_id;});
       if(tipoFiltro && it && it.tipo_item!==tipoFiltro) return '';
       var colab = funcs.find(function(f){return f.id===m.colaborador_id;});
+      if(!colab) colab = (colaboradores||[]).find(function(f){ return String(f.id)===String(almColaboradorIdFromMov(m)); });
+      if(!colab && m.obs){
+        var mt = (m.obs||'').match(/Colaborador:\s*([^|]+)/);
+        if(mt) colab = {nome: mt[1].trim()};
+      }
       return '<option value="'+m.id+'">'+(it?it.nome:'Item')+' → '+(colab?colab.nome:m.equipe_id||'—')+' ('+fmtD(m.data_mov)+')</option>';
     }).join('');
+  var depDestOpts = almBuildDepositoOpts('', 'Selecione o depósito de entrada...');
 
   var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:460px">'
+    +'<div class="modal" style="max-width:520px">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
     +'<h3 style="margin:0">📥 Registrar devolução</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>'
     +'</div>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.45rem .75rem;margin-bottom:.6rem;font-size:11px;color:#185FA5">'
+    +'ℹ️ Informe de <b>onde sai</b> o material (origem da entrega) e para <b>qual depósito volta</b> (entrada).</div>'
     +'<div style="display:flex;flex-direction:column;gap:.6rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Entrega de origem *</label>'
-    +'<select class="inp" id="dev-mov" style="width:100%">'+opts+'</select></div>'
+    +'<select class="inp" id="dev-mov" style="width:100%" onchange="devAtualizarLocais()">'+opts+'</select></div>'
+    +'<div id="dev-orig-panel" style="font-size:11px;background:#f9f9f7;border-radius:8px;padding:.55rem .65rem;border:.5px solid #e8e7e0;color:#555">'
+    +'<span style="color:#888">Selecione a entrega para ver o local de saída.</span></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de entrada (depósito destino) *</label>'
+    +'<select class="inp" id="dev-dep-dest" style="width:100%">'+depDestOpts+'</select></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Data devolução</label>'
     +'<input class="inp" id="dev-data" type="date" value="'+dataHoje()+'" style="width:100%"/></div>'
@@ -58489,28 +58807,113 @@ function openDevolucaoItem(tipoFiltro){
 
   setModal(html);
 
+  window.devAtualizarLocais = function(){
+    var movId = (document.getElementById('dev-mov')||{}).value||'';
+    var panel = document.getElementById('dev-orig-panel');
+    var depSel = document.getElementById('dev-dep-dest');
+    if(!panel) return;
+    if(!movId){
+      panel.innerHTML = '<span style="color:#888">Selecione a entrega para ver o local de saída.</span>';
+      return;
+    }
+    var mov = (movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(movId); });
+    panel.innerHTML = '<div style="font-weight:600;color:#534AB7;margin-bottom:3px">Local de saída</div>'
+      +'<div>'+escHtml(almLocalDevolucaoOrigem(mov))+'</div>';
+    if(depSel && mov && mov.deposito_id && !depSel.value) depSel.value = mov.deposito_id;
+  };
+
   var btn = document.getElementById('dev-btn');
-  if(btn) btn.onclick = function(){
+  if(btn) btn.onclick = async function(){
     var g = function(id){ return (document.getElementById(id)||{}).value||''; };
     var movId = g('dev-mov'); if(!movId){ alert('Selecione a entrega.'); return; }
-    var movOrig = movimentacoes_itens.find(function(m){return m.id===movId;});
+    var depDest = g('dev-dep-dest'); if(!depDest){ alert('Selecione o depósito de entrada (destino).'); return; }
     var cond = g('dev-cond');
-    // Status: bom/desgaste → Disponível; demais → Manutenção ou Baixado
-    var novoStatus = (cond==='Bom estado'||cond==='Com desgaste') ? 'Disponível'
-      : (cond==='Necessita manutenção') ? 'Em manutenção' : 'Fora de uso';
-    var payload = {
-      item_id: movOrig?movOrig.item_id:null, tipo_mov:'devolucao',
-      quantidade: movOrig?movOrig.quantidade:1,
-      movimentacao_origem_id: movId, condicao: cond,
-      data_mov: g('dev-data')||dataHoje(), obs: g('dev-obs'),
-      responsavel_id: usuarioLogado?usuarioLogado.id:null, status: novoStatus
-    };
-    if(movOrig) movOrig.status = 'Devolvido';
-    var novo = Object.assign({id:'mov'+Date.now()}, payload);
-    movimentacoes_itens.push(novo);
-    if(!DEMO) sbInsert('movimentacoes_itens', payload);
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    var r = await almRegistrarDevolucaoPatrimonio({
+      movimentacao_origem_id: movId,
+      deposito_destino_id: depDest,
+      condicao: cond,
+      data_mov: g('dev-data')||dataHoje(),
+      obs: g('dev-obs')
+    });
+    btn.disabled = false;
+    btn.textContent = '💾 Confirmar devolução';
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro na devolução'), 'erro'); return; }
     closeModal();
-    progShowToast('✅ Devolução registrada. Condição: '+cond);
+    progShowToast('✅ Devolução registrada · entrada: '+almDepositoLabel(r.deposito_destino)+(almDevolucaoRetornaEstoque(cond)?' (estoque reposto)':''));
+    renderEstoque(); renderFer();
+  };
+}
+
+function openTransferenciaItem(tipoFiltro){
+  var itsFiltro = tipoFiltro
+    ? itens_catalogo.filter(function(i){return i.tipo_item===tipoFiltro&&i.ativo!==false;})
+    : itens_catalogo.filter(function(i){return i.ativo!==false;});
+  var itemOpts = '<option value="">Selecione o item...</option>'
+    + itsFiltro.map(function(i){ return '<option value="'+i.id+'">'+escHtml(i.nome)+'</option>'; }).join('');
+  var depOpts = almBuildDepositoOpts('', 'Selecione...');
+
+  var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:520px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
+    +'<h3 style="margin:0">🔀 Transferência entre depósitos</h3>'
+    +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>'
+    +'</div>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.45rem .75rem;margin-bottom:.6rem;font-size:11px;color:#185FA5">'
+    +'ℹ️ Informe o <b>local de saída</b> e o <b>local de entrada</b> (depósitos diferentes).</div>'
+    +'<div style="display:flex;flex-direction:column;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Item *</label>'
+    +'<select class="inp" id="trf-item" style="width:100%">'+itemOpts+'</select></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de saída (depósito origem) *</label>'
+    +'<select class="inp" id="trf-dep-orig" style="width:100%">'+depOpts+'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de entrada (depósito destino) *</label>'
+    +'<select class="inp" id="trf-dep-dest" style="width:100%">'+depOpts+'</select></div>'
+    +'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Quantidade *</label>'
+    +'<input class="inp" id="trf-qtd" type="number" min="1" value="1" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Data</label>'
+    +'<input class="inp" id="trf-data" type="date" value="'+dataHoje()+'" style="width:100%"/></div>'
+    +'</div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Observações</label>'
+    +'<input class="inp" id="trf-obs" style="width:100%" placeholder="Opcional"/></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="trf-btn" style="flex:1">🔀 Confirmar transferência</button>'
+    +'</div></div></div>';
+
+  setModal(html);
+
+  var btn = document.getElementById('trf-btn');
+  if(btn) btn.onclick = async function(){
+    var g = function(id){ return (document.getElementById(id)||{}).value||''; };
+    var itemId = g('trf-item');
+    var depOrig = g('trf-dep-orig');
+    var depDest = g('trf-dep-dest');
+    var qtd = parseInt(g('trf-qtd'))||0;
+    if(!itemId){ alert('Selecione o item.'); return; }
+    if(!depOrig){ alert('Selecione o local de saída.'); return; }
+    if(!depDest){ alert('Selecione o local de entrada.'); return; }
+    if(String(depOrig)===String(depDest)){ alert('Depósitos de saída e entrada devem ser diferentes.'); return; }
+    if(qtd<=0){ alert('Quantidade inválida.'); return; }
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    var r = await almRegistrarTransferenciaPatrimonio({
+      item_id: itemId,
+      quantidade: qtd,
+      deposito_origem_id: depOrig,
+      deposito_destino_id: depDest,
+      data_mov: g('trf-data')||dataHoje(),
+      obs: g('trf-obs')
+    });
+    btn.disabled = false;
+    btn.textContent = '🔀 Confirmar transferência';
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro na transferência'), 'erro'); return; }
+    closeModal();
+    progShowToast('✅ Transferência: '+r.qtd+'x '+r.nome+' · '+almDepositoLabel(depOrig)+' → '+almDepositoLabel(depDest));
     renderEstoque(); renderFer();
   };
 }
@@ -58557,23 +58960,25 @@ function openAjusteItem(tipoFiltro){
   setModal(html);
 
   var btn = document.getElementById('aj-btn');
-  if(btn) btn.onclick = function(){
+  if(btn) btn.onclick = async function(){
     var g = function(id){ return (document.getElementById(id)||{}).value||''; };
     var itemId = g('aj-item'); var motivo = g('aj-motivo').trim();
     if(!itemId){ alert('Selecione o item.'); return; }
     if(!motivo){ alert('Informe o motivo do ajuste.'); return; }
     var it = itens_catalogo.find(function(x){return x.id===itemId;});
     var tipoAj = g('aj-tipo');
-    var payload = {
-      item_id:itemId, tipo_mov:'ajuste', tipo_ajuste:tipoAj,
-      quantidade:parseInt(g('aj-qtd'))||1,
-      data_mov:g('aj-data')||dataHoje(), motivo:motivo,
-      responsavel_id:usuarioLogado?usuarioLogado.id:null,
-      status:tipoAj.includes('manutenção')?'Em manutenção':tipoAj.includes('Retorno')?'Disponível':'Fora de uso'
-    };
-    var novo = Object.assign({id:'mov'+Date.now()}, payload);
-    movimentacoes_itens.push(novo);
-    if(!DEMO) sbInsert('movimentacoes_itens', payload);
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    var r = await almRegistrarAjustePatrimonio({
+      item_id: itemId,
+      tipo_ajuste: tipoAj,
+      quantidade: parseInt(g('aj-qtd'))||1,
+      data_mov: g('aj-data')||dataHoje(),
+      motivo: motivo
+    });
+    btn.disabled = false;
+    btn.textContent = '💾 Confirmar ajuste';
+    if(!r.ok){ progShowToast('❌ '+(r.msg||'Erro no ajuste'), 'erro'); return; }
     closeModal();
     progShowToast('✅ Ajuste registrado: '+tipoAj+(it?' — '+it.nome:''));
     renderEstoque(); renderFer();
@@ -58598,15 +59003,8 @@ function renderFer(){
     }).reduce(function(s,m){ return s+(m.quantidade||1); }, 0);
   }
   function saldoTotal(itemId){
-    var ent = movimentacoes_itens.filter(function(m){return m.item_id===itemId&&m.tipo_mov==='entrada';})
-                .reduce(function(s,m){return s+(m.quantidade||1);},0);
-    var sai = movimentacoes_itens.filter(function(m){
-                return m.item_id===itemId&&['entrega','ajuste','perda','quebra','baixa','descarte'].includes(m.tipo_mov)&&m.status!=='Devolvido';
-              }).reduce(function(s,m){return s+(m.quantidade||1);},0);
-    var dev = movimentacoes_itens.filter(function(m){
-                return m.item_id===itemId&&m.tipo_mov==='devolucao'&&(m.status==='Disponível');
-              }).reduce(function(s,m){return s+(m.quantidade||1);},0);
-    return Math.max(0, ent - sai + dev);
+    var it = itens_catalogo.find(function(x){ return x.id===itemId; });
+    return it ? almSaldoEstoqueItem(it, null) : almCalcularSaldoMovimentacoes(itemId);
   }
 
   var lista = ferramentasCat.filter(function(i){
@@ -58657,10 +59055,8 @@ function renderFer(){
 
 function openEntregaItemDireto(itemId){
   var it = itens_catalogo.find(function(x){return x.id===itemId;});
-  if(it) openEntradaItem(itemId); // reusa entrada ou abre entrega
-  // Aqui chamar entrega diretamente
-  // Para simplicidade reutiliza openEntregaItem prefiltrando
-  openEntregaItem(it?it.tipo_item:'');
+  if(!it){ progShowToast('Item não encontrado no catálogo.','erro'); return; }
+  openEntregaItem(it.tipo_item||'ferramenta', itemId);
 }
 
 function saldoItem(itemId){
@@ -60158,7 +60554,7 @@ function renderFichaEpi(){
   var html = '<div class="card" style="margin-bottom:.75rem"><div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem;padding:.75rem 1rem;font-size:12px">'
     +'<div><span style="color:#888">Colaborador:</span> <strong>'+colab.nome+'</strong></div>'
     +'<div><span style="color:#888">RE/Matrícula:</span> '+(colab.re||colab.matricula||'—')+'</div>'
-    +'<div><span style="color:#888">Contrato:</span> '+(contrato?contrato.codigo+' — '+contrato.nome:'<span style="color:#A32D2D">Sem contrato</span>')+'</div>'
+    +'<div><span style="color:#888">Contrato:</span> '+(contrato?escHtml(almContratoLabel(contrato,false)):'<span style="color:#A32D2D">Sem contrato</span>')+'</div>'
     +'<div><span style="color:#888">Cargo:</span> '+(colab.cargo||colab.funcao||'—')+'</div>'
     +'</div></div>';
 
@@ -60751,7 +61147,7 @@ function renderNR6(){
   var cont = (typeof contratos!=='undefined' && f.contrato_id)
     ? contratos.find(function(c){return c.id===f.contrato_id;})
     : null;
-  var contLabel = cont ? (cont.codigo+' — '+cont.nome) : (f.contrato_nome||'<span style="color:#A32D2D">Sem contrato vinculado</span>');
+  var contLabel = cont ? escHtml(almContratoLabel(cont,false)) : (f.contrato_nome||'<span style="color:#A32D2D">Sem contrato vinculado</span>');
 
   // Resolver equipe
   var equipe = (typeof equipes!=='undefined' && f.equipe_id)
@@ -61291,7 +61687,7 @@ function renderFunc(){
   tbody.innerHTML = lista.map(function(f,i){
     var cont = getContrato(f);
     var contLabel = cont
-      ? '<span style="font-size:11px">'+(cont.codigo?cont.codigo+' — ':'')+cont.nome+'</span>'
+      ? '<span style="font-size:11px">'+escHtml(almContratoLabel(cont,false))+'</span>'
       : '<span class="bdg warn" style="font-size:10px">Sem contrato</span>';
     var apt = (typeof calcularAptidao==='function') ? calcularAptidao(f) : null;
     var aptBadge = apt
@@ -61540,7 +61936,7 @@ function _epiEntregaRenderModal(f){
   var kitOpts='<option value="">📦 Aplicar kit modelo…</option>'+kitsRel.map(function(k){ var match=k.cargo&&f.cargo&&String(k.cargo).toLowerCase()===String(f.cargo).toLowerCase(); return '<option value="'+k.id+'">'+escHtml(k.nome)+(k.cargo?' · '+k.cargo:'')+(match?' ✓ cargo':'')+'</option>'; }).join('');
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:720px;width:96vw;max-height:92vh;overflow-y:auto">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem"><h3 style="margin:0">🦺 Entregar EPI</h3><button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button></div>'
-    +'<div style="background:#f9f9f7;border-radius:8px;padding:.6rem .75rem;margin-bottom:.6rem;font-size:12px"><strong>'+escHtml(f.nome)+'</strong> · '+escHtml(f.re||f.matricula||'—')+' · '+escHtml(f.cargo||f.funcao||'—')+'<br>Contrato: '+(cont?escHtml(cont.codigo+' '+cont.nome):'<span style="color:#A32D2D">Sem contrato</span>')+'</div>'
+    +'<div style="background:#f9f9f7;border-radius:8px;padding:.6rem .75rem;margin-bottom:.6rem;font-size:12px"><strong>'+escHtml(f.nome)+'</strong> · '+escHtml(f.re||f.matricula||'—')+' · '+escHtml(f.cargo||f.funcao||'—')+'<br>Contrato: '+(cont?escHtml(almContratoLabel(cont,false)):'<span style="color:#A32D2D">Sem contrato</span>')+'</div>'
     +emPoderHtml
     +(_epiFichaPaiId?'<div style="background:#EEEDFE;border:.5px solid #534AB755;border-radius:8px;padding:.45rem .7rem;margin-bottom:.6rem;font-size:11px;color:#534AB7">➕ <b>Entrega complementar</b> vinculada a uma ficha parcial anterior.</div>':'')
     +'<div style="display:flex;gap:8px;align-items:center;margin-bottom:.6rem;flex-wrap:wrap">'
@@ -61727,7 +62123,7 @@ function imprimirFichaNR6(funcId){
     +'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px">'
     +'<tr><td style="padding:4px;border:1px solid #ddd;width:25%"><b>Colaborador:</b></td><td style="padding:4px;border:1px solid #ddd">'+f.nome+'</td>'
     +'<td style="padding:4px;border:1px solid #ddd;width:25%"><b>Matrícula/RE:</b></td><td style="padding:4px;border:1px solid #ddd">'+(f.re||f.matricula||'—')+'</td></tr>'
-    +'<tr><td style="padding:4px;border:1px solid #ddd"><b>Contrato:</b></td><td style="padding:4px;border:1px solid #ddd">'+(cont?cont.codigo+' '+cont.nome:'Sem contrato')+'</td>'
+    +'<tr><td style="padding:4px;border:1px solid #ddd"><b>Contrato:</b></td><td style="padding:4px;border:1px solid #ddd">'+(cont?almContratoLabel(cont,false):'Sem contrato')+'</td>'
     +'<td style="padding:4px;border:1px solid #ddd"><b>Cargo/Função:</b></td><td style="padding:4px;border:1px solid #ddd">'+(f.cargo||f.funcao||'—')+'</td></tr>'
     +'<tr><td style="padding:4px;border:1px solid #ddd"><b>Empresa:</b></td><td style="padding:4px;border:1px solid #ddd">'+(f.empresa||'—')+'</td>'
     +'<td style="padding:4px;border:1px solid #ddd"><b>Admissão:</b></td><td style="padding:4px;border:1px solid #ddd">'+fmtD(f.admissao)+'</td></tr>'
@@ -62017,14 +62413,7 @@ function eeAplicarDestinoNF(parsed){
       }
     }
   }
-  var cc=(parsed.contrato||parsed.contrato_codigo||'').trim();
-  if(cc){
-    var ct=(contratos||[]).find(function(x){
-      var c=(x.codigo||'').toLowerCase(), n=(x.nome||'').toLowerCase(), t=cc.toLowerCase();
-      return c===t||n.indexOf(t)>=0||t.indexOf(c)>=0;
-    });
-    if(ct) setSel('ee-cont', ct.id);
-  }
+
 }
 function eeFornListarSugestoes(texto, limit){
   var t=_fornChaveNome(texto);
@@ -62394,8 +62783,6 @@ function openEntradaEstoque(tipoPre){
       }).join('');
   var filOpts  = '<option value="">Selecione a filial</option>'
     + filiais.map(function(f){ return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>'; }).join('');
-  var contOpts = '<option value="">Sem contrato</option>'
-    + contratos.map(function(c){ return '<option value="'+c.id+'">'+c.codigo+'</option>'; }).join('');
 
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:960px;max-height:92vh;overflow-y:auto">'
@@ -62403,6 +62790,8 @@ function openEntradaEstoque(tipoPre){
     +'<h3 style="margin:0">📥 Entrada de Estoque</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button>'
     +'</div>'
+    +'<div style="background:#EBF4FD;border-radius:8px;padding:.5rem .75rem;margin-bottom:.6rem;font-size:11px;color:#185FA5">'
+    +'ℹ️ <b>Local de saída (origem):</b> fornecedor ou origem externa · <b>Local de entrada:</b> depósito destino.</div>'
     +'<div style="display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem">'
 
     // Leitura NF com IA
@@ -62419,20 +62808,18 @@ function openEntradaEstoque(tipoPre){
 
     // Cabeçalho comum da NF
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.55rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Filial</label>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Filial (destino)</label>'
     +'<select class="inp" id="ee-filial" style="width:100%" onchange="almAtualizarDepEntrada()">'+filOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Depósito</label>'
-    +'<select class="inp" id="ee-dep" style="width:100%"><option value="">Sem depósito específico</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de entrada (depósito destino) *</label>'
+    +'<select class="inp" id="ee-dep" style="width:100%"><option value="">Selecione o depósito de entrada...</option></select></div>'
     +'</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.55rem">'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato</label>'
-    +'<select class="inp" id="ee-cont" style="width:100%">'+contOpts+'</select></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.55rem">'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Nº NF / Lote</label>'
     +'<input class="inp" id="ee-lote" style="width:100%" placeholder="Nº da nota fiscal"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Requisição / Pedido (RC)</label>'
     +'<input class="inp" id="ee-rc" style="width:100%" placeholder="Ex: RC-2024-001234 ou nº pedido"/></div>'
     +'</div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Fornecedor'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Local de saída (origem) — Fornecedor'
     +' <span style="font-weight:400;color:#888">(cadastro ou texto livre)</span></label>'
     +'<input type="hidden" id="ee-forn-id" value=""/>'
     +'<input class="inp" id="ee-forn-q" style="width:100%" placeholder="Buscar razão social, CNPJ ou digite como na NF..." oninput="eeFiltrarForn()" onfocus="eeFiltrarForn()"/>'
@@ -62496,7 +62883,6 @@ function openEntradaEstoque(tipoPre){
   }
 
   var elFil=document.getElementById('ee-filial'); if(elFil) elFil.value='';
-  var elCont=document.getElementById('ee-cont'); if(elCont) elCont.value='';
   almAtualizarDepEntrada();
 
   window._eeNfBase64=null; window._eeNfMime='';
@@ -62520,20 +62906,32 @@ function almAtualizarDepEntrada(){
   var fid = (document.getElementById('ee-filial')||{}).value||'';
   var sel = document.getElementById('ee-dep'); if(!sel) return;
   var lista = fid ? depositos.filter(function(d){return d.filial_id===fid&&d.ativo;}) : [];
-  sel.innerHTML = '<option value="">Sem depósito específico</option>'
+  sel.innerHTML = '<option value="">Selecione o depósito de entrada...</option>'
     + lista.map(function(d){ return '<option value="'+d.id+'">'+d.nome+'</option>'; }).join('');
 }
 
-function almBuscarLinhaEstoquePatrimonio(ref, filId, depId, contId){
+function almBuscarLinhaEstoquePatrimonio(ref, filId, depId){
   var nome = String((ref&&ref.nome)||'').trim().toLowerCase();
   var cod = String((ref&&ref.codigo)||'').trim();
-  return (typeof estoque!=='undefined'?estoque:[]).find(function(e){
-    if(String(e.filial_id||'')!==String(filId||'')) return false;
-    if(String(e.deposito_id||'')!==String(depId||'')) return false;
-    if(String(e.contrato_id||'')!==String(contId||'')) return false;
+  function matchItem(e){
     if(cod && e.codigo && String(e.codigo).trim()===cod) return true;
     return nome && String(e.nome||'').trim().toLowerCase()===nome;
-  })||null;
+  }
+  var lista = (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
+    if(!matchItem(e)) return false;
+    if(String(e.filial_id||'')!==String(filId||'')) return false;
+    if(depId && String(e.deposito_id||'')===String(depId)) return true;
+    if(depId && !e.deposito_id) return true;
+    if(!depId && !e.deposito_id) return true;
+    return !depId;
+  });
+  if(depId){
+    var exato = lista.find(function(e){ return String(e.deposito_id||'')===String(depId); });
+    if(exato) return exato;
+    var legado = lista.find(function(e){ return !e.deposito_id; });
+    if(legado) return legado;
+  }
+  return lista[0]||null;
 }
 
 async function almAtualizarSaldoEstoquePatrimonio(p){
@@ -62546,13 +62944,21 @@ async function almAtualizarSaldoEstoquePatrimonio(p){
   var codigo = p.codigo!=null ? p.codigo : (itemCat&&itemCat.codigo);
   var sku = p.sku!=null ? p.sku : (itemCat&&itemCat.sku);
   var unidade = p.unidade||(itemCat&&itemCat.unidade_medida)||'UN';
-  var filId = p.filId||null, depId = p.depId||null, contId = p.contId||null;
+  var filId = p.filId||null, depId = p.depId||null;
   var custo = Number(p.custo)||0;
-  var existente = almBuscarLinhaEstoquePatrimonio({nome:nome, codigo:codigo}, filId, depId, contId);
+  var refCons = itemCat || {nome:nome, codigo:codigo};
+  await almConsolidarEstoqueItemDeposito(refCons, depId, filId);
+  var existente = null;
+  if(p.estoqueId){
+    existente = (typeof estoque!=='undefined'?estoque:[]).find(function(e){ return String(e.id)===String(p.estoqueId); })||null;
+  }
+  if(!existente) existente = almBuscarLinhaEstoquePatrimonio({nome:nome, codigo:codigo}, filId, depId);
 
   if(existente){
     var novoSaldo = (Number(existente.saldo)||0)+qtd;
     var patch = {saldo:novoSaldo};
+    if(depId && !existente.deposito_id) patch.deposito_id = depId;
+    if(filId && !existente.filial_id) patch.filial_id = filId;
     if(custo>0) patch.custo_unitario = custo;
     if(p.forn) patch.fornecedor = p.forn;
     if(p.lote) patch.lote = p.lote;
@@ -62583,7 +62989,7 @@ async function almAtualizarSaldoEstoquePatrimonio(p){
     lote:p.lote||null,
     filial_id:filId||null,
     deposito_id:depId||null,
-    contrato_id:contId||null
+    contrato_id:null
   };
   if(DEMO){
     if(typeof estoque==='undefined') estoque=[];
@@ -62607,24 +63013,29 @@ async function almRegistrarEntradaPatrimonio(opts){
   if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
   var depId = opts.deposito_id||null;
   var filId = opts.filial_id||null;
+  if(!depId) return {ok:false, msg:'Selecione o local de entrada (depósito destino)'};
   if(!filId && depId){
     var depObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depId); });
     if(depObj) filId = depObj.filial_id;
   }
   var custo = Number(opts.valor_unitario)||0;
+  var origemTipo = opts.origem_tipo || 'externo';
+  var obsFinal = almAnexarObsOrigem(opts.obs, origemTipo, opts.contrato_origem_id||null);
   var payload = {
     item_id: itemId,
     tipo_mov: 'entrada',
     quantidade: qtd,
     deposito_id: depId,
     filial_id: filId||null,
-    contrato_id: opts.contrato_id||null,
+    contrato_id: null,
+    destino_tipo: 'deposito',
+    destino_id: depId,
     fornecedor: opts.fornecedor||null,
     nota_fiscal: opts.nota_fiscal||null,
     valor_unitario: custo,
     data_mov: opts.data_mov||dataHoje(),
     motivo: opts.motivo||'Entrada de estoque',
-    obs: opts.obs||null,
+    obs: obsFinal,
     numeros_serie: opts.numeros_serie||null,
     responsavel_id: usuarioLogado?usuarioLogado.id:null,
     status: 'Disponível'
@@ -62652,12 +63063,795 @@ async function almRegistrarEntradaPatrimonio(opts){
   }
   var saldo = await almAtualizarSaldoEstoquePatrimonio({
     itemCat:itemCat, qtd:qtd, custo:custo,
-    filId:filId, depId:depId, contId:opts.contrato_id||null,
+    filId:filId, depId:depId,
     forn:opts.fornecedor, lote:opts.nota_fiscal,
     ca:opts.ca||null
   });
   if(!saldo.ok) return saldo;
+  await almConsolidarEstoqueItemDeposito(itemCat, depId, filId);
   return {ok:true, nome:itemCat.nome, qtd:qtd};
+}
+
+function almCalcularSaldoMovimentacoes(itemId){
+  var id = String(itemId||'');
+  var ent = (movimentacoes_itens||[]).filter(function(m){
+    return String(m.item_id||'')===id && m.tipo_mov==='entrada';
+  }).reduce(function(s,m){ return s+(Number(m.quantidade)||1); }, 0);
+  var sai = (movimentacoes_itens||[]).filter(function(m){
+    if(String(m.item_id||'')!==id) return false;
+    if(m.tipo_mov==='entrega') return m.status==='Em uso';
+    if(['ajuste','perda','quebra','baixa','descarte'].indexOf(m.tipo_mov)>=0) return m.status!=='Devolvido';
+    return false;
+  }).reduce(function(s,m){ return s+(Number(m.quantidade)||1); }, 0);
+  return Math.max(0, ent - sai);
+}
+
+function almMovimentacaoNoDeposito(m, depId){
+  if(!depId) return true;
+  return String(m.deposito_id||'')===String(depId);
+}
+
+function almCalcularSaldoMovimentacoesDeposito(itemId, depId){
+  var id = String(itemId||'');
+  var ent = (movimentacoes_itens||[]).filter(function(m){
+    return String(m.item_id||'')===id && m.tipo_mov==='entrada' && almMovimentacaoNoDeposito(m, depId);
+  }).reduce(function(s,m){ return s+(Number(m.quantidade)||1); }, 0);
+  var sai = (movimentacoes_itens||[]).filter(function(m){
+    if(String(m.item_id||'')!==id || !almMovimentacaoNoDeposito(m, depId)) return false;
+    if(m.tipo_mov==='entrega') return m.status==='Em uso';
+    if(['ajuste','perda','quebra','baixa','descarte'].indexOf(m.tipo_mov)>=0) return m.status!=='Devolvido';
+    return false;
+  }).reduce(function(s,m){ return s+(Number(m.quantidade)||1); }, 0);
+  return Math.max(0, ent - sai);
+}
+
+function almSaldoEstoqueItem(ref, depId){
+  var rows = almListarLinhasEstoqueItem(ref);
+  if(depId){
+    return rows.filter(function(e){ return String(e.deposito_id||'')===String(depId); })
+      .reduce(function(s,e){ return s+(Number(e.saldo)||0); }, 0);
+  }
+  var map = {};
+  rows.forEach(function(e){
+    var k = e.deposito_id ? String(e.deposito_id) : '__sem__';
+    map[k] = (map[k]||0) + (Number(e.saldo)||0);
+  });
+  return Object.keys(map).reduce(function(s,k){ return s+map[k]; }, 0);
+}
+
+async function almConsolidarEstoqueItemDeposito(itemCat, depId, filId){
+  if(!itemCat) return {ok:true, merged:0};
+  var rows = almListarLinhasEstoqueItem(itemCat);
+  var byKey = {};
+  rows.forEach(function(e){
+    var k = e.deposito_id ? String(e.deposito_id) : '_null_';
+    if(!byKey[k]) byKey[k]=[];
+    byKey[k].push(e);
+  });
+  if(depId){
+    var d = String(depId);
+    if(!byKey[d]) byKey[d]=[];
+    if(byKey._null_){
+      byKey[d] = byKey[d].concat(byKey._null_);
+      delete byKey._null_;
+    }
+  }
+  var merged = 0;
+  var keys = Object.keys(byKey);
+  for(var ki=0; ki<keys.length; ki++){
+    var key = keys[ki];
+    var lista = byKey[key];
+    if(!lista.length) continue;
+    if(lista.length===1){
+      var unica = lista[0];
+      if(key!=='_null_' && !unica.deposito_id){
+        var p1 = {deposito_id:key};
+        if(filId && !unica.filial_id) p1.filial_id = filId;
+        if(DEMO) Object.assign(unica, p1);
+        else {
+          var ok1 = await sbUpdate('estoque', p1, 'id=eq.'+unica.id);
+          if(ok1) Object.assign(unica, p1);
+        }
+      }
+      continue;
+    }
+    lista.sort(function(a,b){ return (Number(b.saldo)||0)-(Number(a.saldo)||0); });
+    var prim = lista[0];
+    var total = lista.reduce(function(s,e){ return s+(Number(e.saldo)||0); }, 0);
+    var patch = {saldo:total};
+    if(key!=='_null_') patch.deposito_id = key;
+    if(filId && !prim.filial_id) patch.filial_id = filId;
+    if(DEMO) Object.assign(prim, patch);
+    else {
+      var okP = await sbUpdate('estoque', patch, 'id=eq.'+prim.id);
+      if(okP) Object.assign(prim, patch);
+    }
+    for(var i=1;i<lista.length;i++){
+      var dup = lista[i];
+      if(DEMO){ dup.saldo=0; }
+      else {
+        await sbUpdate('estoque', {saldo:0}, 'id=eq.'+dup.id);
+        dup.saldo=0;
+      }
+      merged++;
+    }
+  }
+  return {ok:true, merged:merged};
+}
+
+async function almConsolidarEstoqueTodos(){
+  var refs = {};
+  (typeof itens_catalogo!=='undefined'?itens_catalogo:[]).forEach(function(it){
+    var k = String(it.codigo||it.nome||it.id).toLowerCase();
+    refs[k] = it;
+  });
+  (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){
+    var k = String(e.codigo||e.nome||'').toLowerCase();
+    if(k && !refs[k]) refs[k] = {nome:e.nome, codigo:e.codigo};
+  });
+  var keys = Object.keys(refs);
+  for(var i=0;i<keys.length;i++){
+    var it = refs[keys[i]];
+    await almConsolidarEstoqueItemDeposito(it, null);
+    if(it.id){
+      var depMap = almDepositosComSaldoItem(it);
+      var depKeys = Object.keys(depMap);
+      for(var j=0;j<depKeys.length;j++){
+        if(depKeys[j]==='__sem__') continue;
+        await almReconciliarEstoqueItem(it, depKeys[j], {permitirAcrescentar:false});
+      }
+    }
+  }
+}
+
+function almGarantirEstoqueConsolidado(cb){
+  if(window._almEstoqueConsolidado){
+    if(cb) cb();
+    return;
+  }
+  if(window._almEstoqueConsolidando){
+    window._almEstoqueConsolidando.then(function(){ if(cb) cb(); }).catch(function(){ if(cb) cb(); });
+    return;
+  }
+  window._almEstoqueConsolidando = almConsolidarEstoqueTodos().then(function(){
+    window._almEstoqueConsolidado = true;
+    window._almEstoqueConsolidando = null;
+    if(cb) cb();
+  }).catch(function(){
+    window._almEstoqueConsolidando = null;
+    if(cb) cb();
+  });
+}
+
+function almDepositosComSaldoItem(ref){
+  var rows = almListarLinhasEstoqueItem(ref).filter(function(e){ return (Number(e.saldo)||0)>0; });
+  var map = {};
+  rows.forEach(function(e){
+    var k = e.deposito_id || '__sem__';
+    map[k] = (map[k]||0) + (Number(e.saldo)||0);
+  });
+  return map;
+}
+
+function almDepositoLabel(depId){
+  if(!depId) return 'Sem depósito';
+  var dep = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depId); });
+  if(!dep) return String(depId);
+  var fil = (typeof filiais!=='undefined'?filiais:[]).find(function(f){ return f.id===dep.filial_id; });
+  return dep.nome + (fil ? ' ('+(fil.codigo||fil.nome)+')' : '');
+}
+
+function almBuildDepositoOpts(selectedId, placeholder){
+  placeholder = placeholder || 'Selecione o depósito...';
+  var html = '<option value="">'+escHtml(placeholder)+'</option>';
+  (typeof depositos!=='undefined'?depositos:[]).filter(function(d){ return d.ativo!==false && !d.deleted_at; }).forEach(function(d){
+    var fil = (typeof filiais!=='undefined'?filiais:[]).find(function(f){ return f.id===d.filial_id; });
+    var lbl = d.nome + (fil ? ' ('+(fil.codigo||fil.nome)+')' : '');
+    html += '<option value="'+d.id+'"'+(String(selectedId||'')===String(d.id)?' selected':'')+'>'+escHtml(lbl)+'</option>';
+  });
+  return html;
+}
+
+function almLocalDevolucaoOrigem(mov){
+  if(!mov) return '—';
+  var parts = [];
+  if(mov.contrato_id){
+    var c = (contratos||[]).find(function(x){ return String(x.id)===String(mov.contrato_id); });
+    parts.push('Contrato: '+almContratoLabel(c, true));
+  }
+  if(mov.colaborador_id){
+    var col = (funcs||[]).find(function(f){ return String(f.id)===String(mov.colaborador_id); });
+    parts.push('Colaborador: '+(col?col.nome:mov.colaborador_id));
+  } else if(mov.equipe_id){
+    var eq = (equipes||[]).find(function(e){ return String(e.id)===String(mov.equipe_id); });
+    parts.push('Equipe: '+(eq?(eq.nome_equipe||eq.nome||eq.codigo):mov.equipe_id));
+  }
+  if(mov.deposito_id) parts.push('Depósito origem da entrega: '+almDepositoLabel(mov.deposito_id));
+  return parts.length ? parts.join(' · ') : 'Em uso (campo/contrato)';
+}
+
+function almAnexarObsOrigem(obs, origemTipo, origemId){
+  var base = String(obs||'').trim();
+  if(!origemTipo) return base||null;
+  var tag = 'origem:'+origemTipo+(origemId?(':'+origemId):'');
+  if(base.indexOf('origem:')>=0) return base;
+  return base ? (base+' | '+tag) : tag;
+}
+function almListaColaboradoresEntrega(){
+  var map={}, lista=[];
+  (typeof colaboradores!=='undefined'?colaboradores:[]).filter(function(c){ return c.ativo!==false; }).forEach(function(c){
+    if(c.id&&!map[c.id]){
+      map[c.id]=1;
+      lista.push({id:c.id,nome:c.nome,re:c.re||c.matricula||'',contrato_id:c.contrato_id});
+    }
+  });
+  (funcs||[]).forEach(function(f){
+    if(f.id&&!map[f.id]){
+      map[f.id]=1;
+      lista.push({id:f.id,nome:f.nome,re:f.re||f.matricula||'',contrato_id:f.contrato_id});
+    }
+  });
+  lista.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR',{sensitivity:'base'}); });
+  return lista;
+}
+function almFiltrarColaboradoresEntrega(q, limit){
+  q=String(q||'').toLowerCase().trim();
+  var qd=q.replace(/\D/g,'');
+  var lista=almListaColaboradoresEntrega();
+  if(!q) return lista.slice(0, limit||15);
+  return lista.filter(function(c){
+    var nome=(c.nome||'').toLowerCase();
+    var re=String(c.re||'').toLowerCase();
+    var red=String(c.re||'').replace(/\D/g,'');
+    if(nome.indexOf(q)>=0) return true;
+    if(re && re.indexOf(q)>=0) return true;
+    if(qd.length>=2 && red && red.indexOf(qd)>=0) return true;
+    var palavras=q.split(/\s+/).filter(function(w){ return w.length>=2; });
+    return palavras.length && palavras.every(function(w){ return nome.indexOf(w)>=0; });
+  }).slice(0, limit||15);
+}
+function entFiltrarColaboradores(){
+  var q=((document.getElementById('ent-colab-q')||{}).value||'').trim();
+  var box=document.getElementById('ent-colab-sug');
+  var hint=document.getElementById('ent-colab-hint');
+  var hid=document.getElementById('ent-colab-id');
+  if(hid && document.activeElement && document.activeElement.id==='ent-colab-q') hid.value='';
+  if(!box) return;
+  var sugs=almFiltrarColaboradoresEntrega(q, 15);
+  if(!q){
+    box.style.display='none'; box.innerHTML='';
+    if(hint) hint.textContent='Digite nome ou RE — clique na sugestão';
+    return;
+  }
+  if(!sugs.length){
+    box.style.display='none'; box.innerHTML='';
+    if(hint) hint.textContent='Nenhum colaborador encontrado para "'+q+'"';
+    return;
+  }
+  if(hint) hint.textContent=sugs.length+' sugestão(ões) — clique para selecionar';
+  box.style.display='';
+  box.innerHTML=sugs.map(function(c){
+    var lbl=escHtml(c.nome)+(c.re?' <span style="color:#888">RE '+escHtml(String(c.re))+'</span>':'');
+    return '<div data-id="'+c.id+'" data-nome="'+eeEscAttr(c.nome)+'" data-cont="'+(c.contrato_id||'')+'"'
+      +' onclick="entSelecionarColaborador(this.getAttribute(\'data-id\'),this.getAttribute(\'data-nome\'),this.getAttribute(\'data-cont\'))"'
+      +' style="padding:5px 8px;cursor:pointer;font-size:11px;border-bottom:.5px solid #eee;background:#fff"'
+      +' onmouseover="this.style.background=\'#EEEDFE\'" onmouseout="this.style.background=\'#fff\'">'+lbl+'</div>';
+  }).join('');
+}
+function entSelecionarColaborador(id, nome, contId){
+  var q=document.getElementById('ent-colab-q'), hid=document.getElementById('ent-colab-id');
+  var box=document.getElementById('ent-colab-sug'), hint=document.getElementById('ent-colab-hint');
+  var c=almListaColaboradoresEntrega().find(function(x){ return String(x.id)===String(id); });
+  var label=(nome||c.nome||'');
+  if(c&&c.re) label+=' (RE '+c.re+')';
+  if(q) q.value=label;
+  if(hid) hid.value=id||'';
+  if(box){ box.style.display='none'; box.innerHTML=''; }
+  if(hint) hint.innerHTML='✓ <b>'+escHtml(c?c.nome:nome)+'</b>'+(c&&c.re?' · RE '+escHtml(String(c.re)):'');
+  if(contId|| (c&&c.contrato_id)){
+    var selCont=document.getElementById('ent-cont');
+    if(selCont) selCont.value=contId||c.contrato_id;
+  }
+}
+function entObterColaboradorEntrega(){
+  var hid=(document.getElementById('ent-colab-id')||{}).value||'';
+  if(hid) return hid;
+  var q=((document.getElementById('ent-colab-q')||{}).value||'').trim();
+  if(!q) return null;
+  var qLim=q.toLowerCase();
+  var qd=q.replace(/\D/g,'');
+  var lista=almListaColaboradoresEntrega();
+  if(qd.length>=2){
+    var exatoRe=lista.find(function(c){ return String(c.re||'').replace(/\D/g,'')===qd; });
+    if(exatoRe) return exatoRe.id;
+  }
+  var exatoNome=lista.find(function(c){
+    var n=(c.nome||'').toLowerCase();
+    return n===qLim || (q+' (re '+String(c.re||'').toLowerCase()+')')===qLim;
+  });
+  if(exatoNome) return exatoNome.id;
+  var m=q.match(/^(.+?)\s*\(re\s*([^)]+)\)\s*$/i);
+  if(m){
+    var porPar=lista.find(function(c){
+      return (c.nome||'').toLowerCase()===m[1].trim().toLowerCase()
+        && String(c.re||'').replace(/\D/g,'')===m[2].replace(/\D/g,'');
+    });
+    if(porPar) return porPar.id;
+  }
+  var matches=almFiltrarColaboradoresEntrega(q, 5);
+  if(matches.length===1) return matches[0].id;
+  return null;
+}
+function almNomeColaboradorEntrega(id){
+  if(!id) return '';
+  var c = almListaColaboradoresEntrega().find(function(x){ return String(x.id)===String(id); });
+  return c ? (c.nome||'') : '';
+}
+function almObsMetaEntrega(opts){
+  opts = opts || {};
+  var parts=[];
+  if(opts.colaborador_id){
+    var c = almListaColaboradoresEntrega().find(function(x){ return String(x.id)===String(opts.colaborador_id); });
+    var nome = c ? c.nome : almNomeColaboradorEntrega(opts.colaborador_id);
+    parts.push('Colaborador: '+nome+(c&&c.re?' · RE '+c.re:''));
+  }
+  if(opts.equipe_id){
+    var eq = (typeof equipes!=='undefined'?equipes:[]).find(function(e){ return String(e.id)===String(opts.equipe_id); });
+    parts.push('Equipe: '+(eq?(eq.nome_equipe||eq.nome||eq.codigo):opts.equipe_id));
+  }
+  if(opts.previsao_devolucao) parts.push('Previsão devolução: '+opts.previsao_devolucao);
+  return parts.join(' | ');
+}
+function almJuntarObs(){
+  return Array.prototype.filter.call(arguments, function(s){ return s!=null && String(s).trim()!==''; }).join(' | ') || null;
+}
+function almColaboradorIdFromMov(m){
+  if(!m) return null;
+  if(m.colaborador_id) return m.colaborador_id;
+  var obs = m.obs||'';
+  var mt = obs.match(/Colaborador:\s*([^|]+)/);
+  if(!mt) return null;
+  var nome = mt[1].trim();
+  var c = almListaColaboradoresEntrega().find(function(x){ return (x.nome||'').trim()===nome; });
+  return c ? c.id : null;
+}
+
+function almDepositosSaldoItemDetalhe(ref, excetoDepId){
+  var map = almDepositosComSaldoItem(ref);
+  var out = [];
+  Object.keys(map).forEach(function(k){
+    if(k==='__sem__') return;
+    if(excetoDepId && String(k)===String(excetoDepId)) return;
+    out.push({ depId:k, nome:almDepositoLabel(k), saldo:map[k] });
+  });
+  out.sort(function(a,b){ return b.saldo - a.saldo; });
+  return out;
+}
+
+function entSelecionarDepositoEmprestimo(depId){
+  var sel = document.getElementById('ent-dep');
+  if(sel && depId){ sel.value = depId; entAtualizarSaldoEntrega(); }
+}
+
+function entAtualizarSaldoEntrega(){
+  var itemId = (document.getElementById('ent-item')||{}).value||'';
+  var depId = (document.getElementById('ent-dep')||{}).value||'';
+  var panel = document.getElementById('ent-saldo-panel');
+  var selDep = document.getElementById('ent-dep');
+  if(!panel) return;
+  if(!itemId){
+    panel.innerHTML = '<div style="font-size:11px;color:#888">Selecione o item para ver saldo por depósito.</div>';
+    return;
+  }
+  var it = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
+  if(!it){ panel.innerHTML=''; return; }
+  var total = almSaldoEstoqueItem(it, null);
+  var depSaldo = depId ? almSaldoEstoqueItem(it, depId) : null;
+  var depMap = almDepositosComSaldoItem(it);
+  var depKeys = Object.keys(depMap).filter(function(k){ return k!=='__sem__'; });
+  if(!depId && depKeys.length===1 && selDep){
+    selDep.value = depKeys[0];
+    depId = depKeys[0];
+    depSaldo = almSaldoEstoqueItem(it, depId);
+  }
+  var qtdPed = parseInt((document.getElementById('ent-qtd')||{}).value, 10) || 1;
+  var html = '';
+  if(depId){
+    var cor = depSaldo >= qtdPed ? '#3B6D11' : (depSaldo > 0 ? '#854F0B' : '#A32D2D');
+    html += '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.55rem .75rem">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'
+      +'<div style="min-width:0">'
+      +'<div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.03em">Saldo no depósito selecionado</div>'
+      +'<div style="font-size:12px;font-weight:600;color:#333;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(almDepositoLabel(depId))+'</div>'
+      +'</div>'
+      +'<div style="font-size:26px;font-weight:700;color:'+cor+';line-height:1">'+depSaldo+'</div>'
+      +'</div>'
+      +(depSaldo < qtdPed
+        ? '<div style="font-size:10px;color:#A32D2D;margin-top:5px">⚠ Insuficiente para entregar '+qtdPed+' un. (disponível: '+depSaldo+')</div>'
+        : '<div style="font-size:10px;color:#3B6D11;margin-top:5px">✓ Cobre a quantidade de '+qtdPed+' un.</div>')
+      +(total !== depSaldo ? '<div style="font-size:10px;color:#888;margin-top:3px">Total em todos os depósitos: '+total+' un.</div>' : '')
+      +'</div>';
+  } else {
+    html += '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.55rem .75rem">'
+      +'<div style="font-size:10px;color:#888">Saldo total nos depósitos</div>'
+      +'<div style="font-size:22px;font-weight:700;color:'+(total>0?'#3B6D11':'#A32D2D')+'">'+total+' <span style="font-size:12px;font-weight:500">un.</span></div>'
+      +'<div style="font-size:10px;color:#888;margin-top:3px">Selecione o depósito de origem abaixo.</div>'
+      +'</div>';
+  }
+  var outros = almDepositosSaldoItemDetalhe(it, depId);
+  if(outros.length){
+    html += '<div style="margin-top:.55rem">'
+      +'<div style="font-size:10px;font-weight:600;color:#854F0B;margin-bottom:5px">🔄 Outros depósitos com saldo — pedir emprestado</div>'
+      +'<div style="display:flex;flex-direction:column;gap:4px">'
+      + outros.map(function(o){
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#FFF7E6;border:.5px solid #f0d088;border-radius:6px;padding:5px 8px;font-size:11px">'
+          +'<span style="min-width:0"><b>'+escHtml(o.nome)+'</b> — <b style="color:#3B6D11">'+o.saldo+'</b> un.</span>'
+          +'<button type="button" class="btn btn-sm" style="font-size:10px;padding:2px 10px;white-space:nowrap;background:#854F0B;color:#fff;border-color:#854F0B" onclick="entSelecionarDepositoEmprestimo(\''+o.depId+'\')">Usar este</button>'
+          +'</div>';
+      }).join('')
+      +'</div></div>';
+  } else if(depId && depSaldo===0 && total===0){
+    html += '<div style="font-size:10px;color:#A32D2D;margin-top:6px">Nenhum depósito possui saldo deste item.</div>';
+  } else if(depId && depSaldo===0 && total>0){
+    html += '<div style="font-size:10px;color:#854F0B;margin-top:6px">Este depósito está vazio, mas há saldo em outro local — use a lista acima ou troque o depósito de origem.</div>';
+  }
+  panel.innerHTML = html;
+}
+
+async function almReconciliarEstoqueItem(itemCat, depId, opts){
+  opts = opts || {};
+  if(!itemCat) return {ok:false, msg:'Item inválido'};
+  if(!depId) return {ok:false, msg:'Depósito obrigatório'};
+  await almConsolidarEstoqueItemDeposito(itemCat, depId, opts.filial_id||null);
+  var saldoMov = almCalcularSaldoMovimentacoesDeposito(itemCat.id, depId);
+  var saldoEst = almSaldoEstoqueItem(itemCat, depId);
+  var diff = saldoMov - saldoEst;
+  if(diff === 0) return {ok:true, synced:false, saldoMov:saldoMov, saldoEst:saldoEst};
+  if(diff < 0){
+    var rows = almListarLinhasEstoqueItem(itemCat).filter(function(e){
+      return String(e.deposito_id||'')===String(depId) && (Number(e.saldo)||0)>0;
+    });
+    rows.sort(function(a,b){ return (Number(b.saldo)||0)-(Number(a.saldo)||0); });
+    var restante = -diff;
+    for(var i=0; i<rows.length && restante>0; i++){
+      var row = rows[i];
+      var atual = Number(row.saldo)||0;
+      if(atual<=0) continue;
+      var baixa = Math.min(atual, restante);
+      var novo = atual - baixa;
+      if(DEMO){ row.saldo = novo; }
+      else {
+        var okUp = await sbUpdate('estoque', {saldo:novo}, 'id=eq.'+row.id);
+        if(!okUp) return {ok:false, msg:itemCat.nome+': falha ao corrigir saldo excedente'};
+        row.saldo = novo;
+      }
+      restante -= baixa;
+    }
+    return {ok:true, synced:true, saldoMov:saldoMov, saldoEst:saldoMov};
+  }
+  if(!opts.permitirAcrescentar){
+    return {ok:true, synced:false, saldoMov:saldoMov, saldoEst:saldoEst, excessoMov:diff};
+  }
+  var entradas = (movimentacoes_itens||[]).filter(function(m){
+    return String(m.item_id||'')===String(itemCat.id) && m.tipo_mov==='entrada';
+  }).sort(function(a,b){ return (b.data_mov||'').localeCompare(a.data_mov||''); });
+  if(depId) entradas = entradas.filter(function(m){ return String(m.deposito_id||'')===String(depId); });
+  var ult = entradas[0]||{};
+  return almAtualizarSaldoEstoquePatrimonio({
+    itemCat:itemCat, qtd:diff,
+    filId:ult.filial_id||opts.filial_id||null, depId:depId||ult.deposito_id||null,
+    custo:Number(ult.valor_unitario)||0
+  });
+}
+
+function almListarLinhasEstoqueItem(ref){
+  var nome = String((ref&&ref.nome)||'').trim().toLowerCase();
+  var cod = String((ref&&ref.codigo)||'').trim();
+  return (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
+    if(cod && e.codigo && String(e.codigo).trim()===cod) return true;
+    return nome && String(e.nome||'').trim().toLowerCase()===nome;
+  });
+}
+
+function almResolverLinhaEstoqueItem(itemCat, opts){
+  opts = opts || {};
+  var qtd = Number(opts.qtd)||0;
+  var rows = almListarLinhasEstoqueItem(itemCat);
+  if(opts.filId) rows = rows.filter(function(e){ return String(e.filial_id||'')===String(opts.filId); });
+  if(opts.depId){
+    rows = rows.filter(function(e){ return String(e.deposito_id||'')===String(opts.depId); });
+  }
+  if(opts.estoqueId){
+    var fix = rows.find(function(e){ return String(e.id)===String(opts.estoqueId); });
+    if(fix && (Number(fix.saldo)||0)>=qtd) return fix;
+  }
+  rows.sort(function(a,b){ return (Number(b.saldo)||0)-(Number(a.saldo)||0); });
+  return rows.find(function(e){ return (Number(e.saldo)||0)>=qtd; })||null;
+}
+
+async function almBaixarSaldoEstoquePatrimonio(p){
+  var qtd = Number(p.qtd)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida para baixa'};
+  var row = p.row;
+  if(!row && p.itemCat){
+    row = almResolverLinhaEstoqueItem(p.itemCat, {
+      qtd:qtd, filId:p.filId, depId:p.depId, estoqueId:p.estoqueId
+    });
+  }
+  if(!row) return {ok:false, msg:(p.itemCat&&p.itemCat.nome||'Item')+': sem saldo no estoque para esta localização'};
+  var saldoAtual = Number(row.saldo)||0;
+  if(saldoAtual < qtd) return {ok:false, msg:row.nome+': saldo insuficiente ('+saldoAtual+' disponível, pedido '+qtd+')'};
+  var novoSaldo = saldoAtual - qtd;
+  if(DEMO){
+    row.saldo = novoSaldo;
+    return {ok:true, row:row, saldo:novoSaldo};
+  }
+  var okUp = await sbUpdate('estoque', {saldo:novoSaldo}, 'id=eq.'+row.id);
+  if(!okUp) return {ok:false, msg:row.nome+': falha ao baixar saldo no estoque'};
+  row.saldo = novoSaldo;
+  return {ok:true, row:row, saldo:novoSaldo};
+}
+
+async function almRegistrarEntregaPatrimonio(opts){
+  var itemId = opts.item_id;
+  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
+  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
+  var qtd = Number(opts.quantidade)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
+  if(!opts.deposito_id) return {ok:false, msg:'Selecione o local de saída (depósito)'};
+    if(!opts.contrato_id) return {ok:false, msg:'Selecione o local de destino (contrato)'};
+
+  await almConsolidarEstoqueItemDeposito(itemCat, opts.deposito_id, opts.filial_id);
+  await almReconciliarEstoqueItem(itemCat, opts.deposito_id, {filial_id:opts.filial_id, permitirAcrescentar:false});
+
+  var linhaEst = almResolverLinhaEstoqueItem(itemCat, {
+    qtd:qtd,
+    filId:opts.filial_id||null,
+    depId:opts.deposito_id,
+    estoqueId:opts.estoque_id||null
+  });
+  if(!linhaEst){
+    var saldoDep = almSaldoEstoqueItem(itemCat, opts.deposito_id);
+    var saldoTot = almSaldoEstoqueItem(itemCat, null);
+    var depNome = ((typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(opts.deposito_id); })||{}).nome||'depósito';
+    if(saldoTot > 0 && saldoDep < qtd){
+      return {ok:false, msg:itemCat.nome+': saldo '+saldoTot+' un., mas neste depósito ("'+depNome+'") há '+saldoDep+'. Selecione o depósito onde deu entrada.'};
+    }
+    return {ok:false, msg:itemCat.nome+': sem saldo disponível (depósito: '+saldoDep+')'};
+  }
+
+  var baixa = await almBaixarSaldoEstoquePatrimonio({row:linhaEst, qtd:qtd, itemCat:itemCat});
+  if(!baixa.ok) return baixa;
+
+  var payload = {
+    item_id: itemId,
+    tipo_mov: 'entrega',
+    quantidade: qtd,
+    deposito_id: linhaEst.deposito_id||opts.deposito_id,
+    filial_id: linhaEst.filial_id||opts.filial_id||null,
+    contrato_id: opts.contrato_id,
+    destino_tipo: 'contrato',
+    destino_id: opts.contrato_id,
+    previsao_devolucao: opts.previsao_devolucao||null,
+    data_mov: opts.data_mov||dataHoje(),
+    obs: almJuntarObs(opts.obs, almObsMetaEntrega(opts), 'estoque_id:'+linhaEst.id),
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: 'Em uso'
+  };
+
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload, {
+      colaborador_id: opts.colaborador_id||null,
+      equipe_id: opts.equipe_id||null
+    }));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov){
+      await almAtualizarSaldoEstoquePatrimonio({
+        itemCat:itemCat, qtd:qtd,
+        filId:linhaEst.filial_id, depId:linhaEst.deposito_id,
+        nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
+      });
+      return {ok:false, msg:itemCat.nome+': falha ao registrar entrega (saldo revertido)'};
+    }
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0], {
+      colaborador_id: opts.colaborador_id||null,
+      equipe_id: opts.equipe_id||null,
+      previsao_devolucao: opts.previsao_devolucao||null
+    }));
+  }
+  return {ok:true, nome:itemCat.nome, qtd:qtd, estoque_id:linhaEst.id};
+}
+
+function almDevolucaoRetornaEstoque(cond){
+  return ['Bom estado','Com desgaste','Necessita manutenção','Danificado','Quebrado'].indexOf(cond)>=0;
+}
+
+async function almRegistrarDevolucaoPatrimonio(opts){
+  var movId = opts.movimentacao_origem_id;
+  var movOrig = (movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(movId); });
+  if(!movOrig) return {ok:false, msg:'Entrega de origem não encontrada'};
+  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(movOrig.item_id); });
+  var qtd = Number(opts.quantidade||movOrig.quantidade)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
+  var depDest = opts.deposito_destino_id || movOrig.deposito_id;
+  if(!depDest) return {ok:false, msg:'Selecione o depósito de entrada (destino)'};
+  var depDestObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depDest); });
+  var filDest = depDestObj ? depDestObj.filial_id : movOrig.filial_id;
+  var cond = opts.condicao||'Bom estado';
+  var novoStatus = (cond==='Bom estado'||cond==='Com desgaste') ? 'Disponível'
+    : (cond==='Necessita manutenção') ? 'Em manutenção' : 'Fora de uso';
+
+  var payload = {
+    item_id: movOrig.item_id,
+    tipo_mov: 'devolucao',
+    quantidade: qtd,
+    deposito_id: depDest,
+    filial_id: filDest||null,
+    contrato_id: movOrig.contrato_id||null,
+    destino_tipo: 'deposito',
+    destino_id: depDest,
+    movimentacao_origem_id: movId,
+    condicao: cond,
+    data_mov: opts.data_mov||dataHoje(),
+    obs: almJuntarObs(opts.obs, almObsMetaEntrega({
+      colaborador_id: movOrig.colaborador_id||almColaboradorIdFromMov(movOrig),
+      equipe_id: movOrig.equipe_id||null
+    }), almAnexarObsOrigem('', 'contrato', movOrig.contrato_id||null)),
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: novoStatus
+  };
+
+  if(DEMO){
+    movOrig.status = 'Devolvido';
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
+  } else {
+    var okOrig = await sbUpdate('movimentacoes_itens', {status:'Devolvido'}, 'id=eq.'+movId);
+    if(!okOrig) return {ok:false, msg:'Falha ao atualizar entrega de origem'};
+    movOrig.status = 'Devolvido';
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov) return {ok:false, msg:'Falha ao registrar devolução'};
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+  }
+
+  if(almDevolucaoRetornaEstoque(cond) && itemCat){
+    var estId = null;
+    var obsOrig = movOrig.obs||'';
+    var mEst = obsOrig.match(/estoque_id:([^\s|]+)/);
+    if(mEst) estId = mEst[1];
+    var saldo = await almAtualizarSaldoEstoquePatrimonio({
+      itemCat:itemCat, qtd:qtd,
+      filId:filDest, depId:depDest,
+      estoqueId:estId
+    });
+    if(!saldo.ok) return {ok:false, msg:saldo.msg||'Devolução registrada mas falha ao repor estoque'};
+    await almConsolidarEstoqueItemDeposito(itemCat, depDest, filDest);
+  }
+  return {ok:true, nome:itemCat?itemCat.nome:'Item', cond:cond, deposito_destino:depDest};
+}
+
+async function almRegistrarTransferenciaPatrimonio(opts){
+  var itemId = opts.item_id;
+  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
+  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
+  var qtd = Number(opts.quantidade)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
+  var depOrig = opts.deposito_origem_id;
+  var depDest = opts.deposito_destino_id;
+  if(!depOrig) return {ok:false, msg:'Selecione o local de saída (depósito origem)'};
+  if(!depDest) return {ok:false, msg:'Selecione o local de entrada (depósito destino)'};
+  if(String(depOrig)===String(depDest)) return {ok:false, msg:'Depósitos de saída e entrada devem ser diferentes'};
+
+  var depOrigObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depOrig); });
+  var depDestObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depDest); });
+  var filOrig = depOrigObj ? depOrigObj.filial_id : null;
+  var filDest = depDestObj ? depDestObj.filial_id : null;
+
+  await almConsolidarEstoqueItemDeposito(itemCat, depOrig, filOrig);
+  await almReconciliarEstoqueItem(itemCat, depOrig, {filial_id:filOrig, permitirAcrescentar:false});
+
+  var linhaEst = almResolverLinhaEstoqueItem(itemCat, {qtd:qtd, depId:depOrig, filId:filOrig});
+  if(!linhaEst){
+    var saldoDep = almSaldoEstoqueItem(itemCat, depOrig);
+    return {ok:false, msg:itemCat.nome+': sem saldo no depósito de saída ('+saldoDep+')'};
+  }
+
+  var baixa = await almBaixarSaldoEstoquePatrimonio({row:linhaEst, qtd:qtd, itemCat:itemCat});
+  if(!baixa.ok) return baixa;
+
+  var credito = await almAtualizarSaldoEstoquePatrimonio({
+    itemCat:itemCat, qtd:qtd, filId:filDest, depId:depDest
+  });
+  if(!credito.ok){
+    await almAtualizarSaldoEstoquePatrimonio({
+      itemCat:itemCat, qtd:qtd, filId:filOrig, depId:depOrig,
+      nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
+    });
+    return {ok:false, msg:credito.msg||'Falha ao creditar depósito destino (saldo revertido na origem)'};
+  }
+
+  var payload = {
+    item_id: itemId,
+    tipo_mov: 'transferencia',
+    quantidade: qtd,
+    deposito_id: depOrig,
+    filial_id: filOrig||null,
+    destino_tipo: 'deposito',
+    destino_id: depDest,
+    data_mov: opts.data_mov||dataHoje(),
+    motivo: 'Transferência entre depósitos',
+    obs: opts.obs||null,
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: 'Disponível'
+  };
+
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov){
+      await almAtualizarSaldoEstoquePatrimonio({
+        itemCat:itemCat, qtd:qtd, filId:filOrig, depId:depOrig,
+        nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
+      });
+      await almBaixarSaldoEstoquePatrimonio({row:credito.row, qtd:qtd, itemCat:itemCat});
+      return {ok:false, msg:itemCat.nome+': falha ao registrar transferência (saldo revertido)'};
+    }
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+  }
+
+  await almConsolidarEstoqueItemDeposito(itemCat, depDest, filDest);
+  return {ok:true, nome:itemCat.nome, qtd:qtd, deposito_origem:depOrig, deposito_destino:depDest};
+}
+
+function almAjusteEhEntrada(tipoAj){
+  return ['Inventário positivo','Retorno de manutenção'].indexOf(tipoAj)>=0;
+}
+
+async function almRegistrarAjustePatrimonio(opts){
+  var itemId = opts.item_id;
+  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
+  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
+  var qtd = Number(opts.quantidade)||0;
+  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
+  var tipoAj = opts.tipo_ajuste||'Correção administrativa';
+  var payload = {
+    item_id: itemId,
+    tipo_mov: 'ajuste',
+    tipo_ajuste: tipoAj,
+    quantidade: qtd,
+    deposito_id: opts.deposito_id||null,
+    filial_id: opts.filial_id||null,
+    contrato_id: opts.contrato_id||null,
+    data_mov: opts.data_mov||dataHoje(),
+    motivo: opts.motivo||tipoAj,
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: tipoAj.indexOf('manutenção')>=0 && !almAjusteEhEntrada(tipoAj) ? 'Em manutenção'
+      : (almAjusteEhEntrada(tipoAj) ? 'Disponível' : 'Fora de uso')
+  };
+
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar ajuste'};
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+  }
+
+  if(almAjusteEhEntrada(tipoAj)){
+    var saldo = await almAtualizarSaldoEstoquePatrimonio({
+      itemCat:itemCat, qtd:qtd,
+      filId:opts.filial_id, depId:opts.deposito_id
+    });
+    if(!saldo.ok) return saldo;
+  } else {
+    var baixa = await almBaixarSaldoEstoquePatrimonio({
+      itemCat:itemCat, qtd:qtd,
+      filId:opts.filial_id, depId:opts.deposito_id
+    });
+    if(!baixa.ok) return baixa;
+  }
+  return {ok:true, nome:itemCat.nome, qtd:qtd, tipo:tipoAj};
 }
 
 async function eeRegistrarMovObsEntrada(ctx, linha, extra){
@@ -62668,7 +63862,7 @@ async function eeRegistrarMovObsEntrada(ctx, linha, extra){
     quantidade: parseFloat(linha.qtd)||0,
     deposito_id: ctx.depId||null,
     filial_id: ctx.filId||null,
-    contrato_id: ctx.contId||null,
+    contrato_id: null,
     fornecedor: ctx.forn,
     nota_fiscal: ctx.lote,
     valor_unitario: parseFloat(linha.custo)||0,
@@ -62695,7 +63889,7 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
   var itemId = linha.item_id || '';
   var qtd = parseFloat(linha.qtd) || 0;
   if(qtd <= 0) return {ok:false, msg:(linha.nome||'Item')+': quantidade inválida'};
-  var filId = ctx.filId, depId = ctx.depId, forn = ctx.forn, lote = ctx.lote, contId = ctx.contId;
+  var filId = ctx.filId, depId = ctx.depId, forn = ctx.forn, lote = ctx.lote;
   var obsEntrada = ctx.obs || null, numeroRc = ctx.numero_rc || '';
   var custo = parseFloat(linha.custo) || 0;
   var uid = 'mov'+(Date.now())+'-'+(seq||0);
@@ -62742,10 +63936,11 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     var payload = {
       item_id: itemId, tipo_mov: 'entrada', quantidade: qtd,
       deposito_id: depId||null, filial_id: filId||null,
-      contrato_id: contId||null, fornecedor: forn, nota_fiscal: lote,
+      contrato_id: null, destino_tipo: 'deposito', destino_id: depId||null,
+      fornecedor: forn, nota_fiscal: lote,
       valor_unitario: custo, data_mov: dataHoje(),
       motivo: numeroRc ? ('Entrada NF — RC '+numeroRc) : 'Entrada de estoque',
-      obs: obsEntrada,
+      obs: almAnexarObsOrigem(obsEntrada, forn ? 'externo' : 'externo', null),
       responsavel_id: usuarioLogado?usuarioLogado.id:null,
       status: 'Disponível'
     };
@@ -62772,7 +63967,7 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     }
     var saldoRes = await almAtualizarSaldoEstoquePatrimonio({
       itemCat:itemCat, qtd:qtd, custo:custo, seq:seq,
-      filId:filId, depId:depId, contId:contId,
+      filId:filId, depId:depId,
       forn:forn, lote:lote, ca:linha.ca||null
     });
     if(!saldoRes.ok) return {ok:false, msg:saldoRes.msg||itemCat.nome+': falha no estoque'};
@@ -62790,7 +63985,7 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     ca_validade:linha.ca_validade||null,
     unidade:linha.unidade||'UN',
     qtd:qtd, custo:custo, seq:seq,
-    filId:filId, depId:depId, contId:contId,
+    filId:filId, depId:depId,
     forn:forn, lote:lote
   });
   if(!saldoLivre.ok) return {ok:false, msg:saldoLivre.msg||nome+': falha no estoque'};
@@ -62805,6 +64000,8 @@ async function salvarEntrada(){
   eeSyncLinhasFromDOM();
   var linhas = eeColetarLinhas().filter(function(l){ return (l.nome||'').trim() && (parseFloat(l.qtd)||0)>0; });
   if(!linhas.length){ alert('Adicione ao menos um item com nome e quantidade.'); return; }
+  var depEntrada = (document.getElementById('ee-dep')||{}).value||'';
+  if(!depEntrada){ alert('Selecione o local de entrada (depósito destino).'); return; }
 
   var fornInfo = eeObterFornecedorEntrada();
   var rc = ((document.getElementById('ee-rc')||{}).value||'').trim();
@@ -62812,7 +64009,6 @@ async function salvarEntrada(){
   var ctx = {
     filId: (document.getElementById('ee-filial')||{}).value||null,
     depId: (document.getElementById('ee-dep')||{}).value||null,
-    contId: (document.getElementById('ee-cont')||{}).value||null,
     forn: fornInfo.fornecedor,
     fornecedor_id: fornInfo.fornecedor_id,
     lote: (document.getElementById('ee-lote')||{}).value||'',
@@ -64092,6 +65288,7 @@ async function lcAnalisarContrato(){
         <input class="inp" id="fil-fer-q" placeholder="Buscar..." style="width:150px" oninput="renderFer()"/>
         <button class="btn" onclick="openEntregaItem('ferramenta')">📤 Entregar</button>
         <button class="btn" onclick="openDevolucaoItem('ferramenta')">📥 Devolver</button>
+        <button class="btn" onclick="openTransferenciaItem('ferramenta')">🔀 Transferir</button>
         <button class="btn" onclick="openAjusteItem('ferramenta')">⚙ Ajuste</button>
         <button class="btn btn-pri" onclick="openCadastroItem('ferramenta')">+ Nova ferramenta</button>
       </div>
