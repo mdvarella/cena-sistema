@@ -27965,10 +27965,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.519',
+  numero: '7.9.520',
   data:   '22/06/2026',
-  build:  '20260622-1830',
+  build:  '20260622-1900',
   log: [
+    {v:'7.9.520', d:'22/06/2026', itens:[
+      'Fix SESMT Turmas: restaurados card Aguardando formacao de turma, botao Trilhas por cargo (sequencia de cursos), filtros de turmas e carga de admissao via funcionarios. Removido de Programacao — permanece so em SESMT > Turmas de Treinamento.',
+    ]},
     {v:'7.9.519', d:'22/06/2026', itens:[
       'Fix: Tratamento Verificar — progFindColab e _colabHistorico definidos; corrige ReferenceError ao carregar lista de ocorrencias (vtCarregar/vtRenderLista).',
     ]},
@@ -60860,12 +60863,33 @@ function renderTreinamentos(){
 var TURMA_ST={ 'Programado':{c:'#854F0B',bg:'#FEF3E2'},'Em andamento':{c:'#534AB7',bg:'#EEEDFE'},'Concluído':{c:'#3B6D11',bg:'#EAF3DE'},'Cancelado':{c:'#A32D2D',bg:'#FCEBEB'} };
 var _trilhas=[]; var _trilhasCarregado=false;          // trilhas de formação por cargo
 var _turmaFiltroSt=''; var _turmaBusca='';             // filtros da lista de turmas
-var _trilhaEditId=null; var _trilhaEditCursos=[];      // estado do editor de trilha
-var RECEM_DIAS=90;                                     // janela de "recém contratado"
+var _trilhaEditId=null; var _trilhaEditCursos=[]; var _trilhaEditCargo=''; var _trilhaEditContrato='';
+var RECEM_DIAS=90;
+var _admPorRe=null;
+function _carregarAdmissoes(cb){
+  if(_admPorRe || DEMO){ if(cb)cb(); return; }
+  sbFetch('funcionarios',{select:'matricula,admissao',limit:5000}).then(function(rows){
+    _admPorRe={}; (rows||[]).forEach(function(f){ if(f.matricula!=null && f.admissao) _admPorRe[String(f.matricula).trim()]=f.admissao; });
+    if(cb)cb();
+  }).catch(function(){ _admPorRe={}; if(cb)cb(); });
+}
+function _admissaoDe(c){ if(c.admissao) return c.admissao; if(_admPorRe && c.re!=null) return _admPorRe[String(c.re).trim()]||null; return null; }
+function progSyncAdmissoesDiario(){
+  try{
+    var hoje=dataHojeLocal();
+    if(localStorage.getItem('cena_sync_adm_dia')===hoje) return;
+    if(typeof PONTO_API_URL==='undefined' || !PONTO_API_URL) return;
+    localStorage.setItem('cena_sync_adm_dia',hoje);
+    fetch(PONTO_API_URL+'/api/v1/sincronizar-admissoes',{method:'POST',headers:{'Content-Type':'application/json'}})
+      .then(function(r){ return r.ok?r.json():null; })
+      .then(function(res){ if(!res) localStorage.removeItem('cena_sync_adm_dia'); })
+      .catch(function(){ localStorage.removeItem('cena_sync_adm_dia'); });
+  }catch(e){}
+}
 function _turmaPartDe(tid){ return _sesmtTurmaPart.filter(function(p){return p.turma_id===tid;}); }
 function _normTxt(s){ return (s||'').toString().trim().toLowerCase(); }
 function _diasDesde(dStr){ if(!dStr) return null; var d=new Date(dStr+'T12:00:00'); if(isNaN(d)) return null; return Math.floor((new Date(dataHojeLocal()+'T12:00:00')-d)/86400000); }
-function _recemContratado(c){ var n=_diasDesde(c.admissao); return n!==null && n>=0 && n<=RECEM_DIAS; }
+function _recemContratado(c){ var n=_diasDesde(_admissaoDe(c)); return n!==null && n>=0 && n<=RECEM_DIAS; }
 // Colaborador está em alguma turma não concluída/cancelada (independe de data)
 function _colabTemTurmaAberta(colabId){
   return _sesmtTurmaPart.some(function(p){
@@ -60922,10 +60946,12 @@ function sesmtCarregarTurmas(cb){
   Promise.all([
     sbFetch('sesmt_turmas',{order:'data_inicio.desc'}),
     sbFetch('sesmt_turma_participantes',{}),
-    sbFetch('sesmt_trilha_cargo',{}).catch(function(){ return []; })
+    sbFetch('sesmt_trilha_cargo',{}).catch(function(){ return []; }),
+    (!_cad_cursos.length ? sbFetch('sesmt_cursos',{filters:['status=eq.Ativo'],order:'nome.asc'}).catch(function(){ return []; }) : Promise.resolve(null))
   ]).then(function(r){
     _sesmtTurmas=r[0]||[]; _sesmtTurmaPart=r[1]||[]; _trilhas=r[2]||[]; _trilhasCarregado=true; _sesmtTurmasCarregado=true;
-    if(cb) cb();
+    if(r[3] && r[3].length) _cad_cursos=r[3];
+    _carregarAdmissoes(function(){ if(cb) cb(); });
   }).catch(function(e){ console.warn('turmas:',e); _sesmtTurmasCarregado=true; if(cb)cb(); });
 }
 
@@ -60970,10 +60996,151 @@ function renderTurmas(){
       +(t.status!=='Concluído'&&t.status!=='Cancelado'?'<button class="btn btn-sm" style="color:#3B6D11;border-color:#3B6D11" onclick="turmaConcluir(\''+t.id+'\')">✅ Concluir turma</button>':'')
       +'</div></div>';
   }).join('');
+  var stBtns=[['','Todas'],['Programado','Programado'],['Em andamento','Em andamento'],['Concluído','Concluído'],['Cancelado','Cancelado']].map(function(s){
+    var on=_turmaFiltroSt===s[0]; var cor=TURMA_ST[s[0]];
+    return '<button class="btn btn-sm" onclick="turmaFiltrarSt(\''+s[0]+'\')" style="'+(on?'background:'+(cor?cor.c:'#185FA5')+';color:#fff;border-color:'+(cor?cor.c:'#185FA5'):'')+'">'+escHtml(s[1])+'</button>';
+  }).join('');
   box.innerHTML='<div class="card" style="margin-bottom:1rem"><div class="ch"><span class="ct">👥 Turmas de Treinamento ('+_sesmtTurmas.length+')</span>'
-    +'<button class="btn btn-pri" onclick="openTurmaModal()">+ Nova Turma</button></div>'
-    +'<div style="padding:.4rem .9rem;font-size:11px;color:#888">Matricule colaboradores e clique em <b>▶ Iniciar</b> para marcá-los como <b>Em treinamento</b> nas escalas (somem dos Disponíveis). Ao <b>✅ Concluir</b>, voltam a ficar disponíveis e geram alerta de 7 dias na Programação.</div></div>'
-    +(cards||'<div class="card" style="padding:2rem;text-align:center;color:#aaa">Nenhuma turma cadastrada. Clique em <b>+ Nova Turma</b>.</div>');
+    +'<div style="display:flex;gap:6px"><button class="btn btn-sm" onclick="openTrilhas()" title="Sequência de cursos por cargo">🪜 Trilhas por cargo</button><button class="btn btn-pri" onclick="openTurmaModal()">+ Nova Turma</button></div></div>'
+    +'<div style="padding:.4rem .9rem;font-size:11px;color:#888">Matricule colaboradores e clique em <b>▶ Iniciar</b> para marcá-los como <b>Em treinamento</b> nas escalas (somem dos Disponíveis). Ao <b>✅ Concluir</b>, voltam a ficar disponíveis e geram alerta de 7 dias na Programação.</div>'
+    +'<div style="padding:.2rem .9rem .7rem;display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span style="font-size:11px;color:#888">Filtrar:</span>'+stBtns
+    +'<input class="inp" id="turma-busca" oninput="turmaBuscar(this.value)" value="'+escHtml(_turmaBusca)+'" placeholder="🔎 nome, instituição..." style="flex:1;min-width:160px;max-width:280px;font-size:12px;padding:4px 8px"/>'
+    +'<span style="font-size:11px;color:#aaa">'+turmasF.length+' de '+_sesmtTurmas.length+'</span></div></div>'
+    +_renderAguardandoFormacao()
+    +(cards||'<div class="card" style="padding:2rem;text-align:center;color:#aaa">'+( _turmaFiltroSt||_turmaBusca?'Nenhuma turma com esse filtro.':'Nenhuma turma cadastrada. Clique em <b>+ Nova Turma</b>.')+'</div>');
+  var bi=document.getElementById('turma-busca'); if(bi && bq){ bi.focus(); bi.setSelectionRange(bi.value.length,bi.value.length); }
+}
+function turmaFiltrarSt(s){ _turmaFiltroSt=s; renderTurmas(); }
+function turmaBuscar(v){ _turmaBusca=v; renderTurmas(); }
+
+function _renderAguardandoFormacao(){
+  var porCurso={}, semTrilha=[];
+  colaboradores.forEach(function(c){
+    if(c.ativo===false || c.dispensado===true) return;
+    if(_colabTemTurmaAberta(c.id)) return;
+    var prox=_colabProximoCurso(c);
+    if(prox && prox.curso){
+      (porCurso[prox.curso.id]=porCurso[prox.curso.id]||{curso:prox.curso,colabs:[]}).colabs.push({c:c,ordem:prox.ordem,total:prox.total});
+    } else if(!prox && _recemContratado(c)){
+      semTrilha.push(c);
+    }
+  });
+  var grupos=Object.keys(porCurso).map(function(k){return porCurso[k];})
+    .sort(function(a,b){ return b.colabs.length-a.colabs.length; });
+  var totalAg=grupos.reduce(function(s,g){return s+g.colabs.length;},0);
+  var corpo=grupos.map(function(g){
+    var rows=g.colabs.sort(function(a,b){ return (_diasDesde(_admissaoDe(a.c))||0)-(_diasDesde(_admissaoDe(b.c))||0); }).map(function(o){
+      var c=o.c; var cont=contratos.find(function(x){return x.id===c.contrato_id;});
+      var dias=_diasDesde(_admissaoDe(c));
+      var recem=_recemContratado(c);
+      return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-top:.5px solid #f5f5f3;font-size:12px">'
+        +'<span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+(recem?'🆕 ':'')+escHtml(c.nome)+(c.re?' <span style="color:#aaa;font-size:10px">RE '+escHtml(String(c.re))+'</span>':'')+'</span>'
+        +'<span style="color:#888;font-size:11px;white-space:nowrap">'+escHtml(c.cargo||'—')+(cont?' · '+escHtml(cont.codigo||cont.nome):'')+'</span>'
+        +(dias!==null?'<span style="color:#aaa;font-size:10px;white-space:nowrap">'+(recem?'há '+dias+'d':'')+'</span>':'')
+        +'<span class="bdg" style="font-size:9px;white-space:nowrap">passo '+o.ordem+'/'+o.total+'</span></div>';
+    }).join('');
+    return '<div style="margin-bottom:.6rem;background:#fafafa;border:.5px solid #eee;border-radius:8px;padding:8px 10px">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">'
+      +'<b style="font-size:13px">'+escHtml((g.curso.sigla?g.curso.sigla+' — ':'')+g.curso.nome)+'</b>'
+      +'<span style="background:#FEF3E2;color:#854F0B;border-radius:10px;padding:0 8px;font-size:11px;font-weight:700">'+g.colabs.length+' aguardando</span>'
+      +'<button class="btn btn-sm btn-pri" style="margin-left:auto;font-size:11px" onclick="openTurmaModalCurso(\''+g.curso.id+'\')">➕ Criar turma</button></div>'
+      +rows+'</div>';
+  }).join('');
+  var avisoSem = semTrilha.length? '<div style="margin-top:.4rem;font-size:11px;color:#A36A00;background:#FEF3E2;border-radius:6px;padding:6px 10px">⚠ '+semTrilha.length+' recém-contratado(s) em cargo(s) sem trilha definida. Configure em <b>🪜 Trilhas por cargo</b> para saber qual curso eles aguardam.</div>':'';
+  var vazio='';
+  if(!totalAg && !semTrilha.length){
+    vazio = !_trilhas.length
+      ? '<div style="font-size:12px;color:#777;background:#fafafa;border:.5px dashed #ddd;border-radius:8px;padding:10px 12px">Nenhuma <b>trilha por cargo</b> cadastrada ainda. Clique em <button class="btn btn-sm" onclick="openTrilhas()">🪜 Trilhas por cargo</button> e defina a sequência de cursos de cada cargo — aqui aparecerá quem está aguardando cada curso.</div>'
+      : '<div style="font-size:12px;color:#aaa">Ninguém aguardando no momento: todos os colaboradores das trilhas atuais já estão em turma ou concluíram a sequência.</div>';
+  }
+  return '<div class="card" style="margin-bottom:1rem"><div class="ch"><span class="ct">⏳ Aguardando formação de turma ('+totalAg+')</span>'
+    +'<span style="font-size:11px;color:#888">próximo curso da trilha por cargo</span></div>'
+    +'<div style="padding:.6rem .9rem">'+(corpo||'')+vazio+avisoSem+'</div></div>';
+}
+function openTurmaModalCurso(cursoId){
+  openTurmaModal();
+  setTimeout(function(){ var s=document.getElementById('tm-curso'); if(s){ s.value=cursoId; var o=s.options[s.selectedIndex]; var ti=document.getElementById('tm-titulo'); if(o&&o.dataset.nome&&!ti.value) ti.value=o.dataset.nome; } },60);
+}
+
+function openTrilhas(){
+  _trilhaEditId=null; _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato='';
+  if(!_cad_cargos.length && !DEMO){ cadCarregarCargos(openTrilhas); return; }
+  if(!_cad_cursos.length && !DEMO){ sbFetch('sesmt_cursos',{filters:['status=eq.Ativo'],order:'nome.asc'}).then(function(r){ if(r&&r.length)_cad_cursos=r; _renderTrilhasModal(); }).catch(function(){ _renderTrilhasModal(); }); }
+  else _renderTrilhasModal();
+}
+function _trilhaCaptura(){ var ca=document.getElementById('tr-cargo'); var co=document.getElementById('tr-contrato'); if(ca)_trilhaEditCargo=ca.value; if(co)_trilhaEditContrato=co.value; }
+function trilhaNova(){ _trilhaCaptura(); _trilhaEditId=null; _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato=''; _renderTrilhasModal(); }
+function trilhaEditar(id){ var t=_trilhas.find(function(x){return x.id===id;}); if(!t)return; _trilhaEditId=id; _trilhaEditCursos=_trilhaCursoIds(t).slice(); _trilhaEditCargo=t.cargo||''; _trilhaEditContrato=t.contrato_id||''; _renderTrilhasModal(); }
+function trilhaAddCurso(){ _trilhaCaptura(); var s=document.getElementById('tr-add-curso'); if(!s||!s.value)return; if(_trilhaEditCursos.indexOf(s.value)<0)_trilhaEditCursos.push(s.value); _renderTrilhasModal(); }
+function trilhaMoveCurso(i,dir){ _trilhaCaptura(); var j=i+dir; if(j<0||j>=_trilhaEditCursos.length)return; var tmp=_trilhaEditCursos[i]; _trilhaEditCursos[i]=_trilhaEditCursos[j]; _trilhaEditCursos[j]=tmp; _renderTrilhasModal(); }
+function trilhaRemoveCurso(i){ _trilhaCaptura(); _trilhaEditCursos.splice(i,1); _renderTrilhasModal(); }
+function _cargosDistintos(){ var set={}; colaboradores.forEach(function(c){ if(c.ativo!==false && c.cargo) set[c.cargo]=true; }); return Object.keys(set).sort(function(a,b){return a.localeCompare(b,'pt-BR');}); }
+function _renderTrilhasModal(){
+  var seq=_trilhaEditCursos.map(function(cid,i){
+    var cur=_cad_cursos.find(function(x){return x.id===cid;});
+    return '<div style="display:flex;align-items:center;gap:8px;background:#f9f9f7;border:.5px solid #e0dfd8;border-radius:6px;padding:5px 8px;margin-bottom:4px">'
+      +'<span style="background:#185FA5;color:#fff;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">'+(i+1)+'</span>'
+      +'<span style="flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(cur?((cur.sigla?cur.sigla+' — ':'')+cur.nome):'(curso removido)')+'</span>'
+      +'<button class="btn btn-sm" style="padding:0 6px" onclick="trilhaMoveCurso('+i+',-1)" '+(i===0?'disabled':'')+'>↑</button>'
+      +'<button class="btn btn-sm" style="padding:0 6px" onclick="trilhaMoveCurso('+i+',1)" '+(i===_trilhaEditCursos.length-1?'disabled':'')+'>↓</button>'
+      +'<button class="btn btn-sm" style="padding:0 6px;color:#A32D2D;border-color:#A32D2D" onclick="trilhaRemoveCurso('+i+')">✕</button></div>';
+  }).join('');
+  var contOpts='<option value="">Qualquer contrato</option>'+contratos.map(function(c){return '<option value="'+c.id+'"'+(_trilhaEditContrato===c.id?' selected':'')+'>'+escHtml(c.nome||c.codigo)+'</option>';}).join('');
+  var addOpts='<option value="">+ Adicionar curso à sequência...</option>'+_cad_cursos.filter(function(c){return c.status!=='Inativo' && _trilhaEditCursos.indexOf(c.id)<0;}).map(function(c){return '<option value="'+c.id+'">'+escHtml((c.sigla?c.sigla+' — ':'')+c.nome)+'</option>';}).join('');
+  var lista=_trilhas.slice().sort(function(a,b){return _normTxt(a.cargo).localeCompare(_normTxt(b.cargo));}).map(function(t){
+    var ids=_trilhaCursoIds(t); var cont=t.contrato_id?contratos.find(function(x){return x.id===t.contrato_id;}):null;
+    var chips=ids.map(function(cid,i){ var cur=_cad_cursos.find(function(x){return x.id===cid;}); return '<span style="background:#EEF;border-radius:10px;padding:1px 8px;font-size:10px;color:#534AB7">'+(i+1)+'. '+escHtml(cur?(cur.sigla||cur.nome):'?')+'</span>'; }).join(' ');
+    return '<div style="border-top:.5px solid #eee;padding:6px 0;display:flex;align-items:flex-start;gap:8px">'
+      +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">'+escHtml(t.cargo)+(cont?' <span style="font-size:10px;color:#888">· '+escHtml(cont.codigo||cont.nome)+'</span>':' <span style="font-size:10px;color:#aaa">· qualquer contrato</span>')+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:3px">'+(chips||'<span style="color:#aaa;font-size:11px">sem cursos</span>')+'</div></div>'
+      +'<button class="btn btn-sm" onclick="trilhaEditar(\''+t.id+'\')">✎</button>'
+      +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="trilhaDeletar(\''+t.id+'\')">🗑</button></div>';
+  }).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:600px;max-height:92vh;overflow-y:auto">'
+    +'<h3 style="margin-bottom:.5rem">🪜 Trilhas de formação por cargo</h3>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:.8rem">Defina a ordem dos cursos que cada cargo deve fazer. O sistema mostra quem está aguardando o próximo curso da trilha em <b>Aguardando formação</b>.</div>'
+    +'<div style="background:#fafafa;border:.5px solid #eee;border-radius:8px;padding:10px;margin-bottom:1rem">'
+    +'<div style="font-weight:600;font-size:12px;margin-bottom:.5rem">'+(_trilhaEditId?'✎ Editando trilha':'➕ Nova trilha')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:.6rem">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:500">Cargo *</label>'+cargoSelectHtml(_trilhaEditCargo,'id="tr-cargo" class="inp" style="width:100%"')+'</div>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:500">Contrato</label><select class="inp" id="tr-contrato" style="width:100%">'+contOpts+'</select></div>'
+    +'</div>'
+    +'<label style="font-size:11px;font-weight:500">Sequência de cursos</label>'
+    +'<div style="margin:.3rem 0">'+(seq||'<div style="color:#aaa;font-size:12px;padding:4px 0">Nenhum curso na sequência ainda.</div>')+'</div>'
+    +'<select class="inp" id="tr-add-curso" style="width:100%;margin-bottom:.6rem" onchange="trilhaAddCurso()">'+addOpts+'</select>'
+    +'<div style="display:flex;gap:6px;justify-content:flex-end">'+(_trilhaEditId?'<button class="btn btn-sm" onclick="trilhaNova()">Limpar / nova</button>':'')+'<button class="btn btn-pri btn-sm" onclick="salvarTrilha()">💾 Salvar trilha</button></div>'
+    +'</div>'
+    +'<div style="font-weight:600;font-size:12px;margin-bottom:.3rem">Trilhas cadastradas ('+_trilhas.length+')</div>'
+    +(lista||'<div style="color:#aaa;font-size:12px">Nenhuma trilha cadastrada ainda.</div>')
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="closeModal()">Fechar</button></div>'
+    +'</div></div>');
+}
+function salvarTrilha(){
+  _trilhaCaptura();
+  var cargo=(_trilhaEditCargo||'').trim();
+  if(!cargo){ progShowToast('⚠ Informe o cargo.','erro'); return; }
+  if(!_trilhaEditCursos.length){ progShowToast('⚠ Adicione ao menos um curso à sequência.','erro'); return; }
+  var contId=_trilhaEditContrato||null;
+  var dup=_trilhas.find(function(t){ return t.id!==_trilhaEditId && _normTxt(t.cargo)===_normTxt(cargo) && (t.contrato_id||null)===contId; });
+  if(dup){ progShowToast('⚠ Já existe trilha para esse cargo/contrato. Edite a existente.','erro'); return; }
+  var payload={ cargo:cargo, contrato_id:contId, curso_ids:_trilhaEditCursos.slice(), ativo:true, atualizado_em:new Date().toISOString(), atualizado_por:(usuarioLogado?usuarioLogado.nome:null) };
+  if(_trilhaEditId){
+    var t=_trilhas.find(function(x){return x.id===_trilhaEditId;}); if(t) Object.assign(t,payload);
+    if(!DEMO) sbUpdate('sesmt_trilha_cargo',payload,'id=eq.'+_trilhaEditId);
+    progShowToast('✅ Trilha atualizada.');
+    _trilhaEditId=null; _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato=''; _renderTrilhasModal(); renderTurmas();
+  } else if(!DEMO){
+    sbInsert('sesmt_trilha_cargo',payload).then(function(r){ if(r&&r[0])_trilhas.push(r[0]); progShowToast('✅ Trilha criada.'); _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato=''; _renderTrilhasModal(); renderTurmas(); })
+      .catch(function(){ progShowToast('❌ Erro ao salvar. Rodou o sql_trilha_cargo.sql no Supabase?','erro'); });
+  } else { payload.id='trilha'+Date.now(); _trilhas.push(payload); _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato=''; _renderTrilhasModal(); renderTurmas(); }
+}
+function trilhaDeletar(id){
+  var t=_trilhas.find(function(x){return x.id===id;}); if(!t)return;
+  if(!confirm('Excluir a trilha do cargo "'+t.cargo+'"?')) return;
+  var i=_trilhas.findIndex(function(x){return x.id===id;}); if(i>=0)_trilhas.splice(i,1);
+  if(!DEMO) sbDelete('sesmt_trilha_cargo','id=eq.'+id);
+  if(_trilhaEditId===id){ _trilhaEditId=null; _trilhaEditCursos=[]; _trilhaEditCargo=''; _trilhaEditContrato=''; }
+  progShowToast('🗑 Trilha excluída.'); _renderTrilhasModal(); renderTurmas();
 }
 
 function openTurmaModal(id){
@@ -61237,7 +61404,7 @@ function turmaConcluir(id){
   });
   t.status='Concluído'; t.data_conclusao=hoje; t.qtd_conclusao=concluidos;
   if(!DEMO) sbUpdate('sesmt_turmas',{status:'Concluído',data_conclusao:hoje,qtd_conclusao:concluidos},'id=eq.'+id);
-  progShowToast('✅ Turma concluída — '+concluidos+' concluíram. Liberados aos disponíveis'+(aindaTreinando?' ('+aindaTreinando+' seguem em outra turma)':'')+'.');
+  progShowToast('✅ Turma concluída — '+concluidos+' concluíram. Liberados aos disponíveis.');
   renderTurmas();
 }
 
