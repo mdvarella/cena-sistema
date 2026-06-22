@@ -27955,10 +27955,28 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.511',
+  numero: '7.9.518',
   data:   '22/06/2026',
-  build:  '20260622-1000',
+  build:  '20260622-1800',
   log: [
+    {v:'7.9.518', d:'22/06/2026', itens:[
+      'Locações: filial e depósito exibidos no card; modal de edição sincroniza valores salvos via _lcSincronizarFilialDep (corrige dados aleatórios ao reabrir).',
+      'Locações: _lcPrepFornModal carrega filiais/depositos; cabeçalho do grupo usa valor mais frequente entre os itens.',
+    ]},
+    {v:'7.9.515', d:'22/06/2026', itens:[
+      'Locações: lcAtualizarDepositos preserva o depósito selecionado ao reconstruir a lista por filial — impedia depósito de aparecer ao abrir edição.',
+      'Locações: _lcResolveRespId não busca mais responsável por nome em colaboradores — evita resolver para ID inválido na FK de funcionarios.',
+    ]},
+    {v:'7.9.514', d:'22/06/2026', itens:[
+      'Locações: _lcRespIdValido rejeita IDs de colaboradores via campo re — impede FK inválida em responsavel_id.',
+    ]},
+    {v:'7.9.513', d:'22/06/2026', itens:[
+      'Locações: _lcPrepFornModal não sobrescreve mais funcs com colaboradores; responsavel_id omitido do patch quando inválido.',
+    ]},
+    {v:'7.9.512', d:'22/06/2026', itens:[
+      'Locações: responsavel_id validado contra tabela funcionarios antes de persistir.',
+      'Gestão de Ponto: pg-gestao-ponto restaurado no HTML.',
+    ]},
     {v:'7.9.511', d:'22/06/2026', itens:[
       'Ponto: corrigido crash em progSyncPontoColetarMatriculas (todos=true retornava array em vez de {matriculas:[]}); sync automático agora atualiza a tela corretamente.',
       'Ponto: adicionado ping automático a cada 10 minutos para evitar cold start do Azure App Service.',
@@ -59244,11 +59262,52 @@ function _lcFindLoc(id){
 function _lcResolveRespId(l){
   if(!l) return null;
   if(l.responsavel_id) return l.responsavel_id;
+  // Só busca por nome em funcionarios (funcs) — colaboradores têm FK diferente
   var t=String(l.responsavel||'').trim().toLowerCase();
   if(!t) return null;
-  var base=(colaboradores&&colaboradores.length)?colaboradores:(funcs||[]);
-  var c=base.find(function(x){ return (x.nome||'').trim().toLowerCase()===t; });
-  return c?c.id:null;
+  var c=(funcs||[]).find(function(x){ return (x.nome||'').trim().toLowerCase()===t; });
+  return (c && !c.re) ? c.id : null;
+}
+function _lcPickCampoGrupo(itens, campo){
+  var counts={}, best=null, bestN=0;
+  (itens||[]).forEach(function(i){
+    var v=i[campo];
+    if(v==null||v==='') return;
+    var k=String(v);
+    counts[k]=(counts[k]||0)+1;
+    if(counts[k]>bestN){ bestN=counts[k]; best=k; }
+  });
+  return best;
+}
+function _lcFilialNome(fid){
+  if(!fid) return '';
+  var f=(filiais||[]).find(function(x){ return String(x.id)===String(fid); });
+  if(!f) return '';
+  return (f.codigo?f.codigo+' — ':'')+(f.nome||'');
+}
+function _lcDepositoNome(did){
+  if(!did) return '';
+  var d=(depositos||[]).find(function(x){ return String(x.id)===String(did); });
+  return d?(d.nome||''):'';
+}
+function _lcSincronizarFilialDep(filialId, depositoId){
+  var filEl=document.getElementById('lc-fil');
+  var depEl=document.getElementById('lc-dep');
+  if(filEl){
+    if(filialId){
+      filEl.value=String(filialId);
+      if(filEl.value!==String(filialId)){
+        var fn=_lcFilialNome(filialId)||('Filial '+filialId);
+        var o=document.createElement('option');
+        o.value=String(filialId); o.textContent=fn;
+        filEl.appendChild(o);
+        filEl.value=String(filialId);
+      }
+    } else {
+      filEl.value='';
+    }
+  }
+  lcAtualizarDepositos('lc-dep', depositoId||'');
 }
 function _lcGrupoCabecalho(itens){
   var g=Object.assign({}, itens[0]);
@@ -59259,12 +59318,15 @@ function _lcGrupoCabecalho(itens){
   itens.forEach(function(i){
     if(!g.numero_contrato) g.numero_contrato=_lcNumContrato(i);
     if(!g.fornecedor_id&&i.fornecedor_id) g.fornecedor_id=i.fornecedor_id;
-    if(!g.responsavel_id&&i.responsavel_id) g.responsavel_id=i.responsavel_id;
-    else if(!g.responsavel_id&&i.responsavel) g.responsavel=i.responsavel;
+    if(!g.responsavel&&i.responsavel) g.responsavel=i.responsavel;
+    else if(!g.responsavel&&i.responsavel_id){
+      var _rn=_lcRespNomeById(i.responsavel_id);
+      if(_rn) g.responsavel=_rn;
+    }
     if(!g.locadora&&i.locadora) g.locadora=i.locadora;
-    if(!g.filial_id&&i.filial_id) g.filial_id=i.filial_id;
-    if(!g.deposito_id&&i.deposito_id) g.deposito_id=i.deposito_id;
   });
+  g.filial_id=_lcPickCampoGrupo(itens,'filial_id')||g.filial_id||null;
+  g.deposito_id=_lcPickCampoGrupo(itens,'deposito_id')||g.deposito_id||null;
   g.observacoes=_lcObsLimpa(g);
   return g;
 }
@@ -59288,7 +59350,8 @@ function _lcSnapFromLoc(l){
   return {
     id:l.id, nome:l.nome||'', locadora:l.locadora||'', fornecedor_id:l.fornecedor_id||null,
     filial_id:l.filial_id||null, deposito_id:l.deposito_id||null,
-    responsavel_id:_lcResolveRespId(l), responsavel:l.responsavel||'',
+    responsavel_id:null,
+    responsavel:(function(){ var t=_lcRespTexto(l); return t==='—'?'':t; })(),
     inicio:_lcDateInput(l.inicio), termino:_lcDateInput(l.termino),
     quantidade:Number(l.quantidade||1),
     valor_unitario:Number(l.valor_unitario||0)||(Number(l.quantidade||1)?Number(l.valor_locacao||0)/Number(l.quantidade||1):Number(l.valor_locacao||0)),
@@ -59373,13 +59436,68 @@ function _lcListaResponsaveis(selectedId){
   }
   return lista.sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||'','pt-BR'); });
 }
-function _lcRespOptsHtml(selectedId){
-  return '<option value="">Sem responsável</option>'
-    + _lcListaResponsaveis(selectedId).map(function(f){
-        var extra=f.cargo?(' — '+f.cargo):'';
-        var sel=(selectedId&&String(f.id)===String(selectedId))?' selected':'';
-        return '<option value="'+f.id+'"'+sel+'>'+escHtml((f.nome||'')+extra)+'</option>';
-      }).join('');
+function _lcRespIdValido(v){
+  if(!v) return null;
+  // Só aceita IDs de funcionarios — colaboradores têm campo re (matricula), funcionarios não
+  var lista = funcs||[];
+  var match = lista.find(function(f){ return String(f.id)===String(v); });
+  if(!match) return null;
+  // Se o match veio de colaboradores (tem campo re), não é funcionario válido
+  if(match.re!==undefined && match.re!==null) return null;
+  return v;
+}
+function _lcRespNomeById(id){
+  if(!id) return '';
+  var sid=String(id);
+  var f=(funcs||[]).find(function(x){ return String(x.id)===sid; });
+  if(!f) f=(colaboradores||[]).find(function(x){ return String(x.id)===sid; });
+  return f?(f.nome||''):'';
+}
+function _lcRespTexto(l){
+  if(!l) return '—';
+  var t=String(l.responsavel||'').trim();
+  if(t) return t;
+  if(l.responsavel_id){
+    var n=_lcRespNomeById(l.responsavel_id);
+    if(n) return n;
+  }
+  return '—';
+}
+function _lcNomesResponsaveisSugestao(){
+  var seen={}, nomes=[];
+  (colaboradores||[]).filter(function(c){ return c.ativo!==false; })
+    .filter(_lcEhResponsavelValido)
+    .forEach(function(f){
+      var n=(f.nome||'').trim();
+      if(n&&!seen[n.toLowerCase()]){ seen[n.toLowerCase()]=1; nomes.push(n); }
+    });
+  (locacoes||[]).forEach(function(l){
+    var n=String(l.responsavel||'').trim();
+    if(n&&!seen[n.toLowerCase()]){ seen[n.toLowerCase()]=1; nomes.push(n); }
+  });
+  return nomes.sort(function(a,b){ return a.localeCompare(b,'pt-BR'); });
+}
+function _lcRespCampoHtml(valor, labelInner){
+  labelInner=labelInner||'<label style="font-size:11px">Responsável</label>';
+  var v=escHtml(String(valor||'').trim());
+  var opts=_lcNomesResponsaveisSugestao().map(function(n){ return '<option value="'+escHtml(n)+'">'; }).join('');
+  return '<div class="fg">'+labelInner
+    +'<input class="inp" id="lc-resp" list="lc-resp-list" value="'+v+'" placeholder="Gestor, coordenador ou supervisor" style="width:100%" title="Digite ou escolha da lista"/>'
+    +'<datalist id="lc-resp-list">'+opts+'</datalist></div>';
+}
+function _lcLerFilialDepForm(){
+  var fv=(document.getElementById('lc-fil')||{}).value||'';
+  var dv=(document.getElementById('lc-dep')||{}).value||'';
+  return { filial_id:fv?fv:null, deposito_id:dv?dv:null };
+}
+function _lcLerRespForm(){
+  return String((document.getElementById('lc-resp')||{}).value||'').trim();
+}
+function _lcPatchResponsavel(patch){
+  var nome=_lcLerRespForm();
+  patch.responsavel=nome||null;
+  patch.responsavel_id=null;
+  return patch;
 }
 function _lcNomeResp(id){
   if(!id) return '—';
@@ -59391,14 +59509,22 @@ function _lcNomeResp(id){
   return fNome(id);
 }
 function _lcPrepFornModal(){
-  if(typeof colaboradores!=='undefined'&&colaboradores.length)
-    funcs=colaboradores.filter(function(c){ return c.ativo!==false; });
   return Promise.all([
     carregarFornDB(),
     new Promise(function(res){
       if(_cad_cargos.length||DEMO) res();
       else cadCarregarCargos(res);
     }),
+    (!filiais.length && !DEMO)
+      ? sbFetch('filiais',{order:'nome'}).then(function(rows){
+          if(rows&&rows.length) filiais=rows;
+        }).catch(function(){})
+      : Promise.resolve(),
+    (!depositos.length && !DEMO)
+      ? sbFetch('depositos',{filters:['ativo=eq.true'],order:'nome'}).then(function(rows){
+          if(rows&&rows.length) depositos=rows;
+        }).catch(function(){})
+      : Promise.resolve(),
     (!funcs.length && !DEMO)
       ? sbFetch('funcionarios',{filters:['ativo=eq.true'],order:'nome'}).then(function(rows){
           if(rows&&rows.length) funcs=rows;
@@ -59440,7 +59566,7 @@ function renderLocacoes(){
     var _pvR = selResp.value;
     var _resps = []; var _rset={};
     locacoes.forEach(function(l){
-      var v=(_lcNomeResp(l.responsavel_id)||'').trim();
+      var v=_lcRespTexto(l);
       if(v&&v!=='—'&&!_rset[v.toLowerCase()]){_rset[v.toLowerCase()]=1;_resps.push(v);}
     });
     _lcListaResponsaveis().forEach(function(f){
@@ -59466,7 +59592,7 @@ function renderLocacoes(){
   // Filtrar e agrupar por contrato (locadora + obs_contrato + periodo)
   var rows = filtrarFilial(locacoes).filter(function(l){
     if(qForn && (l.locadora||'') !== qForn) return false;
-    if(qResp && _lcNomeResp(l.responsavel_id).toLowerCase() !== qResp.toLowerCase()) return false;
+    if(qResp && _lcRespTexto(l).toLowerCase() !== qResp.toLowerCase()) return false;
     if(qProd && (l.nome||'').toLowerCase().indexOf(qProd) < 0) return false;
     if(qSt   && !lcDispHasStatus(l.disponibilidade, qSt)) return false;
     if(qContr){
@@ -59481,7 +59607,13 @@ function renderLocacoes(){
   rows.forEach(function(l){
     var key = (l.locadora||'') + '|' + (l.inicio||'') + '|' + (l.termino||'') + '|' + (l.observacoes||'').slice(0,40);
     if(!grupos[key]) grupos[key] = { locadora:l.locadora, inicio:l.inicio, termino:l.termino,
-      responsavel_id:l.responsavel_id, observacoes:l.observacoes, itens:[], total:0 };
+      responsavel:l.responsavel, filial_id:l.filial_id, deposito_id:l.deposito_id,
+      observacoes:l.observacoes, itens:[], total:0 };
+    else {
+      if(!grupos[key].filial_id&&l.filial_id) grupos[key].filial_id=l.filial_id;
+      if(!grupos[key].deposito_id&&l.deposito_id) grupos[key].deposito_id=l.deposito_id;
+      if(!grupos[key].responsavel&&l.responsavel) grupos[key].responsavel=l.responsavel;
+    }
     grupos[key].itens.push(l);
     grupos[key].total += Number(l.valor_locacao||0);
   });
@@ -59547,7 +59679,9 @@ function renderLocacoes(){
     var diff = g.termino ? Math.round((new Date(g.termino+'T00:00:00') - hoje) / 86400000) : null;
     var prazoLabel = diff===null ? '—' : diff<0 ? 'Vencido '+Math.abs(diff)+'d' : diff===0 ? 'Hoje' : diff+' dias';
     var prazoCor   = diff===null ? 'gray' : diff<0 ? 'danger' : diff<=30 ? 'warn' : 'ok';
-    var respNome   = _lcNomeResp(g.responsavel_id);
+    var respNome   = _lcRespTexto(g);
+    var filNome    = _lcFilialNome(g.filial_id);
+    var depNome    = _lcDepositoNome(g.deposito_id);
 
     // Determinar status geral do contrato (suporta disponibilidade como JSON)
     var statusGeral = g.itens.some(function(l){ return lcDispHasStatus(l.disponibilidade,'Em uso'); }) ? 'Em uso'
@@ -59575,6 +59709,8 @@ function renderLocacoes(){
           : '')
       + '<div style="font-size:11px;color:#888;display:flex;gap:10px;flex-wrap:wrap">'
       + (respNome !== '—' ? '<span>👤 '+escHtml(respNome)+'</span>' : '')
+      + (filNome ? '<span>🏢 '+escHtml(filNome)+'</span>' : '')
+      + (depNome ? '<span>📦 '+escHtml(depNome)+'</span>' : '')
       + (g.inicio ? '<span>📅 '+fmtD(g.inicio)+' → '+fmtD(g.termino)+'</span>' : '')
       + '<span class="bdg '+prazoCor+'" style="font-size:10px">'+prazoLabel+'</span>'
       + '</div>'
@@ -59700,18 +59836,29 @@ function locLimparFiltros(){
 }
 
 
-function lcAtualizarDepositos(selectId){
+function lcAtualizarDepositos(selectId, valorPreservar){
   var filSel  = document.getElementById('lc-fil');
   var depSel  = document.getElementById(selectId);
   if(!depSel) return;
+  var curVal  = valorPreservar !== undefined ? valorPreservar : depSel.value;
   var filId   = filSel ? filSel.value : '';
   var depsFil = filId
-    ? depositos.filter(function(d){ return d.filial_id===filId; })
-    : depositos;
-  depSel.innerHTML = '<option value="">Selecione o depósito</option>'
+    ? (depositos||[]).filter(function(d){ return String(d.filial_id)===String(filId); })
+    : (depositos||[]);
+  depSel.innerHTML = '<option value="">Sem depósito</option>'
     + depsFil.map(function(d){
-        return '<option value="'+d.id+'">'+d.nome+'</option>';
+        return '<option value="'+d.id+'">'+escHtml(d.nome)+'</option>';
       }).join('');
+  if(curVal){
+    depSel.value=String(curVal);
+    if(depSel.value!==String(curVal)){
+      var dn=_lcDepositoNome(curVal)||('Depósito salvo');
+      var opt=document.createElement('option');
+      opt.value=String(curVal); opt.textContent=dn;
+      depSel.appendChild(opt);
+      depSel.value=String(curVal);
+    }
+  }
 }
 
 
@@ -59816,7 +59963,6 @@ function _lcLerRateioEdit(){
 }
 
 function _openNovaLocacaoModal(){
-  var fOpts=_lcRespOptsHtml(null);
   var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+f.codigo+' — '+f.nome+'</option>';}).join('');
   var depOpts='<option value="">Selecione a filial primeiro</option>';
 
@@ -59833,7 +59979,7 @@ function _openNovaLocacaoModal(){
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'
     +_lcFornCampoHtml(null, '', 2)
     +'<div class="fg"><label style="font-size:11px">Nº Contrato</label><input class="inp" id="lc-num" placeholder="Ex: 8543" style="width:100%"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Responsável</label><select class="inp" id="lc-resp" style="width:100%" title="Gestores, coordenadores e supervisores">'+fOpts+'</select></div>'
+    +_lcRespCampoHtml('')
     +'<div class="fg"><label style="font-size:11px">Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
     +'<div class="fg"><label style="font-size:11px">Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
     +'<div class="fg" style="display:flex;gap:6px">'
@@ -60039,12 +60185,14 @@ function salvarLocacao(){
   if(_dupExiste){ progShowToast('⚠ Já existe um contrato cadastrado com esta locadora e mesmo período/número. Verifique antes de duplicar.'); return; }
 
   var contratosSel=_lcContratosSel();
+  var _fd=_lcLerFilialDepForm();
   var base = {
     locadora:      locadora,
     fornecedor_id: forn.fornecedor_id||null,
-    filial_id:     (document.getElementById('lc-fil')||{}).value||null,
-    deposito_id:   (document.getElementById('lc-dep')||{}).value||null,
-    responsavel_id:(document.getElementById('lc-resp')||{}).value||null,
+    filial_id:     _fd.filial_id,
+    deposito_id:   _fd.deposito_id,
+    responsavel_id:null,
+    responsavel:   _lcLerRespForm()||null,
     contrato_id:   contratosSel.length===1?contratosSel[0].id:null,
     inicio:        _iniVal||null,
     termino:       _fimVal||null,
@@ -60125,8 +60273,6 @@ function lcAbrirEditarGrupo(idsCsv){
     selContr=[]; cset={};
     itensAtual.forEach(function(l){ _lcContratosFromLoc(l).forEach(function(cid){ if(!cset[cid]){ cset[cid]=1; selContr.push(cid); } }); });
     var fornId=g.fornecedor_id||null;
-    var respId=_lcResolveRespId(g);
-    var fOpts=_lcRespOptsHtml(respId);
     var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){
       return '<option value="'+f.id+'"'+(String(f.id)===String(g.filial_id)?' selected':'')+'>'+escHtml(f.codigo+' — '+f.nome)+'</option>';
     }).join('');
@@ -60141,7 +60287,7 @@ function lcAbrirEditarGrupo(idsCsv){
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
       +_lcFornCampoHtml(fornId, g.locadora||'', 2)
       +'<div class="fg"><label style="font-size:11px">Nº Contrato</label><input class="inp" id="lc-num" value="'+escHtml(g.numero_contrato||'')+'" style="width:100%"/></div>'
-      +'<div class="fg"><label style="font-size:11px">Responsável</label><select class="inp" id="lc-resp" style="width:100%" title="Gestores, coordenadores e supervisores">'+fOpts+'</select></div>'
+      +_lcRespCampoHtml(g.responsavel||'')
       +'<div class="fg"><label style="font-size:11px">Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
       +'<div class="fg"><label style="font-size:11px">Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
       +'<div class="fg"><label style="font-size:11px">Início</label><input class="inp" id="lc-ini" type="date" value="'+g.inicio+'" style="width:100%"/></div>'
@@ -60155,7 +60301,10 @@ function lcAbrirEditarGrupo(idsCsv){
       +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
       +'<button class="btn btn-pri" onclick="lcSalvarEditarGrupo(\''+idsKey+'\')">Salvar contrato ('+itensAtual.length+' itens)</button></div>'
       +'</div></div>');
-    setTimeout(function(){ _lcPreencherFornSelect(fornId, g.locadora||''); }, 0);
+    setTimeout(function(){
+      _lcPreencherFornSelect(fornId, g.locadora||'');
+      _lcSincronizarFilialDep(g.filial_id, g.deposito_id);
+    }, 0);
   }).catch(function(){ progShowToast('⚠ Erro ao carregar contrato.'); });
 }
 function lcSalvarEditarGrupo(idsCsv){
@@ -60165,19 +60314,20 @@ function lcSalvarEditarGrupo(idsCsv){
     var fim=(document.getElementById('lc-fim')||{}).value||null;
     if(ini&&fim&&fim<ini){ progShowToast('⚠ A data de término não pode ser anterior à data de início.'); return; }
     var contratosSel=_lcContratosSel();
+    var _fd=_lcLerFilialDepForm();
     var patch={
       locadora:forn.locadora,
       fornecedor_id:forn.fornecedor_id||null,
       numero_contrato:(document.getElementById('lc-num')||{}).value||null,
-      responsavel_id:(document.getElementById('lc-resp')||{}).value||null,
-      filial_id:(document.getElementById('lc-fil')||{}).value||null,
-      deposito_id:(document.getElementById('lc-dep')||{}).value||null,
+      filial_id:_fd.filial_id,
+      deposito_id:_fd.deposito_id,
       inicio:ini,
       termino:fim,
       tem_seguro:(document.getElementById('lc-seg')||{}).value==='true',
       valor_seguro:parseFloat((document.getElementById('lc-vseg')||{}).value)||null,
       observacoes:(document.getElementById('lc-obs')||{}).value||'',
     };
+    _lcPatchResponsavel(patch);
     if(contratosSel.length===1){
       patch.contrato_id=contratosSel[0].id;
       patch.contrato_qtds=null;
@@ -60215,7 +60365,6 @@ function openEditarLocacao(lid){
     if(!l){ progShowToast('⚠ Locação não encontrada.'); return; }
     var snap=_lcSnapFromLoc(l);
     if(!snap) return;
-  var fOpts=_lcRespOptsHtml(snap.responsavel_id);
   var filOpts='<option value="">Sem filial</option>'+filiais.map(function(f){return '<option value="'+f.id+'"'+(String(f.id)===String(snap.filial_id)?' selected':'')+'>'+escHtml(f.codigo+' — '+f.nome)+'</option>';}).join('');
   var depOpts='<option value="">Sem depósito</option>'
     +(typeof depositos!=='undefined' ? depositos.filter(function(d){return !snap.filial_id||String(d.filial_id)===String(snap.filial_id);})
@@ -60233,7 +60382,7 @@ function openEditarLocacao(lid){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
     +'<div class="fg" style="grid-column:1/-1"><label>Nome</label><input class="inp" id="lc-nome" value="'+escHtml(snap.nome)+'" style="width:100%"/></div>'
     +_lcFornCampoHtml(fornId, snap.locadora, 2)
-    +'<div class="fg"><label>Responsável</label><select class="inp" id="lc-resp" style="width:100%" title="Gestores, coordenadores e supervisores">'+fOpts+'</select></div>'
+    +_lcRespCampoHtml(snap.responsavel||'', '<label>Responsável</label>')
     +'<div class="fg"><label>Filial</label><select class="inp" id="lc-fil" style="width:100%" onchange="lcAtualizarDepositos(\'lc-dep\')">'+filOpts+'</select></div>'
     +'<div class="fg"><label>Depósito</label><select class="inp" id="lc-dep" style="width:100%">'+depOpts+'</select></div>'
     +'<div class="fg"><label>Início</label><input class="inp" id="lc-ini" type="date" value="'+snap.inicio+'" style="width:100%" onchange="var f=document.getElementById(\'lc-fim\');if(f){f.min=this.value;if(f.value&&f.value<this.value)f.value=\'\';}"/></div>'
@@ -60268,6 +60417,7 @@ function openEditarLocacao(lid){
 
   setTimeout(function(){
     _lcPreencherFornSelect(fornId, snap.locadora);
+    _lcSincronizarFilialDep(snap.filial_id, snap.deposito_id);
     lcAtualizarRateio();
     if(cqMap){
       Object.keys(cqMap).forEach(function(cid){
@@ -60294,9 +60444,12 @@ function salvarEditarLocacao(lid){
   l.nome=(document.getElementById('lc-nome')||{}).value||l.nome;
   l.locadora=forn.locadora;
   l.fornecedor_id=forn.fornecedor_id||null;
-  l.filial_id=(document.getElementById('lc-fil')||{}).value||null;
-  l.deposito_id=(document.getElementById('lc-dep')||{}).value||null;
-  l.responsavel_id=(document.getElementById('lc-resp')||{}).value||null;
+  var _fdEdit=_lcLerFilialDepForm();
+  l.filial_id=_fdEdit.filial_id;
+  l.deposito_id=_fdEdit.deposito_id;
+  var _lceRespVal=_lcLerRespForm();
+  l.responsavel_id=null;
+  l.responsavel=_lceRespVal||null;
   l.inicio=(document.getElementById('lc-ini')||{}).value||null;
   l.termino=(document.getElementById('lc-fim')||{}).value||null;
   if(l.inicio && l.termino && l.termino < l.inicio){ progShowToast('⚠ A data de término não pode ser anterior à data de início.'); return; }
@@ -60335,7 +60488,20 @@ function salvarEditarLocacao(lid){
     l.documentos=JSON.stringify([...docsAtual,...novosArqs]);
   }
   if(!DEMO){
-    sbUpdate('locacoes',l,'id=eq.'+lid);
+    var patch={
+      nome:l.nome, locadora:l.locadora, fornecedor_id:l.fornecedor_id,
+      filial_id:l.filial_id, deposito_id:l.deposito_id,
+      responsavel:l.responsavel, responsavel_id:null,
+      inicio:l.inicio, termino:l.termino,
+      quantidade:l.quantidade, valor_unitario:l.valor_unitario,
+      valor_locacao:l.valor_locacao, valor_total:l.valor_total,
+      contrato_id:l.contrato_id, contrato_qtds:l.contrato_qtds,
+      numero_contrato:l.numero_contrato,
+      tem_seguro:l.tem_seguro, valor_seguro:l.valor_seguro,
+      status:l.status, disponibilidade:l.disponibilidade,
+      observacoes:l.observacoes, documentos:l.documentos
+    };
+    sbUpdate('locacoes', patch, 'id=eq.'+lid);
     // EPI/EPC → registrar no estoque SE ainda não foi (dedup por lote = 'locid.'+lid)
     if(l.tipo==='EPI'||l.tipo==='EPC'){
       sbFetch('estoque',{filters:['lote=eq.locid.'+lid]}).then(function(ex){
