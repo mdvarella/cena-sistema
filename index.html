@@ -4546,8 +4546,8 @@ async function sbInsert(table,data){
   var _schemaCols={'treinamentos':['funcionario_id','nr','titulo','validade','data','instituicao','criado_em'],
     'estoque':['nome','codigo','sku','tipo','ca','ca_validade','saldo','saldo_minimo','custo_unitario','unidade_medida','fornecedor','lote','filial_id','deposito_id','contrato_id'],
     'movimentacoes_itens':['item_id','tipo_mov','quantidade','deposito_id','filial_id','contrato_id','fornecedor','nota_fiscal',
-      'valor_unitario','data_mov','responsavel_id','destino_tipo','destino_id','numeros_serie','condicao','motivo','obs','status',
-      'movimentacao_origem_id','tipo_ajuste']};
+      'valor_unitario','data_mov','responsavel_id','registrado_por_id','destino_tipo','destino_id','numeros_serie','condicao','motivo','obs','status',
+      'movimentacao_origem_id','tipo_ajuste','colaborador_id','equipe_id','veiculo_id','projeto_id','previsao_devolucao']};
   if(_schemaCols[table]){
     var _cols=_schemaCols[table];
     var _san=function(obj){var r={};_cols.forEach(function(k){if(obj[k]!==undefined&&obj[k]!==null&&obj[k]!=='')r[k]=obj[k];});return r;};
@@ -4881,18 +4881,33 @@ async function carregarModuloDiario(){
   if(res[6]&&res[6].length)aprs_registradas=res[6].map(function(a){a.respostas=parseJsonField(a.respostas,[]);return a;});
 }
 
-// ── Módulo SESMT/Almox: últimos 90 dias — carregado ao acessar SESMT ─────
+function almMergeMovimentacoes(arrays){
+  var map={};
+  (arrays||[]).forEach(function(arr){
+    (arr||[]).forEach(function(m){
+      if(m&&m.id) map[String(m.id)]=m;
+    });
+  });
+  return Object.keys(map).map(function(k){ return map[k]; }).sort(function(a,b){
+    var da=a.data_mov||'', db=b.data_mov||'';
+    return db<da?-1:db>da?1:0;
+  });
+}
+
+// ── Módulo SESMT/Almox: últimos 90 dias + entregas Em uso — ao acessar SESMT ─────
 async function carregarModuloSESMT(){
   if(_modSESMT)return;
   _modSESMT=true;
   if(DEMO)return;
   var d90=_diasAtras(90);
-  Promise.all([
+  return Promise.all([
     sbFetch('itens_catalogo',{order:'nome'}),
     sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90]}),
+    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrega','status=eq.'+encodeURIComponent('"Em uso"')]}),
+    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrada']})
   ]).then(function(res){
     if(res[0]&&res[0].length)itens_catalogo=res[0];
-    if(res[1]&&res[1].length)movimentacoes_itens=res[1];
+    movimentacoes_itens=almMergeMovimentacoes([res[1],res[2],res[3]]);
   }).catch(function(){});
 }
 
@@ -8327,6 +8342,7 @@ function renderConteudoCadastro(id){
     'equipes-obs':'<div class="card"><div class="ch"><span class="ct">👷 Equipes e Supervisores</span><div style="display:flex;gap:6px;flex-wrap:wrap"><select class="inp" id="fil-eq-cont-vis" style="width:180px" onchange="renderEquipesVis()"><option value="">Todos os contratos</option></select><select class="inp" id="fil-eq-sup-vis" style="width:180px" onchange="renderEquipesVis()"><option value="">Todos os supervisores</option></select><button class="btn" onclick="openGerenciarSupervisor()">👤 Supervisores</button><button class="btn" onclick="openImportarEquipes()">📋 Importar</button><button class="btn btn-pri" onclick="openNovaEquipe()">+ Nova equipe</button></div></div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Contrato</th><th>Supervisor</th><th>Equipes</th><th>Cargo</th><th>Status</th><th></th></tr></thead><tbody id="tbody-equipes-vis"></tbody></table></div></div>',
     colaboradores:'<div class="card"><div class="ch"><span class="ct">👥 Colaboradores por contrato</span><button class="btn btn-pri" onclick="openNovoColaborador()">+ Novo</button></div>'
       +'<div style="display:flex;gap:6px;flex-wrap:wrap;padding:.5rem 1rem;border-bottom:.5px solid #f0efe8">'
+      +'<select class="inp" id="fil-col-area" style="width:160px" onchange="renderColsVis()"><option value="">Todas as áreas</option><option value="SUPRIMENTOS">SUPRIMENTOS</option><option value="ADMINISTRATIVO">ADMINISTRATIVO</option><option value="FACILITIES">FACILITIES</option><option value="FROTAS">FROTAS</option><option value="SESMT">SESMT</option><option value="TI">TI</option><option value="DIRETORIA">DIRETORIA</option><option value="OPERACIONAL">OPERACIONAL</option></select>'
       +'<select class="inp" id="fil-col-cont-vis" style="width:180px" onchange="renderColsVis()"><option value="">Selecione contrato</option></select>'
       +'<select class="inp" id="fil-col-situacao" style="width:130px" onchange="renderColsVis()"><option value="ativo">Ativos</option><option value="dispensado">Dispensados</option><option value="todos">Todos</option></select>'
       +'<select class="inp" id="fil-col-vinculo" style="width:140px" onchange="renderColsVis()"><option value="">Todos os tipos</option><option value="campo">⚡ Campo</option><option value="escritorio">🏢 Escritório</option></select>'
@@ -8936,6 +8952,7 @@ function renderColsVis(){
       return; // aguardar fetch
     }
   }
+  var area     = (document.getElementById('fil-col-area')||{}).value||'';
   var vinculo  = (document.getElementById('fil-col-vinculo')||{}).value||'';
   var cargo    = (document.getElementById('fil-col-cargo')||{}).value||'';
   var equipe   = (document.getElementById('fil-col-equipe')||{}).value||'';
@@ -8989,6 +9006,7 @@ function renderColsVis(){
   var tb=document.getElementById('tbody-cols-vis');if(!tb)return;
 
   var rows=colaboradores.filter(function(c){
+    if(area && (c.area||'')!==area) return false;
     if(cid&&c.contrato_id!==cid)return false;
     if(situacao==='ativo')      return c.ativo!==false&&!c.dispensado;
     if(situacao==='dispensado') return c.dispensado===true;
@@ -9526,6 +9544,8 @@ function openNovoColaborador(){
     +'<input type="hidden" id="nc-cor-escala" value=""/>'
     +'<div style="font-size:11px;color:#888;margin-top:4px">A cor define quando o colaborador está de folga com base no calendário de escala</div>'
     +'</div>'
+    +'<div class="fg"><label>Área</label>'
+    +'<select id="nc-area" class="inp" style="width:100%"><option value="">Sem área definida</option><option value="SUPRIMENTOS">SUPRIMENTOS</option><option value="ADMINISTRATIVO">ADMINISTRATIVO</option><option value="FACILITIES">FACILITIES</option><option value="FROTAS">FROTAS</option><option value="SESMT">SESMT</option><option value="TI">TI</option><option value="DIRETORIA">DIRETORIA</option><option value="OPERACIONAL">OPERACIONAL</option></select></div>'
     // Campo Escala
     +'<div class="fg"><label>Escala de trabalho</label>'
     +'<select id="nc-escala-id" class="inp" style="width:100%">'
@@ -9579,6 +9599,7 @@ function openNovoColaborador(){
         equipe_codigo:eqObj?(eqObj.codigo||eqObj.nome_equipe||''):'',
         cor_escala:corEscala||null,
         escala_id:escalaId||null,
+        area:(document.getElementById('nc-area')||{}).value||null,
         ativo:true
       };
       colaboradores.push(novo);
@@ -9592,6 +9613,7 @@ function openNovoColaborador(){
           equipe_codigo:novo.equipe_codigo||'',
           cor_escala:novo.cor_escala||null,
           escala_id:novo.escala_id||null,
+          area:novo.area||null,
           ativo:novo.ativo
         }).then(function(res){
           if(res&&res[0]&&res[0].id){
@@ -16231,7 +16253,7 @@ function plptNovoAdicional(projId, tipo){
       +'<div class="modal" style="max-width:480px">'
       +'<h3 style="margin-bottom:.75rem">'+titulo+'</h3>'
       +'<div style="margin-bottom:.5rem">'
-      +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🔍 Buscar no catálogo'
+      +'<label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">🔍 Buscar no Almoxarifado SAP'
       +(catalogo.length?' ('+catalogo.length+' itens)':' — carregando...')+'</label>'
       +'<input class="inp" id="adic-busca" style="width:100%" placeholder="'+placeholder+'" oninput="plptAdicFiltrar()"/>'
       +'</div>'
@@ -16280,12 +16302,13 @@ function plptNovoAdicional(projId, tipo){
           var desc=item.descricao||item.nome||'';
           var un=item.unidade||'UN';
           var idx=cat.indexOf(item);
+          var saldoLbl = item.saldo != null ? ' · saldo '+item.saldo+' '+un : '';
           return '<div onclick="plptAdicSelecionar('+idx+')" '
             +'style="padding:8px 12px;cursor:pointer;border-bottom:.5px solid #f5f5f3;font-size:12px" '
             +'onmouseover="this.style.background=\'#f9f9f7\'" onmouseout="this.style.background=\'\'">'
             +(sap?'<b style="color:#185FA5">'+sap+'</b> — ':'')
             +desc
-            +'<span style="float:right;font-size:10px;color:#aaa">'+un+'</span>'
+            +'<span style="float:right;font-size:10px;color:#888">'+un+saldoLbl+'</span>'
             +'</div>';
         }).join('')
         +(cat.length>30?'<div style="padding:6px 12px;font-size:10px;color:#aaa;text-align:center">Mostrando 30 de '+cat.length+' — refine a busca</div>':'');
@@ -16344,58 +16367,25 @@ function plptNovoAdicional(projId, tipo){
       }
     });
   }
-  var localMats = _filtrarMats(typeof catalogo_materiais!=='undefined' ? catalogo_materiais : []);
-  if(!localMats.length && typeof catalogo_materiais!=='undefined'){
-    localMats = catalogo_materiais.filter(function(m){return m.status!=='Inativo';});
-  }
   var localAtivs = _filtrarAtivs(typeof servicos!=='undefined' ? servicos : []);
-  var needMats  = tipo!=='atividade' && localMats.length===0 && !DEMO;
-  var needAtivs = tipo==='atividade'  && localAtivs.length===0 && !DEMO;
 
-  if(needMats){
-    Promise.all([
-      sbFetch('catalogo_materiais',{order:'descricao'}),
-      localAtivs.length===0 ? sbFetch('servicos',{filters:cid?['contrato_id=eq.'+cid]:[]}) : Promise.resolve(localAtivs),
-      sbFetch('itens_catalogo',{order:'nome'})
-    ]).then(function(res){
-      var rows=res[0]||[];
-      rows.forEach(function(m){if(!catalogo_materiais.find(function(x){return x.id===m.id;})) catalogo_materiais.push(m);});
-      // Merge itens_catalogo (RDSE materials) into catalogo_materiais format
-      var itensRows = res[2]||[];
-      itensRows.forEach(function(it){
-        if(!catalogo_materiais.find(function(x){ return x.codigo_sap===it.codigo; })){
-          catalogo_materiais.push({
-            id: it.id, nome: it.nome||it.descricao||'', descricao: it.nome||it.descricao||'',
-            codigo_sap: it.codigo||'', unidade: it.unidade_medida||it.unidade||'UN',
-            status: it.ativo===false?'Inativo':'Ativo', contratos_ids: ['todos'],
-            preco_unitario: it.preco_unitario||0
-          });
-        }
-      });
-      var filtrados = _filtrarMats(catalogo_materiais);
-      // Se filtro por contrato retornou vazio, mostrar todos os ativos
-      if(!filtrados.length) filtrados = catalogo_materiais.filter(function(m){return m.status!=='Inativo';});
-      var ativs = res[1]||localAtivs;
-      if(!ativs.length) ativs = filtrados; // fallback atividades
-      _abrirModal(filtrados, _filtrarAtivs(ativs));
-    }).catch(function(){ _abrirModal(localMats, localAtivs); });
-  } else if(needAtivs){
-    Promise.all([
-      sbFetch('catalogo_materiais',{order:'descricao'}),
-      sbFetch('servicos',{filters:cid?['contrato_id=eq.'+cid]:[]})
-    ]).then(function(res){
-      var mRows=res[0]||[], sRows=res[1]||[];
-      mRows.forEach(function(m){if(!catalogo_materiais.find(function(x){return x.id===m.id;})) catalogo_materiais.push(m);});
-      var filtrados = _filtrarMats(catalogo_materiais);
-      if(!filtrados.length) filtrados = catalogo_materiais.filter(function(m){return m.status!=='Inativo';});
-      // Para atividades: usar servicos filtrados, ou materiais como fallback
-      var atCat = sRows.length ? sRows : filtrados;
-      _abrirModal(filtrados, atCat);
-    }).catch(function(){ _abrirModal(localMats, localMats); });
+  if(tipo==='material'){
+    setModal('<div class="modal-bg"><div class="modal" style="max-width:480px;text-align:center;padding:2rem">'
+      +'<div style="color:#888;font-size:13px">⏳ Carregando catálogo Almoxarifado SAP...</div></div></div>');
+    sotCarregarCatalogoAlmSAP(cid, function(lista){
+      _abrirModal(lista, localAtivs);
+    });
+    return;
+  }
+
+  var needAtivs = localAtivs.length===0 && !DEMO;
+  if(needAtivs){
+    sbFetch('servicos',{filters:cid?['contrato_id=eq.'+cid]:[]}).then(function(sRows){
+      var atCat = sRows && sRows.length ? sRows : [];
+      _abrirModal([], atCat);
+    }).catch(function(){ _abrirModal([], localAtivs); });
   } else {
-    var filtrados = localMats.length ? localMats : catalogo_materiais.filter(function(m){return m.status!=='Inativo';});
-    var atCatalog = localAtivs.length ? localAtivs : filtrados;
-    _abrirModal(filtrados, atCatalog);
+    _abrirModal([], localAtivs);
   }
 }
 
@@ -16563,6 +16553,10 @@ function _plptAplicarAprovacaoAdicional(projId, adicId, catalogId, descricao, qt
     }
   }
   progShowToast('✅ Adicional aprovado! '+qtdAp+' '+unidade+' adicionados ao saldo do projeto.');
+  if(typeof sotLiberarRequisicoesAdicional==='function'){
+    sotLiberarRequisicoesAdicional(projId, descricao, codigoSap||'');
+  }
+  if(typeof sotAtualizarAbaAtual==='function') sotAtualizarAbaAtual(projId);
   _plptRenderProjetoDetalhe(projId);
 }
 
@@ -19914,7 +19908,8 @@ async function _sotProgramarProjeto(projetoId, resultado, justificativa){
 
       // Verificar se já existe reserva para este material/projeto
       var jaReservado = alm_movimentos.some(function(m){
-        return m.status==='reservado' && m.projeto_id===projetoId
+        return (m.status==='reservado'||m.status==='reservado_pendente'||m.status==='separacao')
+          && m.projeto_id===projetoId
           && (m.material_id===r.mat.material_id || m.material_desc===r.mat.descricao);
       });
       if(jaReservado) continue;
@@ -22794,7 +22789,7 @@ function sotAbrirProjeto(projetoId){
     // Enriquecer sot_materiais_proj com breakdown completo de plpt_requisicoes
     if(!DEMO && sot_materiais_proj.length){
       var hoje = dataHojeLocal ? dataHojeLocal() : new Date().toISOString().slice(0,10);
-      var activeStatus = ['Aguardando aprovação','Aprovada','Separação','Aguardando confirmação almox','Em campo','Devolvida'];
+      var activeStatus = ['Aguardando aprovação','Adicional pendente de aprovação','Aprovada','Separação','Aguardando confirmação almox','Em campo','Devolvida'];
       Promise.all([
         sbFetch('plpt_requisicoes_materiais',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.asc',limit:500}),
         sbFetch('sot_adicionais',{filters:['projeto_id=eq.'+projetoId,'tipo=eq.material','status=eq.aprovado']})
@@ -22829,12 +22824,14 @@ function sotAbrirProjeto(projetoId){
                   || (m.descricao && it.nome && m.descricao.toLowerCase()===it.nome.toLowerCase());
             });
             if(!mat) return;
-            var qtdReq = it.qtd_req||0;
-            var qtdRet = it.qtd_ret||qtdReq;
+            var qtdReserva = (it.adicional_pendente && it.qtd_prevista!=null)
+              ? (it.qtd_prevista||0)
+              : (it.qtd_req||0);
+            var qtdRet = it.qtd_ret||qtdReserva;
             // Reservado
             if(activeStatus.includes(r.status)){
-              if(isHoje) mat._res_atual = (mat._res_atual||0) + qtdReq;
-              else       mat._res_ant   = (mat._res_ant||0)  + qtdReq;
+              if(isHoje) mat._res_atual = (mat._res_atual||0) + qtdReserva;
+              else       mat._res_ant   = (mat._res_ant||0)  + qtdReserva;
             }
             // Aplicado/entregue ao campo
             if(r.status==='Em campo'||r.status==='Devolvida'){
@@ -24140,17 +24137,17 @@ function sotRenderTabMateriais(projetoId){
     +'<th rowspan="2" style="padding:5px 8px;text-align:left;min-width:90px">Cód. SAP</th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:left;min-width:160px">Descrição</th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:center;width:40px">Un</th>'
-    +'<th colspan="4" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#185FA5">PROGRAMAÇÃO</th>'
-    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#533AB7">RESERVAS</th>'
+    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#854F0B">PLANEJADO / ADICIONAIS</th>'
+    +'<th colspan="4" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#185FA5">PROGRAMADO / RESERVAS</th>'
     +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#085041">APLICAÇÃO</th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;background:#854F0B;width:60px">Dev.<br>Hoje</th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;width:80px">Ações</th>'
     +'</tr>'
     +'<tr style="background:#222;color:#ddd;font-size:10px">'
-    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Quantidade projetada">Prog.</th>'
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Quantidade planejada">Plan.</th>'
     +'<th style="padding:4px 6px;text-align:right" title="Adicionais aprovados">Adic.</th>'
-    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#7CB8FF">Total</th>'
-    +'<th style="padding:4px 6px;text-align:right;color:#FFB3B3;font-weight:700" title="Quantidade viabilizada — requer aprovação">Viab.</th>'
+    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#FFE0A3">Total</th>'
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333;color:#7CB8FF;font-weight:700" title="Quantidade programada (viabilizada)">Prog.</th>'
     +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Reservas anteriores">Ant.</th>'
     +'<th style="padding:4px 6px;text-align:right" title="Reservas de hoje">Hoje</th>'
     +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#B39DFF">Total</th>'
@@ -24169,6 +24166,8 @@ function sotRenderTabMateriais(projetoId){
       var aplicAnt    = m._aplic_ant     || 0;
       var aplicAtual  = m._aplic_atual   || 0;
       var totalAplic  = aplicAnt + aplicAtual;
+      var viab        = m.qtd_viabilizada || 0;
+      var ehSubst     = totalProg===0 && viab>0;
       var devHoje     = m._dev_hoje      || 0;
       var saldo       = totalProg - totalAplic;
       var corSaldo    = saldo > 0 ? '#3B6D11' : saldo < 0 ? '#A32D2D' : '#888';
@@ -24178,11 +24177,12 @@ function sotRenderTabMateriais(projetoId){
         +'<td style="padding:6px 8px;font-size:10px;font-family:monospace;color:#888">'+(m.codigo_sap||'—')+'</td>'
         +'<td style="padding:6px 8px;font-weight:500">'+escHtml(m.descricao||'Material')+'</td>'
         +'<td style="padding:6px 8px;text-align:center;color:#888">'+un+'</td>'
-        +'<td style="padding:6px 6px;text-align:right;color:#185FA5;border-left:1px solid #f0efe8">'+prog+'</td>'
+        +'<td style="padding:6px 6px;text-align:right;color:#854F0B;border-left:1px solid #f0efe8">'+prog+'</td>'
         +'<td style="padding:6px 6px;text-align:right;color:'+(adicionado>0?'#854F0B':'#ccc')+'">'+( adicionado||'—')+'</td>'
-        +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:#185FA5">'+totalProg+'</td>'
-        +'<td style="padding:6px 6px;text-align:right;color:'+(m.qtd_viabilizada>0?'#A32D2D':'#ccc')+';font-weight:'+(m.qtd_viabilizada>0?'700':'400')+'">'+(m.qtd_viabilizada>0?m.qtd_viabilizada:'—')+'</td>'
-        +'<td style="padding:6px 6px;text-align:right;color:'+(resAnt>0?'#533AB7':'#ccc')+';border-left:1px solid #f0efe8">'+( resAnt||'—')+'</td>'
+        +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:#854F0B">'+totalProg+'</td>'
+        +'<td style="padding:6px 6px;text-align:right;border-left:1px solid #f0efe8;color:'+(viab>0?'#185FA5':'#ccc')+';font-weight:'+(viab>0?'700':'400')+'">'
+        +(viab>0?viab+(ehSubst?'<div style="font-size:9px;color:#533AB7">Subst.</div>':'') :'—')+'</td>'
+        +'<td style="padding:6px 6px;text-align:right;color:'+(resAnt>0?'#533AB7':'#ccc')+'">'+( resAnt||'—')+'</td>'
         +'<td style="padding:6px 6px;text-align:right;color:'+(resAtual>0?'#533AB7':'#ccc')+'">'+( resAtual||'—')+'</td>'
         +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:'+(resOk?'#533AB7':'#A32D2D')+'">'+totalRes+'</td>'
         +'<td style="padding:6px 6px;text-align:right;color:'+(aplicAnt>0?'#085041':'#ccc')+';border-left:1px solid #f0efe8">'+( aplicAnt||'—')+'</td>'
@@ -25848,124 +25848,206 @@ function sotBuscarPorCodigo(contId){
   if(label) label.textContent = (encontrado.codigo||'')+' — '+encontrado.descricao;
 }
 
+// ── Catálogo Almoxarifado SAP para projeto obras ──────────────
+function sotParseContratosIds(m){
+  var cids = m.contratos_ids;
+  if(typeof cids === 'string'){
+    try{ cids = JSON.parse(cids||'[]'); }catch(e){ cids = []; }
+  }
+  return cids || [];
+}
+
+function sotFiltrarMatsContrato(rows, contId){
+  return (rows||[]).filter(function(m){
+    if(m.status==='Inativo') return false;
+    if(!contId) return true;
+    var cids = sotParseContratosIds(m);
+    return cids.indexOf('todos')>=0 || cids.indexOf(contId)>=0;
+  });
+}
+
+function sotBuildListaAlmSAP(contId){
+  var map = {};
+  function add(item){
+    var sap = (item.codigo_sap||item.codigo||'').trim();
+    var desc = item.descricao || item.material_desc || item.nome || '';
+    if(!desc && !sap) return;
+    var key = sap ? sap.toUpperCase() : desc.toLowerCase();
+    if(map[key]) return;
+    map[key] = {
+      id: item.id || item.material_id || key,
+      codigo_sap: sap,
+      descricao: desc,
+      unidade: item.unidade || item.unidade_medida || 'UN',
+      saldo: item.saldo != null ? item.saldo : (item.saldo_disponivel != null ? item.saldo_disponivel : null)
+    };
+  }
+  sotFiltrarMatsContrato(typeof catalogo_materiais!=='undefined' ? catalogo_materiais : [], contId)
+    .forEach(function(m){ add(m); });
+  (typeof alm_estoque!=='undefined' ? alm_estoque : []).forEach(function(e){
+    if(contId && e.contrato_id && e.contrato_id !== contId && e.contrato_id !== 'geral') return;
+    add({id:e.material_id, codigo_sap:e.codigo_sap, descricao:e.material_desc, unidade:e.unidade, saldo:e.saldo});
+  });
+  (typeof mat_sap!=='undefined' ? mat_sap : []).forEach(function(m){
+    if(contId && m.contrato_id && m.contrato_id !== contId) return;
+    add(m);
+  });
+  return Object.keys(map).map(function(k){ return map[k]; })
+    .sort(function(a,b){ return (a.descricao||'').localeCompare(b.descricao||''); });
+}
+
+function sotCarregarCatalogoAlmSAP(contId, cb){
+  function entregar(){
+    var lista = sotBuildListaAlmSAP(contId);
+    if(!lista.length) lista = sotBuildListaAlmSAP('');
+    cb(lista);
+  }
+  if(DEMO){ entregar(); return; }
+  var prom = Promise.resolve();
+  if(typeof almCalcularSaldo === 'function' && alm_movimentos.length){
+    almCalcularSaldo();
+  } else if(!alm_movimentos.length){
+    prom = (typeof almCarregarMovimentos === 'function' ? almCarregarMovimentos() : Promise.resolve())
+      .then(function(){
+        if(typeof almCalcularSaldo === 'function') almCalcularSaldo();
+      });
+  }
+  prom.then(function(){
+    if(sotBuildListaAlmSAP(contId).length){ entregar(); return; }
+    return Promise.all([
+      (!catalogo_materiais.length ? sbFetch('catalogo_materiais',{order:'descricao'}) : Promise.resolve(catalogo_materiais)),
+      (!mat_sap.length ? sbFetch('materiais_sap',{order:'descricao'}) : Promise.resolve(mat_sap))
+    ]).then(function(res){
+      (res[0]||[]).forEach(function(r){
+        r.contratos_ids = sotParseContratosIds(r);
+        if(!catalogo_materiais.find(function(x){ return x.id === r.id; })) catalogo_materiais.push(r);
+      });
+      (res[1]||[]).forEach(function(m){
+        if(!mat_sap.find(function(x){ return x.id === m.id; })) mat_sap.push(m);
+      });
+      entregar();
+    });
+  }).catch(function(){ entregar(); });
+}
+
+function sotLabelMatCatalogo(m){
+  var lbl = m.descricao || 'Material';
+  if(m.codigo_sap) lbl += ' ('+m.codigo_sap+')';
+  if(m.saldo != null) lbl += ' · saldo '+m.saldo+' '+(m.unidade||'UN');
+  return lbl;
+}
+
+function sotRenderOptsMatCatalogo(mats){
+  return mats.map(function(m){
+    return '<option value="'+m.id+'" data-sap="'+(m.codigo_sap||'')+'" data-un="'+(m.unidade||'UN')+'" data-desc="'+escHtml(m.descricao||'')+'">'
+      +escHtml(sotLabelMatCatalogo(m))+'</option>';
+  }).join('');
+}
+
 // ── Novo material ─────────────────────────────────────────────
 function sotAbrirNovoMaterial(projetoId){
   var proj = sot_projetos.find(function(p){return p.id===projetoId;});
   var contId = proj ? proj.contrato_id : (_coContratoAtual||'');
 
-  // Filtrar materiais do catálogo vinculados ao contrato do projeto
-  var matsCat = catalogo_materiais.filter(function(m){
-    if(m.status==='Inativo') return false;
-    var cids = m.contratos_ids||[];
-    return cids.indexOf('todos')>=0 || cids.indexOf(contId)>=0;
-  }).sort(function(a,b){return a.descricao.localeCompare(b.descricao);});
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:520px;text-align:center;padding:2rem">'
+    +'<div style="color:#888;font-size:13px">⏳ Carregando catálogo Almoxarifado SAP...</div></div></div>');
 
-  var matOpts = matsCat.map(function(m){
-    return '<option value="'+m.id+'" data-sap="'+(m.codigo_sap||'')+'" data-un="'+(m.unidade||'UN')+'" data-desc="'+m.descricao+'">'+m.descricao+(m.codigo_sap?' ('+m.codigo_sap+')':'')+'</option>';
-  }).join('');
+  sotCarregarCatalogoAlmSAP(contId, function(matsCat){
+    window._sotMatCat = matsCat;
+    var matOpts = sotRenderOptsMatCatalogo(matsCat);
 
-  var html='<div class="modal-bg"><div class="modal" style="max-width:520px">'
-    +'<h3>Adicionar Material ao Projeto</h3>'
+    var html='<div class="modal-bg"><div class="modal" style="max-width:520px">'
+      +'<h3>Adicionar Material ao Projeto</h3>'
+      +(matsCat.length
+        ?'<div style="background:#f0f7f0;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
+          +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:.4rem;color:#3B6D11">📦 Almoxarifado SAP — '+matsCat.length+' material(is)</label>'
+          +'<div style="display:flex;gap:6px">'
+          +'<input class="inp" id="sot-mat-busca" placeholder="Buscar por nome ou código SAP..." style="flex:1" oninput="sotFiltrarMatCatalogo(this.value)"/>'
+          +'<button class="btn" id="sot-mat-limpar" style="font-size:11px">✕ Limpar</button>'
+          +'</div>'
+          +'<select class="inp" id="sot-mat-cat-sel" style="width:100%;margin-top:6px;height:110px" size="5" onchange="sotPreencherDosCatalogo()">'
+          +matOpts
+          +'</select>'
+          +'<div style="font-size:10px;color:#888;margin-top:3px">Catálogo SAP + saldo em estoque · selecione ou preencha abaixo</div>'
+          +'</div>'
+        :'<div style="background:#FEF3E2;border-radius:8px;padding:.6rem .75rem;margin-bottom:1rem;font-size:12px;color:#854F0B">'
+          +'⚠ Nenhum material no Almoxarifado SAP para este contrato. Cadastre em Almoxarifado → Materiais SAP.'
+          +'</div>')
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
+      +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Descrição *</label>'
+      +'<input class="inp" id="sot-m-desc" style="width:100%" placeholder="Descrição do material"/></div>'
+      +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Código SAP</label>'
+      +'<input class="inp" id="sot-m-sap" style="width:100%" placeholder="1234567" oninput="sotAutoFillBySAP(this.value)"/></div>'
+      +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Unidade</label>'
+      +'<select class="inp" id="sot-m-un" style="width:100%">'
+      +['UN','M','M²','KG','PC','CX','CJ','GL','PST','VÃO','H'].map(function(u){return '<option>'+u+'</option>';}).join('')
+      +'</select></div>'
+      +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd planejada</label>'
+      +'<input class="inp" id="sot-m-proj" type="number" style="width:100%" value="0" min="0"/></div>'
+      +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd programada (viabilizada)</label>'
+      +'<input class="inp" id="sot-m-viab" type="number" style="width:100%" value="0" min="0"/></div>'
+      +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observação</label>'
+      +'<textarea class="inp" id="sot-m-obs" style="width:100%;height:50px"></textarea></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:8px">'
+      +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+      +'<button class="btn btn-pri" id="sot-salvar-mat" style="flex:1">Adicionar</button>'
+      +'</div></div></div>';
 
-    // Busca no catálogo
-    +(matsCat.length
-      ?'<div style="background:#f0f7f0;border-radius:8px;padding:.75rem;margin-bottom:1rem">'
-        +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:.4rem;color:#3B6D11">📦 Selecionar do catálogo ('+ matsCat.length +' disponíveis)</label>'
-        +'<div style="display:flex;gap:6px">'
-        +'<input class="inp" id="sot-mat-busca" placeholder="Buscar por nome ou código..." style="flex:1" oninput="sotFiltrarMatCatalogo(this.value)"/>'
-        +'<button class="btn" id="sot-mat-limpar" style="font-size:11px">✕ Limpar</button>'
-        +'</div>'
-        +'<select class="inp" id="sot-mat-cat-sel" style="width:100%;margin-top:6px;height:90px" size="4" onchange="sotPreencherDosCatalogo()">'
-        +matOpts
-        +'</select>'
-        +'<div style="font-size:10px;color:#888;margin-top:3px">Selecione da lista acima ou preencha manualmente abaixo</div>'
-        +'</div>'
-      :'<div style="background:#FEF3E2;border-radius:8px;padding:.6rem .75rem;margin-bottom:1rem;font-size:12px;color:#854F0B">'
-        +'⚠ Nenhum material do catálogo vinculado a este contrato. Cadastre em Cadastros → Catálogo de Materiais.'
-        +'</div>')
+    setModal(html);
 
-    // Campos manuais
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Descrição *</label>'
-    +'<input class="inp" id="sot-m-desc" style="width:100%" placeholder="Descrição do material"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Código SAP</label>'
-    +'<input class="inp" id="sot-m-sap" style="width:100%" placeholder="1234567" oninput="sotAutoFillBySAP(this.value)"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Unidade</label>'
-    +'<select class="inp" id="sot-m-un" style="width:100%">'
-    +['UN','M','M²','KG','PC','CX','CJ','GL','PST','VÃO','H'].map(function(u){return '<option>'+u+'</option>';}).join('')
-    +'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd projetada</label>'
-    +'<input class="inp" id="sot-m-proj" type="number" style="width:100%" value="0" min="0"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Qtd viabilizada</label>'
-    +'<input class="inp" id="sot-m-viab" type="number" style="width:100%" value="0" min="0"/></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observação</label>'
-    +'<textarea class="inp" id="sot-m-obs" style="width:100%;height:50px"></textarea></div>'
-    +'</div>'
-    +'<div style="display:flex;gap:8px">'
-    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" id="sot-salvar-mat" style="flex:1">Adicionar</button>'
-    +'</div></div></div>';
-
-  // Guardar ref para uso nas funções
-  window._sotMatCat = matsCat;
-  setModal(html);
-
-  setTimeout(function(){
-    // Vincular busca
-    var limpar=document.getElementById('sot-mat-limpar');
-    if(limpar)limpar.onclick=function(){
-      var bi=document.getElementById('sot-mat-busca');if(bi)bi.value='';
-      sotFiltrarMatCatalogo('');
-    };
-
-    // Salvar
-    var btn=document.getElementById('sot-salvar-mat');if(!btn)return;
-    btn.onclick=function(){
-      var desc=(document.getElementById('sot-m-desc')||{}).value.trim();
-      if(!desc){alert('Informe a descrição.');return;}
-      var mat={
-        id:'sm'+Date.now(),projeto_id:projetoId,
-        codigo_sap:(document.getElementById('sot-m-sap')||{}).value.trim(),
-        descricao:desc,
-        unidade:(document.getElementById('sot-m-un')||{}).value||'UN',
-        qtd_projetada:parseFloat((document.getElementById('sot-m-proj')||{}).value)||0,
-        qtd_viabilizada:parseFloat((document.getElementById('sot-m-viab')||{}).value)||0,
-        qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,qtd_devolvida:0,qtd_processada_sap:0,
-        observacao:(document.getElementById('sot-m-obs')||{}).value||''
+    setTimeout(function(){
+      var limpar=document.getElementById('sot-mat-limpar');
+      if(limpar) limpar.onclick=function(){
+        var bi=document.getElementById('sot-mat-busca'); if(bi) bi.value='';
+        sotFiltrarMatCatalogo('');
       };
-      // Verificar duplicidade ANTES de inserir (excluindo o próprio item)
-      var isDup = sot_materiais_proj.some(function(x){
-        if(x.projeto_id !== projetoId) return false;
-        if(x.id === mat.id) return false; // não comparar consigo mesmo
-        if(mat.codigo_sap && x.codigo_sap && mat.codigo_sap.trim()===x.codigo_sap.trim()) return true;
-        if(!mat.codigo_sap && mat.descricao && x.descricao && mat.descricao.toLowerCase()===x.descricao.toLowerCase()) return true;
-        return false;
-      });
-      if(isDup){ progShowToast('⚠ Este material já está cadastrado neste projeto.','erro'); return; }
-      sot_materiais_proj.push(mat);
-      if(!DEMO){
-        var payloadMat={projeto_id:mat.projeto_id,codigo_sap:mat.codigo_sap,
-          descricao:mat.descricao,unidade:mat.unidade,
-          qtd_projetada:mat.qtd_projetada,qtd_viabilizada:mat.qtd_viabilizada,
-          qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,
-          qtd_devolvida:0,qtd_processada_sap:0,observacao:mat.observacao};
-        sbInsert('sot_materiais',payloadMat).then(function(r){if(r&&r[0]&&r[0].id)mat.id=r[0].id;});
-      }
-      closeModal();
-      sotAtualizarAbaAtual(projetoId);
-    };
-  },50);
+      var btn=document.getElementById('sot-salvar-mat');
+      if(!btn) return;
+      btn.onclick=function(){
+        var desc=(document.getElementById('sot-m-desc')||{}).value.trim();
+        if(!desc){ alert('Informe a descrição.'); return; }
+        var mat={
+          id:'sm'+Date.now(), projeto_id:projetoId,
+          codigo_sap:(document.getElementById('sot-m-sap')||{}).value.trim(),
+          descricao:desc,
+          unidade:(document.getElementById('sot-m-un')||{}).value||'UN',
+          qtd_projetada:parseFloat((document.getElementById('sot-m-proj')||{}).value)||0,
+          qtd_viabilizada:parseFloat((document.getElementById('sot-m-viab')||{}).value)||0,
+          qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,qtd_devolvida:0,qtd_processada_sap:0,
+          observacao:(document.getElementById('sot-m-obs')||{}).value||''
+        };
+        var isDup = sot_materiais_proj.some(function(x){
+          if(x.projeto_id !== projetoId) return false;
+          if(mat.codigo_sap && x.codigo_sap && mat.codigo_sap.trim()===x.codigo_sap.trim()) return true;
+          if(!mat.codigo_sap && mat.descricao && x.descricao && mat.descricao.toLowerCase()===x.descricao.toLowerCase()) return true;
+          return false;
+        });
+        if(isDup){ progShowToast('⚠ Este material já está cadastrado neste projeto.','erro'); return; }
+        sot_materiais_proj.push(mat);
+        if(!DEMO){
+          sbInsert('sot_materiais',{
+            projeto_id:mat.projeto_id, codigo_sap:mat.codigo_sap, descricao:mat.descricao, unidade:mat.unidade,
+            qtd_projetada:mat.qtd_projetada, qtd_viabilizada:mat.qtd_viabilizada,
+            qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,qtd_devolvida:0,qtd_processada_sap:0,
+            observacao:mat.observacao
+          }).then(function(r){ if(r&&r[0]&&r[0].id) mat.id=r[0].id; });
+        }
+        closeModal();
+        sotAtualizarAbaAtual(projetoId);
+      };
+    },50);
+  });
 }
 
 function sotFiltrarMatCatalogo(busca){
-  var sel=document.getElementById('sot-mat-cat-sel');if(!sel)return;
+  var sel=document.getElementById('sot-mat-cat-sel'); if(!sel) return;
   var mats=window._sotMatCat||[];
-  var q=busca.toLowerCase();
-  sel.innerHTML=mats.filter(function(m){
-    return !q||m.descricao.toLowerCase().indexOf(q)>=0||(m.codigo_sap||'').indexOf(q)>=0;
-  }).map(function(m){
-    return '<option value="'+m.id+'" data-sap="'+(m.codigo_sap||'')+'" data-un="'+(m.unidade||'UN')+'" data-desc="'+m.descricao+'">'+m.descricao+(m.codigo_sap?' ('+m.codigo_sap+')':'')+'</option>';
-  }).join('');
+  var q=(busca||'').toLowerCase();
+  var filtrados=mats.filter(function(m){
+    return !q || (m.descricao||'').toLowerCase().indexOf(q)>=0 || (m.codigo_sap||'').toLowerCase().indexOf(q)>=0;
+  });
+  sel.innerHTML=sotRenderOptsMatCatalogo(filtrados);
 }
 
 
@@ -26048,7 +26130,12 @@ function sotAutoFillBySAP(cod){
     .find(function(e){ return (e.codigo_sap||'').toUpperCase()===codUpper; });
   if(est){ _aplicarFill({descricao: est.material_desc||'', unidade: est.unidade||'UN'}); return; }
 
-  // 5. Not found locally — fetch from DB (itens_catalogo and alm_movimentos)
+  // 5. materiais_sap / mat_sap (local)
+  var msap = (typeof mat_sap!=='undefined' ? mat_sap : [])
+    .find(function(m){ return (m.codigo_sap||'').toUpperCase()===codUpper; });
+  if(msap){ _aplicarFill({descricao: msap.descricao||'', unidade: msap.unidade||'UN'}); return; }
+
+  // 6. Not found locally — fetch from DB
   var desc = document.getElementById('sot-m-desc');
   if(desc) desc.placeholder = 'Buscando...';
   Promise.all([
@@ -27211,6 +27298,185 @@ function sotProcessarImportacaoMat(projetoId){
 
 
 
+// ── Reserva de materiais SOT — cálculo de saldo e adicional ───────────────
+// Sem alteração de schema: flags qtd_prevista/qtd_adicional/adicional_pendente no JSON itens
+function sotCalcReservaMat(m){
+  var prog       = Number(m.qtd_projetada)||0;
+  var adicionado = Number(m._adicionado)||0;
+  var totalProg  = prog + adicionado;
+  var resAnt     = Number(m._res_ant)||0;
+  var resAtual   = Number(m._res_atual)||0;
+  var totalRes   = resAnt + resAtual;
+  var aplicAnt   = Number(m._aplic_ant)||0;
+  var aplicAtual = Number(m._aplic_atual)||0;
+  var totalAplic = aplicAnt + aplicAtual;
+  var saldoPrevisto = Math.max(0, totalProg - totalRes - totalAplic);
+  return {
+    prog:prog, adicionado:adicionado, totalProg:totalProg,
+    resAnt:resAnt, resAtual:resAtual, totalRes:totalRes,
+    aplicAnt:aplicAnt, aplicAtual:aplicAtual, totalAplic:totalAplic,
+    saldoPrevisto:saldoPrevisto
+  };
+}
+function sotReservaStatusHtml(calc, novaQtd){
+  novaQtd = Number(novaQtd)||0;
+  if(novaQtd<=0) return '<span style="font-size:9px;color:#aaa">—</span>';
+  if(novaQtd <= calc.saldoPrevisto){
+    return '<span style="font-size:9px;color:#3B6D11;font-weight:600">✓ Dentro do previsto</span>';
+  }
+  var exc = +(novaQtd - calc.saldoPrevisto).toFixed(4);
+  var prev = calc.saldoPrevisto;
+  return '<span style="font-size:9px;color:#854F0B;font-weight:600">Excedente: '+exc+'</span>'
+    +(prev>0?'<div style="font-size:9px;color:#3B6D11">Previsto: '+prev+'</div>':'')
+    +'<div style="font-size:9px;color:#A32D2D;font-weight:600">⚠ Adicional pendente</div>';
+}
+function sotSplitReservaQtd(m, novaQtd){
+  var calc = sotCalcReservaMat(m);
+  novaQtd = Math.max(0, Number(novaQtd)||0);
+  var qtdPrevista = Math.min(novaQtd, calc.saldoPrevisto);
+  var qtdAdicional = Math.max(0, novaQtd - calc.saldoPrevisto);
+  return {
+    calc:calc, novaQtd:novaQtd,
+    qtd_prevista:qtdPrevista, qtd_adicional:qtdAdicional,
+    temAdicional:qtdAdicional > 0
+  };
+}
+function sotAtualizarStatusReservaLinha(i){
+  var mats = window._sotReservaItensMats||[];
+  var m = mats[i];
+  if(!m) return;
+  var inp = document.getElementById('sot-rsv-qtd-'+i);
+  var el  = document.getElementById('sot-rsv-status-'+i);
+  if(!el) return;
+  var calc = sotCalcReservaMat(m);
+  var novaQtd = inp ? (parseFloat(inp.value)||0) : 0;
+  el.innerHTML = sotReservaStatusHtml(calc, novaQtd);
+}
+function sotAbrirModalAdicionalReserva(projetoId, excessItens, ctx, onOk){
+  var motivos = ['Urgência operacional','Erro de programação','Necessidade não prevista','Cliente solicitou','Outro'];
+  var rows = excessItens.map(function(x,i){
+    return '<div style="background:#FFF8EC;border:.5px solid #F5D78E;border-radius:8px;padding:.65rem;margin-bottom:.5rem">'
+      +'<div style="font-weight:600;font-size:12px;margin-bottom:4px">'+escHtml(x.mat.descricao||x.mat.nome||'Material')+'</div>'
+      +(x.mat.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(x.mat.codigo_sap)+'</div>':'')
+      +'<div style="font-size:11px;color:#555;margin:.35rem 0">'
+      +'Dentro do previsto: <b style="color:#3B6D11">'+x.qtd_prevista+'</b> '+escHtml(x.mat.unidade||'UN')
+      +' · Adicional: <b style="color:#854F0B">'+x.qtd_adicional+'</b> '+escHtml(x.mat.unidade||'UN')
+      +'</div>'
+      +'<div class="fg" style="margin-bottom:.4rem"><label style="font-size:11px;font-weight:600">Motivo *</label>'
+      +'<select class="inp" id="sot-adic-mot-'+i+'" style="width:100%">'
+      +motivos.map(function(mo){ return '<option>'+mo+'</option>'; }).join('')
+      +'</select></div>'
+      +'<div class="fg"><label style="font-size:11px;font-weight:600">Justificativa *</label>'
+      +'<textarea class="inp" id="sot-adic-just-'+i+'" rows="2" style="width:100%;resize:vertical" placeholder="Descreva por que precisa de material acima do previsto..."></textarea>'
+      +'</div></div>';
+  }).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:520px;max-height:90vh;overflow-y:auto">'
+    +'<h3 style="margin:0 0 .5rem;color:#854F0B">📦 Material adicional obrigatório</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">A quantidade solicitada ultrapassa o saldo previsto do projeto. '
+    +'Informe motivo e justificativa — o excedente será registrado como <b>adicional pendente de aprovação</b>.</div>'
+    +rows
+    +'<div style="display:flex;gap:8px;margin-top:.5rem">'
+    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="sot-adic-reserva-ok" style="flex:2;background:#854F0B;border-color:#854F0B">Confirmar e solicitar</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn = document.getElementById('sot-adic-reserva-ok');
+    if(!btn) return;
+    btn.onclick = function(){
+      var meta = [];
+      for(var i=0;i<excessItens.length;i++){
+        var motivo = ((document.getElementById('sot-adic-mot-'+i)||{}).value||'').trim();
+        var justif = ((document.getElementById('sot-adic-just-'+i)||{}).value||'').trim();
+        if(!justif){ progShowToast('⚠ Informe a justificativa para todos os itens adicionais.','erro'); return; }
+        meta.push({ motivo:motivo, justificativa:justif });
+      }
+      closeModal();
+      onOk(meta);
+    };
+  }, 0);
+}
+function sotPersistirRequisicaoMateriais(projetoId, itensSel, ctx, adicionalMeta){
+  adicionalMeta = adicionalMeta || [];
+  var temAdicional = itensSel.some(function(it){ return it.qtd_adicional > 0; });
+  var metaIdx = 0;
+  var promAdic = [];
+  if(!DEMO && temAdicional){
+    itensSel.forEach(function(it){
+      if(!it.qtd_adicional || it.qtd_adicional<=0) return;
+      var meta = adicionalMeta[metaIdx++] || {};
+      var obsAdic = '[Reserva material] Motivo: '+(meta.motivo||'—')+' | '+ (meta.justificativa||'');
+      promAdic.push(
+        sbInsert('sot_adicionais', {
+          projeto_id: projetoId, tipo:'material',
+          catalog_id: it.mat_id||null,
+          descricao: it.nome, codigo_sap: it.codigo||null, unidade: it.unidade,
+          qtd_solicitada: it.qtd_adicional, observacoes: obsAdic,
+          criado_por: usuarioLogado ? usuarioLogado.nome : '',
+          status: 'pendente'
+        }).then(function(r){
+          if(r && r[0] && r[0].id) it.adicional_id = r[0].id;
+        })
+      );
+    });
+  } else if(DEMO && temAdicional){
+    itensSel.forEach(function(it){
+      if(it.qtd_adicional>0) it.adicional_id = 'adic-demo-'+Date.now();
+    });
+  }
+  Promise.all(promAdic).then(function(){
+    var payload = {
+      projeto_id: projetoId,
+      equipe_id: ctx.equipeId,
+      data: ctx.dataRetir,
+      status: temAdicional ? 'Adicional pendente de aprovação' : 'Aguardando aprovação',
+      solicitante: usuarioLogado ? usuarioLogado.nome : '',
+      observacoes: ctx.obs,
+      itens: JSON.stringify(itensSel),
+      criado_em: new Date().toISOString()
+    };
+    if(DEMO){
+      progShowToast('✅ Requisição enviada'+(temAdicional?' (com adicional pendente)':'')+' (demo)');
+      return;
+    }
+    sbInsert('plpt_requisicoes_materiais', payload)
+      .then(function(){
+        progShowToast(temAdicional
+          ? '✅ Solicitação enviada — parte adicional aguarda aprovação do gestor.'
+          : '✅ Requisição enviada! Aguardando aprovação do gerente.');
+        var content = document.getElementById('sot-tab-content');
+        if(content) sotRenderTabReserva(projetoId, content);
+        else if(typeof sotAtualizarAbaAtual==='function') sotAtualizarAbaAtual(projetoId);
+      })
+      .catch(function(e){ progShowToast('⚠ Erro: '+(e&&e.message||e),'erro'); });
+  });
+}
+function sotLiberarRequisicoesAdicional(projId, descricao, codigoSap){
+  if(DEMO) return;
+  sbFetch('plpt_requisicoes_materiais', {
+    filters:['projeto_id=eq.'+projId,'status=eq.Adicional pendente de aprovação','deleted_at=is.null'],
+    limit:50
+  }).then(function(rows){
+    (rows||[]).forEach(function(r){
+      var itens = parseJsonField(r.itens, []);
+      var changed = false;
+      itens.forEach(function(it){
+        var match = (descricao && it.nome && it.nome.toLowerCase()===descricao.toLowerCase())
+          || (codigoSap && it.codigo && it.codigo===codigoSap);
+        if(match && it.adicional_pendente){
+          it.adicional_pendente = false;
+          it.qtd_req = (it.qtd_prevista||0) + (it.qtd_adicional||0);
+          changed = true;
+        }
+      });
+      if(!changed) return;
+      var stillPending = itens.some(function(it){ return it.adicional_pendente; });
+      var patch = { itens: JSON.stringify(itens) };
+      if(!stillPending) patch.status = 'Aguardando aprovação';
+      sbUpdate('plpt_requisicoes_materiais', patch, 'id=eq.'+r.id);
+    });
+  }).catch(function(){});
+}
+
 function sotRenderTabReserva(projetoId, container){
   var mats = (typeof sot_materiais_proj!=='undefined' ? sot_materiais_proj : [])
     .filter(function(m){ return m.projeto_id===projetoId; });
@@ -27238,8 +27504,9 @@ function sotRenderTabReserva(projetoId, container){
   // ── Cabeçalho informativo ──────────────────────────────────────────────
   html += '<div style="background:#F0EEFF;border-radius:10px;padding:.75rem 1rem;margin-bottom:.75rem">'
     +'<div style="font-weight:700;font-size:13px;color:#533AB7;margin-bottom:.4rem">📤 Nova Requisição de Materiais</div>'
-    +'<div style="font-size:11px;color:#666">Selecione os materiais e informe a quantidade a usar hoje. '
-    +'A quantidade máxima é o <strong>Saldo disponível</strong> (Total Programado − Total Aplicado).</div>'
+    +'<div style="font-size:11px;color:#666">Selecione os materiais e informe a quantidade a usar. '
+    +'O <strong>saldo previsto</strong> = Total programado − Reservado − Aplicado. '
+    +'Acima do saldo exige <strong>material adicional</strong> com motivo e justificativa.</div>'
     +'</div>';
 
   // ── Tabela com todas as colunas ────────────────────────────────────────
@@ -27250,23 +27517,24 @@ function sotRenderTabReserva(projetoId, container){
     +'<tr style="background:#1a1a18;color:#fff;font-size:10px">'
     +'<th rowspan="2" style="padding:5px 8px;width:28px"></th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:left;min-width:140px">Material</th>'
-    // PROGRAMAÇÃO
-    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#185FA5">PROGRAMAÇÃO</th>'
-    // RESERVAS
-    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#533AB7">RESERVAS</th>'
+    // PROGRAMAÇÃO → PLANEJADO / ADICIONAIS + PROGRAMADO / RESERVAS
+    +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#854F0B">PLANEJADO / ADICIONAIS</th>'
+    +'<th colspan="4" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#185FA5">PROGRAMADO / RESERVAS</th>'
     // APLICAÇÃO
     +'<th colspan="3" style="padding:4px 8px;text-align:center;border-left:1px solid #333;background:#085041">APLICAÇÃO</th>'
     // HOJE
     +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;background:#854F0B;min-width:65px">Dev.<br>Hoje</th>'
+    +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;min-width:90px">Status</th>'
     +'<th rowspan="2" style="padding:5px 8px;text-align:center;border-left:1px solid #333;min-width:75px">Qtd a usar</th>'
     +'</tr>'
     +'<tr style="background:#222;color:#ddd;font-size:10px">'
-    // PROGRAMAÇÃO sub
-    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Quantidade projetada original">Prog.</th>'
-    +'<th style="padding:4px 6px;text-align:right" title="Soma de adicionais aprovados">Adic.</th>'
-    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#7CB8FF" title="Prog + Adicionado">Total</th>'
-    // RESERVAS sub
-    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Reservas de dias anteriores">Ant.</th>'
+    // PLANEJADO / ADICIONAIS
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333" title="Quantidade planejada">Plan.</th>'
+    +'<th style="padding:4px 6px;text-align:right" title="Adicionais aprovados">Adic.</th>'
+    +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#FFE0A3" title="Planejado + Adicionais">Total</th>'
+    // PROGRAMADO / RESERVAS
+    +'<th style="padding:4px 6px;text-align:right;border-left:1px solid #333;color:#7CB8FF;font-weight:700" title="Quantidade programada (viabilizada)">Prog.</th>'
+    +'<th style="padding:4px 6px;text-align:right" title="Reservas de dias anteriores">Ant.</th>'
     +'<th style="padding:4px 6px;text-align:right" title="Reserva de hoje">Hoje</th>'
     +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#B39DFF" title="Total Reservado — nunca > Total Programado">Total</th>'
     // APLICAÇÃO sub
@@ -27278,35 +27546,23 @@ function sotRenderTabReserva(projetoId, container){
 
   mats.forEach(function(m, i){
     var un = escHtml(m.unidade||'UN');
-
-    // ── Programação ──────────────────────────────────────────────────────
-    var prog       = m.qtd_projetada  || 0;
-    var adicionado = m._adicionado    || 0;
-    var totalProg  = prog + adicionado;
-
-    // ── Reservas ─────────────────────────────────────────────────────────
-    var resAnt     = m._res_ant   || 0;
-    var resAtual   = m._res_atual || 0;
-    var totalRes   = resAnt + resAtual;
-    // Validação: totalRes nunca > totalProg
+    var calc = sotCalcReservaMat(m);
+    var prog       = calc.prog;
+    var adicionado = calc.adicionado;
+    var totalProg  = calc.totalProg;
+    var resAnt     = calc.resAnt;
+    var resAtual   = calc.resAtual;
+    var totalRes   = calc.totalRes;
     var resOk      = totalRes <= totalProg;
-
-    // ── Aplicação ─────────────────────────────────────────────────────────
-    var aplicAnt   = m._aplic_ant   || 0;
-    var aplicAtual = m._aplic_atual || 0;
-    var totalAplic = aplicAnt + aplicAtual;
-    // Validação: totalAplic nunca > totalRes
+    var aplicAnt   = calc.aplicAnt;
+    var aplicAtual = calc.aplicAtual;
+    var totalAplic = calc.totalAplic;
     var aplicOk    = totalAplic <= totalRes;
-
-    // ── Devolvido hoje ────────────────────────────────────────────────────
     var devHoje    = m._dev_hoje || 0;
-
-    // ── Saldo disponível (máximo que pode reservar agora) ─────────────────
-    var saldo      = totalProg - totalAplic;
-    var maxReserva = Math.max(0, saldo);
+    var viab       = m.qtd_viabilizada || 0;
+    var saldo      = calc.saldoPrevisto;
     var corSaldo   = saldo > 0 ? '#3B6D11' : saldo === 0 ? '#888' : '#A32D2D';
 
-    // ── Row ────────────────────────────────────────────────────────────────
     html += '<tr style="border-bottom:.5px solid #f0efe8">'
       +'<td style="padding:6px 8px"><input type="checkbox" id="sot-rsv-chk-'+i+'" '
       +'onchange="sotReservaToggle('+i+')" style="cursor:pointer;width:16px;height:16px"/></td>'
@@ -27314,12 +27570,13 @@ function sotRenderTabReserva(projetoId, container){
       +(m.codigo_sap?'<div style="font-size:10px;color:#888;font-family:monospace">'+escHtml(m.codigo_sap)+'</div>':'')
       +'<div style="font-weight:500">'+escHtml(m.descricao||'Material')+'</div>'
       +'</td>'
-      // PROGRAMAÇÃO
-      +'<td style="padding:6px 6px;text-align:right;color:#185FA5;border-left:1px solid #f0efe8">'+prog+'</td>'
+      // PLANEJADO / ADICIONAIS
+      +'<td style="padding:6px 6px;text-align:right;color:#854F0B;border-left:1px solid #f0efe8">'+prog+'</td>'
       +'<td style="padding:6px 6px;text-align:right;color:'+(adicionado>0?'#854F0B':'#ccc')+'">'+( adicionado>0?adicionado:'—')+'</td>'
-      +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:#185FA5">'+totalProg+' <span style="font-size:9px;font-weight:400">'+un+'</span></td>'
-      // RESERVAS
-      +'<td style="padding:6px 6px;text-align:right;color:'+(resAnt>0?'#533AB7':'#ccc')+';border-left:1px solid #f0efe8">'+( resAnt>0?resAnt:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:#854F0B">'+totalProg+' <span style="font-size:9px;font-weight:400">'+un+'</span></td>'
+      // PROGRAMADO / RESERVAS
+      +'<td style="padding:6px 6px;text-align:right;border-left:1px solid #f0efe8;color:'+(viab>0?'#185FA5':'#ccc')+';font-weight:'+(viab>0?'700':'400')+'">'+(viab>0?viab:'—')+'</td>'
+      +'<td style="padding:6px 6px;text-align:right;color:'+(resAnt>0?'#533AB7':'#ccc')+'">'+( resAnt>0?resAnt:'—')+'</td>'
       +'<td style="padding:6px 6px;text-align:right;color:'+(resAtual>0?'#533AB7':'#ccc')+'">'+( resAtual>0?resAtual:'—')+'</td>'
       +'<td style="padding:6px 6px;text-align:right;font-weight:700;color:'+(resOk?'#533AB7':'#A32D2D')+'">'
       +totalRes+' <span style="font-size:9px;font-weight:400">'+un+'</span>'
@@ -27332,13 +27589,14 @@ function sotRenderTabReserva(projetoId, container){
       +(!aplicOk?'<div style="font-size:9px;color:#A32D2D">⚠ > Res</div>':'')+'</td>'
       // DEVOLVIDO HOJE
       +'<td style="padding:6px 6px;text-align:right;color:'+(devHoje>0?'#854F0B':'#ccc')+';border-left:1px solid #f0efe8">'+( devHoje>0?devHoje:'—')+'</td>'
-      // QTD A USAR
+      +'<td style="padding:6px 6px;text-align:center;border-left:1px solid #f0efe8;vertical-align:middle" id="sot-rsv-status-'+i+'">'
+      +'<span style="font-size:9px;color:#aaa">—</span></td>'
       +'<td style="padding:6px 8px;text-align:center;border-left:1px solid #f0efe8">'
-      +'<div style="font-size:10px;color:'+corSaldo+';font-weight:600;margin-bottom:2px">Saldo: '+saldo+'</div>'
-      +'<input type="number" id="sot-rsv-qtd-'+i+'" min="0" max="'+maxReserva+'" value="0" disabled '
+      +'<div style="font-size:10px;color:'+corSaldo+';font-weight:600;margin-bottom:2px" title="Prog − Reservado − Aplicado">Saldo prev.: '+saldo+'</div>'
+      +'<input type="number" id="sot-rsv-qtd-'+i+'" min="0" step="0.01" value="0" disabled '
       +'style="width:65px;padding:4px;border:.5px solid #e0dfd8;border-radius:6px;text-align:center;font-size:12px" '
-      +'oninput="sotReservaQtd('+i+',this.value,'+maxReserva+')"/>'
-      +(maxReserva===0?'<div style="font-size:9px;color:#888;margin-top:2px">✅ Completo</div>':'')
+      +'oninput="sotReservaQtd('+i+',this.value)"/>'
+      +(saldo===0?'<div style="font-size:9px;color:#888;margin-top:2px">Sem saldo previsto</div>':'')
       +'</td></tr>';
   });
 
@@ -27391,28 +27649,46 @@ function sotReservaToggle(i){
   inp.disabled = !chk.checked;
   var mats = window._sotReservaItensMats||[];
   if(chk.checked && Number(inp.value)===0 && mats[i]){
-    inp.value = mats[i].qtd_projetada||1;
+    var saldo = sotCalcReservaMat(mats[i]).saldoPrevisto;
+    inp.value = saldo > 0 ? saldo : 0;
   }
   if(!chk.checked) inp.value=0;
+  sotAtualizarStatusReservaLinha(i);
 }
 
-function sotReservaQtd(i, val, max){
+function sotReservaQtd(i, val){
   var inp = document.getElementById('sot-rsv-qtd-'+i);
-  if(inp && Number(val)>max) inp.value = max;
+  if(inp && Number(val)<0) inp.value = 0;
+  sotAtualizarStatusReservaLinha(i);
 }
 
 function sotEnviarRequisicao(projetoId){
   var mats = window._sotReservaItensMats||[];
   var itensSel = [];
+  var excessItens = [];
   mats.forEach(function(m,i){
     var chk = document.getElementById('sot-rsv-chk-'+i);
     var inp = document.getElementById('sot-rsv-qtd-'+i);
     if(chk&&chk.checked&&inp){
-      var qtd = Math.min(parseFloat(inp.value)||0, m.qtd_projetada||0);
-      if(qtd>0) itensSel.push({
+      var novaQtd = parseFloat(inp.value)||0;
+      if(novaQtd<=0) return;
+      var split = sotSplitReservaQtd(m, novaQtd);
+      var item = {
         mat_id:m.id, codigo:m.codigo_sap||'', nome:m.descricao||'',
-        unidade:m.unidade||'UN', qtd_prog:m.qtd_projetada||0, qtd_req:qtd
-      });
+        unidade:m.unidade||'UN',
+        qtd_prog:split.calc.totalProg,
+        qtd_req:novaQtd,
+        qtd_prevista:split.qtd_prevista,
+        qtd_adicional:split.qtd_adicional,
+        adicional_pendente:split.temAdicional
+      };
+      itensSel.push(item);
+      if(split.temAdicional){
+        excessItens.push({
+          mat:m, calc:split.calc, novaQtd:novaQtd,
+          qtd_prevista:split.qtd_prevista, qtd_adicional:split.qtd_adicional
+        });
+      }
     }
   });
   if(!itensSel.length){
@@ -27427,39 +27703,40 @@ function sotEnviarRequisicao(projetoId){
     progShowToast('⚠ Selecione a equipe responsável pela retirada.','erro');
     return;
   }
-
-  var payload = {
-    projeto_id:    projetoId,
-    equipe_id:     equipeIdSel,
-    data:          dataRetir,
-    data_retirada: dataRetir,
-    status:        'Aguardando aprovação',
-    solicitante:   usuarioLogado ? usuarioLogado.nome : '',
-    solicitante_id: usuarioLogado ? usuarioLogado.id : null,
-    observacoes:   obs,
-    itens:         JSON.stringify(itensSel),
-    criado_em:     new Date().toISOString(),
-  };
-  if(!DEMO){
-    sbInsert('plpt_requisicoes_materiais', payload)
-      .then(function(){
-        progShowToast('✅ Requisição enviada! Aguardando aprovação do gerente.');
-        var content = document.getElementById('sot-tab-content');
-        sotRenderTabReserva(projetoId, content);
-      })
-      .catch(function(e){ progShowToast('⚠ Erro: '+e.message,'erro'); });
-  } else {
-    progShowToast('✅ Requisição enviada (demo)');
+  var ctx = { equipeId:equipeIdSel, dataRetir:dataRetir, obs:obs };
+  if(excessItens.length){
+    sotAbrirModalAdicionalReserva(projetoId, excessItens, ctx, function(adicionalMeta){
+      sotPersistirRequisicaoMateriais(projetoId, itensSel, ctx, adicionalMeta);
+    });
+    return;
   }
+  sotPersistirRequisicaoMateriais(projetoId, itensSel, ctx, []);
 }
 
 
 // ── Mover status de requisição (almoxarife/gestor) ──────────────────────────
 function sotMoverReq(reqId, novoStatus){
+  if(novoStatus==='Separação'){
+    var _bloqueado = false;
+    if(!DEMO){
+      sbFetch('plpt_requisicoes_materiais',{filters:['id=eq.'+reqId],limit:1}).then(function(rows){
+        var r = rows && rows[0];
+        if(r && r.status==='Adicional pendente de aprovação'){
+          progShowToast('⚠ Separação bloqueada — material adicional ainda pendente de aprovação.','erro');
+          return;
+        }
+        _sotMoverReqExec(reqId, novoStatus);
+      });
+      return;
+    }
+  }
+  _sotMoverReqExec(reqId, novoStatus);
+}
+function _sotMoverReqExec(reqId, novoStatus){
   var confirmar = novoStatus==='Reprovada' ? confirm('Reprovar esta requisição?') : true;
   if(!confirmar) return;
   if(!DEMO){
-    sbUpdate('plpt_requisicoes_materiais', {status:novoStatus, atualizado_em:new Date().toISOString()}, 'id=eq.'+reqId)
+    sbUpdate('plpt_requisicoes_materiais', {status:novoStatus}, 'id=eq.'+reqId)
       .then(function(ok){
         if(ok){
           progShowToast('✅ Status atualizado: '+novoStatus);
@@ -27484,6 +27761,7 @@ function sotCarregarHistoricoRequisicoes(projetoId){
   }).then(function(rows){
     if(!rows||!rows.length){ el.innerHTML=''; return; }
     var STATUS_COR={'Aguardando aprovação':{bg:'#FEF3E2',c:'#854F0B'},
+      'Adicional pendente de aprovação':{bg:'#FFF0E0',c:'#A32D2D'},
       'Aprovada':{bg:'#EAF3DE',c:'#3B6D11'},'Separação':{bg:'#EBF4FD',c:'#185FA5'},
       'Em campo':{bg:'#F0EEFF',c:'#533AB7'},'Devolvida':{bg:'#f5f5f3',c:'#888'},
       'Reprovada':{bg:'#FFF0F0',c:'#A32D2D'}};
@@ -27505,7 +27783,10 @@ function sotCarregarHistoricoRequisicoes(projetoId){
             _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Aprovada" style="font-size:10px;background:#3B6D11;color:#fff;border-color:#3B6D11">✅ Aprovar</button> ';
           if(r.status==='Aprovada' && _isAlmox)
             _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Separação" style="font-size:10px;background:#185FA5;color:#fff;border-color:#185FA5">📦 Separar</button> ';
-          _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Reprovada" style="font-size:10px;color:#A32D2D;border-color:#A32D2D">✕</button>';
+          if(r.status==='Adicional pendente de aprovação')
+            _acoes += '<span style="font-size:10px;color:#A32D2D;font-weight:600">⏳ Aprove o adicional na aba Adicional</span> ';
+          if(r.status!=='Adicional pendente de aprovação')
+            _acoes += '<button class="btn btn-sm sot-mover-req" data-id="'+r.id+'" data-status="Reprovada" style="font-size:10px;color:#A32D2D;border-color:#A32D2D">✕</button>';
         }
         return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .85rem;margin-bottom:.4rem">'
           +'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.2rem">'
@@ -27657,9 +27938,71 @@ function sotRecusarAdicional(projId, adicId){
 }
 
 
+function sotPersistirAdicionalMaterial(m, qtdAdic, callback){
+  var qtd = Math.max(0, parseFloat(qtdAdic)||0);
+  m._adicionado = qtd;
+  if(DEMO){ if(callback) callback(); return; }
+  var projId = m.projeto_id;
+  var tag = 'Via edição material';
+  sbFetch('sot_adicionais',{
+    filters:['projeto_id=eq.'+projId,'tipo=eq.material'],
+    order:'criado_em.desc', limit:200
+  }).then(function(rows){
+    var matches = (rows||[]).filter(function(a){
+      if(m.codigo_sap && a.codigo_sap && m.codigo_sap===a.codigo_sap) return true;
+      if(m.descricao && a.descricao && m.descricao.toLowerCase()===a.descricao.toLowerCase()) return true;
+      return false;
+    });
+    var manual = matches.find(function(a){ return (a.observacoes||'').indexOf(tag)>=0; });
+    var others = matches.filter(function(a){
+      return a !== manual && (a.status==='aprovado' || a.status==='Aprovado');
+    });
+    var sumOthers = others.reduce(function(s, a){
+      return s + (parseFloat(a.qtd_aprovada||a.qtd_solicitada)||0);
+    }, 0);
+    var manualQtd = Math.max(0, qtd - sumOthers);
+    if(manualQtd <= 0){
+      if(manual && manual.id) sbDelete('sot_adicionais','id=eq.'+manual.id).finally(function(){
+        m._adicionado = sumOthers;
+        if(callback) callback();
+      });
+      else {
+        m._adicionado = sumOthers;
+        if(callback) callback();
+      }
+      return;
+    }
+    var payload = {
+      qtd_solicitada: manualQtd,
+      qtd_aprovada:   manualQtd,
+      status:         'aprovado',
+      codigo_sap:     m.codigo_sap||'',
+      descricao:      m.descricao,
+      unidade:        m.unidade||'UN',
+      observacoes:    tag,
+      aprovado_por:   usuarioLogado ? usuarioLogado.nome : '',
+      aprovado_em:    new Date().toISOString(),
+    };
+    m._adicionado = sumOthers + manualQtd;
+    if(manual && manual.id){
+      sbUpdate('sot_adicionais', payload, 'id=eq.'+manual.id).then(function(){ if(callback) callback(); });
+    } else {
+      sbInsert('sot_adicionais', Object.assign({
+        projeto_id: projId,
+        tipo:       'material',
+        criado_por: usuarioLogado ? usuarioLogado.nome : '',
+      }, payload)).then(function(){ if(callback) callback(); });
+    }
+  }).catch(function(e){
+    console.error('sotPersistirAdicionalMaterial:', e);
+    if(callback) callback();
+  });
+}
+
 function sotEditarMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
+  var qtdAdic = m._adicionado != null ? m._adicionado : 0;
   setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
     +'<h3 style="margin-bottom:.75rem">Editar Material</h3>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
@@ -27671,8 +28014,8 @@ function sotEditarMaterial(id){
     +'<input class="inp" id="sot-mat-desc" value="'+escHtml(m.descricao||'')+'" style="width:100%"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Projetada</label>'
     +'<input class="inp" id="sot-mat-qtd" type="number" step="0.01" value="'+(m.qtd_projetada||0)+'" style="width:100%"/></div>'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Viabilizada</label>'
-    +'<input class="inp" id="sot-mat-viab" type="number" step="0.01" value="'+(m.qtd_viabilizada||0)+'" style="width:100%"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Adicional</label>'
+    +'<input class="inp" id="sot-mat-adic" type="number" step="0.01" min="0" value="'+qtdAdic+'" style="width:100%"/></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Observação</label>'
     +'<input class="inp" id="sot-mat-obs" value="'+escHtml(m.observacao||'')+'" style="width:100%"/></div>'
     +'</div>'
@@ -27690,51 +28033,56 @@ function sotEditarMaterial(id){
       m.descricao       = desc;
       m.unidade         = g('sot-mat-un')||'UN';
       m.qtd_projetada   = parseFloat(g('sot-mat-qtd'))||0;
-      m.qtd_viabilizada = parseFloat(g('sot-mat-viab'))||0;
+      var qtdAdicSalvar = parseFloat(g('sot-mat-adic'))||0;
       m.observacao      = g('sot-mat-obs');
       var projId = m.projeto_id;
+      function _finalizarEdicao(){
+        closeModal();
+        sotAtualizarAbaAtual(projId);
+        progShowToast('✅ Material atualizado.');
+      }
       if(!DEMO){
         var _payload={codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
-          qtd_projetada:m.qtd_projetada,qtd_viabilizada:m.qtd_viabilizada,
+          qtd_projetada:m.qtd_projetada,
           observacao:m.observacao};
+        function _aposMaterial(){
+          sotPersistirAdicionalMaterial(m, qtdAdicSalvar, _finalizarEdicao);
+        }
         if(isUUID(id)){
-          // Normal update by UUID
           sbUpdate('sot_materiais',_payload,'id=eq.'+id).then(function(ok){
-            if(ok) progShowToast('✅ Material salvo.');
-            else progShowToast('⚠ Erro ao salvar no banco — verifique o console.','erro');
+            if(!ok) progShowToast('⚠ Erro ao salvar material no banco.','erro');
+            _aposMaterial();
           }).catch(function(e){
             console.error('Edit mat:',e);
             progShowToast('⚠ Erro: '+(e&&e.message||e),'erro');
+            _aposMaterial();
           });
         } else {
-          // Temp ID — re-fetch real UUID from DB then update
           sbFetch('sot_materiais',{filters:['projeto_id=eq.'+m.projeto_id,'codigo_sap=eq.'+m.codigo_sap,'deleted_at=is.null']})
             .then(function(rows){
               if(rows&&rows[0]&&rows[0].id){
-                m.id=rows[0].id; // fix local ID
-                sbUpdate('sot_materiais',_payload,'id=eq.'+rows[0].id)
-                  .then(function(){ progShowToast('✅ Material salvo no banco.'); })
-                  .catch(function(e){ progShowToast('⚠ Erro ao salvar: '+(e&&e.message||e),'erro'); });
+                m.id=rows[0].id;
+                sbUpdate('sot_materiais',_payload,'id=eq.'+rows[0].id).then(_aposMaterial);
               } else {
-                // Record doesn't exist yet — insert it
                 var ins=Object.assign({projeto_id:m.projeto_id,
                   qtd_requisitada:0,qtd_entregue:0,qtd_aplicada:0,
-                  qtd_devolvida:0,qtd_processada_sap:0},_payload);
-                sbInsert('sot_materiais',ins)
-                  .then(function(r){
-                    if(r&&r[0]) m.id=r[0].id;
-                    progShowToast('✅ Material inserido no banco.');
-                  }).catch(function(e){ progShowToast('⚠ Erro ao inserir: '+(e&&e.message||e),'erro'); });
+                  qtd_devolvida:0,qtd_processada_sap:0,qtd_viabilizada:0},_payload);
+                sbInsert('sot_materiais',ins).then(function(r){
+                  if(r&&r[0]) m.id=r[0].id;
+                  _aposMaterial();
+                }).catch(function(e){ progShowToast('⚠ Erro ao inserir: '+(e&&e.message||e),'erro'); _aposMaterial(); });
               }
             }).catch(function(e){
               console.error('Edit mat lookup:',e);
               progShowToast('⚠ Erro ao buscar material: '+(e&&e.message||e),'erro');
+              _aposMaterial();
             });
         }
+      } else {
+        m._adicionado = qtdAdicSalvar;
+        _finalizarEdicao();
       }
-      closeModal();
-      sotAtualizarAbaAtual(projId);
-      progShowToast('✅ Material atualizado.');
+      return;
     };
     var btnE = document.getElementById('sot-excluir-mat');
     if(btnE) btnE.onclick = function(){
@@ -27965,12 +28313,51 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.520',
-  data:   '22/06/2026',
-  build:  '20260622-1900',
+  numero: '7.9.530',
+  data:   '07/06/2026',
+  build:  '20260607-1630',
   log: [
+    {v:'7.9.530', d:'07/06/2026', itens:[
+      'Frotas → Veículos: filtro por Posse (Próprio, Alugado, Comodato, Terceiro, Outro); métricas respeitam o filtro selecionado.',
+    ]},
+    {v:'7.9.529', d:'07/06/2026', itens:[
+      'EPIs/EPCs: nova sub-aba Entregar colaborador com seleção de colaborador e botão para abrir modal openNovaEntregaEpi.',
+      'Lista de entregas EPI usa openNovaEntregaEpi (substitui openEntrega legado); atalhos do hub apontam para aba Entregar.',
+    ]},
+    {v:'7.9.528', d:'24/06/2026', itens:[
+      'Colaboradores: filtro por Área (SUPRIMENTOS, ADMINISTRATIVO, FACILITES, FROTAS, SESMT, TI) exclusivo da tela de cadastro — não afeta outros filtros de contrato.',
+      'Colaboradores: campo Área adicionado nos modais de novo e edição, salvo no banco no campo area.',
+      'Online: onlineHeartbeat usa sbUpsert — elimina erro 409 por duplicate key quando conexão cai entre SELECT e INSERT.',
+    ]},
+    {v:'7.9.527', d:'07/06/2026', itens:[
+      'Projeto Obras — modal Editar Material: campo Qtd Adicional (antes Viabilizada) grava em sot_adicionais e coluna Adic. da tabela.',
+    ]},
+    {v:'7.9.526', d:'07/06/2026', itens:[
+      'Projeto Obras — Materiais: colunas PLANEJADO/ADICIONAIS e PROGRAMADO/RESERVAS; modal + Adicional e + Material ligados ao catálogo Almoxarifado SAP (catalogo_materiais + estoque + materiais_sap).',
+    ]},
+    {v:'7.9.525', d:'07/06/2026', itens:[
+      'Fix entrega patrimonial: reconciliação não zera mais saldo na entrega quando movimentações estão incompletas (permitirReduzir:false).',
+      'SESMT carrega todas as entradas para cálculo de saldo; resolver estoque aceita filial/depósito legado (null).',
+      'Modal entrega: saldo sem depósito definido exibido e consolidado ao selecionar depósito de saída.',
+    ]},
+    {v:'7.9.524', d:'07/06/2026', itens:[
+      'Etapa 1 posse: entrega patrimonial persiste colaborador_id, equipe_id, previsao_devolucao e registrado_por_id em movimentacoes_itens (requer sql_etapa1_posse_movimentacoes.sql).',
+      'Devolução patrimonial propaga detentor da entrega de origem; SESMT carrega entregas Em uso além da janela de 90 dias.',
+      'salvarEntregaEpi grava tipo EPC quando item consta no epi_catalogo como EPC.',
+    ]},
+    {v:'7.9.523', d:'22/06/2026', itens:[
+      'SOT Reservar Materiais: saldo previsto = programado − reservado − aplicado; excedente exige modal de adicional com motivo/justificativa.',
+      'Requisição com adicional fica Adicional pendente de aprovação; almoxarifado só separa após aprovação do gestor (sem alteração de schema — flags no JSON itens).',
+    ]},
+    {v:'7.9.521', d:'22/06/2026', itens:[
+      'Fix Materiais SAP: reserva automática ao programar projeto (_sotProgramarProjeto) usa await almSalvarMovimentoSeguro — evita movimento fantasma; for...of no lugar de forEach; contador só se persistir OK; dedup inclui reservado_pendente e separacao.',
+    ]},
     {v:'7.9.520', d:'22/06/2026', itens:[
       'Fix SESMT Turmas: restaurados card Aguardando formacao de turma, botao Trilhas por cargo (sequencia de cursos), filtros de turmas e carga de admissao via funcionarios. Removido de Programacao — permanece so em SESMT > Turmas de Treinamento.',
+    ]},
+    {v:'7.9.520', d:'25/06/2026', itens:[
+      'Locações: filtro Produto/Equipamento passa a filtrar contratos (grupos) no nível do grupo — exibe todos os itens do contrato quando qualquer item bate; corrige Editar incluir apenas itens parciais.',
+      'Locações: edição de grupo não sobrescreve depósito individual de cada item a menos que o usuário tenha explicitamente alterado o campo no formulário (lc-dep-original guard).',
     ]},
     {v:'7.9.519', d:'22/06/2026', itens:[
       'Fix: Tratamento Verificar — progFindColab e _colabHistorico definidos; corrige ReferenceError ao carregar lista de ocorrencias (vtCarregar/vtRenderLista).',
@@ -29602,21 +29989,15 @@ var _onlineInterval = null;
 function onlineHeartbeat(){
   if(DEMO || !usuarioLogado) return;
   var modulo = (typeof _mainAtual !== 'undefined' ? _mainAtual : '') || 'sistema';
-  sbFetch('usuarios_online',{filters:['usuario_id=eq.'+usuarioLogado.id],limit:1}).then(function(rows){
-    var payload = {
-      usuario_id:   usuarioLogado.id,
-      nome:         usuarioLogado.nome,
-      perfil:       usuarioLogado.perfil||'',
-      sessao_id:    window._sessaoId||'',
-      ultimo_ping:  new Date().toISOString(),
-      modulo_atual: modulo
-    };
-    if(rows && rows.length){
-      sbUpdate('usuarios_online', payload, 'usuario_id=eq.'+usuarioLogado.id);
-    } else {
-      sbInsert('usuarios_online', payload);
-    }
-  }).catch(function(){});
+  var payload = {
+    usuario_id:   usuarioLogado.id,
+    nome:         usuarioLogado.nome,
+    perfil:       usuarioLogado.perfil||'',
+    sessao_id:    window._sessaoId||'',
+    ultimo_ping:  new Date().toISOString(),
+    modulo_atual: modulo
+  };
+  sbUpsert('usuarios_online', payload, 'usuario_id');
 }
 
 function onlineInit(){
@@ -39722,6 +40103,8 @@ function openEditarColaborador(cid){
       return '<button type="button" id="nc-cor-'+(cor||'none')+'" onclick="ncSelCor(\''+cor+'\')" style="padding:7px;border:2px '+(ativo?'solid':'dashed')+' '+borders[cor]+';border-radius:8px;background:'+(ativo?bgs[cor]:'#fff'+(cor?'':';background:#f5f5f3'))+';cursor:pointer;font-size:12px;font-weight:600;color:'+(ativo?colors[cor]:colors[cor]||'#888')+'">'+labels[cor]+'</button>';
     }).join('')
     +'</div>'
+    +'<div class="fg"><label>Área</label>'
+    +'<select id="nc-area" class="inp" style="width:100%"><option value="">Sem área definida</option><option value="SUPRIMENTOS">SUPRIMENTOS</option><option value="ADMINISTRATIVO">ADMINISTRATIVO</option><option value="FACILITIES">FACILITIES</option><option value="FROTAS">FROTAS</option><option value="SESMT">SESMT</option><option value="TI">TI</option><option value="DIRETORIA">DIRETORIA</option><option value="OPERACIONAL">OPERACIONAL</option></select></div>'
     +'<div class="fg"><label>Escala de trabalho</label>'
     +'<select id="nc-escala-id" class="inp" style="width:100%">'
     +'<option value="">Sem escala definida</option>'
@@ -39748,6 +40131,8 @@ function openEditarColaborador(cid){
     if(selCnh)    selCnh.value    = c.cnh_categoria||'';
     if(selCont)   selCont.value   = c.contrato_id||'';
     if(selEquipe) selEquipe.value = c.equipe_id||'';
+    var selArea = document.getElementById('nc-area');
+    if(selArea) selArea.value = c.area||'';
     // Forçar escala — buscar valor atual do banco para garantir
     var selEscala = document.getElementById('nc-escala-id');
     if(selEscala && c.escala_id) selEscala.value = c.escala_id;
@@ -39807,6 +40192,7 @@ function openEditarColaborador(cid){
       c.equipe_codigo=eqNova?eqNova.codigo:'';
       c.cor_escala=(document.getElementById('nc-cor-escala')||{}).value||null;
       c.escala_id=(document.getElementById('nc-escala-id')||{}).value||null;
+      c.area=(document.getElementById('nc-area')||{}).value||null;
 
       if(!DEMO) sbUpdate('colaboradores',{
         nome:c.nome, re:c.re, cargo:c.cargo, bro:c.bro||null, ativo:c.ativo,
@@ -39817,7 +40203,8 @@ function openEditarColaborador(cid){
         equipe_codigo:c.equipe_codigo||'',
         contrato_id:c.contrato_id||null,
         cor_escala:c.cor_escala||null,
-        escala_id:c.escala_id||null
+        escala_id:c.escala_id||null,
+        area:c.area||null
       },'id=eq.'+cid).then(function(ok){
         if(!ok){
           progShowToast('⚠️ Erro ao salvar colaborador no banco — verifique a conexão e as colunas da tabela.','erro');
@@ -48265,6 +48652,7 @@ function frtVeiculosRender(){
   var contrato = (document.getElementById('frt-v-contrato')||{}).value||'';
   var modelo   = (document.getElementById('frt-v-modelo')||{}).value||'';
   var forn     = (document.getElementById('frt-v-forn')||{}).value||'';
+  var posse    = (document.getElementById('frt-v-posse')||{}).value||'';
 
   // Popular select de modelos com modelos únicos dos veículos
   var selMod = document.getElementById('frt-v-modelo');
@@ -48318,6 +48706,7 @@ function frtVeiculosRender(){
     if(contrato==='__sem__'){ if(v.contrato_id)return false; }
     else if(contrato&&v.contrato_id!==contrato)return false;
     if(forn&&v.fornecedor_id!==forn)return false;
+    if(posse&&v.posse!==posse)return false;
     if(busca&&v.placa.toLowerCase().indexOf(busca)<0&&(v.modelo||'').toLowerCase().indexOf(busca)<0)return false;
     return true;
   });
@@ -48332,6 +48721,7 @@ function frtVeiculosRender(){
     var base = contrato==='__sem__' ? frt_veiculos.filter(function(v){ return !v.contrato_id; })
              : contrato ? frt_veiculos.filter(function(v){ return v.contrato_id===contrato; })
              : frt_veiculos;
+    if(posse) base = base.filter(function(v){ return v.posse===posse; });
     var labelCont = contrato ? ' ✦' : ''; // marca visual quando filtrado por contrato
     m.style.gridTemplateColumns = 'repeat(auto-fit,minmax(108px,1fr))';
     m.innerHTML=[
@@ -52731,6 +53121,10 @@ window.addEventListener('load',async function(){
           <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
           <option>Caminhão cesto</option><option>Caminhão munck</option><option>Van</option>
           <option>Motocicleta</option><option>Outro</option>
+        </select>
+        <select class="inp" id="frt-v-posse" style="width:140px" onchange="frtVeiculosRender()">
+          <option value="">Todas as posses</option>
+          <option>Próprio</option><option>Alugado</option><option>Comodato</option><option>Terceiro</option><option>Outro</option>
         </select>
         <button class="btn btn-pri port-btn-editar-veic" onclick="frtAbrirNovoVeiculo()">+ Novo veículo</button>
       </div>
@@ -57745,11 +58139,11 @@ function almRenderDashboard(){
     {tipo:'epi',        icon:'🦺', titulo:'EPIs',            cor:'#3B6D11', bg:'#EAF3DE',
      desc:'Equipamentos de Proteção Individual — capacetes, luvas, botas, etc.',
      prim:{lbl:'📥 Entrada no estoque', fn:'openEntradaEstoque(\'epi\')'},
-     sec:[{lbl:'Entregar colaborador', aba:'epis', extra:'epiTabView(\'lista\')'},{lbl:'Cadastro EPI', aba:'epis', extra:'epiTabView(\'cad\')'}]},
+     sec:[{lbl:'Entregar colaborador', aba:'epis', extra:'epiTabView(\'entregar\')'},{lbl:'Cadastro EPI', aba:'epis', extra:'epiTabView(\'cad\')'}]},
     {tipo:'epc',        icon:'🛡', titulo:'EPCs',            cor:'#534AB7', bg:'#EEEDFE',
      desc:'Equipamentos de Proteção Coletiva — cones, fitas, sinalização, etc.',
      prim:{lbl:'📥 Entrada no estoque', fn:'openEntradaEstoque(\'epc\')'},
-     sec:[{lbl:'Entregar colaborador', aba:'epis', extra:'epiTabView(\'lista\')'},{lbl:'Cadastro EPC', aba:'epis', extra:'epiTabView(\'cad\')'}]},
+     sec:[{lbl:'Entregar colaborador', aba:'epis', extra:'epiTabView(\'entregar\')'},{lbl:'Cadastro EPC', aba:'epis', extra:'epiTabView(\'cad\')'}]},
     {tipo:'ferramenta', icon:'🔧', titulo:'Ferramentas',     cor:'#854F0B', bg:'#FEF3E2',
      desc:'Ferramentas patrimoniais — elétricas, manuais, medição e corte.',
      prim:{lbl:'📥 Entrada no estoque', fn:'openEntradaEstoque(\'ferramenta\')'},
@@ -57863,7 +58257,7 @@ function _almShowAbaInterna(aba){
       else if(typeof renderAlmList==='function')       renderAlmList();
     }
     else if(aba==='itens')       { iniciarAbaItens(); }
-    else if(aba==='epis')        { if(typeof epiTabView==='function') epiTabView('lista'); else if(typeof renderEpis==='function') renderEpis(); }
+    else if(aba==='epis')        { if(typeof epiTabView==='function') epiTabView('entregar'); else if(typeof renderEpis==='function') renderEpis(); }
     else if(aba==='uniformes')   { if(typeof renderUniformesEntregues==='function') renderUniformesEntregues(); }
     else if(aba==='lavagem')     { if(typeof renderLavagem==='function')             renderLavagem(); }
     else if(aba==='ferramentas') { if(typeof renderFer==='function')                renderFer(); }
@@ -58249,15 +58643,17 @@ function showAlm(fid){
 function renderEpis(){
   var q=(document.getElementById('fil-epi-q')||{}).value||'';
   var t=(document.getElementById('fil-epi-tipo')||{}).value||'';
+  var tbody=document.getElementById('tbody-epis'); if(!tbody) return;
   var rows=filtrarFilial(epis).filter(function(e){return(!q||e.nome.toLowerCase().indexOf(q.toLowerCase())>=0||fNome(e.responsavel_id).toLowerCase().indexOf(q.toLowerCase())>=0)&&(!t||e.tipo===t);});
-  document.getElementById('tbody-epis').innerHTML=rows.map(function(e){
+  tbody.innerHTML=rows.length?rows.map(function(e){
     var s=stV(e.validade);var sc=e.ca_validade?stV(e.ca_validade):null;
+    var cont=(typeof contratos!=='undefined'&&e.contrato_id)?contratos.find(function(c){return c.id===e.contrato_id;}):null;
     return '<tr><td style="font-weight:500">'+e.nome+'</td><td><span class="bdg '+(e.tipo==='EPI'?'info':'purple')+'">'+e.tipo+'</span></td>'
       +'<td style="color:#888">'+e.ca+'</td><td>'+(sc?'<span class="bdg '+sc.cls+'">'+fmtD(e.ca_validade)+'</span>':'—')+'</td>'
-      +'<td>'+fNome(e.responsavel_id)+'</td><td>'+fmtD(e.validade)+'</td>'
-      +'<td>'+(s?'<span class="bdg '+s.cls+'">'+s.lbl+'</span>':'—')+'</td>'
-      +'<td><button class="btn btn-sm" onclick="openEntrega(\''+e.responsavel_id+'\')">Entregar</button></td></tr>';
-  }).join('');
+      +'<td>'+fNome(e.responsavel_id)+'</td><td style="font-size:11px">'+(cont?escHtml(almContratoLabel(cont,false)):'—')+'</td>'
+      +'<td>'+fmtD(e.validade)+'</td><td>'+(s?'<span class="bdg '+s.cls+'">'+s.lbl+'</span>':'—')+'</td>'
+      +'<td><button class="btn btn-sm btn-pri" onclick="openNovaEntregaEpi(\''+e.responsavel_id+'\')">+ Entregar</button></td></tr>';
+  }).join(''):'<tr><td colspan="9" style="padding:2rem;text-align:center;color:#aaa">Nenhuma entrega registrada. Use a aba <b>Entregar colaborador</b>.</td></tr>';
 }
 // ── CADASTRO ÚNICO DE ITENS ──────────────────────────────────────────────────
 var itens_catalogo = []; // {id,codigo,nome,descricao,tipo_item,categoria,unidade_medida,
@@ -58265,7 +58661,8 @@ var itens_catalogo = []; // {id,codigo,nome,descricao,tipo_item,categoria,unidad
                          //  controla_ca,controla_calibracao,controla_devolucao,ativo,observacoes}
 var movimentacoes_itens = []; // {id,item_id,tipo_mov,quantidade,deposito_id,filial_id,
                               //  contrato_id,fornecedor,nota_fiscal,valor_unitario,
-                              //  data_mov,responsavel_id,destino_tipo,destino_id,
+                              //  data_mov,responsavel_id,registrado_por_id,destino_tipo,destino_id,
+                              //  colaborador_id,equipe_id,veiculo_id,projeto_id,previsao_devolucao,
                               //  numeros_serie,condicao,motivo,obs,status}
 
 var TIPOS_ITEM = ['material','ferramenta','epi','epc','vestimenta','equipamento','consumivel','peca','kit','outro'];
@@ -59609,7 +60006,6 @@ function renderLocacoes(){
   var rows = filtrarFilial(locacoes).filter(function(l){
     if(qForn && (l.locadora||'') !== qForn) return false;
     if(qResp && _lcRespTexto(l).toLowerCase() !== qResp.toLowerCase()) return false;
-    if(qProd && (l.nome||'').toLowerCase().indexOf(qProd) < 0) return false;
     if(qSt   && !lcDispHasStatus(l.disponibilidade, qSt)) return false;
     if(qContr){
       var _cq=null; try{_cq=l.contrato_qtds&&typeof l.contrato_qtds==='string'?JSON.parse(l.contrato_qtds):l.contrato_qtds;}catch(e){}
@@ -59633,6 +60029,14 @@ function renderLocacoes(){
     grupos[key].itens.push(l);
     grupos[key].total += Number(l.valor_locacao||0);
   });
+
+  // Filtro de produto/equipamento aplicado no nível do grupo
+  if(qProd){
+    Object.keys(grupos).forEach(function(k){
+      if(!grupos[k].itens.some(function(l){ return (l.nome||'').toLowerCase().indexOf(qProd)>=0; }))
+        delete grupos[k];
+    });
+  }
 
   var lista = document.getElementById('loc-lista-cards');
   if(!lista) return;
@@ -59767,7 +60171,8 @@ function renderLocacoes(){
       +'<div>Item</div><div>Tipo</div><div style="text-align:center">Qtd</div><div style="text-align:right">V.Unit/Mês</div>'
       +'<div>Contratos</div><div style="text-align:right">Total</div><div></div></div>';
 
-    var body = '<div id="loc-body-'+gi+'" style="display:none;margin-top:.75rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
+    var _bodyOpen = (qProd||qSt) ? '' : 'none';
+    var body = '<div id="loc-body-'+gi+'" style="display:'+_bodyOpen+';margin-top:.75rem;border-top:.5px solid #f0efe8;padding-top:.75rem">'
       + _filC + _colHdr
       + g.itens.map(function(l){
           var cq=null; try{cq=l.contrato_qtds&&typeof l.contrato_qtds==='string'?JSON.parse(l.contrato_qtds):l.contrato_qtds;}catch(e){}
@@ -60314,12 +60719,16 @@ function lcAbrirEditarGrupo(idsCsv){
       +'<div class="fg" style="grid-column:1/-1"><label style="font-size:11px">Observações</label><textarea class="inp" id="lc-obs" style="width:100%;height:50px">'+escHtml(g.observacoes||'')+'</textarea></div>'
       +_lcHtmlSecaoContratos(selContr)
       +'</div></div>'
+      +'<input type="hidden" id="lc-dep-original" value="">'
       +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
       +'<button class="btn btn-pri" onclick="lcSalvarEditarGrupo(\''+idsKey+'\')">Salvar contrato ('+itensAtual.length+' itens)</button></div>'
       +'</div></div>');
     setTimeout(function(){
       _lcPreencherFornSelect(fornId, g.locadora||'');
       _lcSincronizarFilialDep(g.filial_id, g.deposito_id);
+      var _depEl=document.getElementById('lc-dep');
+      var _depOrig=document.getElementById('lc-dep-original');
+      if(_depEl&&_depOrig) _depOrig.value=_depEl.value;
     }, 0);
   }).catch(function(){ progShowToast('⚠ Erro ao carregar contrato.'); });
 }
@@ -60331,18 +60740,24 @@ function lcSalvarEditarGrupo(idsCsv){
     if(ini&&fim&&fim<ini){ progShowToast('⚠ A data de término não pode ser anterior à data de início.'); return; }
     var contratosSel=_lcContratosSel();
     var _fd=_lcLerFilialDepForm();
+    var _depOrigEl=document.getElementById('lc-dep-original');
+    var _depOrig=_depOrigEl?_depOrigEl.value:'__unset__';
+    var _depSel=(document.getElementById('lc-dep')||{}).value||'';
     var patch={
       locadora:forn.locadora,
       fornecedor_id:forn.fornecedor_id||null,
       numero_contrato:(document.getElementById('lc-num')||{}).value||null,
       filial_id:_fd.filial_id,
-      deposito_id:_fd.deposito_id,
       inicio:ini,
       termino:fim,
       tem_seguro:(document.getElementById('lc-seg')||{}).value==='true',
       valor_seguro:parseFloat((document.getElementById('lc-vseg')||{}).value)||null,
       observacoes:(document.getElementById('lc-obs')||{}).value||'',
     };
+    // Só atualiza depósito se o usuário explicitamente mudou o valor no formulário
+    if(_depOrig==='__unset__'||_depSel!==_depOrig){
+      patch.deposito_id=_depSel||null;
+    }
     _lcPatchResponsavel(patch);
     if(contratosSel.length===1){
       patch.contrato_id=contratosSel[0].id;
@@ -62052,13 +62467,39 @@ function getContratoColaborador(colab){
   return null;
 }
 
-// ══ EPIs/EPCs — sub-abas (lista / ficha / cadastro) ════════════
+// ══ EPIs/EPCs — sub-abas (entregar / lista / ficha / cadastro) ════════════
+function epiEntregaAtualizarColabs(){
+  var cid = (document.getElementById('epi-ent-contrato')||{}).value||'';
+  var sel = document.getElementById('epi-ent-colab'); if(!sel) return;
+  var cols = (typeof colaboradores!=='undefined')
+    ? colaboradores.filter(function(c){ return c.ativo!==false && (!cid || c.contrato_id===cid); }) : [];
+  var cur = sel.value;
+  sel.innerHTML = '<option value="">Selecione o colaborador...</option>'
+    + cols.map(function(c){ return '<option value="'+c.id+'">'+escHtml(c.nome)+(c.re?' (RE '+c.re+')':'')+'</option>'; }).join('');
+  if(cur && cols.some(function(c){ return String(c.id)===String(cur); })) sel.value = cur;
+}
+function renderEpiEntregaTab(){
+  if(typeof funcs==='undefined'||!funcs.length) window.funcs=(typeof colaboradores!=='undefined'?colaboradores:[]).filter(function(c){return c.ativo!==false;});
+  var selCont = document.getElementById('epi-ent-contrato');
+  if(selCont && selCont.options.length<=1 && typeof contratos!=='undefined'){
+    selCont.innerHTML = '<option value="">Todos os contratos</option>'
+      + contratos.map(function(c){ return '<option value="'+c.id+'">'+escHtml(almContratoLabel(c,true))+'</option>'; }).join('');
+  }
+  epiEntregaAtualizarColabs();
+}
+function epiAbrirModalEntrega(){
+  var fid = (document.getElementById('epi-ent-colab')||{}).value||'';
+  if(!fid){ progShowToast('Selecione o colaborador para entregar EPI/EPC.','erro'); return; }
+  if(typeof funcs==='undefined'||!funcs.length) window.funcs=(typeof colaboradores!=='undefined'?colaboradores:[]).filter(function(c){return c.ativo!==false;});
+  openNovaEntregaEpi(fid);
+}
 function epiTabView(v){
-  ['lista','ficha','cad','fichas'].forEach(function(x){
+  ['entregar','lista','ficha','cad','fichas'].forEach(function(x){
     var d=document.getElementById('epi-view-'+x); if(d) d.style.display=(x===v?'':'none');
     var b=document.getElementById('epiv-btn-'+x); if(b){ if(x===v) b.classList.add('btn-pri'); else b.classList.remove('btn-pri'); }
   });
-  if(v==='lista'){ if(typeof renderEpis==='function') renderEpis(); }
+  if(v==='entregar'){ renderEpiEntregaTab(); }
+  else if(v==='lista'){ if(typeof renderEpis==='function') renderEpis(); }
   else if(v==='ficha'){ if(typeof iniciarFichaEpi==='function') iniciarFichaEpi(); }
   else if(v==='cad'){ renderEpiCatalogo(); }
   else if(v==='fichas'){ renderEpiFichas(); }
@@ -62124,6 +62565,7 @@ function epiCarregarCatalogo(cb){
 }
 function _epiCatDatalist(id){ return '<datalist id="'+id+'">'+(_epiCatalogo||[]).filter(function(x){return x.ativo!==false;}).map(function(x){ return '<option value="'+escHtml(x.nome)+'">'+escHtml(x.tipo||'EPI')+(x.ca?' · CA '+x.ca:'')+'</option>'; }).join('')+'</datalist>'; }
 function _epiCatCa(nome){ var x=(_epiCatalogo||[]).find(function(i){return (i.nome||'').toLowerCase()===String(nome||'').toLowerCase();}); return x?(x.ca||''):''; }
+function _epiCatTipo(nome){ var x=(_epiCatalogo||[]).find(function(i){return (i.nome||'').toLowerCase()===String(nome||'').toLowerCase();}); return (x&&x.tipo==='EPC')?'EPC':'EPI'; }
 function renderEpiCatalogo(){
   var box=document.getElementById('epi-view-cad'); if(!box) return;
   if(!_epiCatCarregado && !DEMO){ box.innerHTML='<div class="card" style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando catálogo...</div>'; epiCarregarCatalogo(function(){ var d=document.getElementById('epi-view-cad'); if(d&&d.style.display!=='none') renderEpiCatalogo(); }); return; }
@@ -62341,11 +62783,12 @@ function salvarEntregaEpi(){
   var cont = getContratoColaborador(f); var cid=f.contrato_id||(cont?cont.id:null);
   var criados=[], valesCriados=[], proms=[];
   itens.forEach(function(it,idx){
+    var tipoItem=_epiCatTipo(it.nome.trim());
     var novo={ id:'epi'+Date.now()+'_'+idx, nome:it.nome.trim(), quantidade:parseInt(it.qtd)||1, ca:it.ca||'',
       ca_validade:it.ca_validade||null, data_entrega:data, data_prevista_substituicao:null, motivo_entrega:motivo, observacoes:obs,
-      responsavel_id:funcId, contrato_id:cid, cargo_funcao_no_momento:(f.cargo||f.funcao||''), equipe_id:f.equipe_id||null, status:'Ativo', assinatura_url:null, tipo:'EPI' };
+      responsavel_id:funcId, contrato_id:cid, cargo_funcao_no_momento:(f.cargo||f.funcao||''), equipe_id:f.equipe_id||null, status:'Ativo', assinatura_url:null, tipo:tipoItem };
     epis.push(novo); criados.push(novo);
-    if(!DEMO) proms.push(sbInsert('epis',{ nome:novo.nome,quantidade:novo.quantidade,ca:novo.ca,ca_validade:novo.ca_validade,data_entrega:novo.data_entrega,data_prevista_substituicao:novo.data_prevista_substituicao,motivo_entrega:novo.motivo_entrega,observacoes:novo.observacoes,responsavel_id:novo.responsavel_id,contrato_id:novo.contrato_id,cargo_funcao_no_momento:novo.cargo_funcao_no_momento,equipe_id:novo.equipe_id,status:'Ativo',tipo:'EPI' })
+    if(!DEMO) proms.push(sbInsert('epis',{ nome:novo.nome,quantidade:novo.quantidade,ca:novo.ca,ca_validade:novo.ca_validade,data_entrega:novo.data_entrega,data_prevista_substituicao:novo.data_prevista_substituicao,motivo_entrega:novo.motivo_entrega,observacoes:novo.observacoes,responsavel_id:novo.responsavel_id,contrato_id:novo.contrato_id,cargo_funcao_no_momento:novo.cargo_funcao_no_momento,equipe_id:novo.equipe_id,status:'Ativo',tipo:tipoItem })
       .then(function(r){ if(r&&r[0]&&r[0].id) novo.id=r[0].id; }).catch(function(e){console.error('salvarEntregaEpi:',e);}));
     // Mau uso → gera vale (custo estoque + 30%)
     if(it.mauUso){
@@ -63780,10 +64223,18 @@ function entAtualizarSaldoEntrega(){
   var depSaldo = depId ? almSaldoEstoqueItem(it, depId) : null;
   var depMap = almDepositosComSaldoItem(it);
   var depKeys = Object.keys(depMap).filter(function(k){ return k!=='__sem__'; });
+  var saldoSemDep = Number(depMap['__sem__'])||0;
   if(!depId && depKeys.length===1 && selDep){
     selDep.value = depKeys[0];
     depId = depKeys[0];
     depSaldo = almSaldoEstoqueItem(it, depId);
+  }
+  if(!depId && !depKeys.length && saldoSemDep>0 && selDep && selDep.options.length>1){
+    selDep.selectedIndex = 1;
+    depId = selDep.value;
+  }
+  if(depId && (Number(depSaldo)||0)===0 && saldoSemDep>0){
+    depSaldo = saldoSemDep;
   }
   var qtdPed = parseInt((document.getElementById('ent-qtd')||{}).value, 10) || 1;
   var html = '';
@@ -63801,6 +64252,7 @@ function entAtualizarSaldoEntrega(){
         ? '<div style="font-size:10px;color:#A32D2D;margin-top:5px">⚠ Insuficiente para entregar '+qtdPed+' un. (disponível: '+depSaldo+')</div>'
         : '<div style="font-size:10px;color:#3B6D11;margin-top:5px">✓ Cobre a quantidade de '+qtdPed+' un.</div>')
       +(total !== depSaldo ? '<div style="font-size:10px;color:#888;margin-top:3px">Total em todos os depósitos: '+total+' un.</div>' : '')
+      +(saldoSemDep>0 && depId ? '<div style="font-size:10px;color:#854F0B;margin-top:3px">ℹ️ Parte do saldo estava sem depósito — será consolidado nesta saída.</div>' : '')
       +'</div>';
   } else {
     html += '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.55rem .75rem">'
@@ -63839,6 +64291,9 @@ async function almReconciliarEstoqueItem(itemCat, depId, opts){
   var diff = saldoMov - saldoEst;
   if(diff === 0) return {ok:true, synced:false, saldoMov:saldoMov, saldoEst:saldoEst};
   if(diff < 0){
+    if(opts.permitirReduzir === false){
+      return {ok:true, synced:false, saldoMov:saldoMov, saldoEst:saldoEst, movIncompleto:true};
+    }
     var rows = almListarLinhasEstoqueItem(itemCat).filter(function(e){
       return String(e.deposito_id||'')===String(depId) && (Number(e.saldo)||0)>0;
     });
@@ -63888,9 +64343,15 @@ function almResolverLinhaEstoqueItem(itemCat, opts){
   opts = opts || {};
   var qtd = Number(opts.qtd)||0;
   var rows = almListarLinhasEstoqueItem(itemCat);
-  if(opts.filId) rows = rows.filter(function(e){ return String(e.filial_id||'')===String(opts.filId); });
+  if(opts.filId){
+    rows = rows.filter(function(e){
+      return !e.filial_id || String(e.filial_id||'')===String(opts.filId);
+    });
+  }
   if(opts.depId){
-    rows = rows.filter(function(e){ return String(e.deposito_id||'')===String(opts.depId); });
+    rows = rows.filter(function(e){
+      return !e.deposito_id || String(e.deposito_id||'')===String(opts.depId);
+    });
   }
   if(opts.estoqueId){
     var fix = rows.find(function(e){ return String(e.id)===String(opts.estoqueId); });
@@ -63933,7 +64394,7 @@ async function almRegistrarEntregaPatrimonio(opts){
     if(!opts.contrato_id) return {ok:false, msg:'Selecione o local de destino (contrato)'};
 
   await almConsolidarEstoqueItemDeposito(itemCat, opts.deposito_id, opts.filial_id);
-  await almReconciliarEstoqueItem(itemCat, opts.deposito_id, {filial_id:opts.filial_id, permitirAcrescentar:false});
+  await almReconciliarEstoqueItem(itemCat, opts.deposito_id, {filial_id:opts.filial_id, permitirAcrescentar:false, permitirReduzir:false});
 
   var linhaEst = almResolverLinhaEstoqueItem(itemCat, {
     qtd:qtd,
@@ -63954,6 +64415,7 @@ async function almRegistrarEntregaPatrimonio(opts){
   var baixa = await almBaixarSaldoEstoquePatrimonio({row:linhaEst, qtd:qtd, itemCat:itemCat});
   if(!baixa.ok) return baixa;
 
+  var uidReg = usuarioLogado?usuarioLogado.id:null;
   var payload = {
     item_id: itemId,
     tipo_mov: 'entrega',
@@ -63963,18 +64425,20 @@ async function almRegistrarEntregaPatrimonio(opts){
     contrato_id: opts.contrato_id,
     destino_tipo: 'contrato',
     destino_id: opts.contrato_id,
+    colaborador_id: opts.colaborador_id||null,
+    equipe_id: opts.equipe_id||null,
+    veiculo_id: opts.veiculo_id||null,
+    projeto_id: opts.projeto_id||null,
     previsao_devolucao: opts.previsao_devolucao||null,
     data_mov: opts.data_mov||dataHoje(),
     obs: almJuntarObs(opts.obs, almObsMetaEntrega(opts), 'estoque_id:'+linhaEst.id),
-    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    registrado_por_id: uidReg,
+    responsavel_id: uidReg,
     status: 'Em uso'
   };
 
   if(DEMO){
-    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload, {
-      colaborador_id: opts.colaborador_id||null,
-      equipe_id: opts.equipe_id||null
-    }));
+    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
   } else {
     var insMov = await sbInsert('movimentacoes_itens', payload);
     if(!insMov){
@@ -63985,11 +64449,7 @@ async function almRegistrarEntregaPatrimonio(opts){
       });
       return {ok:false, msg:itemCat.nome+': falha ao registrar entrega (saldo revertido)'};
     }
-    movimentacoes_itens.push(Object.assign({}, payload, insMov[0], {
-      colaborador_id: opts.colaborador_id||null,
-      equipe_id: opts.equipe_id||null,
-      previsao_devolucao: opts.previsao_devolucao||null
-    }));
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
   }
   return {ok:true, nome:itemCat.nome, qtd:qtd, estoque_id:linhaEst.id};
 }
@@ -64013,6 +64473,8 @@ async function almRegistrarDevolucaoPatrimonio(opts){
   var novoStatus = (cond==='Bom estado'||cond==='Com desgaste') ? 'Disponível'
     : (cond==='Necessita manutenção') ? 'Em manutenção' : 'Fora de uso';
 
+  var uidReg = usuarioLogado?usuarioLogado.id:null;
+  var colabOrig = movOrig.colaborador_id||almColaboradorIdFromMov(movOrig);
   var payload = {
     item_id: movOrig.item_id,
     tipo_mov: 'devolucao',
@@ -64023,13 +64485,19 @@ async function almRegistrarDevolucaoPatrimonio(opts){
     destino_tipo: 'deposito',
     destino_id: depDest,
     movimentacao_origem_id: movId,
+    colaborador_id: colabOrig||null,
+    equipe_id: movOrig.equipe_id||null,
+    veiculo_id: movOrig.veiculo_id||null,
+    projeto_id: movOrig.projeto_id||null,
+    previsao_devolucao: movOrig.previsao_devolucao||null,
     condicao: cond,
     data_mov: opts.data_mov||dataHoje(),
     obs: almJuntarObs(opts.obs, almObsMetaEntrega({
-      colaborador_id: movOrig.colaborador_id||almColaboradorIdFromMov(movOrig),
+      colaborador_id: colabOrig,
       equipe_id: movOrig.equipe_id||null
     }), almAnexarObsOrigem('', 'contrato', movOrig.contrato_id||null)),
-    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    registrado_por_id: uidReg,
+    responsavel_id: uidReg,
     status: novoStatus
   };
 
@@ -65090,7 +65558,7 @@ function sesmtShowTab(name){
     if(s2) s2.innerHTML='<option value="">Selecione</option>'+funcs.map(function(f){return '<option value="'+f.id+'">'+f.nome+'</option>';}).join('');
     if(typeof renderNR6==='function') renderNR6();
   }
-  else if(name==='epis')        { if(typeof epiTabView==='function') epiTabView('lista'); else if(typeof renderEpis==='function') renderEpis(); }
+  else if(name==='epis')        { if(typeof epiTabView==='function') epiTabView('entregar'); else if(typeof renderEpis==='function') renderEpis(); }
   else if(name==='ferramentas') { if(typeof renderFer==='function') renderFer(); }
   else if(name==='locacoes')    { if(typeof renderLocacoes==='function') renderLocacoes(); }
   else if(name==='estoque')     { if(typeof renderEstoque==='function') renderEstoque(); }
@@ -65521,19 +65989,47 @@ async function lcAnalisarContrato(){
 </div>
 <div id="pg-sesmt-epis" class="hidden">
   <div style="display:flex;gap:6px;margin-bottom:.6rem;flex-wrap:wrap">
-    <button id="epiv-btn-lista" class="btn btn-sm btn-pri" onclick="epiTabView('lista')">📋 Entregas</button>
+    <button id="epiv-btn-entregar" class="btn btn-sm btn-pri" onclick="epiTabView('entregar')">🦺 Entregar colaborador</button>
+    <button id="epiv-btn-lista" class="btn btn-sm" onclick="epiTabView('lista')">📋 Entregas registradas</button>
     <button id="epiv-btn-ficha" class="btn btn-sm" onclick="epiTabView('ficha')">👤 Ficha por colaborador</button>
     <button id="epiv-btn-cad" class="btn btn-sm" onclick="epiTabView('cad')">🗂 Cadastro EPI/EPC</button>
     <button id="epiv-btn-fichas" class="btn btn-sm" onclick="epiTabView('fichas')">📄 Fichas assinadas</button>
   </div>
 
-  <div id="epi-view-lista">
+  <div id="epi-view-entregar">
+    <div class="card">
+      <div class="ch"><span class="ct">🦺 Entregar EPI/EPC ao colaborador</span></div>
+      <div style="padding:1rem 1.25rem;max-width:560px">
+        <div style="background:#EBF4FD;border-radius:8px;padding:.55rem .75rem;margin-bottom:.85rem;font-size:11px;color:#185FA5">
+          Selecione o colaborador e clique em <b>Registrar entrega</b> para abrir o formulário com kit, assinatura e ficha NR-6.
+        </div>
+        <div style="display:flex;flex-direction:column;gap:.65rem">
+          <div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato (filtro)</label>
+            <select class="inp" id="epi-ent-contrato" style="width:100%" onchange="epiEntregaAtualizarColabs()">
+              <option value="">Todos os contratos</option>
+            </select></div>
+          <div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Colaborador *</label>
+            <select class="inp" id="epi-ent-colab" style="width:100%">
+              <option value="">Selecione o colaborador...</option>
+            </select></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:.35rem">
+            <button class="btn btn-pri" onclick="epiAbrirModalEntrega()">+ Registrar entrega</button>
+            <button class="btn" onclick="openEpiKits()" title="Gerenciar kits modelo">📦 Kits modelo</button>
+            <button class="btn" onclick="epiTabView('fichas')">📄 Ver fichas assinadas</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="epi-view-lista" style="display:none">
     <div class="card">
       <div class="ch"><span class="ct">EPIs e EPCs entregues</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <select class="inp" id="fil-epi-tipo" style="width:100px" onchange="renderEpis()"><option value="">Todos</option><option>EPI</option><option>EPC</option></select>
           <input class="inp" id="fil-epi-q" placeholder="Buscar..." style="width:130px" oninput="renderEpis()"/>
-          <button class="btn" onclick="openEntradaEstoque()">📥 Entrada no estoque</button>
+          <button class="btn btn-pri" onclick="epiTabView('entregar')">+ Entregar colaborador</button>
+          <button class="btn" onclick="openEntradaEstoque('epi')">📥 Entrada no estoque</button>
         </div>
       </div>
       <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
@@ -69236,6 +69732,10 @@ function comgasRemoverFoto(ncId, idx) {
           <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
           <option>Caminhão cesto</option><option>Caminhão munck</option><option>Van</option>
           <option>Motocicleta</option><option>Outro</option>
+        </select>
+        <select class="inp" id="frt-v-posse" style="width:140px" onchange="frtVeiculosRender()">
+          <option value="">Todas as posses</option>
+          <option>Próprio</option><option>Alugado</option><option>Comodato</option><option>Terceiro</option><option>Outro</option>
         </select>
         <button class="btn btn-pri port-btn-editar-veic" onclick="frtAbrirNovoVeiculo()">+ Novo veículo</button>
       </div>
