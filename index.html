@@ -3529,11 +3529,20 @@ body.insp-campo-ativo #app-content-area {
             <option value="Noite">Noite</option>
           </select>
         </div>
-        <div>
-          <div style="font-size:11px;color:#888;margin-bottom:3px">Tipo de equipe</div>
-          <select class="inp" id="tma-rel-tipo" style="width:150px">
-            <option value="">Todos</option>
-          </select>
+        <div style="position:relative;min-width:180px">
+          <div style="font-size:11px;color:#888;margin-bottom:3px">Tipo de equipe <span style="font-weight:400;color:#aaa">(múltipla)</span></div>
+          <button type="button" class="inp" id="tma-rel-tipo-btn" onclick="relTmaToggleTipoMulti(event)"
+            style="width:190px;text-align:left;cursor:pointer;font-size:12px;display:flex;justify-content:space-between;align-items:center;gap:6px"
+            title="Clique para escolher um ou mais tipos">
+            <span id="tma-rel-tipo-label">Todos</span><span style="color:#888;font-size:10px">▾</span>
+          </button>
+          <div id="tma-rel-tipo-panel" style="display:none;position:absolute;left:0;top:100%;margin-top:2px;z-index:80;background:#fff;border:.5px solid #e0dfd8;border-radius:8px;box-shadow:0 6px 18px #0002;padding:8px;min-width:220px;max-height:240px;overflow:auto"
+            onclick="event.stopPropagation()">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 2px;cursor:pointer;border-bottom:.5px solid #f0efe8;margin-bottom:4px">
+              <input type="checkbox" id="tma-rel-tipo-all" checked onchange="relTmaTipoMultiToggleAll(this.checked)"/> Todos
+            </label>
+            <div id="tma-rel-tipo-opts"></div>
+          </div>
         </div>
         <div style="display:flex;gap:6px;align-items:flex-end">
           <button class="btn btn-pri" onclick="relTmaGerar()">🔍 Gerar</button>
@@ -9482,18 +9491,12 @@ function relTmaInicializar(){
     });
   }
   var selEq = document.getElementById('tma-rel-eq');
-  var selTipo = document.getElementById('tma-rel-tipo');
   if(selEq && selEq.options.length <= 1){
     (equipes_disp||[]).filter(function(e){return e.contrato_id===TMA_CID&&e.status==='Ativo';})
       .sort(function(a,b){return (a.codigo||'').localeCompare(b.codigo||'');})
       .forEach(function(e){ selEq.appendChild(new Option(e.codigo+' — '+(e.nome||''), e.id)); });
   }
-  if(selTipo && selTipo.options.length <= 1){
-    var tipos = [...new Set((equipes_disp||[]).filter(function(e){return e.contrato_id===TMA_CID;})
-      .map(function(e){return e.nome||'';}).filter(Boolean))];
-    // Buscar tipos de equipe
-    (tipos_equipe||[]).forEach(function(t){ selTipo.appendChild(new Option(t.nome, t.id)); });
-  }
+  relTmaPopularTiposMulti();
   // Selects dos novos relatórios (saída S/N e horas logadas)
   ['tma-saiu-eq','tma-horas-eq','tma-fat-eq'].forEach(function(id){
     var sel=document.getElementById(id);
@@ -9517,6 +9520,103 @@ function relTmaInicializar(){
     if(a&&!a.value) a.value=ini7;
     if(b&&!b.value) b.value=hoje;
   });
+}
+
+/** Multi-select de tipos de equipe — relatório escala TMA Oeste */
+function relTmaPopularTiposMulti(){
+  var box=document.getElementById('tma-rel-tipo-opts');
+  if(!box) return;
+  if(box.getAttribute('data-ready')==='1' && box.children.length) return;
+  var tipos=(tipos_equipe||[]).slice().sort(function(a,b){
+    return String(a.nome||'').localeCompare(String(b.nome||''),'pt-BR',{sensitivity:'base'});
+  });
+  if(!tipos.length){
+    box.innerHTML='<div style="font-size:11px;color:#aaa;padding:4px">Nenhum tipo cadastrado</div>';
+    return;
+  }
+  box.innerHTML=tipos.map(function(t){
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 2px;cursor:pointer">'
+      +'<input type="checkbox" class="tma-rel-tipo-chk" value="'+escHtml(String(t.id))+'" onchange="relTmaTipoMultiOnChange()"/>'
+      +escHtml(t.nome||t.id)
+      +'</label>';
+  }).join('');
+  box.setAttribute('data-ready','1');
+  var all=document.getElementById('tma-rel-tipo-all');
+  if(all) all.checked=true;
+  relTmaAtualizarLabelTipos();
+}
+
+function relTmaToggleTipoMulti(ev){
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  relTmaPopularTiposMulti();
+  var panel=document.getElementById('tma-rel-tipo-panel');
+  if(!panel) return;
+  var open=panel.style.display==='none'||!panel.style.display;
+  panel.style.display=open?'block':'none';
+  if(open){
+    setTimeout(function(){
+      document.addEventListener('click', relTmaFecharTipoMultiOutside, {once:true});
+    }, 0);
+  }
+}
+function relTmaFecharTipoMultiOutside(e){
+  var panel=document.getElementById('tma-rel-tipo-panel');
+  var btn=document.getElementById('tma-rel-tipo-btn');
+  if(!panel) return;
+  if(panel.contains(e.target) || (btn&&btn.contains(e.target))) {
+    document.addEventListener('click', relTmaFecharTipoMultiOutside, {once:true});
+    return;
+  }
+  panel.style.display='none';
+}
+function relTmaTipoMultiToggleAll(checked){
+  document.querySelectorAll('#tma-rel-tipo-opts .tma-rel-tipo-chk').forEach(function(chk){
+    chk.checked=!!checked;
+  });
+  relTmaAtualizarLabelTipos();
+}
+function relTmaTipoMultiOnChange(){
+  var chks=Array.prototype.slice.call(document.querySelectorAll('#tma-rel-tipo-opts .tma-rel-tipo-chk'));
+  var all=document.getElementById('tma-rel-tipo-all');
+  if(all){
+    var nOn=chks.filter(function(c){return c.checked;}).length;
+    all.checked = nOn===0 || nOn===chks.length;
+    // Se marcou algum específico, "Todos" fica desmarcado (exceto se marcou todos)
+    if(nOn>0 && nOn<chks.length) all.checked=false;
+    if(nOn===chks.length && chks.length) all.checked=true;
+  }
+  relTmaAtualizarLabelTipos();
+}
+/** Retorna [] = todos os tipos; ou lista de tipo_id selecionados */
+function relTmaGetTiposSelecionados(){
+  var chks=Array.prototype.slice.call(document.querySelectorAll('#tma-rel-tipo-opts .tma-rel-tipo-chk'));
+  if(!chks.length) return [];
+  var sel=chks.filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+  var all=document.getElementById('tma-rel-tipo-all');
+  // Nenhum marcado ou "Todos" marcado sem parcial → sem filtro
+  if(!sel.length) return [];
+  if(all && all.checked && sel.length===chks.length) return [];
+  if(all && all.checked && sel.length===0) return [];
+  // Se "Todos" marcado e nenhum específico: sem filtro
+  if(all && all.checked && !chks.some(function(c){return c.checked;})) return [];
+  // Seleção parcial
+  if(sel.length && sel.length<chks.length) return sel;
+  if(sel.length===chks.length) return []; // todos os itens = equivalente a Todos
+  return sel;
+}
+function relTmaAtualizarLabelTipos(){
+  var lab=document.getElementById('tma-rel-tipo-label');
+  if(!lab) return;
+  var ids=relTmaGetTiposSelecionados();
+  if(!ids.length){ lab.textContent='Todos'; return; }
+  var nomes=ids.map(function(id){
+    var t=(tipos_equipe||[]).find(function(x){return String(x.id)===String(id);});
+    return t?(t.nome||id):id;
+  });
+  if(nomes.length===1) lab.textContent=nomes[0];
+  else if(nomes.length<=2) lab.textContent=nomes.join(', ');
+  else lab.textContent=nomes.length+' tipos selecionados';
+  lab.title=nomes.join(', ');
 }
 
 // Helper: Exportar como XLS real (Excel abre diretamente)
@@ -10509,7 +10609,12 @@ function relTmaVeiculos(){
     var manuts  = res[2]||[];
     var veicsFrt= res[3]||[];
 
-    if(veicsFrt.length) frt_veiculos = veicsFrt;
+    if(veicsFrt.length){
+      // Não sobrescrever a frota global com subset TMA — mescla por id
+      var byId={}; (frt_veiculos||[]).forEach(function(v){ if(v&&v.id) byId[v.id]=v; });
+      veicsFrt.forEach(function(v){ if(v&&v.id) byId[v.id]=v; });
+      frt_veiculos=Object.keys(byId).map(function(k){return byId[k];});
+    }
 
     var tmaEqIds={};
     equipes_disp.forEach(function(e){if(e.contrato_id===TMA_CID) tmaEqIds[e.id]=true;});
@@ -10688,7 +10793,10 @@ function relTmaGerar(){
   var busca= ((document.getElementById('tma-rel-colab')||{}).value||'').toLowerCase().trim();
   var turno= (document.getElementById('tma-rel-turno')||{}).value||'';
   var base = (document.getElementById('tma-rel-base')||{}).value||'';
-  var tipoId=(document.getElementById('tma-rel-tipo')||{}).value||'';
+  var tipoIds = typeof relTmaGetTiposSelecionados==='function' ? relTmaGetTiposSelecionados() : [];
+  // Fechar painel multi-select se aberto
+  var tipoPanel=document.getElementById('tma-rel-tipo-panel');
+  if(tipoPanel) tipoPanel.style.display='none';
 
   if(!ini){progShowToast('⚠ Informe a data inicial.');return;}
   if(!fim) fim=ini;
@@ -10696,20 +10804,31 @@ function relTmaGerar(){
   var wrap = document.getElementById('tma-rel-resultado');
   wrap.innerHTML = '<div style="text-align:center;padding:2rem;color:#888">⏳ Gerando relatório...</div>';
 
-  // Buscar composições e veículos do período em paralelo
+  // Buscar composições, veículos, equipes e celulares do período em paralelo
   var filters = ['data=gte.'+ini,'data=lte.'+fim];
   Promise.all([
-    sbFetch('composicao_dia',{filters:filters,order:'data,equipe_id'}),
-    sbFetch('prog_veiculos_dia',{filters:filters}),
-    sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'})
+    sbFetch('composicao_dia',{filters:filters,order:'data,equipe_id',limit:5000}),
+    sbFetch('prog_veiculos_dia',{filters:filters,limit:5000}),
+    sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo',limit:3000}),
+    sbFetch('celulares_empresa',{order:'numero',limit:3000}).catch(function(){return [];})
   ]).then(function(res){
     var comps = res[0]||[];
     var veicsDB = res[1]||[];
     var eqsDB = res[2]||[];
-    // Atualizar equipes em memória com dados frescos (pega telefone atualizado)
-    eqsDB.forEach(function(e){
-      var idx = equipes_disp.findIndex(function(x){return x.id===e.id;});
-      if(idx>=0) equipes_disp[idx]=e; else equipes_disp.push(e);
+    var celsDB = res[3];
+    if(Array.isArray(celsDB)) _celulares = celsDB;
+    // Atualizar equipes em memória com dados frescos (preserva supervisor/telefone)
+    mergeEquipesDispFromFetch(eqsDB);
+    // Mescla celular_id da memória (escala aberta) quando o fetch veio sem o campo
+    (composicao_dia||[]).forEach(function(mem){
+      if(!mem || !mem.celular_id) return;
+      var dMem=(mem.data||'').toString().split('T')[0];
+      if(!dMem || dMem<ini || dMem>fim) return;
+      var hit=comps.find(function(c){
+        return String(c.equipe_id)===String(mem.equipe_id)
+          && (c.data||'').toString().split('T')[0]===dMem;
+      });
+      if(hit && !hit.celular_id) hit.celular_id=mem.celular_id;
     });
     // Índice de veículos por equipe+data+slot
     var veicIdx = {};
@@ -10736,11 +10855,15 @@ function relTmaGerar(){
       var eq = equipes_disp.find(function(e){return e.id===c.equipe_id;});
       return eq && (eq.nome||'').toUpperCase()===base.toUpperCase();
     });
-    // Filtrar por tipo
-    if(tipoId) comps = comps.filter(function(c){
-      var eq = equipes_disp.find(function(e){return e.id===c.equipe_id;});
-      return eq && eq.tipo_id===tipoId;
-    });
+    // Filtrar por tipo (múltipla escolha)
+    if(tipoIds && tipoIds.length){
+      var tipoSet={};
+      tipoIds.forEach(function(id){ tipoSet[String(id)]=true; });
+      comps = comps.filter(function(c){
+        var eq = equipes_disp.find(function(e){return e.id===c.equipe_id;});
+        return eq && eq.tipo_id && tipoSet[String(eq.tipo_id)];
+      });
+    }
 
     if(!comps.length){
       wrap.innerHTML='<div class="card" style="text-align:center;padding:2rem;color:#888">Nenhuma escala encontrada para os filtros selecionados.</div>';
@@ -10767,6 +10890,15 @@ function relTmaGerar(){
         return eq ? (eq.hora_inicio||'')+'–'+(eq.hora_fim||'') : '';
       }).filter(Boolean))];
       var horTitulo = horariosUnicos.length===1 ? ' DAS '+horariosUnicos[0].replace('–',' ÀS ') : '';
+
+      var baseLabel = base ? base : (function(){
+        var bases = compsData.map(function(c){ var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;}); return eq?(eq.nome||'').toUpperCase():''; }).filter(Boolean);
+        var embu=bases.filter(function(b){return b==='EMBU';}).length;
+        var lapa=bases.filter(function(b){return b==='LAPA';}).length;
+        if(embu>0&&lapa===0) return 'EMBU';
+        if(lapa>0&&embu===0) return 'LAPA';
+        return 'EMBU / LAPA';
+      })();
 
       // Build table rows
       var rows = [];
@@ -10798,27 +10930,19 @@ function relTmaGerar(){
         var veic = frt_veiculos&&comp.veiculo_id ? frt_veiculos.find(function(v){return v.id===comp.veiculo_id;}) : null;
         var tipoVeic = veic ? (veic.tipo||veic.modelo||'—') : (veicDia&&veicDia.modelo ? veicDia.modelo : '—');
         var turnoLabel = (eq.hora_inicio||'')+(eq.hora_fim?' – '+eq.hora_fim:'');
+        var telEq = tmaTelefoneEquipe(eq, comp);
 
         membros.forEach(function(m, idx){
           rows.push({
-            eq: eq, comp: comp, membro: m, placa: placa,
+            eq: eq, comp: comp, membro: m, placa: placa, telefone: telEq,
             tipoVeic: tipoVeic, turnoLabel: turnoLabel, isFirst: idx===0, total: membros.length
           });
-          todosRegistros.push({data: dataFmt, equipe: eq.codigo, bro: m.bro||'', nome: m.nome||'', re: m.re||'',
-            telefone: eq.telefone||'', placa: placa, supervisor: eq.supervisor||'', veiculo: tipoVeic, turno: turnoLabel});
+          todosRegistros.push({data: dataFmt, base: baseLabel, equipe: eq.codigo, bro: m.bro||'', nome: m.nome||'', re: m.re||'',
+            telefone: telEq, placa: placa, supervisor: tmaSupervisorEquipe(eq), veiculo: tipoVeic, turno: turnoLabel});
         });
       });
 
       if(!rows.length) return;
-
-      var baseLabel = base ? base : (function(){
-        var bases = compsData.map(function(c){ var eq=equipes_disp.find(function(e){return e.id===c.equipe_id;}); return eq?(eq.nome||'').toUpperCase():''; }).filter(Boolean);
-        var embu=bases.filter(function(b){return b==='EMBU';}).length;
-        var lapa=bases.filter(function(b){return b==='LAPA';}).length;
-        if(embu>0&&lapa===0) return 'EMBU';
-        if(lapa>0&&embu===0) return 'LAPA';
-        return 'EMBU / LAPA';
-      })();
 
       html += '<div class="card" style="margin-bottom:1.5rem;overflow:hidden">'
         +'<div style="background:#1a1a18;color:#fff;text-align:center;padding:.75rem 1rem">'
@@ -10827,18 +10951,15 @@ function relTmaGerar(){
         +'<div style="overflow-x:auto">'
         +'<table style="width:100%;border-collapse:collapse;font-size:11px">'
         +'<thead><tr style="background:#1a1a18;color:#fff">'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">EQUIPES</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">BR0</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">COMPONENTES</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">RE</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">TELEFONE</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">PLACA</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;max-width:80px;min-width:70px;word-wrap:break-word;text-align:center">OPERA A REDE PRIMÁRIA</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;max-width:80px;min-width:70px;word-wrap:break-word;text-align:center">OPERA RELIGADOR AUTOMÁTICO</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;max-width:90px;min-width:80px;word-wrap:break-word;text-align:center">CHECK LIST FERRAMENTAS E EPC</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">SUPERVISOR DO TURNO</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">VEÍCULO</th>'
-        +'<th style="padding:6px 8px;border:1px solid #333;white-space:nowrap">TURNO</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">EQUIPES</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">BR0</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">COMPONENTES</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">RE</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">TELEFONE</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">PLACA</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">SUPERVISOR DO TURNO</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">VEÍCULO</th>'
+        +'<th style="padding:8px 8px;border:1px solid #333;white-space:nowrap;font-size:13px">TURNO</th>'
         +'</tr></thead><tbody>';
       // Agrupar rows por equipe para mesclar células
       var gruposEq = [];
@@ -10853,7 +10974,7 @@ function relTmaGerar(){
       });
 
       gruposEq.forEach(function(grp, gi){
-        var bgRow = gi%2===0 ? '#fff' : '#f8f8f6';
+        var bgRow = gi%2===0 ? '#fff' : '#EFE8D3';
         grp.rows.forEach(function(r, ri){
           html += '<tr style="background:'+bgRow+'">';
           // Células mescladas na primeira linha do grupo
@@ -10864,12 +10985,9 @@ function relTmaGerar(){
           html += '<td style="padding:5px 8px;border:1px solid #e0dfd8;font-weight:500">'+escHtml(r.membro.nome||'')+'</td>';
           html += '<td style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center">'+escHtml(r.membro.re||'')+'</td>';
           if(ri===0){
-            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;font-weight:500">'+escHtml(r.eq.telefone||'')+'</td>';
+            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;font-weight:500">'+escHtml(r.telefone||'')+'</td>';
             html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;font-weight:700;letter-spacing:1px">'+escHtml(r.placa)+'</td>';
-            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;color:#3B6D11;font-weight:600">SIM</td>';
-            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;color:#3B6D11;font-weight:600">SIM</td>';
-            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;color:#3B6D11;font-weight:600">SIM</td>';
-            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle">'+escHtml(r.eq.supervisor||'')+'</td>';
+            html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;white-space:nowrap">'+escHtml(tmaSupervisorEquipe(r.eq))+'</td>';
             html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle">'+escHtml(r.tipoVeic)+'</td>';
             html += '<td rowspan="'+grp.rows.length+'" style="padding:5px 8px;border:1px solid #e0dfd8;text-align:center;vertical-align:middle;font-weight:600;color:#185FA5">'+escHtml(r.turnoLabel)+'</td>';
           }
@@ -10896,53 +11014,132 @@ function relTmaGerar(){
   });
 }
 
-function _tmaTituloRelatorio(){
-  var ini=(document.getElementById('tma-rel-ini')||{}).value||'';
-  var fim=(document.getElementById('tma-rel-fim')||{}).value||'';
-  var base=((document.getElementById('tma-rel-base')||{}).value||'').toUpperCase();
-  function fmtData(iso){ if(!iso)return''; var p=iso.split('-'); return p[2]+'/'+p[1]+'/'+p[0]; }
-  var periodo=fmtData(ini)+(fim&&fim!==ini?' a '+fmtData(fim):'');
-  return 'FORMAÇÃO EQUIPES TMA-CENA'+(periodo?'   '+periodo:'')+(base?'  –  '+base:'');
+/** Mescla equipe_disp do banco sem apagar supervisor/telefone já conhecidos em memória. */
+function mergeEquipeDispRow(existing, incoming){
+  if(!incoming) return existing||null;
+  if(!existing) return incoming;
+  var out=Object.assign({}, existing, incoming);
+  function _txt(v){ return v!=null && String(v).trim()!=='' ? String(v).trim() : ''; }
+  var incSup=_txt(incoming.supervisor), exSup=_txt(existing.supervisor);
+  if(!incSup && exSup){
+    out.supervisor=existing.supervisor;
+  } else if(incSup && exSup && incSup!==exSup && existing._supSavedAt && (Date.now()-existing._supSavedAt)<60000){
+    // Cadastro acabou de gravar — não deixar um fetch atrasado restaurar o supervisor antigo
+    out.supervisor=existing.supervisor;
+  }
+  var incTel=_txt(incoming.telefone), exTel=_txt(existing.telefone);
+  if(!incTel && exTel){
+    out.telefone=existing.telefone;
+  } else if(incTel && exTel && incTel!==exTel && existing._telSavedAt && (Date.now()-existing._telSavedAt)<60000){
+    out.telefone=existing.telefone;
+  }
+  if(existing._supSavedAt) out._supSavedAt=existing._supSavedAt;
+  if(existing._telSavedAt) out._telSavedAt=existing._telSavedAt;
+  return out;
+}
+function mergeEquipesDispFromFetch(rows){
+  if(!rows||!rows.length) return;
+  rows.forEach(function(e){
+    if(!e||!e.id) return;
+    var idx=equipes_disp.findIndex(function(x){return x.id===e.id;});
+    if(idx>=0) equipes_disp[idx]=mergeEquipeDispRow(equipes_disp[idx], e);
+    else equipes_disp.push(e);
+  });
 }
 
-function _tmaBuildTableHtml(regs){
-  function esc(v){return (v||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-  var colDefs=[
-    {l:'DATA',w:'15mm'},{l:'EQUIPES',w:'18mm'},{l:'BR0',w:'8mm'},
-    {l:'COMPONENTES',w:'40mm'},{l:'RE',w:'11mm'},{l:'TELEFONE',w:'20mm'},
-    {l:'PLACA',w:'13mm'},{l:'REDE PRIM.',w:'14mm'},{l:'RELIGADOR',w:'14mm'},
-    {l:'CHECK LIST EPC',w:'17mm'},{l:'SUPERVISOR',w:'34mm'},{l:'VEICULO',w:'22mm'},{l:'TURNO',w:'11mm'}
-  ];
-  var cg='<colgroup>'+colDefs.map(function(c){return '<col style="width:'+c.w+'">';}).join('')+'</colgroup>';
-  var thead='<thead><tr>'+colDefs.map(function(c){return '<th>'+c.l+'</th>';}).join('')+'</tr></thead>';
-  var tbody='<tbody>'+regs.map(function(r){
-    return '<tr><td>'+esc(r.data)+'</td><td>'+esc(r.equipe)+'</td><td>'+esc(r.bro)+'</td>'
-      +'<td>'+esc(r.nome)+'</td><td>'+esc(r.re)+'</td><td>'+esc(r.telefone)+'</td>'
-      +'<td>'+esc(r.placa)+'</td><td style="text-align:center">SIM</td>'
-      +'<td style="text-align:center">SIM</td><td style="text-align:center">SIM</td>'
-      +'<td>'+esc(r.supervisor)+'</td><td>'+esc(r.veiculo)+'</td><td>'+esc(r.turno)+'</td></tr>';
-  }).join('')+'</tbody>';
-  return '<table>'+cg+thead+tbody+'</table>';
+/** Nome do supervisor atrelado à equipe de disponibilidade (cadastro). */
+function tmaSupervisorEquipe(eq){
+  if(!eq) return '';
+  function _nomeSup(raw){
+    var s=raw!=null?String(raw).trim():'';
+    if(!s) return '';
+    if(typeof isUUID==='function' && isUUID(s)){
+      var u=(typeof usuarios_lista!=='undefined'?usuarios_lista:[]).find(function(x){return String(x.id)===s;});
+      if(u&&u.nome) return String(u.nome).trim();
+      var c=(colaboradores||[]).find(function(x){return String(x.id)===s;});
+      if(c&&c.nome) return String(c.nome).trim();
+      return '';
+    }
+    return s;
+  }
+  var direto=_nomeSup(eq.supervisor);
+  if(direto) return direto;
+  // Fallback: mesma equipe em memória com supervisor preenchido
+  if(eq.id){
+    var same=(equipes_disp||[]).find(function(e){
+      return e && String(e.id)===String(eq.id) && e.supervisor && String(e.supervisor).trim();
+    });
+    var n1=_nomeSup(same&&same.supervisor);
+    if(n1) return n1;
+  }
+  // Fallback: mesmo código em equipes_disp / equipes (PLPT)
+  var cod=String(eq.codigo||'').trim();
+  if(cod){
+    var byCod=(equipes_disp||[]).find(function(e){
+      return e && String(e.codigo||'').trim()===cod && e.supervisor && String(e.supervisor).trim();
+    });
+    var n2=_nomeSup(byCod&&byCod.supervisor);
+    if(n2) return n2;
+    var plpt=(equipes||[]).find(function(e){
+      return e && (String(e.codigo||'').trim()===cod || String(e.nome_equipe||'').indexOf(cod)>=0)
+        && e.supervisor && String(e.supervisor).trim();
+    });
+    var n3=_nomeSup(plpt&&plpt.supervisor);
+    if(n3) return n3;
+  }
+  return '';
 }
 
-function _tmaPrintOverlay(titulo, tableHtml){
+/**
+ * Telefone da equipe no relatório de escala:
+ * 1) celular do dia (composicao_dia.celular_id → celulares_empresa)
+ * 2) telefone cadastrado em equipes_disp
+ */
+function tmaTelefoneEquipe(eq, comp){
+  if(comp && comp.celular_id){
+    var cel=(_celulares||[]).find(function(c){return String(c.id)===String(comp.celular_id);});
+    if(cel && cel.numero) return String(cel.numero).trim();
+  }
+  // Fallback: se celular_id veio como número “cru” (legado)
+  if(comp && comp.celular_id && /^\d{10,11}$/.test(String(comp.celular_id).replace(/\D/g,''))){
+    return String(comp.celular_id).replace(/\D/g,'');
+  }
+  if(eq && eq.telefone!=null && String(eq.telefone).trim()) return String(eq.telefone).trim();
+  // Último recurso: busca por código da equipe no cache de celulares já atribuídos na memória
+  if(eq && eq.id){
+    var mem=(composicao_dia||[]).find(function(c){
+      return String(c.equipe_id)===String(eq.id) && c.celular_id;
+    });
+    if(mem && mem.celular_id){
+      var cel2=(_celulares||[]).find(function(c){return String(c.id)===String(mem.celular_id);});
+      if(cel2 && cel2.numero) return String(cel2.numero).trim();
+    }
+  }
+  return '';
+}
+
+// PDF e Imagem reaproveitam o HTML já renderizado na tela (wrap.innerHTML), para
+// sair sempre idêntico ao relatório em tela (mesma mesclagem de célula, zebra,
+// badge de equipe etc.) — nada de reconstruir uma tabela paralela.
+function _tmaPrintOverlay(contentHtml){
   var old=document.getElementById('_tma-print-overlay');if(old)old.remove();
   var olds=document.getElementById('_tma-print-style');if(olds)olds.remove();
   var div=document.createElement('div');
   div.id='_tma-print-overlay';
   div.style.cssText='display:none;position:fixed;top:0;left:0;width:100%;z-index:-1';
-  div.innerHTML='<h2>'+titulo+'</h2>'+tableHtml;
+  div.innerHTML=contentHtml;
   document.body.appendChild(div);
   var estilo=document.createElement('style');
   estilo.id='_tma-print-style';
   estilo.textContent='@media print{'
     +'@page{size:A4 landscape;margin:5mm}'
     +'body > *{display:none!important}'
-    +'#_tma-print-overlay{display:block!important;font-family:Arial,sans-serif;font-size:7px}'
-    +'#_tma-print-overlay h2{font-size:11px;font-weight:700;margin:0 0 5px 0;text-align:center;color:#000;letter-spacing:1px}'
-    +'#_tma-print-overlay table{border-collapse:collapse;width:100%;table-layout:fixed}'
-    +'#_tma-print-overlay th{background:#1a1a18!important;color:#fff!important;border:1px solid #444;padding:2px;font-size:6.5px;text-align:center;vertical-align:bottom;line-height:1.3;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
-    +'#_tma-print-overlay td{border:1px solid #aaa;padding:2px 3px;font-size:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}'
+    +'#_tma-print-overlay,#_tma-print-overlay *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;overflow:visible!important}'
+    +'#_tma-print-overlay{display:block!important;font-family:Arial,sans-serif}'
+    +'#_tma-print-overlay .card{break-inside:avoid;margin-bottom:10px!important;box-shadow:none!important}'
+    +'#_tma-print-overlay table{font-size:8px!important}'
+    +'#_tma-print-overlay th{font-size:8px!important;padding:3px 4px!important}'
+    +'#_tma-print-overlay td{font-size:7.5px!important;padding:2px 4px!important}'
     +'}';
   document.head.appendChild(estilo);
   window.print();
@@ -10953,9 +11150,8 @@ function _tmaPrintOverlay(titulo, tableHtml){
 }
 function relTmaExportarPDF(){
   var wrap = document.getElementById('tma-rel-resultado');
-  var regs = wrap && wrap._registros;
-  if(!regs||!regs.length){progShowToast('Gere o relatorio primeiro.');return;}
-  _tmaPrintOverlay(_tmaTituloRelatorio(), _tmaBuildTableHtml(regs));
+  if(!wrap || !wrap._registros || !wrap._registros.length){progShowToast('Gere o relatorio primeiro.');return;}
+  _tmaPrintOverlay(wrap.innerHTML);
 }
 
 function relTmaExportarExcel(){
@@ -10963,18 +11159,58 @@ function relTmaExportarExcel(){
   var regs = wrap._registros;
   if(!regs||!regs.length){progShowToast('Gere o relatorio primeiro.');return;}
 
-  var rows = [['DATA','EQUIPE','BR0','COMPONENTES','RE','TELEFONE','PLACA','OPERA REDE PRIMARIA','OPERA RELIGADOR','CHECK LIST EPC','SUPERVISOR','VEICULO','TURNO']];
-  regs.forEach(function(r){
-    rows.push([r.data,r.equipe,r.bro,r.nome,r.re,r.telefone,r.placa,'SIM','SIM','SIM',r.supervisor,r.veiculo,r.turno]);
-  });
+  var cab = ['EQUIPE','BR0','COMPONENTES','RE','TELEFONE','PLACA','SUPERVISOR DO TURNO','VEÍCULO','TURNO'];
+  var nCols = cab.length;
 
   function escXml(v){ return (v||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function celula(v, idx, mergeDown){
+    var attrs = (idx?' ss:Index="'+idx+'"':'') + (mergeDown?' ss:MergeDown="'+mergeDown+'"':'');
+    return '<Cell'+attrs+'><Data ss:Type="String">'+escXml(v)+'</Data></Cell>';
+  }
+
+  // Agrupar por data (banner de título próprio, igual tela/PDF/Imagem) e,
+  // dentro de cada data, por equipe — pra mesclar EQUIPE/TELEFONE/PLACA/
+  // SUPERVISOR/VEICULO/TURNO em vez de repetir em cada linha.
+  var datas = [];
+  regs.forEach(function(r){
+    var d = datas[datas.length-1];
+    if(!d || d.data!==r.data){ d = {data:r.data, base:r.base, grupos:[]}; datas.push(d); }
+    var g = d.grupos[d.grupos.length-1];
+    if(!g || g.equipe!==r.equipe){ g = {equipe:r.equipe, itens:[]}; d.grupos.push(g); }
+    g.itens.push(r);
+  });
+
+  var linhas = '';
+  datas.forEach(function(dg){
+    linhas += '<Row ss:StyleID="titulo"><Cell ss:MergeAcross="'+(nCols-1)+'"><Data ss:Type="String">'
+      +escXml('FORMAÇÃO EQUIPES TMA-CENA   '+dg.data+' –'+dg.base)+'</Data></Cell></Row>';
+    linhas += '<Row ss:StyleID="hdr">'+cab.map(function(c){return celula(c);}).join('')+'</Row>';
+    dg.grupos.forEach(function(g, gi){
+      var n = g.itens.length;
+      var styleAttr = gi%2===0 ? '' : ' ss:StyleID="alt"';
+      var md = n>1 ? n-1 : 0;
+      g.itens.forEach(function(r, ri){
+        if(ri===0){
+          linhas += '<Row'+styleAttr+'>'
+            +celula(r.equipe,null,md)+celula(r.bro)+celula(r.nome)+celula(r.re)
+            +celula(r.telefone,null,md)+celula(r.placa,null,md)+celula(r.supervisor,null,md)
+            +celula(r.veiculo,null,md)+celula(r.turno,null,md)+'</Row>';
+        } else {
+          linhas += '<Row'+styleAttr+'>'+celula(r.bro,2)+celula(r.nome)+celula(r.re)+'</Row>';
+        }
+      });
+    });
+  });
+
   var xml = '<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?>'
     +'<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">'
+    +'<Styles>'
+    +'<Style ss:ID="titulo"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="14"/><Interior ss:Color="#1A1A18" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    +'<Style ss:ID="hdr"><Font ss:Bold="1" ss:Color="#FFFFFF" ss:Size="12"/><Interior ss:Color="#1A1A18" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+    +'<Style ss:ID="alt"><Interior ss:Color="#EFE8D3" ss:Pattern="Solid"/></Style>'
+    +'</Styles>'
     +'<Worksheet ss:Name="TMA"><Table>'
-    +rows.map(function(row){
-      return '<Row>'+row.map(function(c){return '<Cell><Data ss:Type="String">'+escXml(c)+'</Data></Cell>';}).join('')+'</Row>';
-    }).join('')
+    +linhas
     +'</Table></Worksheet></Workbook>';
   var blob = new Blob([xml],{type:'application/vnd.ms-excel;charset=utf-8;'});
   var link = document.createElement('a');
@@ -10984,47 +11220,95 @@ function relTmaExportarExcel(){
   progShowToast('Arquivo Excel (.xls) gerado.');
 }
 
+// Transforma <table> com rowspan em <div> CSS Grid equivalente, só na cópia
+// usada pra gerar a imagem — o html2canvas tem bug conhecido com <td rowspan>
+// (mede altura errado, texto sobrepõe/esmaece nas células mescladas). Grid não
+// passa pelo código de tabela dele, só por caixas normais (bem mais confiável).
+// Assume a estrutura fixa gerada logo acima (relTmaGerar): 9 colunas — EQUIPES
+// (rowspan) · BR0/COMPONENTES/RE (por pessoa, colunas 2-4) · TELEFONE/PLACA/
+// SUPERVISOR/VEICULO/TURNO (rowspan) — linhas de continuação da equipe sempre
+// têm só as 3 células por pessoa, começando na coluna 2.
+function _tmaTabelaParaGrid(table){
+  var theadTr = table.querySelector('thead tr');
+  if(!theadTr) return;
+  var headerCells = theadTr.children;
+  var nCols = headerCells.length;
+  var headerBg = theadTr.getAttribute('style')||'';
+
+  var grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat('+nCols+',max-content);width:100%;';
+
+  Array.prototype.forEach.call(headerCells, function(th, i){
+    var d=document.createElement('div');
+    d.innerHTML = th.innerHTML;
+    d.setAttribute('style', headerBg+';'+(th.getAttribute('style')||'')+';display:flex;align-items:center;box-sizing:border-box;');
+    d.style.gridColumn = String(i+1);
+    d.style.gridRow = '1';
+    grid.appendChild(d);
+  });
+
+  var linha = 2;
+  Array.prototype.forEach.call(table.querySelectorAll('tbody tr'), function(tr){
+    var trBg = tr.getAttribute('style')||'';
+    var isFirst = tr.children.length===nCols;
+    var colStart = isFirst ? 1 : 2;
+    Array.prototype.forEach.call(tr.children, function(td, ci){
+      var span = parseInt(td.getAttribute('rowspan')||'1',10);
+      var d=document.createElement('div');
+      d.innerHTML = td.innerHTML;
+      d.setAttribute('style', trBg+';'+(td.getAttribute('style')||'')+';display:flex;align-items:center;box-sizing:border-box;');
+      d.style.gridColumn = String(colStart+ci);
+      d.style.gridRow = span>1 ? (linha+' / span '+span) : String(linha);
+      grid.appendChild(d);
+    });
+    linha++;
+  });
+
+  table.parentNode.replaceChild(grid, table);
+}
+
 function relTmaImagem(){
   var wrap = document.getElementById('tma-rel-resultado');
-  var regs = wrap && wrap._registros;
-  if(!regs||!regs.length){progShowToast('Gere o relatorio primeiro.');return;}
-  var titulo = _tmaTituloRelatorio();
-  var tableHtml = _tmaBuildTableHtml(regs);
+  if(!wrap || !wrap._registros || !wrap._registros.length){progShowToast('Gere o relatorio primeiro.');return;}
 
-  // Cria div visível para captura
   var old=document.getElementById('_tma-img-cap');if(old)old.remove();
   var div=document.createElement('div');
   div.id='_tma-img-cap';
-  div.style.cssText='position:fixed;top:0;left:0;width:1200px;background:#fff;padding:12px 14px;font-family:Arial,sans-serif;font-size:9px;z-index:99999';
-  div.innerHTML='<div style="font-size:13px;font-weight:700;text-align:center;margin-bottom:6px;letter-spacing:1px">'+titulo+'</div>'
-    +'<style>#_tma-img-cap table{border-collapse:collapse;width:100%;table-layout:fixed}'
-    +'#_tma-img-cap th{background:#1a1a18;color:#fff;border:1px solid #444;padding:3px 2px;font-size:8px;text-align:center;vertical-align:bottom;line-height:1.3}'
-    +'#_tma-img-cap td{border:1px solid #aaa;padding:2px 4px;font-size:8.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}'
-    +'</style>'+tableHtml;
+  div.style.cssText='position:fixed;top:0;left:0;width:max-content;max-width:none;background:#fff;padding:18px;font-family:Arial,sans-serif;z-index:99999';
+  div.innerHTML = wrap.innerHTML;
   document.body.appendChild(div);
+  div.querySelectorAll('[style*="overflow"]').forEach(function(el){ el.style.overflow='visible'; });
+  div.querySelectorAll('.card').forEach(function(el){ el.style.boxShadow='none'; });
+  div.querySelectorAll('table').forEach(function(t){ _tmaTabelaParaGrid(t); });
 
   function capturar(){
-    html2canvas(div,{scale:2,backgroundColor:'#ffffff',useCORS:true,logging:false}).then(function(canvas){
-      div.remove();
-      canvas.toBlob(function(blob){
-        if(navigator.clipboard && navigator.clipboard.write){
-          navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(function(){
-            progShowToast('Imagem copiada! Cole com Ctrl+V no WhatsApp.');
-          }).catch(function(){
+    // Aguarda dois frames pra garantir que o layout/paint do clone já assentou
+    // antes do html2canvas medir e desenhar (evita texto sobreposto/cortado).
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){
+      html2canvas(div,{scale:2,backgroundColor:'#ffffff',useCORS:true,logging:false}).then(function(canvas){
+        div.remove();
+        canvas.toBlob(function(blob){
+          if(!blob){ progShowToast('Erro ao gerar imagem.'); return; }
+          if(navigator.clipboard && navigator.clipboard.write){
+            navigator.clipboard.write([new ClipboardItem({'image/png':blob})]).then(function(){
+              progShowToast('Imagem copiada! Cole com Ctrl+V no WhatsApp.');
+            }).catch(function(){
+              var url=URL.createObjectURL(blob);
+              var a=document.createElement('a');a.href=url;a.download='relatorio_tma.png';a.click();
+              progShowToast('Copiado falhou — imagem salva como PNG.');
+            });
+          } else {
             var url=URL.createObjectURL(blob);
             var a=document.createElement('a');a.href=url;a.download='relatorio_tma.png';a.click();
-            progShowToast('Copiado falhou — imagem salva como PNG.');
-          });
-        } else {
-          var url=URL.createObjectURL(blob);
-          var a=document.createElement('a');a.href=url;a.download='relatorio_tma.png';a.click();
-          progShowToast('Imagem salva como PNG (use no WhatsApp Web).');
-        }
-      },'image/png');
-    }).catch(function(e){
-      div.remove();
-      progShowToast('Erro ao capturar imagem: '+e.message);
-    });
+            progShowToast('Imagem salva como PNG (use no WhatsApp Web).');
+          }
+        },'image/png');
+      }).catch(function(e){
+        div.remove();
+        console.error('relTmaImagem erro:', e);
+        progShowToast('Erro ao capturar imagem: '+e.message);
+      });
+    }); });
   }
 
   if(typeof html2canvas==='undefined'){
@@ -13916,17 +14200,9 @@ function eqdCarregarStatus(){
   // Buscar inativas ou todas do banco
   var filters = statusFil ? ['status=eq.'+statusFil] : [];
   progShowToast('⏳ Carregando equipes...');
-  sbFetch('equipes_disp',{filters:filters,order:'codigo'}).then(function(res){
+  sbFetch('equipes_disp',{filters:filters,order:'codigo',limit:3000}).then(function(res){
     if(res&&res.length){
-      // Mesclar com equipes_disp em memória (evitar duplicatas)
-      res.forEach(function(eq){
-        if(!equipes_disp.find(function(e){return e.id===eq.id;})){
-          equipes_disp.push(eq);
-        } else {
-          var idx = equipes_disp.findIndex(function(e){return e.id===eq.id;});
-          if(idx>=0) equipes_disp[idx] = eq;
-        }
-      });
+      mergeEquipesDispFromFetch(res);
     }
     renderEqDispVis();
   }).catch(function(){ renderEqDispVis(); });
@@ -14278,12 +14554,15 @@ function openNovaEquipeDisp(){
     }).join('');
   var tipoOpts='<option value="">— Selecione o tipo —</option>'
     +tipos_equipe.map(function(t){return '<option value="'+t.id+'">'+t.nome+'</option>';}).join('');
+  var cidIni=cidAtual||'';
+  var supOptsNovo=_buildSupOpts(cidIni,'');
   setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Nova Equipe de Disponibilidade</h3>'
     +'<div class="g2">'
     +'<div class="fg"><label>Código</label><input id="ned-cod" class="inp" placeholder="EJN101" oninput="nedAutoBase()" style="width:100%"/></div>'
     +'<div class="fg"><label>Base</label><input id="ned-nome" class="inp" placeholder="LAPA ou EMBU" style="width:100%"/></div>'
     +'<div class="fg"><label>Tipo de equipe</label><select id="ned-tipo" class="inp" style="width:100%">'+tipoOpts+'</select></div>'
-    +'<div class="fg"><label>Contrato</label><select id="ned-cont" class="inp" style="width:100%">'+contOpts+'</select></div>'
+    +'<div class="fg"><label>Contrato</label><select id="ned-cont" class="inp" style="width:100%" onchange="nedAtualizarSupNovo()">'+contOpts+'</select></div>'
+    +'<div class="fg"><label>Supervisor <span style="font-size:10px;color:#888">(do contrato)</span></label><select id="ned-sup" class="inp" style="width:100%">'+supOptsNovo+'</select></div>'
     +'<div class="fg"><label>Status</label><select id="ned-status-novo" class="inp" style="width:100%">'
     +'<option value="Ativo" selected>Ativo</option>'
     +'<option value="Inativo">Inativo</option>'
@@ -14291,6 +14570,11 @@ function openNovaEquipeDisp(){
     +'</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" id="btn-salvar-ned">Salvar</button></div></div></div>');
+  window.nedAtualizarSupNovo=function(){
+    var cid=(document.getElementById('ned-cont')||{}).value||'';
+    var sel=document.getElementById('ned-sup');
+    if(sel) sel.innerHTML=_buildSupOpts(cid,'');
+  };
   document.getElementById('btn-salvar-ned').onclick=function(){
     var cod=(document.getElementById('ned-cod')||{}).value.trim();
     var nome=(document.getElementById('ned-nome')||{}).value.trim();
@@ -14298,6 +14582,7 @@ function openNovaEquipeDisp(){
     var novo={id:'ed'+Date.now(),codigo:cod,nome:nome,
       tipo_id:(document.getElementById('ned-tipo')||{}).value||'',
       contrato_id:(document.getElementById('ned-cont')||{}).value||'',
+      supervisor:(document.getElementById('ned-sup')||{}).value||'',
       status:(document.getElementById('ned-status-novo')||{}).value||'Ativo'};
     equipes_disp.push(novo);
     if(!DEMO){
@@ -14306,6 +14591,7 @@ function openNovaEquipeDisp(){
         nome:novo.nome,
         tipo_id:novo.tipo_id,
         contrato_id:novo.contrato_id,
+        supervisor:novo.supervisor||null,
         status:novo.status
       }).then(function(res){
         if(res&&res[0]&&res[0].id){
@@ -14537,13 +14823,19 @@ function openEditarEqDisp(eid){
     if(sel) sel.innerHTML=buildVeicOptsTMA(cid);
   };
 
-  document.getElementById('btn-ed-ned').onclick=function(){
+  document.getElementById('btn-ed-ned').onclick=async function(){
     var horaIni=(document.getElementById('ned-hini')||{}).value.trim()||null;
     var horaFim=(document.getElementById('ned-hfim')||{}).value.trim()||null;
+    var prev={
+      codigo:e.codigo,nome:e.nome,tipo_id:e.tipo_id,contrato_id:e.contrato_id,
+      supervisor:e.supervisor,status:e.status,hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,
+      turno_tipo:e.turno_tipo,escala:e.escala,veiculo_padrao_id:e.veiculo_padrao_id,telefone:e.telefone
+    };
     e.codigo=(document.getElementById('ned-cod')||{}).value.trim()||e.codigo;
     e.nome=(document.getElementById('ned-nome')||{}).value.trim()||e.nome;
     e.tipo_id=(document.getElementById('ned-tipo')||{}).value||e.tipo_id;
     e.contrato_id=(document.getElementById('ned-cont')||{}).value||e.contrato_id;
+    e.supervisor=(document.getElementById('ned-sup')||{}).value||'';
     e.status=(document.getElementById('ned-status')||{}).value||e.status;
     e.hora_inicio=horaIni;
     e.hora_fim=horaFim;
@@ -14551,14 +14843,57 @@ function openEditarEqDisp(eid){
     e.escala=(document.getElementById('ned-escala')||{}).value||null;
     e.veiculo_padrao_id=(document.getElementById('ned-veic')||{}).value||null;
     e.telefone=(document.getElementById('ned-tel')||{}).value.trim()||null;
-    if(!DEMO)sbUpdate('equipes_disp',{
+    if(DEMO){ closeModal();renderEqDispVis(); return; }
+    var btn=this; btn.disabled=true; btn.textContent='Salvando...';
+    var payload={
       codigo:e.codigo,nome:e.nome,tipo_id:e.tipo_id,
       contrato_id:e.contrato_id,status:e.status,
+      supervisor:e.supervisor||null,
       hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,
       turno_tipo:e.turno_tipo,escala:e.escala,
       veiculo_padrao_id:e.veiculo_padrao_id||null,
       telefone:e.telefone||null
-    },'id=eq.'+eid);
+    };
+    var ok=await sbUpdate('equipes_disp',payload,'id=eq.'+eid);
+    // Se o PATCH completo falhar (ex.: coluna ausente no schema cache), tenta só supervisor/telefone
+    if(!ok){
+      ok=await sbUpdate('equipes_disp',{
+        supervisor:e.supervisor||null,
+        telefone:e.telefone||null
+      },'id=eq.'+eid);
+    }
+    if(!ok){
+      Object.assign(e, prev);
+      btn.disabled=false; btn.textContent='Salvar';
+      if(typeof progShowToast==='function'){
+        progShowToast('⚠ Erro ao salvar supervisor/equipe. Confira o SQL sql_equipes_disp_supervisor.sql e o console.','erro');
+      } else {
+        alert('Erro ao salvar equipe. Verifique se a coluna supervisor existe (SQL equipes_disp).');
+      }
+      return;
+    }
+    e._supSavedAt=Date.now();
+    e._telSavedAt=Date.now();
+    // Confirma no banco — se a coluna não existir, o PATCH pode “passar” sem o campo
+    try{
+      var ver=await sbFetch('equipes_disp',{filters:['id=eq.'+eid],limit:1});
+      var row=ver&&ver[0];
+      if(row){
+        if(row.supervisor===undefined){
+          Object.assign(e, prev);
+          if(typeof progShowToast==='function') progShowToast('⚠ Coluna supervisor ausente no banco. Rode SQLS/sql_equipes_disp_supervisor.sql','erro');
+          btn.disabled=false; btn.textContent='Salvar';
+          return;
+        }
+        if(String(row.supervisor||'')!==String(e.supervisor||'')){
+          e.supervisor=row.supervisor||'';
+          if(typeof progShowToast==='function') progShowToast('⚠ Supervisor não gravou no banco (valor revertido).','erro');
+          btn.disabled=false; btn.textContent='Salvar';
+          return;
+        }
+      }
+    }catch(_e){}
+    if(typeof progShowToast==='function') progShowToast('✅ Equipe salva');
     closeModal();renderEqDispVis();
   };
 }
@@ -16622,7 +16957,11 @@ function _getSupervisoresContrato(cid){
   var supsCad = equipes.filter(function(e){ return e.contrato_id===cid; })
     .map(function(e){ return e.supervisor; }).filter(Boolean);
 
-  return [...new Set([...supUsr, ...supColabs, ...supsCad])].sort();
+  // Supervisores já atrelados em equipes de disponibilidade (TMA)
+  var supsDisp = (equipes_disp||[]).filter(function(e){ return e.contrato_id===cid; })
+    .map(function(e){ return e.supervisor; }).filter(Boolean);
+
+  return [...new Set([...supUsr, ...supColabs, ...supsCad, ...supsDisp])].sort();
 }
 
 function _buildSupOpts(cid, selected){
@@ -16756,9 +17095,14 @@ function openEditarEquipe(eid){
     if(sel) sel.innerHTML=buildVeicOpts(cid);
   };
 
-  document.getElementById('btn-ed-eq').onclick=function(){
+  document.getElementById('btn-ed-eq').onclick=async function(){
     var horaIni=(document.getElementById('ne-hini')||{}).value.trim()||null;
     var horaFim=(document.getElementById('ne-hfim')||{}).value.trim()||null;
+    var prev={
+      contrato_id:e.contrato_id,supervisor:e.supervisor,nome_equipe:e.nome_equipe,cargo:e.cargo,
+      status:e.status,hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,turno_tipo:e.turno_tipo,
+      escala:e.escala,veiculo_padrao_id:e.veiculo_padrao_id,telefone:e.telefone
+    };
     e.contrato_id=(document.getElementById('ne-cont')||{}).value||e.contrato_id;
     e.supervisor=(document.getElementById('ne-sup')||{}).value||e.supervisor;
     e.nome_equipe=(document.getElementById('ne-eq')||{}).value||e.nome_equipe;
@@ -16770,12 +17114,23 @@ function openEditarEquipe(eid){
     e.escala=(document.getElementById('ne-escala')||{}).value||null;
     e.veiculo_padrao_id=(document.getElementById('ne-veic')||{}).value||null;
     e.telefone=(document.getElementById('ne-tel')||{}).value.trim()||null;
-    if(!DEMO)sbUpdate('equipes',{
+    if(DEMO){ closeModal();renderEquipes(); return; }
+    var btn=this; btn.disabled=true; btn.textContent='Salvando...';
+    var ok=await sbUpdate('equipes',{
       contrato_id:e.contrato_id,supervisor:e.supervisor,nome_equipe:e.nome_equipe,
       cargo:e.cargo,status:e.status,hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,
       turno_tipo:e.turno_tipo,escala:e.escala,veiculo_padrao_id:e.veiculo_padrao_id||null,
       telefone:e.telefone||null
     },'id=eq.'+eid);
+    if(!ok){
+      Object.assign(e, prev);
+      btn.disabled=false; btn.textContent='Salvar';
+      if(typeof progShowToast==='function') progShowToast('⚠ Erro ao salvar equipe/supervisor no banco.','erro');
+      else alert('Erro ao salvar equipe.');
+      return;
+    }
+    e._supSavedAt=Date.now();
+    if(typeof progShowToast==='function') progShowToast('✅ Equipe salva');
     closeModal();renderEquipes();
   };
 }
@@ -37567,10 +37922,52 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.764',
-  data:   '31/07/2026',
-  build:  '20260731-1615',
+  numero: '7.9.778',
+  data:   '05/08/2026',
+  build:  '20260805-0830',
   log: [
+    {v:'7.9.778', d:'05/08/2026', itens:[
+      'Frotas → Manutenções → Controle: campo Validade (ensaio/inspeção etc.); em branco = sem prazo; alerta na lista e notificações aos 20 e 10 dias; SQL sql_frotas_manut_validade.sql.',
+    ]},
+    {v:'7.9.777', d:'05/08/2026', itens:[
+      'Frotas → Veículos: alterar placa e retroceder status exigem justificativa + autorização do gerente (admin/gestor); exclusão bloqueada se o veículo estiver em execução; SQL sql_frotas_veiculo_aprovacoes.sql.',
+    ]},
+    {v:'7.9.776', d:'04/08/2026', itens:[
+      'Cadastro de equipes: salvar supervisor confirma no banco (antes falhava em silêncio e o Atualizar trazia o antigo); merge não sobrescreve supervisor recém-gravado com fetch atrasado.',
+    ]},
+    {v:'7.9.775', d:'04/08/2026', itens:[
+      'Programação de Equipes: remover placa de linha sem programação passa a apagar de fato (banco + composição do dia) e não volta mais após Atualizar — localStorage deixa de restaurar placa removida.',
+    ]},
+    {v:'7.9.774', d:'04/08/2026', itens:[
+      'Relatório Escala TMA Oeste: SUPERVISOR DO TURNO volta a aparecer — merge de equipes_disp deixa de apagar supervisor/telefone; relatório recarrega com limite alto e resolve nome (texto, UUID ou fallback por código).',
+    ]},
+    {v:'7.9.773', d:'03/08/2026', itens:[
+      'Frotas → Manutenções: busca por placa (ex.: 9D41 / FTM9D41) consulta o banco e resolve placa via veiculo_id; se o veículo está em manutenção sem chamado, mostra aviso na lista.',
+    ]},
+    {v:'7.9.772', d:'03/08/2026', itens:[
+      'Frotas → Veículos/Manutenções: pesquisa de placa encontra veículos em manutenção (ex.: FTM9D41, DZH7G12) — carrega frota completa (sem corte 1000), normaliza hífen/espaço na busca e não some baixados quando há texto na pesquisa.',
+    ]},
+    {v:'7.9.771', d:'02/08/2026', itens:[
+      'Viabilidade → Simular faturamento: ao final, Resultado de caixa (após retenção/glosa) — mostra se o caixa do mês fica negativo; lucro contábil permanece sem abater retenção.',
+    ]},
+    {v:'7.9.770', d:'02/08/2026', itens:[
+      'Viabilidade → Simular faturamento: exibe linha “Outras despesas” (~diferença entre as 5 linhas clássicas e o custo_total), corrigindo a conta visual do Resultado antes IR (ex.: ~R$ 158 mil que abatia sem aparecer).',
+    ]},
+    {v:'7.9.769', d:'02/08/2026', itens:[
+      'Viabilidade Econômica: nova visão DRE da Viabilidade (receita/folhas Premissas − combustível Frotas − locações Almox − demais Financeiro sem duplicar folha/locação/combustível); rótulo Premissas “Valor previsto de faturamento”; SQL sql_vbe_premissas_folha_colunas.sql; DRE legado preservada.',
+    ]},
+    {v:'7.9.768', d:'01/08/2026', itens:[
+      'Programação TMA: celular da escala passa a gravar de fato no banco (por id da composição + celular_id no Salvar equipe) e espelha o número em equipes_disp.telefone; Relatório Escala TMA Oeste resolve TELEFONE pelo celular do dia (ex.: EBN341 / 11994187664).',
+    ]},
+    {v:'7.9.767', d:'31/07/2026', itens:[
+      'Relatório Escala TMA Oeste: coluna TELEFONE passa a usar o celular do dia da programação (composicao_dia.celular_id) e, se não houver, o telefone do cadastro da equipe.',
+    ]},
+    {v:'7.9.766', d:'31/07/2026', itens:[
+      'Cadastro Equipes Disponibilidade: supervisor passa a ser gravado no salvar (antes só aparecia no formulário); Relatório de Escala TMA Oeste exibe o supervisor do cadastro na coluna SUPERVISOR DO TURNO; SQL sql_equipes_disp_supervisor.sql.',
+    ]},
+    {v:'7.9.765', d:'31/07/2026', itens:[
+      'Relatórios → TMA Oeste (Escala): filtro Tipo de equipe passa a aceitar múltipla escolha (um ou mais tipos) na geração do relatório.',
+    ]},
     {v:'7.9.764', d:'31/07/2026', itens:[
       'Programação TMA: botão principal Auto Escalar volta a copiar a escala completa de um dia de referência para a data destino (complementar/substituir); sem botão por linha e sem lógica de vínculo fixo.',
     ]},
@@ -39740,27 +40137,23 @@ function progCarregarStatus(data){
         filters:['status=in.(ferias,afastado,treinamento)','data_retorno=gt.'+data,'data=lt.'+data,'deleted_at=is.null'],
         order:'data.desc', limit:500
       }),
-      sbFetch('prog_veiculos_dia', {filters:['data=eq.'+data]})
+      progFetchVeiculosDia(data)
     ]).then(function(res){
       var rowsDia      = res[0];
       var persistRows  = res[1] || [];
       var veicRows     = res[2] || [];
       // Limpar cache do dia antes de popular — evita veículos fantasma após remoção
-      Object.keys(_progVeiculos).forEach(function(k){ if(k.indexOf('_'+data)>=0) delete _progVeiculos[k]; });
-      // Popular _progVeiculos com dados do banco (atualizado do banco)
-      if(veicRows.length){
-        veicRows.forEach(function(r){
-          if(!r.equipe_id||!r.placa) return;
-          var key = String(r.slot||'1')==='2'
-            ? progVeiculoKeyB(r.equipe_id, r.data||data)
-            : progVeiculoKey(r.equipe_id, r.data||data);
-          _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
-            justificativa:r.justificativa,alterado_por:r.alterado_por};
-        });
-        try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
-        // Invalidar cache de status para que progGetVeicStatusReal reconheça veículos em uso
-        window._veicEscCache = {};
-      }
+      progLimparVeiculosDia(data);
+      (veicRows||[]).forEach(function(r){
+        if(!r.equipe_id||!r.placa||r.deleted_at) return;
+        var key = String(r.slot||'1')==='2'
+          ? progVeiculoKeyB(r.equipe_id, r.data||data)
+          : progVeiculoKey(r.equipe_id, r.data||data);
+        _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
+          justificativa:r.justificativa,alterado_por:r.alterado_por};
+      });
+      progPersistVeiculosLocal(data);
+      window._veicEscCache = {};
 
       if(rowsDia === null){ return; } // erro de API — manter localStorage
 
@@ -40144,6 +40537,27 @@ function notifGetSources(){
   sources.push({label:'🔧 Solicitações de Manutenção',table:'frotas_manutencoes',
     filters:['status=eq.Solicitada'],linkId:'manutencoes',linkLabel:'Ver Chamados'});
 
+  // Validade periódica (ensaio etc.): vencidas e a vencer em 20 dias
+  var hojeVal=typeof dataHojeLocal==='function'?dataHojeLocal():new Date().toISOString().slice(0,10);
+  var em20=new Date(hojeVal+'T12:00:00'); em20.setDate(em20.getDate()+20);
+  var em20Str=em20.toISOString().slice(0,10);
+  sources.push({
+    label:'⏰ Manutenção — validade vencida',
+    table:'frotas_manutencoes',
+    filters:['validade=not.is.null','validade=lt.'+hojeVal],
+    order:'validade.asc',
+    linkId:'manutencoes',
+    linkLabel:'Ver Manutenções'
+  });
+  sources.push({
+    label:'⚠️ Manutenção — validade a vencer (20 dias)',
+    table:'frotas_manutencoes',
+    filters:['validade=not.is.null','validade=gte.'+hojeVal,'validade=lte.'+em20Str],
+    order:'validade.asc',
+    linkId:'manutencoes',
+    linkLabel:'Ver Manutenções'
+  });
+
   if(isGestor){
     sources.push({label:'📐 Medições Aguardando Aprovação',table:'sot_medicoes',
       filters:['status=eq.em_aprovacao'],linkId:'medicoes',linkLabel:'Ver Medições'});
@@ -40173,6 +40587,14 @@ function notifGetSources(){
           linkId:    'transf-veiculos',
           linkLabel: 'Autorizar'
         });
+        sources.push({
+          label:     '🔐 Aprovação Frota (placa/status) → '+nomeC,
+          table:     'frotas_veiculo_aprovacoes',
+          filters:   ['status=eq.pendente','contrato_id=eq.'+cid],
+          order:     'solicitado_em.desc',
+          linkId:    'aprov-veiculos',
+          linkLabel: 'Autorizar'
+        });
       });
     } else {
       // Admin sem contrato específico: vê todas
@@ -40182,6 +40604,14 @@ function notifGetSources(){
         filters:   ['status=eq.pendente'],
         order:     'solicitado_em.desc',
         linkId:    'transf-veiculos',
+        linkLabel: 'Autorizar'
+      });
+      sources.push({
+        label:     '🔐 Aprovações Frota (placa / status)',
+        table:     'frotas_veiculo_aprovacoes',
+        filters:   ['status=eq.pendente'],
+        order:     'solicitado_em.desc',
+        linkId:    'aprov-veiculos',
         linkLabel: 'Autorizar'
       });
     }
@@ -40319,6 +40749,11 @@ function notifNavegar(linkId){
       if(typeof _subAtual!=='undefined') _subAtual['frotas']='frotas-veiculos';
       showMain('frotas');
       setTimeout(function(){ frtAbrirTransferenciasPendentes(); }, 400);
+    },
+    'aprov-veiculos': function(){
+      if(typeof _subAtual!=='undefined') _subAtual['frotas']='frotas-veiculos';
+      showMain('frotas');
+      setTimeout(function(){ frtAbrirVeicAprovacoesPendentes(); }, 400);
     }
   };
 
@@ -40516,12 +40951,7 @@ function progAtualizarQuadro(){
         colaboradores.sort(function(a,b){return (a.nome||'').localeCompare(b.nome||'');});
       }
       if(equipes.length){
-        var eqMap={};
-        equipes.forEach(function(e){ eqMap[e.id]=e; });
-        equipes_disp.forEach(function(e,i){ if(eqMap[e.id]) equipes_disp[i]=eqMap[e.id]; });
-        equipes.forEach(function(e){
-          if(!equipes_disp.find(function(x){return x.id===e.id;})) equipes_disp.push(e);
-        });
+        mergeEquipesDispFromFetch(equipes);
       }
       // composicao_dia: MERGE por id — equipes confirmadas não perdem colaborador_ids no refresh
       if(comps.length){
@@ -41401,6 +41831,324 @@ function frtAutorizarTransferencia(tId, autorizar){
   if(typeof frtVeiculosRender==='function') frtVeiculosRender();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// APROVAÇÕES SENSÍVEIS — placa / retrocesso de status
+// ═══════════════════════════════════════════════════════════════
+var _frtVeicAprovacoes = [];
+
+var FRT_STATUS_RANK = {
+  'Disponível':10,
+  'Disponível após manutenção':15,
+  'Liberado provisoriamente':20,
+  'Reservado':30,
+  'Em uso':40,
+  'Emprestado':45,
+  'Solicitação de manutenção':50,
+  'Em análise pela frota':55,
+  'Aguardando peça':60,
+  'Aguardando oficina':65,
+  'Em quarentena':70,
+  'Bloqueado':75,
+  'Em manutenção':80,
+  'Em transferência':85,
+  'Substituído':90,
+  'Baixado':100
+};
+
+function frtStatusRank(st){
+  var s=String(st||'').trim();
+  if(FRT_STATUS_RANK[s]!=null) return FRT_STATUS_RANK[s];
+  var low=s.toLowerCase();
+  if(low.indexOf('dispon')>=0) return 10;
+  if(low.indexOf('baix')>=0) return 100;
+  if(low.indexOf('manut')>=0) return 80;
+  if(low.indexOf('uso')>=0) return 40;
+  return 50;
+}
+
+/** Retroagir = ir para status "mais livre" / anterior na hierarquia operacional. */
+function frtStatusEhRetrocesso(de, para){
+  if(!de || !para) return false;
+  if(String(de).trim()===String(para).trim()) return false;
+  return frtStatusRank(para) < frtStatusRank(de);
+}
+
+function frtPodeAutorizarVeiculo(){
+  if(!usuarioLogado) return false;
+  var p=String(usuarioLogado.perfil||'').toLowerCase();
+  if(['admin','gestor','gerencia'].indexOf(p)>=0) return true;
+  var extras=usuarioLogado.perfis_extra||usuarioLogado.perfis||[];
+  if(typeof extras==='string'){ try{ extras=JSON.parse(extras); }catch(e){ extras=String(extras).split(','); } }
+  return (extras||[]).some(function(x){
+    var s=String(x||'').toLowerCase().trim();
+    return s==='admin'||s==='gestor'||s==='gerencia'||s==='gerente'||s==='frotas';
+  });
+}
+
+/** Em execução = status do veículo ou chamado de manutenção aberto em "Em Execução". */
+function frtVeiculoEmExecucao(v){
+  if(!v) return false;
+  var st=String(v.status||'').toLowerCase();
+  if(st.indexOf('execu')>=0) return true;
+  var placa=typeof frtNormPlaca==='function'?frtNormPlaca(v.placa):String(v.placa||'').toUpperCase().replace(/[-\s]/g,'');
+  return (frt_manutencoes||[]).some(function(m){
+    if(!m) return false;
+    var ms=String(m.status||'');
+    if(!/^em execu/i.test(ms)) return false;
+    if(v.id && m.veiculo_id && String(m.veiculo_id)===String(v.id)) return true;
+    var mp=typeof frtNormPlaca==='function'?frtNormPlaca(m.placa):String(m.placa||'').toUpperCase().replace(/[-\s]/g,'');
+    return placa && mp && placa===mp;
+  });
+}
+
+async function frtCarregarVeicAprovacoes(){
+  if(DEMO){ frtAtualizarBadgeVeicAprov(); return; }
+  try{
+    var rows=await sbFetch('frotas_veiculo_aprovacoes',{
+      filters:['status=eq.pendente'], order:'solicitado_em.desc', limit:200
+    });
+    _frtVeicAprovacoes = rows||[];
+  }catch(e){
+    console.warn('frtCarregarVeicAprovacoes',e);
+    _frtVeicAprovacoes = [];
+  }
+  frtAtualizarBadgeVeicAprov();
+}
+
+function frtAtualizarBadgeVeicAprov(){
+  var n=_frtVeicAprovacoesParaMim().length;
+  var badges=document.querySelectorAll('.frt-aprov-badge');
+  for(var i=0;i<badges.length;i++){
+    badges[i].textContent = n||'';
+    badges[i].style.display = n ? 'inline-flex' : 'none';
+  }
+}
+
+function _frtVeicAprovacoesParaMim(){
+  if(!_frtVeicAprovacoes.length) return [];
+  if(!frtPodeAutorizarVeiculo()) return [];
+  var meusCids = (usuarioLogado && usuarioLogado.contrato_id
+    ? usuarioLogado.contrato_id.split(',').map(function(s){return s.trim();}).filter(Boolean)
+    : []);
+  var isAdmin = usuarioLogado && (usuarioLogado.perfil==='admin'||usuarioLogado.perfil==='gestor');
+  return _frtVeicAprovacoes.filter(function(t){
+    if(t.status!=='pendente') return false;
+    if(isAdmin && !meusCids.length) return true;
+    if(!meusCids.length) return true; // gerencia sem contrato: vê todas
+    if(!t.contrato_id) return true;
+    return meusCids.indexOf(t.contrato_id)>=0;
+  });
+}
+
+/**
+ * Abre modal de justificativa para alteração sensível.
+ * onConfirm(justificativa) — gerente aplica; demais só solicitam.
+ */
+function frtAbrirJustificativaSensivel(opts){
+  opts=opts||{};
+  var titulo=opts.titulo||'Autorização necessária';
+  var aviso=opts.aviso||'';
+  var pode=frtPodeAutorizarVeiculo();
+  var html='<div class="modal-bg"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin-bottom:.35rem">'+escHtml(titulo)+'</h3>'
+    +(aviso?'<div style="background:#FFF8E1;border:.5px solid #F9A825;border-radius:8px;padding:10px 12px;font-size:12px;margin-bottom:1rem;color:#7B4F00">'+aviso+'</div>':'')
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'
+    +(pode
+      ?'Você é gerente/gestor: informe a <b>justificativa</b> para aplicar agora.'
+      :'Esta alteração exige <b>aprovação do gerente da área</b>. Informe a justificativa e aguarde a autorização.')
+    +'</div>'
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Justificativa *</label>'
+    +'<textarea class="inp" id="frt-sens-just" style="width:100%;height:80px" placeholder="Descreva o motivo da alteração..."></textarea>'
+    +'<div style="display:flex;gap:8px;margin-top:1rem">'
+    +'<button class="btn" id="frt-sens-cancel" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="frt-sens-ok" style="flex:1.4">'+(pode?'✅ Autorizar e aplicar':'📤 Solicitar aprovação')+'</button>'
+    +'</div></div></div>';
+  setModal(html);
+  setTimeout(function(){
+    var cancel=document.getElementById('frt-sens-cancel');
+    var ok=document.getElementById('frt-sens-ok');
+    if(cancel) cancel.onclick=function(){
+      closeModal();
+      if(typeof opts.onCancel==='function') opts.onCancel();
+    };
+    if(ok) ok.onclick=function(){
+      var just=((document.getElementById('frt-sens-just')||{}).value||'').trim();
+      if(!just){ progShowToast('⚠️ Informe a justificativa.','erro'); return; }
+      ok.disabled=true;
+      closeModal();
+      if(typeof opts.onConfirm==='function') opts.onConfirm(just, pode);
+    };
+  },40);
+}
+
+function frtRegistrarAprovacaoVeiculo(reg){
+  reg=reg||{};
+  reg.status=reg.status||'pendente';
+  reg.solicitado_por=reg.solicitado_por||(usuarioLogado?usuarioLogado.nome:'sistema');
+  reg.solicitado_em=reg.solicitado_em||new Date().toISOString();
+  if(DEMO){
+    reg.id='fva'+Date.now();
+    if(reg.status==='pendente') _frtVeicAprovacoes.push(reg);
+    frtAtualizarBadgeVeicAprov();
+    return Promise.resolve(reg);
+  }
+  return sbInsert('frotas_veiculo_aprovacoes', reg).then(function(r){
+    if(r&&r[0]){
+      Object.assign(reg, r[0]);
+      if(reg.status==='pendente'){
+        _frtVeicAprovacoes.push(reg);
+        frtAtualizarBadgeVeicAprov();
+      }
+    }
+    return reg;
+  }).catch(function(e){
+    console.error('frtRegistrarAprovacaoVeiculo',e);
+    progShowToast('⚠️ Falha ao registrar aprovação. Rode o SQL sql_frotas_veiculo_aprovacoes.sql','erro');
+    return null;
+  });
+}
+
+function frtAbrirVeicAprovacoesPendentes(){
+  var pendentes=_frtVeicAprovacoesParaMim();
+  var pode=frtPodeAutorizarVeiculo();
+  if(!pendentes.length){
+    progShowToast(pode?'Nenhuma aprovação pendente.':'Sem permissão de gerente ou sem pendências.');
+    return;
+  }
+  var linhas=pendentes.map(function(t){
+    var tipoLbl=t.tipo==='placa'?'Alterar placa':(t.tipo==='status'?'Retroceder status':'Placa + status');
+    var det='';
+    if(t.tipo==='placa'||t.tipo==='placa_status'){
+      det+='<div style="font-size:11px;margin-top:2px">Placa: <b>'+escHtml(t.valor_anterior||'')+'</b> → <b>'+escHtml(t.valor_novo||'')+'</b></div>';
+    }
+    if(t.tipo==='status'||t.tipo==='placa_status'){
+      det+='<div style="font-size:11px;margin-top:2px">Status: <b>'+escHtml(t.status_anterior||'')+'</b> → <b>'+escHtml(t.status_novo||'')+'</b></div>';
+    }
+    var dt=t.solicitado_em?String(t.solicitado_em).split('T')[0].split('-').reverse().join('/'):'—';
+    var botoes=pode
+      ? '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">'
+        +'<button class="btn btn-pri" style="font-size:11px;padding:4px 10px" onclick="frtAutorizarVeicAprovacao(\''+t.id+'\',true)">✅ Autorizar</button>'
+        +'<button class="btn" style="font-size:11px;padding:4px 10px;color:#A32D2D;border-color:#A32D2D" onclick="frtAutorizarVeicAprovacao(\''+t.id+'\',false)">❌ Recusar</button>'
+        +'</div>'
+      : '<div style="font-size:10px;color:#aaa;font-style:italic">Aguardando gerente</div>';
+    return '<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:12px;margin-bottom:8px">'
+      +'<div style="display:flex;justify-content:space-between;gap:8px">'
+      +'<div>'
+      +'<div style="font-weight:700;font-size:13px">🚗 '+escHtml(t.placa_atual||'')+' — '+escHtml(tipoLbl)+'</div>'
+      +det
+      +'<div style="font-size:11px;color:#888;margin-top:4px">Justificativa: '+escHtml(t.justificativa||'')+'</div>'
+      +'<div style="font-size:10px;color:#aaa;margin-top:2px">Solicitado por '+escHtml(t.solicitado_por||'')+' em '+dt+'</div>'
+      +'</div>'+botoes+'</div></div>';
+  }).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:520px">'
+    +'<h3 style="margin-bottom:1rem">🔐 Aprovações de veículos ('+pendentes.length+')</h3>'
+    +linhas
+    +'<div style="text-align:right;margin-top:.5rem"><button class="btn" onclick="closeModal()">Fechar</button></div>'
+    +'</div></div>');
+}
+
+function frtAutorizarVeicAprovacao(tId, autorizar){
+  var t=_frtVeicAprovacoes.find(function(x){return String(x.id)===String(tId);});
+  if(!t) return;
+  if(!frtPodeAutorizarVeiculo()){
+    progShowToast('⚠️ Sem permissão de gerente para autorizar.','erro');
+    return;
+  }
+  var novoStatus=autorizar?'aprovado':'rejeitado';
+  var aprovadoPor=usuarioLogado?usuarioLogado.nome:'gestor';
+  t.status=novoStatus;
+  t.aprovado_por=aprovadoPor;
+  t.aprovado_em=new Date().toISOString();
+  if(!DEMO){
+    sbUpdate('frotas_veiculo_aprovacoes',{
+      status:novoStatus, aprovado_por:aprovadoPor, aprovado_em:t.aprovado_em
+    },'id=eq.'+tId);
+  }
+  if(autorizar){
+    var idx=frt_veiculos.findIndex(function(x){return String(x.id)===String(t.veiculo_id);});
+    var payload={};
+    if(t.tipo==='placa'||t.tipo==='placa_status'){
+      payload.placa=t.valor_novo;
+    }
+    if(t.tipo==='status'||t.tipo==='placa_status'){
+      payload.status=t.status_novo;
+      payload.ativo=t.status_novo!=='Baixado';
+    }
+    if(Object.keys(payload).length){
+      if(idx>=0) Object.assign(frt_veiculos[idx], payload);
+      if(!DEMO) sbUpdate('frotas_veiculos', payload, 'id=eq.'+t.veiculo_id);
+    }
+    progShowToast('✅ Alteração autorizada e aplicada.');
+  } else {
+    progShowToast('❌ Solicitação recusada.');
+  }
+  _frtVeicAprovacoes=_frtVeicAprovacoes.filter(function(x){return String(x.id)!==String(tId);});
+  frtAtualizarBadgeVeicAprov();
+  closeModal();
+  if(typeof frtVeiculosRender==='function') frtVeiculosRender();
+}
+
+/**
+ * Gate de salvamento: placa alterada e/ou status retroativo exigem justificativa (+ aprovação se não for gerente).
+ * Retorna Promise<boolean> — true se pode seguir com o payload (já ajustado).
+ */
+function frtGateSalvarVeiculoSensivel(v, payload){
+  return new Promise(function(resolve){
+    if(!v){ resolve({ok:true, payload:payload}); return; }
+    var placaNova=typeof frtNormPlaca==='function'?frtNormPlaca(payload.placa):String(payload.placa||'').toUpperCase().replace(/[-\s]/g,'');
+    var placaAnt=typeof frtNormPlaca==='function'?frtNormPlaca(v.placa):String(v.placa||'').toUpperCase().replace(/[-\s]/g,'');
+    var mudaPlaca=placaNova && placaAnt && placaNova!==placaAnt;
+    var mudaStatusRetro=frtStatusEhRetrocesso(v.status, payload.status);
+    if(!mudaPlaca && !mudaStatusRetro){
+      resolve({ok:true, payload:payload});
+      return;
+    }
+    var tipo=mudaPlaca&&mudaStatusRetro?'placa_status':(mudaPlaca?'placa':'status');
+    var aviso='';
+    if(mudaPlaca) aviso+='Placa: <b>'+escHtml(v.placa||'')+'</b> → <b>'+escHtml(payload.placa||'')+'</b>. ';
+    if(mudaStatusRetro) aviso+='Status retroativo: <b>'+escHtml(v.status||'')+'</b> → <b>'+escHtml(payload.status||'')+'</b>.';
+    frtAbrirJustificativaSensivel({
+      titulo: mudaPlaca?'Alteração de placa':'Retrocesso de status',
+      aviso: aviso,
+      onCancel: function(){ resolve({ok:false}); },
+      onConfirm: function(just, podeAutorizar){
+        var reg={
+          veiculo_id:v.id,
+          placa_atual:v.placa||'',
+          tipo:tipo,
+          valor_anterior:mudaPlaca?(v.placa||null):null,
+          valor_novo:mudaPlaca?(payload.placa||null):null,
+          status_anterior:mudaStatusRetro?(v.status||null):null,
+          status_novo:mudaStatusRetro?(payload.status||null):null,
+          justificativa:just,
+          contrato_id:v.contrato_id||payload.contrato_id||null,
+          status: podeAutorizar?'aprovado':'pendente',
+          aprovado_por: podeAutorizar?(usuarioLogado?usuarioLogado.nome:null):null,
+          aprovado_em: podeAutorizar?new Date().toISOString():null
+        };
+        if(podeAutorizar){
+          // Aplica já; registra histórico como aprovado
+          frtRegistrarAprovacaoVeiculo(reg).then(function(){
+            resolve({ok:true, payload:payload, just:just});
+          });
+        } else {
+          // Não aplica placa/status agora; demais campos seguem
+          var safe=Object.assign({}, payload);
+          if(mudaPlaca) safe.placa=v.placa;
+          if(mudaStatusRetro){
+            safe.status=v.status;
+            safe.ativo=v.status==='Baixado'?false:(v.ativo!==false);
+          }
+          frtRegistrarAprovacaoVeiculo(reg).then(function(){
+            progShowToast('📤 Solicitação enviada ao gerente. Demais dados serão salvos; placa/status aguardam aprovação.');
+            resolve({ok:true, payload:safe, pending:true, just:just});
+          });
+        }
+      }
+    });
+  });
+}
+
 // ── Salvar status de veículo (reutilizável) ──────────────────
 function _progVeicSalvarStatus(st, vid, vx, obs){
   var statusFrotas={
@@ -41408,18 +42156,41 @@ function _progVeicSalvarStatus(st, vid, vx, obs){
     'Emprestado':'Emprestado','Substituído':'Substituído'
   };
   var novoStatus = statusFrotas[st]||st;
-  var payload = {status: novoStatus};
-  if(obs) payload.observacoes = obs;
-  var idx=frt_veiculos.findIndex(function(x){return x.id===vid;});
-  if(idx>=0){ frt_veiculos[idx].status=novoStatus; if(obs) frt_veiculos[idx].observacoes=obs; }
-  if(!DEMO) sbUpdate('frotas_veiculos', payload, 'id=eq.'+vid)
-    .then(function(ok){
-      if(!ok) progShowToast('⚠️ Erro ao salvar status.','erro');
-      else progShowToast('✅ '+escHtml(vx.placa)+' → '+st+(obs?' ('+obs+')':''));
+  var statusAtual = vx && vx.status ? vx.status : '';
+  var aplicar=function(payloadFinal, just){
+    var payload=Object.assign({}, payloadFinal);
+    if(just){
+      var base=(payload.observacoes||obs||'').trim();
+      payload.observacoes=(base?base+' | ':'')+'[Retrocesso '+new Date().toLocaleString('pt-BR')+'] '+just;
+    } else if(obs && !payload.observacoes){
+      payload.observacoes=obs;
+    }
+    var idx=frt_veiculos.findIndex(function(x){return x.id===vid;});
+    if(idx>=0) Object.assign(frt_veiculos[idx], payload);
+    if(!DEMO) sbUpdate('frotas_veiculos', payload, 'id=eq.'+vid)
+      .then(function(ok){
+        if(!ok) progShowToast('⚠️ Erro ao salvar status.','erro');
+        else progShowToast('✅ '+escHtml(vx.placa)+' → '+st+(just?' (autorizado)':(obs?' ('+obs+')':'')));
+      });
+    closeModal();
+    if(typeof progRenderQuadro==='function') progRenderQuadro();
+    else if(typeof progProjRenderQuadro==='function') progProjRenderQuadro();
+  };
+  var payloadBase={status:novoStatus};
+  if(obs) payloadBase.observacoes=obs;
+  if(typeof frtStatusEhRetrocesso==='function' && frtStatusEhRetrocesso(statusAtual, novoStatus)){
+    frtGateSalvarVeiculoSensivel(vx, payloadBase).then(function(res){
+      if(!res||!res.ok) return;
+      if(res.pending){
+        closeModal();
+        if(typeof progRenderQuadro==='function') progRenderQuadro();
+        return;
+      }
+      aplicar(res.payload, res.just);
     });
-  closeModal();
-  if(typeof progRenderQuadro==='function') progRenderQuadro();
-  else if(typeof progProjRenderQuadro==='function') progProjRenderQuadro();
+    return;
+  }
+  aplicar(payloadBase, null);
 }
 
 // ── Modal de destino para Emprestado / Substituído ────────────
@@ -41590,13 +42361,26 @@ function plptSalvarCelularProg(eqId, data, celularId){
   });
   if(comp){
     comp.celular_id = celularId||null;
-    if(!DEMO) sbUpdate('composicao_dia',{celular_id:celularId||null},'equipe_id=eq.'+eqId+'&data=eq.'+data);
+    if(!DEMO){
+      var filtroCel = (comp.id && typeof isUUID==='function' && isUUID(comp.id))
+        ? ('id=eq.'+comp.id)
+        : ('equipe_id=eq.'+eqId+'&data=eq.'+data);
+      sbUpdate('composicao_dia',{celular_id:celularId||null}, filtroCel);
+    }
   } else {
     var novo = {equipe_id:eqId, data:data, celular_id:celularId||null, colaborador_ids:'[]'};
     composicao_dia.push(novo);
     if(!DEMO) sbUpsert('composicao_dia', novo, 'equipe_id,data');
   }
-  var cel = celularId ? (_celulares||[]).find(function(x){return x.id===celularId;}) : null;
+  var cel = celularId ? (_celulares||[]).find(function(x){return String(x.id)===String(celularId);}) : null;
+  var numero = cel && cel.numero ? String(cel.numero).trim() : '';
+  var eqDisp = (equipes_disp||[]).find(function(e){return String(e.id)===String(eqId);});
+  if(eqDisp && numero){
+    eqDisp.telefone = numero;
+    if(!DEMO && typeof isUUID==='function' && isUUID(eqId)){
+      sbUpdate('equipes_disp',{telefone:numero},'id=eq.'+eqId);
+    }
+  }
   progShowToast(cel ? '📱 '+cel.numero+' atribuído.' : '📱 Celular removido.');
 }
 
@@ -41767,19 +42551,33 @@ function progRenderLinha(eqId, data){
 }
 
 function progSalvarCelular(eqId, data, celularId){
-  // Save to composicao_dia
+  // Save to composicao_dia (sempre por id quando possível — data=eq.YYYY-MM-DD falha com timestamp)
   var comp = composicao_dia.find(function(c){
     return c.equipe_id===eqId && (c.data||'').split('T')[0]===data;
   });
+  var cel = celularId ? (_celulares||[]).find(function(x){return String(x.id)===String(celularId);}) : null;
+  var numero = cel && cel.numero ? String(cel.numero).trim() : '';
   if(comp){
     comp.celular_id = celularId||null;
-    if(!DEMO) sbUpdate('composicao_dia',{celular_id:celularId||null},'equipe_id=eq.'+eqId+'&data=eq.'+data);
+    if(!DEMO){
+      var filtroCel = (comp.id && typeof isUUID==='function' && isUUID(comp.id))
+        ? ('id=eq.'+comp.id)
+        : ('equipe_id=eq.'+eqId+'&data=eq.'+data);
+      sbUpdate('composicao_dia',{celular_id:celularId||null}, filtroCel);
+    }
   } else {
     var novo = {equipe_id:eqId, data:data, celular_id:celularId||null, colaborador_ids:'[]'};
     composicao_dia.push(novo);
     if(!DEMO) sbUpsert('composicao_dia', novo, 'equipe_id,data');
   }
-  var cel = celularId ? (_celulares||[]).find(function(x){return x.id===celularId;}) : null;
+  // Espelha o número no cadastro da equipe (fallback do relatório / PDF)
+  var eqDisp = (equipes_disp||[]).find(function(e){return String(e.id)===String(eqId);});
+  if(eqDisp && numero){
+    eqDisp.telefone = numero;
+    if(!DEMO && typeof isUUID==='function' && isUUID(eqId)){
+      sbUpdate('equipes_disp',{telefone:numero},'id=eq.'+eqId);
+    }
+  }
   progShowToast(cel ? '📱 '+cel.numero+' atribuído à equipe.' : '📱 Celular removido da equipe.');
 }
 
@@ -42282,7 +43080,8 @@ function progSalvarEquipe(eqId){
       colaborador_ids:ids,
       turno:'Manha', confirmada:true,
       tem_folga:temFolga,
-      motorista_id:comp.motorista_id||null
+      motorista_id:comp.motorista_id||null,
+      celular_id:comp.celular_id||null
     };
     // Incluir veiculo no payload antes de salvar composicao_dia
     var _veicSave = progGetVeiculo(eqId, data);
@@ -59427,7 +60226,7 @@ function vbeRenderPremissasCore(cid){
     +'<div class="fg" style="grid-column:1/-1"><div id="vbe-pr-meses-hint" style="font-size:11px;color:#185FA5;background:#EBF4FD;border-radius:6px;padding:6px 10px">'
     +escHtml(mesesHint)+' · Verba = saldo ÷ meses restantes</div></div>'
     +vbeFieldMoeda('vbe-pr-meta','Meta faturamento mensal',pe.meta_faturamento_mensal,ro,vbeBadgeOrigem('meta_faturamento_mensal',orig))
-    +vbeFieldMoeda('vbe-pr-fat-esp','Receita bruta prevista (faturamento mensal esperado)',pe.faturamento_mensal_esperado,ro,vbeBadgeOrigem('faturamento_mensal_esperado',orig)||' <span class="bdg info" style="font-size:9px">Valores previstos</span>')
+    +vbeFieldMoeda('vbe-pr-fat-esp','Valor previsto de faturamento',pe.faturamento_mensal_esperado,ro,vbeBadgeOrigem('faturamento_mensal_esperado',orig)||' <span class="bdg info" style="font-size:9px">Valores previstos · DRE da Viabilidade</span>')
     +vbeFieldNum('vbe-pr-prazo-pg','Prazo médio pagamento (dias)',p.prazo_medio_pagamento_dias,'')
     +vbeFieldNum('vbe-pr-retencao','Retenção %',p.retencao_percentual,ro)
     +vbeFieldNum('vbe-pr-glosa','Glosa média %',p.glosa_media_percentual,ro)
@@ -60863,6 +61662,10 @@ function vbeRenderResultado(){
   Promise.resolve(vbeEnsureDadosCustosERP(comp)).then(function(){
     return vbeEnsureCombustivelContrato(cid, comp);
   }).then(function(){
+    return typeof vbeEnsureLancamentosCompetencia==='function'
+      ? vbeEnsureLancamentosCompetencia(comp)
+      : Promise.resolve();
+  }).then(function(){
     if(wrap.getAttribute('data-vbe-res-token')!==token) return;
     vbeRenderResultadoBody(cid, comp, wrap);
   }).catch(function(e){
@@ -60870,6 +61673,235 @@ function vbeRenderResultado(){
     if(wrap.getAttribute('data-vbe-res-token')!==token) return;
     vbeRenderResultadoBody(cid, comp, wrap);
   });
+}
+
+/**
+ * DRE da Viabilidade (visão gerencial simples) — não substitui o DRE/Resultado legado.
+ * Receita e folhas: Premissas · Combustível: Frotas · Locações: Almox · Demais: Financeiro anti-dup.
+ */
+function vbeDreViabilidadeExcluirCategoria(catNova, catLeg, grupo){
+  var g=grupo||(typeof vbeGrupoGerencialDaCategoria==='function'?vbeGrupoGerencialDaCategoria(catNova):'');
+  if(g==='pessoal') return true;
+  var excl={
+    combustivel:1, locacao_frota:1, manutencao_frota:1, pneus:1, pedagios:1,
+    documentacao_frota:1, seguros_frota:1,
+    salarios:1, encargos:1, beneficios:1, horas_extras_adicionais:1,
+    vale_refeicao:1, vale_alimentacao:1, vale_transporte:1,
+    plano_saude:1, plano_odontologico:1, seguro_vida:1, cesta_basica:1,
+    diarias_hospedagens:1, treinamentos:1, uniformes:1, epi:1, epc:1
+  };
+  if(excl[catNova]) return true;
+  var leg=String(catLeg||'').toLowerCase();
+  if(['folha','encargos','beneficios','combustivel','locacao','manutencao_frota','pneus','pedagio'].indexOf(leg)>=0) return true;
+  return false;
+}
+
+function vbeSomarCombustivelContratoComp(cid, ym){
+  ym=vbeNormCompetenciaYm(ym)||String(ym||'').slice(0,7);
+  if(!cid||!/^\d{4}-\d{2}$/.test(ym)) return 0;
+  var placas=typeof vbePlacasContrato==='function'?vbePlacasContrato(cid):[];
+  var placasNorm={};
+  placas.forEach(function(p){
+    var k=typeof frtNormPlaca==='function'?frtNormPlaca(p):String(p||'').toUpperCase().replace(/[-\s]/g,'');
+    if(k) placasNorm[k]=true;
+  });
+  var _np=function(p){ return typeof frtNormPlaca==='function'?frtNormPlaca(p):String(p||'').toUpperCase().replace(/[-\s]/g,''); };
+  var contNome='';
+  try{
+    var _ct=(contratos||[]).find(function(c){ return String(c.id)===String(cid); });
+    contNome=String((_ct&&(_ct.nome||_ct.codigo))||'').toLowerCase();
+  }catch(eN){}
+  var comb=0;
+  (frt_combustivel||[]).forEach(function(c){
+    if(String(c.data||'').slice(0,7)!==ym) return;
+    var ok=String(c.contrato_id||'')===String(cid);
+    if(!ok && placasNorm[_np(c.placa)]) ok=true;
+    if(!ok && contNome && !c.contrato_id){
+      var cn=String(c.contrato_nome||'').toLowerCase();
+      if(cn && (cn.indexOf(contNome)>=0 || contNome.indexOf(cn)>=0)) ok=true;
+    }
+    if(!ok) return;
+    comb+=Number(c.valor_total!=null?c.valor_total:c.valor||0)||0;
+  });
+  return Math.round(comb*100)/100;
+}
+
+function vbeMontarDreViabilidade(cid, comp){
+  cid=cid||(typeof vbeContratoFiltroAtual==='function'?vbeContratoFiltroAtual():'');
+  comp=comp||(typeof vbeGetCompSel==='function'?vbeGetCompSel():'');
+  var ym=typeof vbeNormCompetenciaYm==='function'?vbeNormCompetenciaYm(comp):String(comp||'').slice(0,7);
+  var p=(typeof vbeObterPremissasEfetivas==='function'?vbeObterPremissasEfetivas(cid,comp):null)||{};
+  var receita=Number(p.faturamento_mensal_esperado||0)||0;
+  var folhaOp=Number(p.folha_operacional_total||0)||0;
+  var folhaBo=Number(p.folha_backoffice_total||0)||0;
+  var combustivel=vbeSomarCombustivelContratoComp(cid, ym);
+  var locacoes=0;
+  try{ locacoes=Number(typeof vbeLocacaoTotalContrato==='function'?vbeLocacaoTotalContrato(cid):0)||0; }
+  catch(eL){ locacoes=0; }
+
+  var demais=0, qtdLancIncluidos=0, qtdLancExcluidos=0, qtdSemCategoria=0, qtdLancRelacionados=0;
+  (lancamentos||[]).forEach(function(l){
+    if(!l || String(l.contrato_id||'')!==String(cid||'')) return;
+    var compL=(typeof vbeNormCompetenciaYm==='function'
+      ?(vbeNormCompetenciaYm(l.competencia)||vbeNormCompetenciaYm(l.data_emissao))
+      :'')||String(l.data_emissao||'').slice(0,7);
+    if(compL!==ym) return;
+    qtdLancRelacionados++;
+    var split=typeof vbeSplitLancamentoCamadas==='function'
+      ? vbeSplitLancamentoCamadas(l)
+      : {camada:'realizado', realizado:Number(l.valor||0)||0};
+    if(split.camada==='ignorado') return;
+    var valor=Number(split.realizado||0)||0;
+    if(valor<=0) return;
+
+    var catLeg=typeof vbeMapCatErpParaVbe==='function'
+      ? vbeMapCatErpParaVbe(l.categoria_id,l.subcategoria_id)
+      : null;
+    var cls=typeof vbeClassificarDespesaFinanceira==='function'
+      ? vbeClassificarDespesaFinanceira({
+          categoria_id:l.categoria_id, subcategoria_id:l.subcategoria_id,
+          descricao:l.descricao, documento_fiscal:l.documento_fiscal||l.nfe||'',
+          fornecedor_id:l.fornecedor_id, aplicacao_custo:l.aplicacao_custo||l.aplicacao,
+          natureza_despesa:l.natureza_despesa, tipo_despesa:l.tipo_despesa,
+          grupo_dre:l.grupo_dre, classificacao_manual:l.classificacao_manual
+        })
+      : {categoria:'outros'};
+    var catNova=cls.categoria||'outros';
+    var grupo=typeof vbeGrupoGerencialDaCategoria==='function'?vbeGrupoGerencialDaCategoria(catNova):'outros';
+
+    if(!l.categoria_id || cls.nao_classificado || (catNova==='outros' && cls.confianca==='Baixa')){
+      qtdSemCategoria++;
+    }
+    // Receitas: vbeMapCatErpParaVbe retorna null — não entram na DRE
+    if(!catLeg) return;
+
+    if(vbeDreViabilidadeExcluirCategoria(catNova, catLeg, grupo)){
+      qtdLancExcluidos++;
+      return;
+    }
+    demais+=valor;
+    qtdLancIncluidos++;
+  });
+  demais=Math.round(demais*100)/100;
+
+  var totalDespesas=Math.round((folhaOp+folhaBo+combustivel+locacoes+demais)*100)/100;
+  var resultado=Math.round((receita-totalDespesas)*100)/100;
+  var margem=receita>0 ? Math.round((resultado/receita*100)*100)/100 : null;
+
+  var alertas=[];
+  if(!cid) alertas.push({tipo:'erro', msg:'Selecione um contrato. A DRE não busca valores gerais do sistema.'});
+  if(!ym || !/^\d{4}-\d{2}$/.test(ym)) alertas.push({tipo:'erro', msg:'Competência inválida. Use contrato_id + competência YYYY-MM.'});
+  if(!(receita>0)) alertas.push({tipo:'warn', msg:'Valor previsto de faturamento não informado nas Premissas.'});
+  if(!(folhaOp>0)) alertas.push({tipo:'info', msg:'Folha Operacional vazia nas Premissas (considerada R$ 0,00).'});
+  if(!(folhaBo>0)) alertas.push({tipo:'info', msg:'Folha Backoffice vazia nas Premissas (considerada R$ 0,00).'});
+  if(!(combustivel>0)) alertas.push({tipo:'info', msg:'Não foram encontrados gastos de combustível para este contrato e competência.'});
+  if(!(locacoes>0)) alertas.push({tipo:'info', msg:'Não foram encontradas locações vinculadas a este contrato.'});
+  if(!qtdLancRelacionados) alertas.push({tipo:'info', msg:'Não há lançamentos financeiros relacionados a este contrato e competência.'});
+  if(qtdSemCategoria>0) alertas.push({tipo:'warn', msg:'Existem lançamentos financeiros sem categoria. Revise para evitar distorção na DRE.'});
+  if(margem!=null && margem<0) alertas.push({tipo:'erro', msg:'Margem operacional prevista negativa. Revisar receita, custos e despesas.'});
+
+  return {
+    contrato_id:cid,
+    competencia:ym,
+    receita_prevista:receita,
+    folha_operacional:folhaOp,
+    folha_backoffice:folhaBo,
+    combustivel:combustivel,
+    locacoes:locacoes,
+    demais_despesas:demais,
+    total_despesas:totalDespesas,
+    resultado_operacional:resultado,
+    margem_operacional_pct:margem,
+    origens:{
+      receita:'Premissas → Valor previsto de faturamento',
+      folha_operacional:'Premissas → Folha Operacional',
+      folha_backoffice:'Premissas → Folha Backoffice',
+      combustivel:'Frotas → Combustíveis',
+      locacoes:'Almoxarifado → Locações',
+      demais:'Financeiro → Lançamentos (excluindo folha, locações, combustível e manutenção já cobertos por módulos)'
+    },
+    meta:{
+      qtd_lanc_relacionados:qtdLancRelacionados,
+      qtd_lanc_incluidos:qtdLancIncluidos,
+      qtd_lanc_excluidos:qtdLancExcluidos,
+      qtd_sem_categoria:qtdSemCategoria
+    },
+    alertas:alertas
+  };
+}
+
+function vbeHtmlDreViabilidade(dre){
+  dre=dre||{};
+  if(!vbePodeVerFinanceiro()){
+    return '<div class="card" style="margin-bottom:1rem;border-left:4px solid #185FA5">'
+      +'<div class="ch"><span class="ct">DRE da Viabilidade</span></div>'
+      +'<div style="padding:1rem;color:#888;font-size:12px">Sem permissão para visualizar valores financeiros.</div></div>';
+  }
+  var margemTxt=dre.margem_operacional_pct==null
+    ? 'Não calculada'
+    : (Number(dre.margem_operacional_pct).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})+'%');
+  var resCor=Number(dre.resultado_operacional||0)>=0?'#085041':'#A32D2D';
+  var marCor=dre.margem_operacional_pct==null?'#888':(Number(dre.margem_operacional_pct)>=0?'#3B6D11':'#A32D2D');
+  var ymLabel='';
+  try{
+    var ym=String(dre.competencia||'').slice(0,7);
+    if(/^\d{4}-\d{2}$/.test(ym)) ymLabel=ym.slice(5,7)+'/'+ym.slice(0,4);
+  }catch(eY){}
+  function row(label, valor, origem, opts){
+    opts=opts||{};
+    return '<tr'+(opts.bold?' style="font-weight:700;background:#f8f8f6"':'')+'>'
+      +'<td style="padding:8px 12px">'
+      +'<div style="font-size:12px'+(opts.bold?';font-weight:700':'')+'">'+escHtml(label)+'</div>'
+      +(origem?'<div style="font-size:10px;color:#888;margin-top:2px">Origem: '+escHtml(origem)+'</div>':'')
+      +'</td>'
+      +'<td style="padding:8px 12px;text-align:right;white-space:nowrap;font-size:13px;color:'+(opts.cor||'#333')+'">'
+      +escHtml(valor)+'</td></tr>';
+  }
+  var alertasHtml='';
+  (dre.alertas||[]).forEach(function(a){
+    var bg=a.tipo==='erro'?'#FCEBEB':(a.tipo==='warn'?'#FAEEDA':'#EBF4FD');
+    var cor=a.tipo==='erro'?'#A32D2D':(a.tipo==='warn'?'#854F0B':'#185FA5');
+    var brd=a.tipo==='erro'?'#F0C3C3':(a.tipo==='warn'?'#E8D4B8':'#C3DDF0');
+    alertasHtml+='<div style="font-size:11px;color:'+cor+';background:'+bg+';border:.5px solid '+brd
+      +';border-radius:8px;padding:6px 10px;margin-bottom:6px">'+escHtml(a.msg||'')+'</div>';
+  });
+  var o=dre.origens||{};
+  return '<div class="card" id="vbe-dre-viabilidade" style="margin-bottom:1rem;border-left:4px solid #185FA5">'
+    +'<div class="ch"><span class="ct">DRE da Viabilidade</span>'
+    +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+    +'<span style="font-size:10px;color:#888">Visão gerencial simples · '+(ymLabel||'—')+'</span>'
+    +'<button type="button" class="btn btn-sm" onclick="vbeRenderResultado()" title="Recalcular com dados atualizados">↻ Recalcular</button>'
+    +'<button type="button" class="btn btn-sm" onclick="vbeMostrarAba(\'premissas\')">Premissas →</button>'
+    +'</div></div>'
+    +'<div style="padding:.75rem 1rem 0">'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px">'
+    +vbeMetricCard('Receita prevista',vbeFmtValor(dre.receita_prevista),'#185FA5')
+    +vbeMetricCard('Total de despesas',vbeFmtValor(dre.total_despesas),'#854F0B')
+    +vbeMetricCard('Resultado operacional',vbeFmtValor(dre.resultado_operacional),resCor)
+    +vbeMetricCard('Margem operacional',margemTxt,marCor)
+    +'</div>'
+    +(alertasHtml?'<div style="margin-bottom:10px">'+alertasHtml+'</div>':'')
+    +'</div>'
+    +'<div style="overflow-x:auto">'
+    +'<table class="tbl" style="margin:0"><thead><tr>'
+    +'<th style="text-align:left;padding:8px 12px">Linha</th>'
+    +'<th style="text-align:right;padding:8px 12px">Valor</th>'
+    +'</tr></thead><tbody>'
+    +row('Receita prevista', vbeFmtValor(dre.receita_prevista), o.receita, {bold:true, cor:'#185FA5'})
+    +row('(−) Folha Operacional', vbeFmtValor(dre.folha_operacional), o.folha_operacional)
+    +row('(−) Folha Backoffice', vbeFmtValor(dre.folha_backoffice), o.folha_backoffice)
+    +row('(−) Combustível', vbeFmtValor(dre.combustivel), o.combustivel)
+    +row('(−) Locações', vbeFmtValor(dre.locacoes), o.locacoes)
+    +row('(−) Demais despesas financeiras', vbeFmtValor(dre.demais_despesas), o.demais)
+    +row('Total de despesas', vbeFmtValor(dre.total_despesas), null, {bold:true, cor:'#854F0B'})
+    +row('= Resultado operacional previsto', vbeFmtValor(dre.resultado_operacional), null, {bold:true, cor:resCor})
+    +row('Margem operacional prevista', margemTxt, null, {bold:true, cor:marCor})
+    +'</tbody></table></div>'
+    +'<div style="padding:.65rem 1rem 1rem;font-size:10px;color:#888">'
+    +'Anti-duplicidade: lançamentos de folha/pessoal, combustível, locação e manutenção cobertos por módulos não entram em Demais despesas'
+    +(dre.meta?' · '+Number(dre.meta.qtd_lanc_excluidos||0)+' lançamento(s) excluído(s) por deduplicação':'')
+    +' · A DRE completa (impostos/retenção) permanece abaixo.</div>'
+    +'</div>';
 }
 /** Painel Margem Etapa B — formatação (só apresentação; não recalcula). */
 function vbeFormatarValorPainel(valor, tipo, opcoes){
@@ -62105,9 +63137,17 @@ function vbeRenderResultadoBody(cid,comp,wrap){
   var prod=r.produtividade||{};
   var painel=a.painel_margem||null;
   var resumoHtml='';
+  var dreViabHtml='';
   var dreGerHtml='';
   var cenariosDHtml='';
   var conciliacaoHtml='';
+  try{
+    var dreViab=vbeMontarDreViabilidade(cid,comp);
+    dreViabHtml=vbeHtmlDreViabilidade(dreViab);
+  }catch(eViab){
+    console.warn('[VBE] DRE da Viabilidade',eViab);
+    dreViabHtml='';
+  }
   try{
     resumoHtml=vbeRenderResumoExecutivoMargem(painel,{ivec:iv,confianca:a.nivel_confianca});
   }catch(eResumo){
@@ -62230,7 +63270,8 @@ function vbeRenderResultadoBody(cid,comp,wrap){
   } else {
     faixaDiag='<div id="vbe-diag-despesas"></div>';
   }
-  wrap.innerHTML=resumoHtml
+  wrap.innerHTML=dreViabHtml
+    +resumoHtml
     +dreGerHtml
     +cenariosDHtml
     +conciliacaoHtml
@@ -62274,15 +63315,18 @@ function vbeHtmlSimulacaoReceitaResultado(a, prev, real, comp){
   var base=prev||{};
   var recIni=Number(base.receita_bruta||0)||0;
   function packDesp(b){
+    var fo=Number(b.folha_operacional||0), fbo=Number(b.folha_backoffice||0);
+    var cb=Number(b.combustivel||0), loc=Number(b.locacao||0), man=Number(b.manutencao_frota||0);
+    var ct=Number(b.custo_total||0);
+    var cinco=fo+fbo+cb+loc+man;
+    var outras=Number(b.outras_despesas||0);
+    if(outras<0.005 && ct>0) outras=Math.max(0, Math.round((ct-cinco)*100)/100);
     return {
-      folha_operacional:Number(b.folha_operacional||0),
-      folha_backoffice:Number(b.folha_backoffice||0),
-      combustivel:Number(b.combustivel||0),
-      locacao:Number(b.locacao||0),
-      manutencao_frota:Number(b.manutencao_frota||0),
+      folha_operacional:fo, folha_backoffice:fbo, combustivel:cb, locacao:loc, manutencao_frota:man,
+      outras_despesas:outras,
       custo_direto:Number(b.custo_direto||0),
       custo_indireto:Number(b.custo_indireto||0),
-      custo_total:Number(b.custo_total||0)
+      custo_total:ct>0?ct:Math.round((cinco+outras)*100)/100
     };
   }
   var despPrev=packDesp(prev||{});
@@ -62302,7 +63346,7 @@ function vbeHtmlSimulacaoReceitaResultado(a, prev, real, comp){
     +'<div class="ch"><span class="ct">Simular faturamento</span>'
     +'<span style="font-size:10px;color:#888">What-if · despesas previstas fixas · '+escHtml(String(comp||'').slice(0,7))+'</span></div>'
     +'<div style="padding:.65rem 1rem;font-size:11px;color:#555;background:#F0EEFF;margin:0 1rem;border-radius:8px">'
-    +'Altere só a <b>receita bruta</b>. Despesas usam a mesma razão da Premissas/Custos/Locações (Folha op + Folha BO + Combustível + Locação + Manutenção). '
+    +'Altere só a <b>receita bruta</b>. Despesas: Folha op + Folha BO + Combustível + Locação + Manutenção + <b>Outras</b> (materiais, admin. e demais lançamentos do Financeiro que entram no custo total). '
     +'Retenção <b>não abate</b> o resultado (receita futura). Para gravar bases: '
     +'<button type="button" class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="vbeMostrarAba(\'premissas\')">Premissas →</button>'
     +'</div>'
@@ -62330,6 +63374,7 @@ function vbeHtmlSimulacaoReceitaResultado(a, prev, real, comp){
     +'<div>Combustível: <b>'+vbeFmtValor(d.combustivel)+'</b></div>'
     +'<div>Locação: <b>'+vbeFmtValor(d.locacao)+'</b></div>'
     +'<div>Manutenção: <b>'+vbeFmtValor(d.manutencao_frota)+'</b></div>'
+    +'<div>Outras: <b>'+vbeFmtValor(d.outras_despesas)+'</b></div>'
     +'<div>Total desp.: <b style="color:#854F0B">'+vbeFmtValor(d.custo_total)+'</b></div>'
     +'</div>'
     +'<div id="vbe-res-sim-out" style="padding:0 1rem 1rem"></div>'
@@ -62396,13 +63441,22 @@ function vbeAtualizarSimulacaoReceitaResultado(){
   var baseDre=vbeMontarDreBloco(baseRec, baseDesp.custo_direto, baseDesp.custo_indireto, _vbeResSimCtx.ret, _vbeResSimCtx.glosa, _vbeResSimCtx.eqEnt, vbeAliquotasRegime(_vbeResSimCtx.regime_salvo, _vbeResSimCtx.iss), baseDesp);
   var dRes=dre.resultado_mensal-baseDre.resultado_mensal;
   var dRec=rec-baseRec;
+  // Outras = custo_total − (5 linhas clássicas); era abatido no resultado sem aparecer na tabela
+  var cincoVis=(Number(dre.folha_operacional||0)+Number(dre.folha_backoffice||0)+Number(dre.combustivel||0)+Number(dre.locacao||0)+Number(dre.manutencao_frota||0));
+  var outrasVis=Number(dre.outras_despesas||0);
+  if(outrasVis<0.005) outrasVis=Math.max(0, Math.round((Number(dre.custo_total||0)-cincoVis)*100)/100);
+  // Caixa: resultado líquido contábil − retenção/glosa (retenção continua fora do lucro contábil)
+  var retGlosaAmt=Number(dre.retencao_glosa||0)||0;
+  var resultadoCaixa=Math.round((Number(dre.resultado_mensal||0)-retGlosaAmt)*100)/100;
+  var retPct=((Number(_vbeResSimCtx.ret||0)+Number(_vbeResSimCtx.glosa||0))*100);
+  var corCaixa=resultadoCaixa>=0?'#085041':'#A32D2D';
   out.innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:.75rem">'
     +vbeMetricCard('Receita bruta',vbeFmtValor(dre.receita_bruta),'#185FA5')
     +vbeMetricCard('Impostos s/ fat.',vbeFmtValor(dre.impostos_faturamento),'#534AB7')
     +vbeMetricCard('Despesas',vbeFmtValor(dre.custo_total),'#854F0B')
     +vbeMetricCard('IRPJ/CSLL',vbeFmtValor(dre.irpj_csll),'#854F0B')
     +vbeMetricCard('Resultado líquido',vbeFmtValor(dre.resultado_mensal),(dre.resultado_mensal>=0?'#085041':'#A32D2D'))
-    +vbeMetricCard('Δ vs base', (dRes>=0?'+':'')+vbeFmtValor(dRes),(dRes>=0?'#3B6D11':'#A32D2D'))
+    +vbeMetricCard('Resultado caixa (após retenção)',vbeFmtValor(resultadoCaixa),corCaixa)
     +'</div>'
     +'<table class="tbl" style="margin:0"><tbody>'
     +vbeDreRow('Receita bruta',vbeFmtValor(dre.receita_bruta))
@@ -62415,13 +63469,22 @@ function vbeAtualizarSimulacaoReceitaResultado(){
     +vbeDreRow('(−) Combustível',vbeFmtValor(dre.combustivel||0))
     +vbeDreRow('(−) Locação total',vbeFmtValor(dre.locacao||0))
     +vbeDreRow('(−) Manutenção frota',vbeFmtValor(dre.manutencao_frota||0))
+    +(outrasVis>0.005?vbeDreRow('(−) Outras despesas (materiais, admin., demais lançamentos)',vbeFmtValor(outrasVis)):'')
     +vbeDreRow('= Resultado antes IR/CSLL',vbeFmtValor(dre.resultado_antes_ir))
     +vbeDreRow('(−) IRPJ/CSLL ('+escHtml(trib.label)+')',vbeFmtValor(dre.irpj_csll))
     +vbeDreRow('= Resultado líquido simulado',vbeFmtValor(dre.resultado_mensal),true)
-    +'<tr style="color:#888;font-size:11px"><td style="padding:6px 1rem" colspan="2">Retenção/glosa '
-    +vbeFmtValor(dre.retencao_glosa)+' — informativo (não abate)</td></tr>'
+    +vbeDreRow('(−) Retenção/glosa ('+vbeFmtNum(retPct,2)+'% da receita bruta)',vbeFmtValor(retGlosaAmt))
+    +'<tr style="font-weight:700;background:'+(resultadoCaixa<0?'#FCEBEB':'#EAF3DE')+'">'
+    +'<td style="padding:10px 1rem;color:'+corCaixa+'">= Resultado de caixa (após retenção)</td>'
+    +'<td style="text-align:right;padding:10px 1rem;color:'+corCaixa+';font-size:15px">'+vbeFmtValor(resultadoCaixa)+'</td></tr>'
+    +'<tr style="color:#888;font-size:11px"><td style="padding:6px 1rem" colspan="2">'
+    +'O resultado líquido é contábil (retenção não abate o lucro — é receita futura). '
+    +'O <b>resultado de caixa</b> mostra o efeito imediato se a retenção/glosa for retida no mês'
+    +(resultadoCaixa<0?' — <span style="color:#A32D2D">caixa negativo neste cenário</span>':'')
+    +'.</td></tr>'
     +'</tbody></table>'
     +'<div style="font-size:11px;color:#555;margin-top:8px">Δ receita vs base: <b style="color:'+(dRec>=0?'#3B6D11':'#A32D2D')+'">'+(dRec>=0?'+':'')+vbeFmtValor(dRec)+'</b>'
+    +' · Δ resultado líquido vs base: <b style="color:'+(dRes>=0?'#3B6D11':'#A32D2D')+'">'+(dRes>=0?'+':'')+vbeFmtValor(dRes)+'</b>'
     +' · carga s/ fat. <b>'+vbeFmtNum(trib.carga_fat_pct,2)+'%</b>'
     +' · ponto de equilíbrio: <b>'+vbeFmtValor(dre.ponto_equilibrio)+'</b></div>';
 }
@@ -68283,10 +69346,96 @@ function progProjVerificarSemEscala(){
 var _progVeiculos = {}; // carregado do banco ou localStorage
 
 function progVeiculoKey(eqId, data){
-  return eqId + '_' + data;
+  return eqId + '_' + (data||'').split('T')[0];
 }
 function progVeiculoKeyB(eqId, data){
-  return eqId + '_' + data + '_b';
+  return eqId + '_' + (data||'').split('T')[0] + '_b';
+}
+function progVeiculoKeyEhDoDia(k, data){
+  var d=(data||'').split('T')[0];
+  return k===d || k.endsWith('_'+d) || k.endsWith('_'+d+'_b');
+}
+function progLimparVeiculosDia(data){
+  var d=(data||'').split('T')[0];
+  Object.keys(_progVeiculos||{}).forEach(function(k){
+    if(progVeiculoKeyEhDoDia(k, d)) delete _progVeiculos[k];
+  });
+}
+/** Persiste no localStorage só as placas do dia (não o mapa inteiro de outras datas). */
+function progPersistVeiculosLocal(data){
+  var d=(data||'').split('T')[0];
+  var slice={};
+  Object.keys(_progVeiculos||{}).forEach(function(k){
+    if(progVeiculoKeyEhDoDia(k, d)) slice[k]=_progVeiculos[k];
+  });
+  try{ localStorage.setItem('prog_veic_'+d, JSON.stringify(slice)); }catch(e){}
+}
+function progDiaSeguinte(data){
+  var d=(data||'').split('T')[0];
+  var p=d.split('-');
+  var dt=new Date(Date.UTC(+p[0], +p[1]-1, +p[2]));
+  dt.setUTCDate(dt.getUTCDate()+1);
+  return dt.toISOString().slice(0,10);
+}
+/** Busca veículos do dia no banco (date ou timestamptz) sem incluir soft-deleted. */
+function progFetchVeiculosDia(data, eqId){
+  var d=(data||'').split('T')[0];
+  var filters=['data=gte.'+d,'data=lt.'+progDiaSeguinte(d),'deleted_at=is.null'];
+  if(eqId) filters.unshift('equipe_id=eq.'+eqId);
+  return sbFetch('prog_veiculos_dia',{filters:filters,limit:eqId?50:5000}).then(function(rows){
+    if(rows&&rows.length) return rows;
+    // Fallback legado: data=eq.YYYY-MM-DD
+    var f2=['data=eq.'+d];
+    if(eqId) f2.unshift('equipe_id=eq.'+eqId);
+    return sbFetch('prog_veiculos_dia',{filters:f2,limit:eqId?50:5000}).then(function(r2){
+      return (r2||[]).filter(function(x){ return !x.deleted_at; });
+    });
+  }).catch(function(){ return []; });
+}
+/** Limpa placa também na composição do dia (fonte que reaparece após Atualizar). */
+function progLimparPlacaComposicao(eqId, data){
+  var d=(data||'').split('T')[0];
+  var comp=typeof progFindCompDia==='function'?progFindCompDia(eqId, d):null;
+  if(!comp){
+    comp=(composicao_dia||[]).find(function(c){
+      return String(c.equipe_id)===String(eqId) && (c.data||'').split('T')[0]===d && !c.deleted_at;
+    })||null;
+  }
+  if(comp){
+    comp.placa=null;
+    comp.veiculo_id=null;
+    comp.veiculo_placa=null;
+    comp.modelo=null;
+  }
+  if(DEMO) return Promise.resolve(true);
+  var payload={placa:null,veiculo_id:null,modelo:null};
+  if(comp && comp.id && typeof isUUID==='function' && isUUID(comp.id)){
+    return sbUpdate('composicao_dia',payload,'id=eq.'+comp.id).catch(function(e){
+      console.warn('progLimparPlacaComposicao',e);
+      return false;
+    });
+  }
+  // Sem id em memória: localiza no banco e limpa
+  return sbFetch('composicao_dia',{
+    filters:['equipe_id=eq.'+eqId,'data=gte.'+d,'data=lt.'+progDiaSeguinte(d),'deleted_at=is.null'],
+    limit:5
+  }).then(function(rows){
+    if(!rows||!rows.length){
+      return sbFetch('composicao_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+d],limit:5});
+    }
+    return rows;
+  }).then(function(rows){
+    if(!rows||!rows.length) return true;
+    return Promise.all(rows.map(function(r){
+      if(!r.id) return null;
+      var mem=(composicao_dia||[]).find(function(c){return c.id===r.id;});
+      if(mem){ mem.placa=null; mem.veiculo_id=null; mem.veiculo_placa=null; mem.modelo=null; }
+      return sbUpdate('composicao_dia',payload,'id=eq.'+r.id);
+    }));
+  }).catch(function(e){
+    console.warn('progLimparPlacaComposicao',e);
+    return false;
+  });
 }
 
 function progFindCompDia(eqId, data){
@@ -68406,8 +69555,8 @@ function progSetVeiculo(eqId, data, veiculoObj){
     if(_conf.length) progShowToast('⚠️ Veículo '+veiculoObj.placa+' já está escalado em outra equipe neste dia! Verifique o painel de veículos.');
   }
   _progVeiculos[progVeiculoKey(eqId, data)] = veiculoObj;
-  try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
-        window._veicEscCache = {}; // Invalida cache de status
+  progPersistVeiculosLocal(data);
+  window._veicEscCache = {}; // Invalida cache de status
 
   // Verificar conflito de horário de veículo compartilhado
   if(veiculoObj && veiculoObj.id){
@@ -68447,92 +69596,91 @@ function progSetVeiculo(eqId, data, veiculoObj){
 // ── Salvar veículo no slot B (2ª moto da Moto Dupla) ──────────
 function progSetVeiculoB(eqId, data, veiculoObj){
   _progVeiculos[progVeiculoKeyB(eqId, data)] = veiculoObj;
-  try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+  progPersistVeiculosLocal(data);
   return progSalvarVeiculoNoBanco(eqId, data, veiculoObj, 2);
 }
 
 function progRemoverVeiculoB(eqId, data){
   if(!confirm('Remover 2ª moto desta equipe?')) return;
-  delete _progVeiculos[progVeiculoKeyB(eqId, data)];
-  try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
+  var d=(data||'').split('T')[0];
+  delete _progVeiculos[progVeiculoKeyB(eqId, d)];
+  progPersistVeiculosLocal(d);
+  window._veicEscCache = {};
   if(!DEMO){
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'slot=eq.2','deleted_at=is.null']})
-      .then(function(res){
-        if(res&&res.length){
-          var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
-          res.forEach(function(row){
-            if(row.id && isUUID(row.id)){
-              fetch(SB.url+'/rest/v1/prog_veiculos_dia?id=eq.'+row.id,{method:'DELETE',headers:h})
-                .catch(function(e){console.error('progRemoverVeiculoB DELETE erro',e);});
-            }
-          });
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+    progFetchVeiculosDia(d, eqId).then(function(res){
+      (res||[]).forEach(function(row){
+        if(String(row.slot||'1')!=='2') return;
+        if(row.id && isUUID(row.id)){
+          fetch(SB.url+'/rest/v1/prog_veiculos_dia?id=eq.'+row.id,{method:'DELETE',headers:h})
+            .catch(function(e){console.error('progRemoverVeiculoB DELETE erro',e);});
         }
-      }).catch(function(e){console.error('progRemoverVeiculoB fetch erro',e);});
+      });
+    }).catch(function(e){console.error('progRemoverVeiculoB fetch erro',e);});
   }
   closeModal();
   var eq = equipes_disp.find(function(e){return e.id===eqId;});
   var cell = document.getElementById('prog-veic-cell-'+eqId);
-  if(cell) cell.innerHTML = progRenderVeiculoCell(eq||{id:eqId}, data);
+  if(cell) cell.innerHTML = progRenderVeiculoCell(eq||{id:eqId}, d);
   var btn = document.getElementById('prog-veic-btn-'+eqId);
-  if(btn) btn.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'a');};
+  if(btn) btn.onclick = function(){progAbrirSelecionarVeiculo(eqId, d, 'a');};
   var btn2 = document.getElementById('prog-veic-btn2-'+eqId);
-  if(btn2) btn2.onclick = function(){progAbrirSelecionarVeiculo(eqId, data, 'b');};
+  if(btn2) btn2.onclick = function(){progAbrirSelecionarVeiculo(eqId, d, 'b');};
 }
 
 var _progVeiculosDateCache = null;
 
 function progCarregarVeiculos(data){
-  // localStorage como render inicial rápido (merge, não substitui)
-  try{
-    var saved = localStorage.getItem('prog_veic_'+data);
-    if(saved){
-      var lsVeic = JSON.parse(saved);
-      Object.assign(_progVeiculos, lsVeic);
-    }
-  }catch(e){}
+  var d=(data||'').split('T')[0];
 
-  // Sempre buscar do banco — banco é a fonte de verdade
-  if(DEMO) return;
-  sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data]})
-    .then(function(rows){
-      _progVeiculosDateCache = data;
-      // NÃO limpar chaves — DB atualiza por cima, localStorage preenche o que a replica ainda não tem
-      var loaded = 0;
-      if(rows&&rows.length){
-        rows.forEach(function(r){
-          if(!r.equipe_id||!r.placa) return;
-          var key = String(r.slot||'1')==='2' ? progVeiculoKeyB(r.equipe_id,r.data||data) : progVeiculoKey(r.equipe_id,r.data||data);
-          _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
-            justificativa:r.justificativa,alterado_por:r.alterado_por};
-          loaded++;
-        });
+  // Sempre buscar do banco — banco é a fonte de verdade (localStorage NÃO restaura placa removida)
+  if(DEMO){
+    try{
+      var savedDemo = localStorage.getItem('prog_veic_'+d);
+      if(savedDemo){
+        progLimparVeiculosDia(d);
+        Object.assign(_progVeiculos, JSON.parse(savedDemo));
       }
-      // Fallback: composicao_dia como fonte secundária
-      // APENAS para equipes que NÃO foram consultadas no banco (prog_veiculos_dia)
-      // Se o banco retornou registros para o dia, eles são fonte autoritativa
-      var comps = [];
-      if(!rows || !rows.length){
-        // Só usar fallback se banco não retornou nada
-        comps = composicao_dia.filter(function(c){
-          var cd=(c.data||'').split('T')[0];
-          return (cd===data||c.data===data) && c.placa && !c.deleted_at;
-        });
-        comps.forEach(function(c){
-          var key = progVeiculoKey(c.equipe_id, data);
-          if(!_progVeiculos[key]){
-            _progVeiculos[key]={id:c.veiculo_id,placa:c.placa,modelo:c.modelo||''};
-            loaded++;
-          }
-        });
-      }
-      console.log('[veic load]',{data:data,prog_veiculos_dia:(rows&&rows.length)||0,composicao_fallback:comps.length,total:loaded});
-      try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
-      progRenderQuadro();
-    }).catch(function(e){
-      console.error('[veic load] ERRO:',e);
-      // Não limpar cache em caso de erro — manter o que tinha
-      progRenderQuadro();
+    }catch(e){}
+    return;
+  }
+
+  progFetchVeiculosDia(d).then(function(rows){
+    _progVeiculosDateCache = d;
+    // Limpa o dia antes de aplicar o banco — evita placa fantasma do localStorage
+    progLimparVeiculosDia(d);
+    var loaded = 0;
+    var eqComRegistro = {};
+    (rows||[]).forEach(function(r){
+      if(!r.equipe_id||!r.placa||r.deleted_at) return;
+      eqComRegistro[String(r.equipe_id)] = true;
+      var key = String(r.slot||'1')==='2' ? progVeiculoKeyB(r.equipe_id,r.data||d) : progVeiculoKey(r.equipe_id,r.data||d);
+      _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
+        justificativa:r.justificativa,alterado_por:r.alterado_por};
+      loaded++;
     });
+    // Fallback composicao_dia só para equipes SEM registro em prog_veiculos_dia
+    var compsFallback = 0;
+    (composicao_dia||[]).forEach(function(c){
+      var cd=(c.data||'').split('T')[0];
+      if(cd!==d && c.data!==d) return;
+      if(!c.placa || c.deleted_at) return;
+      if(eqComRegistro[String(c.equipe_id)]) return;
+      var key = progVeiculoKey(c.equipe_id, d);
+      if(!_progVeiculos[key]){
+        _progVeiculos[key]={id:c.veiculo_id,placa:c.placa,modelo:c.modelo||''};
+        loaded++;
+        compsFallback++;
+      }
+    });
+    console.log('[veic load]',{data:d,prog_veiculos_dia:(rows&&rows.length)||0,composicao_fallback:compsFallback,total:loaded});
+    progPersistVeiculosLocal(d);
+    window._veicEscCache = {};
+    progRenderQuadro();
+  }).catch(function(e){
+    console.error('[veic load] ERRO:',e);
+    progRenderQuadro();
+  });
 }
 
 // ── Renderiza mini-card de um slot de veículo (a=moto1, b=moto2) ─
@@ -68966,10 +70114,13 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
 
 function progFiltrarListaVeiculos(){
   var busca = ((document.getElementById('pv-busca')||{}).value||'').toLowerCase();
+  var buscaNorm = busca.replace(/[-\s]/g,'');
   document.querySelectorAll('.frt-veic-item').forEach(function(el){
     var placa = (el.getAttribute('data-placa')||'').toLowerCase();
+    var placaNorm = placa.replace(/[-\s]/g,'');
     var modelo = (el.getAttribute('data-modelo')||'').toLowerCase();
-    el.style.display = (!busca||placa.indexOf(busca)>=0||modelo.indexOf(busca)>=0)?'':'none';
+    var ok = !busca || placa.indexOf(busca)>=0 || placaNorm.indexOf(buscaNorm)>=0 || modelo.indexOf(busca)>=0;
+    el.style.display = ok?'':'none';
   });
 }
 
@@ -68985,44 +70136,31 @@ function progPreencherVeicSel(){
 function progRemoverVeiculo(eqId, data){
   if(!confirm('Remover veículo desta equipe?')) return;
 
-  // Remover da memória
-  // Remover da memória e localStorage
-  var _pvKey = progVeiculoKey(eqId, data);
-  delete _progVeiculos[_pvKey];
-  // Limpar localStorage para evitar que volte no refresh
-  try{
-    var _lsKey = 'prog_veic_'+data;
-    var _lsData = JSON.parse(localStorage.getItem(_lsKey)||'{}');
-    delete _lsData[_pvKey];
-    localStorage.setItem(_lsKey, JSON.stringify(_lsData));
-  }catch(e){}
-  try{ localStorage.setItem('prog_veic_'+data, JSON.stringify(_progVeiculos)); }catch(e){}
-
-  // Remover do banco — hard DELETE direto pelo id (evita soft-delete que mantém a linha)
-  if(!DEMO){
-    // Buscar sem filtro de slot para compatibilidade com registros antigos
-    var _h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
-    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data,'deleted_at=is.null']})
-      .then(function(res){
-        if(res&&res.length){
-          res.forEach(function(row){
-            // Deletar apenas slot 1 (ou sem slot) — não apagar slot 2 (Moto Dupla)
-            var rowSlot = row.slot===undefined||row.slot===null||row.slot===1||row.slot==='1';
-            if(rowSlot && row.id && isUUID(row.id)){
-              fetch(SB.url+'/rest/v1/prog_veiculos_dia?id=eq.'+row.id,{method:'DELETE',headers:_h})
-                .catch(function(e){console.error('progRemoverVeiculo DELETE erro',e);});
-            }
-          });
-        }
-      })
-      .catch(function(e){ console.error('progRemoverVeiculo fetch erro', e); });
-  }
+  var d=(data||'').split('T')[0];
+  delete _progVeiculos[progVeiculoKey(eqId, d)];
+  progPersistVeiculosLocal(d);
+  window._veicEscCache = {};
 
   closeModal();
   var cell = document.getElementById('prog-veic-cell-'+eqId);
-  if(cell) cell.innerHTML = progRenderVeiculoCell({id:eqId}, data);
+  if(cell) cell.innerHTML = progRenderVeiculoCell({id:eqId}, d);
   var btn = document.getElementById('prog-veic-btn-'+eqId);
-  if(btn) btn.onclick = function(){progAbrirSelecionarVeiculo(eqId, data);};
+  if(btn) btn.onclick = function(){progAbrirSelecionarVeiculo(eqId, d);};
+
+  // Persistir remoção: composição (fonte do Atualizar) + prog_veiculos_dia
+  if(DEMO) return;
+  var _h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+  Promise.all([
+    progLimparPlacaComposicao(eqId, d),
+    progFetchVeiculosDia(d, eqId).then(function(res){
+      return Promise.all((res||[]).map(function(row){
+        var rowSlot = row.slot===undefined||row.slot===null||row.slot===1||row.slot==='1';
+        if(!rowSlot || !row.id || !isUUID(row.id)) return null;
+        return fetch(SB.url+'/rest/v1/prog_veiculos_dia?id=eq.'+row.id,{method:'DELETE',headers:_h})
+          .catch(function(e){console.error('progRemoverVeiculo DELETE erro',e);});
+      }));
+    })
+  ]).catch(function(e){ console.error('progRemoverVeiculo persist erro', e); });
 }
 
 // Vincular botões de veículo após render do quadro
@@ -70164,6 +71302,79 @@ var FRT_INTEGRACOES = [
 ];
 
 // ── Inicialização ─────────────────────────────────────────────
+/** Carrega frota completa (paginado) — sbFetch padrão corta em 1000 e some placas no meio/fim do alfabeto. */
+function frtFetchVeiculosCompleto(){
+  if(DEMO) return Promise.resolve(frt_veiculos||[]);
+  if(typeof sbFetchAll==='function'){
+    return sbFetchAll('frotas_veiculos',{order:'placa',maxPages:10})
+      .then(function(r){ return r||[]; })
+      .catch(function(){
+        return sbFetch('frotas_veiculos',{order:'placa',limit:5000}).then(function(r){return r||[];}).catch(function(){return[];});
+      });
+  }
+  return sbFetch('frotas_veiculos',{order:'placa',limit:5000}).then(function(r){return r||[];}).catch(function(){return[];});
+}
+function frtFetchManutencoesCompleto(){
+  if(DEMO) return Promise.resolve(frt_manutencoes||[]);
+  function _ok(r){ return (r&&r.length)?r:[]; }
+  function _viaSbFetch(){
+    return sbFetch('frotas_manutencoes',{order:'data.desc',limit:5000}).then(_ok).catch(function(){
+      return sbFetch('frotas_manutencoes',{order:'data_solicitacao.desc',limit:5000}).then(_ok).catch(function(){return[];});
+    });
+  }
+  if(typeof sbFetchAll==='function'){
+    return sbFetchAll('frotas_manutencoes',{order:'data.desc',maxPages:5})
+      .then(function(r){ return (r&&r.length)?r:sbFetchAll('frotas_manutencoes',{order:'data_solicitacao.desc',maxPages:5}).then(_ok); })
+      .then(function(r){ return (r&&r.length)?r:_viaSbFetch(); })
+      .catch(_viaSbFetch);
+  }
+  return _viaSbFetch();
+}
+/** Placa efetiva do chamado (campo placa ou cadastro do veículo). */
+function frtManutPlacaOf(m){
+  if(!m) return '';
+  if(m.placa) return String(m.placa);
+  if(m.veiculo_id){
+    var v=(frt_veiculos||[]).find(function(x){return String(x.id)===String(m.veiculo_id);});
+    if(v&&v.placa) return String(v.placa);
+  }
+  return '';
+}
+function frtManutMergeRows(extra){
+  if(!extra||!extra.length) return 0;
+  var byId={}; (frt_manutencoes||[]).forEach(function(m){ if(m&&m.id) byId[String(m.id)]=true; });
+  var n=0;
+  extra.forEach(function(m){
+    if(!m) return;
+    if(m.id&&byId[String(m.id)]) return;
+    if(!frt_manutencoes) frt_manutencoes=[];
+    frt_manutencoes.push(m);
+    if(m.id) byId[String(m.id)]=true;
+    n++;
+  });
+  return n;
+}
+/** Busca chamados no banco por trecho de placa (ex.: 9D41). */
+function frtManutBuscarPlacaNoBanco(busca){
+  var safe=String(busca||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(DEMO||safe.length<2) return Promise.resolve([]);
+  return sbFetch('frotas_manutencoes',{filters:['placa=ilike.*'+safe+'*'],order:'data.desc',limit:300})
+    .then(function(rows){
+      frtManutMergeRows(rows||[]);
+      return rows||[];
+    })
+    .catch(function(){ return []; });
+}
+/** Placa bate na busca ignorando hífen/espaço (FTM9D41 ≡ FTM-9D41). */
+function frtPlacaMatchBusca(placa, busca){
+  if(!busca) return true;
+  var b=String(busca).toLowerCase().replace(/[-\s]/g,'');
+  var p=String(placa||'').toLowerCase().replace(/[-\s]/g,'');
+  if(p.indexOf(b)>=0) return true;
+  // também aceita busca com hífen vs cadastro sem
+  return String(placa||'').toLowerCase().indexOf(String(busca).toLowerCase())>=0;
+}
+
 function frtInit(subpage){
   // Mover TODAS as páginas de frotas para dentro do app-content-area de uma vez
   ['frotas-dashboard','frotas-veiculos','frotas-pneus','frotas-portaria',
@@ -70176,11 +71387,12 @@ function frtInit(subpage){
   // Carregar dados e renderizar após carregar
   var p = function(t,o){ return sbFetch(t,o||{}).then(function(r){return r||[];}).catch(function(){return [];}); };
 
-  // Transferências pendentes
+  // Transferências + aprovações sensíveis pendentes
   frtCarregarTransferencias();
+  if(typeof frtCarregarVeicAprovacoes==='function') frtCarregarVeicAprovacoes();
 
-  // Veículos primeiro
-  p('frotas_veiculos',{order:'placa'}).then(function(rows){
+  // Veículos primeiro (frota completa — sem corte 1000)
+  frtFetchVeiculosCompleto().then(function(rows){
     if(rows&&rows.length) frt_veiculos = rows;
     try{ frtMigrarFiorinosUtilitario(); }catch(eMig){ console.warn('frtMigrarFiorinosUtilitario',eMig); }
 
@@ -70249,7 +71461,7 @@ function frtInit(subpage){
     // Carregar demais tabelas em background
     Promise.all([
       p('frotas_portaria_saidas',{order:'data_saida.desc',filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
-      p('frotas_manutencoes',{order:'data.desc'}),
+      frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
       p('frotas_avarias',{order:'data.desc'}),
@@ -70273,6 +71485,8 @@ function frtInit(subpage){
       if(res[10]){ frt_impl_tipos_extra = (res[10]||[]).filter(function(t){return t.ativo!==false;}).map(function(t){return t.nome;}); }
       // Re-renderizar dashboard se estiver nele (agora com dados completos)
       if(subpage==='frotas-dashboard') frtDashRender();
+      if(subpage==='frotas-veiculos') frtVeiculosRender();
+      if(subpage==='frotas-manutencoes') frtManutRender();
       // Re-renderizar aba Retorno se estiver visível
       var _retEl = document.getElementById('port-aba-retorno');
       if(_retEl && _retEl.style.display !== 'none') portRenderRetorno();
@@ -70285,14 +71499,14 @@ function frtInit(subpage){
 function frtCarregarDados(){
   if(DEMO){ frtGerarDemoData(); return Promise.resolve(); }
   // Carregar veículos primeiro (obrigatório) depois demais tabelas (opcionais)
-  return sbFetch('frotas_veiculos',{order:'placa'}).then(function(rows){
+  return frtFetchVeiculosCompleto().then(function(rows){
     if(rows&&rows.length) frt_veiculos = rows;
     try{ frtMigrarFiorinosUtilitario(); }catch(eMig){}
     // Carregar demais tabelas em paralelo sem bloquear
     var p = function(t,o){ return sbFetch(t,o).catch(function(){return[];}); };
     Promise.all([
       p('frotas_portaria_saidas',{order:'data_saida.desc',filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
-      p('frotas_manutencoes',{order:'data.desc'}),
+      frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
       p('frotas_avarias',{order:'data.desc'}),
@@ -70558,9 +71772,15 @@ function frtVeiculosRender(){
     if(status){
       if(status==='Baixado'){
         if(!(String(v.status||'')==='Baixado' || v.ativo===false || String(v.status||'').toLowerCase()==='inativo')) return false;
-      } else if(v.status!==status) return false;
-    } else if(inativo){
+      } else {
+        // Match case-insensitive (Em Manutenção ≡ Em manutenção)
+        var stV=String(v.status||'').toLowerCase();
+        var stF=String(status).toLowerCase();
+        if(stV!==stF) return false;
+      }
+    } else if(inativo && !busca){
       // Lista padrão: oculta baixados/inativos (use filtro Status = Baixado para vê-los)
+      // Com texto na busca: inclui todos para achar a placa
       return false;
     }
     if(tipo&&v.tipo!==tipo)return false;
@@ -70569,9 +71789,37 @@ function frtVeiculosRender(){
     else if(contrato&&v.contrato_id!==contrato)return false;
     if(forn&&v.fornecedor_id!==forn)return false;
     if(posse&&v.posse!==posse)return false;
-    if(busca&&v.placa.toLowerCase().indexOf(busca)<0&&(v.modelo||'').toLowerCase().indexOf(busca)<0)return false;
+    if(busca){
+      var okPlaca=frtPlacaMatchBusca(v.placa, busca);
+      var okMod=(v.modelo||'').toLowerCase().indexOf(busca)>=0;
+      var okMarca=(v.marca||'').toLowerCase().indexOf(busca)>=0;
+      if(!okPlaca&&!okMod&&!okMarca) return false;
+    }
     return true;
   });
+
+  // Se buscou placa e não achou em memória, tenta no banco (cache truncado / outro contrato)
+  if(busca && !rows.length && !DEMO && !window._frtBuscaLookupLock){
+    window._frtBuscaLookupLock=true;
+    var qNorm=(typeof frtNormPlaca==='function'?frtNormPlaca(busca):String(busca).toUpperCase().replace(/[-\s]/g,''));
+    var safe=qNorm.replace(/[^A-Z0-9]/g,'');
+    if(safe.length>=3){
+      sbFetch('frotas_veiculos',{filters:['or=(placa.ilike.*'+safe+'*,placa.ilike.*'+safe.slice(0,3)+'-'+safe.slice(3)+'*)'],limit:50})
+        .then(function(extra){
+          window._frtBuscaLookupLock=false;
+          if(!extra||!extra.length) return;
+          var byId={}; (frt_veiculos||[]).forEach(function(v){ if(v&&v.id) byId[v.id]=true; });
+          var added=0;
+          extra.forEach(function(v){
+            if(v&&v.id&&!byId[v.id]){ frt_veiculos.push(v); byId[v.id]=true; added++; }
+          });
+          if(added) frtVeiculosRender();
+        })
+        .catch(function(){ window._frtBuscaLookupLock=false; });
+    } else {
+      window._frtBuscaLookupLock=false;
+    }
+  }
 
   // Métricas — por tipo operacional (filtro contrato); sem tipo_op = Backoffice
   var m = document.getElementById('frt-v-metricas');
@@ -73013,80 +74261,188 @@ function frtPortariaRender(){
 }
 
 // ── MANUTENÇÕES ───────────────────────────────────────────────
-function frtManutRender(){
-  var tb=document.getElementById('frt-man-tbody');if(!tb)return;
-  var busca=(document.getElementById('frt-man-busca')||{}).value||'';
-  var tipo=(document.getElementById('frt-man-tipo')||{}).value||'';
-  var status=(document.getElementById('frt-man-status')||{}).value||'';
+function frtManutEls(){
+  // Preferir página visível (há HTML duplicado de Frotas no index)
+  var pages=document.querySelectorAll('#pg-frotas-manutencoes');
+  var pg=null;
+  for(var i=0;i<pages.length;i++){
+    if(!pages[i].classList.contains('hidden')){ pg=pages[i]; break; }
+  }
+  if(!pg) pg=pages[0]||null;
+  if(!pg){
+    return {
+      tbs: Array.prototype.slice.call(document.querySelectorAll('#frt-man-tbody')),
+      buscaEl: document.getElementById('frt-man-busca'),
+      tipoEl: document.getElementById('frt-man-tipo'),
+      statusEl: document.getElementById('frt-man-status'),
+      mets: Array.prototype.slice.call(document.querySelectorAll('#frt-man-metricas'))
+    };
+  }
+  return {
+    tbs: Array.prototype.slice.call(pg.querySelectorAll('#frt-man-tbody')),
+    buscaEl: pg.querySelector('#frt-man-busca'),
+    tipoEl: pg.querySelector('#frt-man-tipo'),
+    statusEl: pg.querySelector('#frt-man-status'),
+    mets: Array.prototype.slice.call(pg.querySelectorAll('#frt-man-metricas'))
+  };
+}
+function frtManutRender(opts){
+  opts=opts||{};
+  var els=frtManutEls();
+  var tbs=els.tbs;
+  if(!tbs.length)return;
+  var busca=((els.buscaEl||{}).value||'').trim();
+  var tipo=((els.tipoEl||{}).value||'');
+  var status=((els.statusEl||{}).value||'');
 
-  var rows=frt_manutencoes.filter(function(m){
-    if(tipo&&m.tipo!==tipo)return false;
-    if(status&&m.status!==status)return false;
-    if(busca&&(m.placa||'').toLowerCase().indexOf(busca.toLowerCase())<0)return false;
-    return true;
-  });
-
-  var met=document.getElementById('frt-man-metricas');
-  if(met){
-    var valorTotal=rows.reduce(function(s,m){return s+(m.valor||0);},0);
-    met.innerHTML=[
-      {l:'Total',v:rows.length,c:'#555'},
-      {l:'Em aberto',v:rows.filter(function(m){return m.status!=='Concluída';}).length,c:'#854F0B'},
-      {l:'Concluídas',v:rows.filter(function(m){return m.status==='Concluída';}).length,c:'#3B6D11'},
-      {l:'Com garantia',v:rows.filter(function(m){return m.garantia;}).length,c:'#185FA5'},
-      {l:'Valor total',v:'R$'+Math.round(valorTotal/1000)+'k',c:'#085041'},
-    ].map(function(x){
-      return '<div style="background:#f9f9f7;border-radius:8px;padding:.5rem;text-align:center">'
-        +'<div style="font-size:10px;color:#888">'+x.l+'</div>'
-        +'<div style="font-size:18px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
-    }).join('');
+  function _filtrar(){
+    return (frt_manutencoes||[]).filter(function(m){
+      if(tipo&&m.tipo!==tipo)return false;
+      if(status&&String(m.status||'')!==status)return false;
+      if(busca){
+        var placa=frtManutPlacaOf(m);
+        var okPlaca=frtPlacaMatchBusca(placa, busca)||frtPlacaMatchBusca(m.placa, busca);
+        var okMod=(m.modelo||'').toLowerCase().indexOf(String(busca).toLowerCase())>=0;
+        if(!okPlaca&&!okMod) return false;
+      }
+      return true;
+    });
   }
 
-  var hoje=new Date(); hoje.setHours(0,0,0,0);
-  if(!rows.length){tb.innerHTML='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma manutenção encontrada.</td></tr>';return;}
-  tb.innerHTML=rows.map(function(m){
-    var stCor=(FRT_MANUT_COR&&FRT_MANUT_COR[m.status])||'#555';
-    // Calcular dias em reparo e atraso
-    var diasReparo=0,diasAtraso=0,bgRow='',alertLabel='';
-    if(m.data_inicio_reparo && ['Em Execução','Aguardando Peça','Requisição','Aprovada'].indexOf(m.status)>=0){
-      diasReparo=Math.floor((hoje-new Date(m.data_inicio_reparo))/(86400000));
-      if(diasReparo>=15)      {bgRow='background:#FDE8E8'; alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">🔴 '+diasReparo+'d</span> ';}
-      else if(diasReparo>=10) {bgRow='background:#FEF0E2'; alertLabel='<span style="font-size:9px;background:#C97A1F;color:#fff;border-radius:3px;padding:0 4px">🟠 '+diasReparo+'d</span> ';}
-      else if(diasReparo>=5)  {bgRow='background:#FEF9EE'; alertLabel='<span style="font-size:9px;background:#854F0B;color:#fff;border-radius:3px;padding:0 4px">🟡 '+diasReparo+'d</span> ';}
-    }
-    if(m.previsao_retorno && m.status!=='Concluída' && m.status!=='Disponível'){
-      var prevDate=new Date(m.previsao_retorno); prevDate.setHours(0,0,0,0);
-      diasAtraso=Math.floor((hoje-prevDate)/86400000);
-      if(diasAtraso>0&&!alertLabel) alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">⏰ +'+diasAtraso+'d</span> ';
-    }
-    var isAtivo = ['Concluída','Disponível','Negada'].indexOf(m.status)<0;
-    return '<tr data-mid="'+m.id+'" style="'+bgRow+';cursor:pointer">'  
-      +'<td style="font-family:monospace;font-weight:600;font-size:12px">'+escHtml(m.placa)+'</td>'
-      +'<td style="font-size:11px;color:#888">'+escHtml(m.modelo)+'</td>'
-      +'<td style="font-size:11px">'+escHtml(m.tipo)+'</td>'
-      +'<td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+alertLabel+escHtml(m.descricao)+'</td>'
-      +'<td style="font-size:11px">'+fmtD(m.data_solicitacao||m.data)+'</td>'
-      +(m.previsao_retorno?'<td style="font-size:11px;color:'+(diasAtraso>0?'#A32D2D':'#555')+'">'+fmtD(m.previsao_retorno)+(diasAtraso>0?' ⚠':'')+'</td>':'<td style="font-size:11px;color:#aaa">—</td>')
-      +'<td><span style="background:'+stCor+'22;color:'+stCor+';border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">'+escHtml(m.status)+'</span></td>'
-      +'<td style="text-align:right">'+(isAtivo?'<button class="btn btn-pri btn-sm" data-bmid="'+m.id+'" style="font-size:10px">'+(['Solicitada','Em Análise'].indexOf(m.status)>=0?'⚖️ Avaliar':'📋 Controle')+'</button>':'<span style="font-size:10px;color:#aaa">Encerrado</span>')+'</td>'
-      +'</tr>';
-  }).join('');
-  setTimeout(function(){
-    tb.querySelectorAll("[data-mid]").forEach(function(tr){
-      tr.onclick=function(){frtAbrirFichaManutencao(this.getAttribute("data-mid"));};
-    });
-    tb.querySelectorAll("[data-bmid]").forEach(function(btn){
-      btn.onclick=function(e){
-        e.stopPropagation();
-        var mid=this.getAttribute("data-bmid");
-        var mv=frt_manutencoes.find(function(x){return x.id===mid;});
-        // Avaliar → ficha; Controle → direto para edição
-        if(mv&&['Solicitada','Em Análise'].indexOf(mv.status)>=0) frtAbrirFichaManutencao(mid);
-        else frtAbrirControleManutencao(mid);
-      };
-    });
-  },50);
+  var rows=_filtrar();
 
+  // Sem dados / busca sem resultado → carrega do banco (evita lista vazia por cache truncado)
+  if(!opts._skipDb && !DEMO){
+    var precisaLista=!(frt_manutencoes&&frt_manutencoes.length);
+    var precisaBusca=!!busca && !rows.length && String(busca).replace(/[^A-Za-z0-9]/g,'').length>=2;
+    if(precisaLista||precisaBusca){
+      if(window._frtManutLookupLock) return;
+      window._frtManutLookupLock=true;
+      var pLoad=precisaLista?frtFetchManutencoesCompleto().then(function(r){
+        if(r&&r.length) frt_manutencoes=r;
+      }):Promise.resolve();
+      pLoad.then(function(){
+        if(precisaBusca) return frtManutBuscarPlacaNoBanco(busca);
+      }).then(function(){
+        window._frtManutLookupLock=false;
+        frtManutRender({_skipDb:true});
+      }).catch(function(){
+        window._frtManutLookupLock=false;
+        frtManutRender({_skipDb:true});
+      });
+      // Mostra loading enquanto busca
+      if(!rows.length){
+        tbs.forEach(function(tb){
+          tb.innerHTML='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#888">Buscando manutenções...</td></tr>';
+        });
+      }
+      return;
+    }
+  }
+
+  rows=_filtrar();
+
+  // Veículo em status de manutenção sem chamado: avisar na busca por placa
+  var avisoVeicHtml='';
+  if(busca && !rows.length){
+    var veicsManut=(frt_veiculos||[]).filter(function(v){
+      if(!frtPlacaMatchBusca(v.placa, busca)) return false;
+      var st=String(v.status||'').toLowerCase();
+      return st.indexOf('manuten')>=0||st.indexOf('aguardando')>=0||st.indexOf('análise')>=0||st.indexOf('analise')>=0||st==='bloqueado'||st.indexOf('quarentena')>=0;
+    });
+    if(veicsManut.length){
+      avisoVeicHtml=veicsManut.map(function(v){
+        var vid=String(v.id||'').replace(/'/g,"\\'");
+        return '<tr style="background:#FEF3E2">'
+          +'<td style="font-family:monospace;font-weight:700">'+escHtml(v.placa)+'</td>'
+          +'<td style="font-size:11px">'+escHtml(v.modelo||'')+'</td>'
+          +'<td style="font-size:11px;color:#854F0B">—</td>'
+          +'<td style="font-size:11px;color:#854F0B">Veículo com status <b>'+escHtml(v.status||'')+'</b>, sem chamado nesta lista. Abra uma solicitação ou confira o cadastro.</td>'
+          +'<td colspan="2" style="font-size:11px;color:#aaa">—</td>'
+          +'<td><span style="background:#FEF3E2;color:#854F0B;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">'+escHtml(v.status||'')+'</span></td>'
+          +'<td style="text-align:right"><button class="btn btn-pri btn-sm" style="font-size:10px" onclick="event.stopPropagation();frtAbrirNovaManutencao(\''+vid+'\')">+ Chamado</button></td>'
+          +'</tr>';
+      }).join('');
+    }
+  }
+
+  var metHtml='';
+  var valorTotal=rows.reduce(function(s,m){return s+(m.valor||0);},0);
+  var vencVal=rows.filter(function(m){ var i=frtManutValidadeInfo(m); return i&&i.nivel==='vencida'; }).length;
+  var av20=rows.filter(function(m){ var i=frtManutValidadeInfo(m); return i&&(i.nivel==='d10'||i.nivel==='d20'); }).length;
+  metHtml=[
+    {l:'Total',v:rows.length,c:'#555'},
+    {l:'Em aberto',v:rows.filter(function(m){return m.status!=='Concluída';}).length,c:'#854F0B'},
+    {l:'Concluídas',v:rows.filter(function(m){return m.status==='Concluída';}).length,c:'#3B6D11'},
+    {l:'Validade ≤20d',v:av20,c:av20?'#C97A1F':'#888'},
+    {l:'Validade vencida',v:vencVal,c:vencVal?'#A32D2D':'#888'},
+    {l:'Valor total',v:'R$'+Math.round(valorTotal/1000)+'k',c:'#085041'},
+  ].map(function(x){
+    return '<div style="background:#f9f9f7;border-radius:8px;padding:.5rem;text-align:center">'
+      +'<div style="font-size:10px;color:#888">'+x.l+'</div>'
+      +'<div style="font-size:18px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
+  }).join('');
+  (els.mets||[]).forEach(function(met){ if(met) met.innerHTML=metHtml; });
+
+  var hoje=new Date(); hoje.setHours(0,0,0,0);
+  var bodyHtml='';
+  if(!rows.length && !avisoVeicHtml){
+    bodyHtml='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma manutenção encontrada.</td></tr>';
+  } else {
+    bodyHtml=rows.map(function(m){
+      var stCor=(FRT_MANUT_COR&&FRT_MANUT_COR[m.status])||'#555';
+      var diasReparo=0,diasAtraso=0,bgRow='',alertLabel='';
+      if(m.data_inicio_reparo && ['Em Execução','Aguardando Peça','Requisição','Aprovada'].indexOf(m.status)>=0){
+        diasReparo=Math.floor((hoje-new Date(m.data_inicio_reparo))/(86400000));
+        if(diasReparo>=15)      {bgRow='background:#FDE8E8'; alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">🔴 '+diasReparo+'d</span> ';}
+        else if(diasReparo>=10) {bgRow='background:#FEF0E2'; alertLabel='<span style="font-size:9px;background:#C97A1F;color:#fff;border-radius:3px;padding:0 4px">🟠 '+diasReparo+'d</span> ';}
+        else if(diasReparo>=5)  {bgRow='background:#FEF9EE'; alertLabel='<span style="font-size:9px;background:#854F0B;color:#fff;border-radius:3px;padding:0 4px">🟡 '+diasReparo+'d</span> ';}
+      }
+      if(m.previsao_retorno && m.status!=='Concluída' && m.status!=='Disponível'){
+        var prevDate=new Date(m.previsao_retorno); prevDate.setHours(0,0,0,0);
+        diasAtraso=Math.floor((hoje-prevDate)/86400000);
+        if(diasAtraso>0&&!alertLabel) alertLabel='<span style="font-size:9px;background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px">⏰ +'+diasAtraso+'d</span> ';
+      }
+      var valInfo=frtManutValidadeInfo(m);
+      if(valInfo&&valInfo.nivel!=='ok'){
+        alertLabel+=frtManutValidadeBadgeHtml(valInfo);
+        if(!bgRow){
+          if(valInfo.nivel==='vencida'||valInfo.nivel==='d10') bgRow='background:#FDE8E8';
+          else if(valInfo.nivel==='d20') bgRow='background:#FEF0E2';
+        }
+      }
+      var isAtivo = ['Concluída','Disponível','Negada'].indexOf(m.status)<0;
+      var placaShow=frtManutPlacaOf(m)||m.placa||'—';
+      return '<tr data-mid="'+m.id+'" style="'+bgRow+';cursor:pointer">'
+        +'<td style="font-family:monospace;font-weight:600;font-size:12px">'+escHtml(placaShow)+'</td>'
+        +'<td style="font-size:11px;color:#888">'+escHtml(m.modelo||'')+'</td>'
+        +'<td style="font-size:11px">'+escHtml(m.tipo||'')+'</td>'
+        +'<td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+alertLabel+escHtml(m.descricao||'')+'</td>'
+        +'<td style="font-size:11px">'+fmtD(m.data_solicitacao||m.data)+'</td>'
+        +(m.previsao_retorno?'<td style="font-size:11px;color:'+(diasAtraso>0?'#A32D2D':'#555')+'">'+fmtD(m.previsao_retorno)+(diasAtraso>0?' ⚠':'')+'</td>':'<td style="font-size:11px;color:#aaa">—</td>')
+        +'<td><span style="background:'+stCor+'22;color:'+stCor+';border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">'+escHtml(m.status||'')+'</span></td>'
+        +'<td style="text-align:right">'+(isAtivo?'<button class="btn btn-pri btn-sm" data-bmid="'+m.id+'" style="font-size:10px">'+(['Solicitada','Em Análise'].indexOf(m.status)>=0?'⚖️ Avaliar':'📋 Controle')+'</button>':'<span style="font-size:10px;color:#aaa">Encerrado</span>')+'</td>'
+        +'</tr>';
+    }).join('')+avisoVeicHtml;
+  }
+
+  tbs.forEach(function(tb){
+    tb.innerHTML=bodyHtml;
+    setTimeout(function(){
+      tb.querySelectorAll("[data-mid]").forEach(function(tr){
+        tr.onclick=function(){frtAbrirFichaManutencao(this.getAttribute("data-mid"));};
+      });
+      tb.querySelectorAll("[data-bmid]").forEach(function(btn){
+        btn.onclick=function(e){
+          e.stopPropagation();
+          var mid=this.getAttribute("data-bmid");
+          var mv=frt_manutencoes.find(function(x){return x.id===mid;});
+          if(mv&&['Solicitada','Em Análise'].indexOf(mv.status)>=0) frtAbrirFichaManutencao(mid);
+          else frtAbrirControleManutencao(mid);
+        };
+      });
+    },50);
+  });
 }
 // ── COMBUSTÍVEL ───────────────────────────────────────────────
 /** Enriquecer abastecimento: km anterior, km rodados e média km/L (vs abastecimento anterior da mesma placa). */
@@ -75735,7 +77091,8 @@ function frtModalVeiculo(v){
     +'<h3>'+(v?'Editar Veículo':'Novo Veículo')+'</h3>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem">'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Placa *</label>'
-    +'<input class="inp" id="fv-placa" style="width:100%;text-transform:uppercase" value="'+(v?escHtml(v.placa||''):'')+'" placeholder="ABC-1234"/></div>'
+    +'<input class="inp" id="fv-placa" style="width:100%;text-transform:uppercase" value="'+(v?escHtml(v.placa||''):'')+'" placeholder="ABC-1234"/>'
+    +(v?'<div style="font-size:10px;color:#854F0B;margin-top:3px">Alterar placa exige justificativa e autorização do gerente.</div>':'')+'</div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Modelo *</label>'
     +'<input class="inp" id="fv-modelo" style="width:100%" value="'+(v?escHtml(v.modelo||''):'')+'"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Marca</label>'
@@ -75764,7 +77121,8 @@ function frtModalVeiculo(v){
     +'<select class="inp" id="fv-cont" data-nosort style="width:100%"><option value="">Sem contrato</option>'+contOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Status</label>'
     +'<select class="inp" id="fv-status" data-nosort style="width:100%" onchange="frtModalVeiculoStatusHint()"><option value="">Selecione...</option>'+stOpts+'</select>'
-    +'<div id="fv-status-hint" style="display:none;font-size:10px;color:#854F0B;margin-top:4px">Baixado inativa o veículo no cadastro (some da lista ativa).</div></div>'
+    +'<div id="fv-status-hint" style="display:none;font-size:10px;color:#854F0B;margin-top:4px">Baixado inativa o veículo no cadastro (some da lista ativa).</div>'
+    +(v?'<div style="font-size:10px;color:#854F0B;margin-top:3px">Retroceder status (ex.: Manutenção → Disponível) exige justificativa e aprovação do gerente.</div>':'')+'</div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Responsável</label>'
     +'<input class="inp" id="fv-resp" style="width:100%" value="'+(v?escHtml(v.responsavel||''):'')+'"/></div>'
 
@@ -75899,41 +77257,55 @@ function frtModalVeiculo(v){
             closeModal(); frtVeiculosRender();
           });
         };
-        if(v){
-          var idx=frt_veiculos.findIndex(function(x){return x.id===v.id;});
-          if(idx>=0) Object.assign(frt_veiculos[idx],payload);
+        var persist=function(finalPayload, just){
+          if(just){
+            var base=(finalPayload.observacoes||'').trim();
+            finalPayload.observacoes=(base?base+' | ':'')+'[Aprov. '+new Date().toLocaleString('pt-BR')+'] '+just;
+          }
+          if(v){
+            var idx=frt_veiculos.findIndex(function(x){return x.id===v.id;});
+            if(idx>=0) Object.assign(frt_veiculos[idx],finalPayload);
+            if(!DEMO){
+              return sbUpdate('frotas_veiculos',finalPayload,'id=eq.'+v.id).then(function(ok){
+                if(!ok){
+                  btn.disabled=false;
+                  progShowToast('⚠️ Erro ao salvar veículo. Se falhou em tanque/seguro, rode sql_frotas_veiculos_fase8.sql.','erro');
+                  return;
+                }
+                var baixou=finalPayload.status==='Baixado';
+                progShowToast(baixou
+                  ?('✅ Veículo '+(finalPayload.placa||placa)+' baixado e inativado no cadastro.')
+                  :('✅ Veículo '+(finalPayload.placa||placa)+' salvo no banco.'));
+                return afterSave(v.id);
+              });
+            }
+            progShowToast('✅ Veículo atualizado: '+(finalPayload.placa||placa));
+            return afterSave(v.id);
+          }
+          var novo=Object.assign({id:'fv'+Date.now(),score:75},finalPayload);
+          frt_veiculos.push(novo);
           if(!DEMO){
-            return sbUpdate('frotas_veiculos',payload,'id=eq.'+v.id).then(function(ok){
-              if(!ok){
+            return sbInsert('frotas_veiculos',_semId(novo)).then(function(r){
+              if(r&&r[0]&&r[0].id) novo.id=r[0].id;
+              else {
                 btn.disabled=false;
-                progShowToast('⚠️ Erro ao salvar veículo. Se falhou em tanque/seguro, rode sql_frotas_veiculos_fase8.sql.','erro');
+                progShowToast('⚠️ Erro ao criar veículo. Verifique SQL Fase 8 se usou tanque/seguro.','erro');
                 return;
               }
-              progShowToast(baixar
-                ?('✅ Veículo '+placa+' baixado e inativado no cadastro.')
-                :('✅ Veículo '+placa+' salvo no banco.'));
-              return afterSave(v.id);
+              progShowToast('Veículo criado: '+placa);
+              return afterSave(novo.id);
             });
           }
-          progShowToast(baixar?('✅ Veículo '+placa+' baixado e inativado.'):('✅ Veículo atualizado: '+placa));
-          return afterSave(v.id);
-        }
-        var novo=Object.assign({id:'fv'+Date.now(),score:75},payload);
-        frt_veiculos.push(novo);
-        if(!DEMO){
-          return sbInsert('frotas_veiculos',_semId(novo)).then(function(r){
-            if(r&&r[0]&&r[0].id) novo.id=r[0].id;
-            else {
-              btn.disabled=false;
-              progShowToast('⚠️ Erro ao criar veículo. Verifique SQL Fase 8 se usou tanque/seguro.','erro');
-              return;
-            }
-            progShowToast('Veículo criado: '+placa);
-            return afterSave(novo.id);
+          progShowToast('Veículo criado: '+placa);
+          return afterSave(novo.id);
+        };
+        if(v){
+          return frtGateSalvarVeiculoSensivel(v, payload).then(function(res){
+            if(!res||!res.ok){ btn.disabled=false; return; }
+            return persist(res.payload, res.just);
           });
         }
-        progShowToast('Veículo criado: '+placa);
-        return afterSave(novo.id);
+        return persist(payload, null);
       }).catch(function(e){
         btn.disabled=false;
         progShowToast('⚠️ Erro ao cadastrar fornecedor: '+(e&&e.message||e),'erro');
@@ -76014,11 +77386,15 @@ function frtModalVeiculoStatusHint(){
   hint.style.display = st==='Baixado' ? 'block' : 'none';
 }
 
-/** Exclui veículo; se houver vínculos (FK), baixa e inativa no cadastro. */
+/** Exclui veículo; bloqueia se estiver em execução. Se houver vínculos (FK), baixa e inativa. */
 async function frtExcluirVeiculo(id){
   var v=(frt_veiculos||[]).find(function(x){return String(x.id)===String(id);});
   if(!v){ progShowToast('Veículo não encontrado.','erro'); return; }
-  if(!confirm('Excluir o veículo '+v.placa+' do cadastro?\n\nSe houver histórico (combustível, manutenção, portaria…), ele será Baixado e inativado em vez de apagado.')) return;
+  if(typeof frtVeiculoEmExecucao==='function' && frtVeiculoEmExecucao(v)){
+    progShowToast('⛔ Não é possível excluir: veículo em execução (manutenção). Finalize o chamado antes.','erro');
+    return;
+  }
+  if(!confirm('Excluir o veículo '+v.placa+' do cadastro?\n\nPermitido apenas se não estiver em execução.\nSe houver histórico (combustível, manutenção, portaria…), ele será Baixado e inativado em vez de apagado.')) return;
   function softBaixar(){
     var payload={status:'Baixado',ativo:false};
     var idx=frt_veiculos.findIndex(function(x){return String(x.id)===String(id);});
@@ -76291,6 +77667,26 @@ var FRT_MANUT_COR = {
 };
 var FRT_MANUT_STATUS_COMPRA = ['Pendente','RC emitida','OC emitida','Enviado ao fornecedor','Confirmado','Cancelado'];
 
+/** Validade periódica (ensaio etc.): null/vazio = sem prazo. Alertas 20d e 10d. */
+function frtManutValidadeInfo(m){
+  if(!m||!m.validade) return null;
+  var raw=String(m.validade).slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  var hoje=new Date(); hoje.setHours(0,0,0,0);
+  var dt=new Date(raw+'T12:00:00'); dt.setHours(0,0,0,0);
+  var dias=Math.round((dt-hoje)/86400000);
+  var item=(m.validade_item||'').trim()||'Validade';
+  if(dias<0) return {dias:dias, nivel:'vencida', item:item, data:raw, label:'⛔ '+item+' vencida há '+Math.abs(dias)+'d'};
+  if(dias<=10) return {dias:dias, nivel:'d10', item:item, data:raw, label:'🔴 '+item+' vence em '+dias+'d'};
+  if(dias<=20) return {dias:dias, nivel:'d20', item:item, data:raw, label:'🟠 '+item+' vence em '+dias+'d'};
+  return {dias:dias, nivel:'ok', item:item, data:raw, label:item+' até '+fmtD(raw)};
+}
+function frtManutValidadeBadgeHtml(info){
+  if(!info||info.nivel==='ok') return '';
+  var bg=info.nivel==='vencida'?'#A32D2D':(info.nivel==='d10'?'#A32D2D':'#C97A1F');
+  return '<span style="font-size:9px;background:'+bg+';color:#fff;border-radius:3px;padding:0 4px;margin-left:3px" title="'+escHtml(info.label)+'">'+escHtml(info.label)+'</span> ';
+}
+
 function frtManutMsgFornecedor(m){
   m=m||{};
   var linhas=[
@@ -76445,8 +77841,9 @@ function frtAbrirNovaManutencao(veicId){
     function renderLista(busca){
       var lista = frt_veiculos.filter(function(v){
         if(v.ativo===false) return false;
-        var b = busca.toLowerCase();
-        return (v.placa||'').toLowerCase().includes(b)
+        var b = (busca||'').toLowerCase();
+        if(!b) return true;
+        return frtPlacaMatchBusca(v.placa, b)
             || (v.modelo||'').toLowerCase().includes(b)
             || (v.marca||'').toLowerCase().includes(b);
       }).slice(0,10);
@@ -76555,6 +77952,9 @@ function frtAbrirFichaManutencao(id){
     +(m.status_compra?'<div><b>Status compra:</b> '+escHtml(m.status_compra)+'</div>':'')
     +(m.fornecedor?'<div style="grid-column:span 2"><b>Fornecedor:</b> '+escHtml(m.fornecedor)+'</div>':'')
     +(m.fornecedor_email||m.fornecedor_telefone?'<div style="grid-column:span 2"><b>Contato:</b> '+escHtml([m.fornecedor_email,m.fornecedor_telefone].filter(Boolean).join(' · '))+'</div>':'')
+    +(m.validade?'<div style="grid-column:span 2"><b>Validade'+(m.validade_item?' ('+escHtml(m.validade_item)+')':'')+':</b> '+fmtD(m.validade)
+      +(function(){ var vi=frtManutValidadeInfo(m); return vi&&vi.nivel!=='ok'?' <span style="color:'+(vi.nivel==='d20'?'#C97A1F':'#A32D2D')+';font-weight:700">'+escHtml(vi.label)+'</span>':''; })()
+      +'</div>':'')
     +(m.anexo_compra_url?'<div style="grid-column:span 2"><b>Anexo:</b> <a href="'+escHtml(m.anexo_compra_url)+'" target="_blank" rel="noopener">Ver arquivo ↗</a></div>':'')
     +(m.obs_compra?'<div style="grid-column:span 2"><b>Obs. compra:</b> '+escHtml(m.obs_compra)+'</div>':'')
     +(m.justificativa_negativa?'<div style="grid-column:span 2;color:#A32D2D"><b>Negativa:</b> '+escHtml(m.justificativa_negativa)+'</div>':'')
@@ -76645,6 +78045,24 @@ function frtAbrirControleManutencao(id){
     +'<input class="inp" id="fc-inicio" type="date" style="width:100%" value="'+(m.data_inicio_reparo||'')+'"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Previsão de retorno</label>'
     +'<input class="inp" id="fc-prev" type="date" style="width:100%" value="'+(m.previsao_retorno||'')+'"/></div>'
+    // Validade periódica (ensaio, inspeção…)
+    +'<div style="grid-column:span 2;margin-top:.15rem;padding:.65rem .75rem;background:#F5F8FC;border-radius:8px;border:.5px solid #D6E4F5">'
+    +'<div style="font-size:12px;font-weight:700;color:#185FA5;margin-bottom:.45rem">📅 Validade do item / serviço</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Item (ex.: Ensaio)</label>'
+    +'<input class="inp" id="fc-val-item" style="width:100%" value="'+escHtml(m.validade_item||'')+'" placeholder="Ensaio dielétrico, inspeção…"/></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Data de validade</label>'
+    +'<input class="inp" id="fc-validade" type="date" style="width:100%" value="'+(m.validade?String(m.validade).slice(0,10):'')+'"/>'
+    +'<div style="font-size:10px;color:#888;margin-top:3px">Em branco = sem prazo. Com data: alerta aos 20 e 10 dias.</div></div>'
+    +'</div>'
+    +(function(){
+      var vi=frtManutValidadeInfo(m);
+      if(!vi||vi.nivel==='ok') return '';
+      var cor=vi.nivel==='vencida'||vi.nivel==='d10'?'#A32D2D':'#C97A1F';
+      var bg=vi.nivel==='d20'?'#FEF0E2':'#FCEBEB';
+      return '<div style="margin-top:.5rem;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;background:'+bg+';color:'+cor+'">'+escHtml(vi.label)+'</div>';
+    })()
+    +'</div>'
     +(dias>0?'<div style="grid-column:span 2"><div style="border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;text-align:center;background:'+(dias>=15?'#FCEBEB':dias>=10?'#FEF0E2':'#FEF9EE')+';color:'+(dias>=15?'#A32D2D':dias>=10?'#C97A1F':'#854F0B')+'">⏱ '+dias+' dias em reparo'+(dias>=15?' — CRÍTICO':dias>=10?' — ALERTA':' — ATENÇÃO')+'</div></div>':'')
     // ── Processo de compra (Fase 4) ──
     +'<div style="grid-column:span 2;margin-top:.25rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
@@ -76691,6 +78109,8 @@ function frtAbrirControleManutencao(id){
       m.status=g('fc-status')||m.status;
       m.data_inicio_reparo=g('fc-inicio')||null;
       m.previsao_retorno=g('fc-prev')||null;
+      m.validade_item=g('fc-val-item').trim()||null;
+      m.validade=g('fc-validade')||null;
       // Compra
       m.numero_requisicao=g('fc-num-rc').trim()||null;
       m.ordem_compra=g('fc-oc').trim()||null;
@@ -76737,6 +78157,8 @@ function frtAbrirControleManutencao(id){
           km:m.km,garantia:m.garantia,status:m.status,
           data_inicio_reparo:m.data_inicio_reparo||null,
           previsao_retorno:m.previsao_retorno||null,
+          validade:m.validade||null,
+          validade_item:m.validade_item||null,
           justificativa_negativa:m.justificativa_negativa||null,
           numero_requisicao:m.numero_requisicao,
           ordem_compra:m.ordem_compra,
@@ -76755,7 +78177,7 @@ function frtAbrirControleManutencao(id){
           var payload=buildPayload(fornId);
           sbUpdate('frotas_manutencoes',payload,'id=eq.'+_id).then(function(ok){
             if(ok===false){
-              // Retry sem colunas Fase 4 se SQL não aplicado
+              // Retry sem colunas novas se SQL não aplicado
               var p2={
                 fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
                 km:m.km,garantia:m.garantia,status:m.status,
@@ -76766,13 +78188,13 @@ function frtAbrirControleManutencao(id){
               };
               return sbUpdate('frotas_manutencoes',p2,'id=eq.'+_id).then(function(ok2){
                 if(ok2===false){
-                  if(fcErrEl){fcErrEl.textContent='⚠ Erro ao salvar. Rode sql_frotas_manut_fase4_compras.sql no Supabase.';fcErrEl.style.display='block';}
+                  if(fcErrEl){fcErrEl.textContent='⚠ Erro ao salvar. Rode sql_frotas_manut_fase4_compras.sql / sql_frotas_manut_validade.sql no Supabase.';fcErrEl.style.display='block';}
                   if(btnSav){btnSav.textContent='💾 Salvar Controle';btnSav.disabled=false;}
                   progShowToast('❌ Erro ao salvar manutenção.','erro');
                   return;
                 }
                 closeModal();frtManutRender();
-                progShowToast('✅ Controle salvo (campos compra pendem SQL Fase 4).');
+                progShowToast('✅ Controle salvo (validade pendente: rode sql_frotas_manut_validade.sql).');
               });
             }
             closeModal();frtManutRender();
@@ -77690,6 +79112,7 @@ window.addEventListener('load',async function(){
           <option value="">Todas as posses</option>
           <option>Próprio</option><option>Alugado</option><option>Comodato</option><option>Terceiro</option><option>Outro</option>
         </select>
+        <button class="btn port-btn-editar-veic" onclick="frtAbrirVeicAprovacoesPendentes()" title="Aprovações de placa/status">🔐 Aprovações <span class="frt-aprov-badge" style="display:none;min-width:16px;height:16px;border-radius:8px;background:#A32D2D;color:#fff;font-size:10px;align-items:center;justify-content:center;padding:0 4px;margin-left:4px"></span></button>
         <button class="btn btn-pri port-btn-editar-veic" onclick="frtAbrirNovoVeiculo()">+ Novo veículo</button>
       </div>
     </div>
@@ -77973,7 +79396,7 @@ window.addEventListener('load',async function(){
         <button class="btn btn-pri" onclick="frtAbrirNovaManutencao()">+ Nova solicitação</button>
       </div>
     </div>
-    <div id="frt-man-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
+    <div id="frt-man-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
   </div>
   <div style="overflow-x:auto"><table class="tbl tbl-responsive">
     <thead><tr>
@@ -100958,8 +102381,7 @@ async function inspCampoCarregarEquipesContrato(cid, dataRef){
     else{ var i=equipes.findIndex(function(x){return x.id===e.id;}); equipes[i]=e; }
   });
   (fetched[1]||[]).forEach(function(e){
-    var i=equipes_disp.findIndex(function(x){return x.id===e.id;});
-    if(i>=0) equipes_disp[i]=e; else equipes_disp.push(e);
+    mergeEquipesDispFromFetch([e]);
   });
   if(dataRef){
     var comps=await sbFetch('composicao_dia',{filters:['data=eq.'+_compDataStr(dataRef)],limit:500}).catch(function(){return[];});
@@ -103223,6 +104645,7 @@ function comgasRemoverFoto(ncId, idx) {
           <option value="">Todas as posses</option>
           <option>Próprio</option><option>Alugado</option><option>Comodato</option><option>Terceiro</option><option>Outro</option>
         </select>
+        <button class="btn port-btn-editar-veic" onclick="frtAbrirVeicAprovacoesPendentes()" title="Aprovações de placa/status">🔐 Aprovações <span class="frt-aprov-badge" style="display:none;min-width:16px;height:16px;border-radius:8px;background:#A32D2D;color:#fff;font-size:10px;align-items:center;justify-content:center;padding:0 4px;margin-left:4px"></span></button>
         <button class="btn btn-pri port-btn-editar-veic" onclick="frtAbrirNovoVeiculo()">+ Novo veículo</button>
       </div>
     </div>
@@ -103506,7 +104929,7 @@ function comgasRemoverFoto(ncId, idx) {
         <button class="btn btn-pri" onclick="frtAbrirNovaManutencao()">+ Nova solicitação</button>
       </div>
     </div>
-    <div id="frt-man-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
+    <div id="frt-man-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
   </div>
   <div style="overflow-x:auto"><table class="tbl tbl-responsive">
     <thead><tr>
