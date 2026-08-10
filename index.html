@@ -3246,6 +3246,7 @@ body.insp-campo-ativo #app-content-area {
     <button id="tab-prog-escala" onclick="progAbaSelecionar('escala')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid #1a1a18;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#1a1a18">📅 Programação</button>
     <button id="tab-prog-calendario" onclick="progAbaSelecionar('calendario')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">🗓 Calendário de Folgas</button>
     <button id="tab-prog-verificar" onclick="progAbaSelecionar('verificar')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">🔍 Tratamento Verificar</button>
+    <button id="tab-prog-relatos" onclick="progAbaSelecionar('relatos')" style="padding:.5rem 1.2rem;border:none;border-bottom:2.5px solid transparent;background:none;font-size:13px;font-weight:600;cursor:pointer;color:#888">📋 Relatórios</button>
   </div>
 
   <div id="prog-mobile-view" style="display:none"></div>
@@ -3282,6 +3283,7 @@ body.insp-campo-ativo #app-content-area {
         <button class="btn" id="btn-modo-mobile" onclick="progMobileToggle()" style="color:#533AB7;border-color:#533AB7;font-size:11px;padding:4px 8px">📱 Mobile</button>
         <button class="btn" onclick="enviarWhatsAppTodos()" style="color:#25D366;border-color:#25D366;font-size:11px;padding:4px 8px">📲 WhatsApp</button>
         <button class="btn" onclick="progAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px">🔄 Atualizar</button>
+        <button class="btn" onclick="progRecuperarPlacasDia()" style="color:#854F0B;border-color:#854F0B;font-size:11px;padding:4px 8px" title="Recupera placas faltantes (composição / dia anterior)">🚗 Recuperar placas</button>
       </div>
     </div>
     <!-- Filtro por tipo -->
@@ -3393,6 +3395,40 @@ body.insp-campo-ativo #app-content-area {
         Clique em qualquer dia para alterar a cor da escala. Dias sem cor estão em branco — precisam ser preenchidos.
       </div>
       <div id="cal-2026-grid" style="padding:.5rem 1rem 1rem"></div>
+    </div>
+  </div>
+
+  <!-- Aba Relatórios — casos/discussões do dia -->
+  <div id="prog-aba-relatos" style="display:none">
+    <div class="card" style="margin-bottom:1rem">
+      <div class="ch" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <span class="ct">📋 Relatórios do dia</span>
+        <input type="date" class="inp" id="prog-rel-data" style="width:145px;font-size:12px" onchange="progRelOnDataChange()"/>
+        <select class="inp" id="prog-rel-filtro" style="width:130px;font-size:12px" onchange="progRelRender()">
+          <option value="abertos">Abertos</option>
+          <option value="todos">Todos</option>
+          <option value="resolvidos">Resolvidos</option>
+        </select>
+        <button class="btn btn-pri" onclick="progRelNovoCaso()" style="font-size:12px;padding:5px 12px">+ Novo relato</button>
+        <button class="btn" onclick="progRelCarregar()" style="font-size:12px;padding:5px 10px;color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>
+        <span id="prog-rel-count" style="font-size:11px;color:#888"></span>
+      </div>
+      <div style="padding:.5rem 1rem;font-size:12px;color:#888;border-top:.5px solid #f0efe8">
+        Crie um caso do dia (ex.: dificuldade para escalar) ou responda nos relatos existentes. Tudo fica gravado com o nome do usuário.
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(260px,340px) 1fr;gap:1rem;align-items:start" id="prog-rel-layout">
+      <div class="card" style="margin:0">
+        <div class="ch"><span class="ct" style="font-size:13px">Casos</span></div>
+        <div id="prog-rel-lista" style="padding:.5rem;max-height:70vh;overflow-y:auto">
+          <div style="color:#aaa;font-size:12px;padding:1rem;text-align:center">Carregando…</div>
+        </div>
+      </div>
+      <div class="card" style="margin:0;min-height:320px">
+        <div id="prog-rel-detalhe" style="padding:1rem">
+          <div style="color:#aaa;font-size:13px;text-align:center;padding:2.5rem 1rem">Selecione um caso à esquerda ou crie um novo relato.</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -5120,16 +5156,20 @@ function erpCarregarFornecedores(forceRefresh){
     var norm=erpDedup(items).map(erpNorm).filter(function(f){return f.razao_social;})
       .sort(function(a,b){return a.razao_social.localeCompare(b.razao_social,'pt-BR',{sensitivity:'base'});});
     erpSalvarCache(norm);
+    // Mantém ERP em fornecedores, mas NÃO apaga o cadastro local (_fornDB)
     fornecedores=norm;
-    _erpSetStatus('✅ '+norm.length+' fornecedores','#3B6D11');
+    _erpSetStatus('✅ '+norm.length+' ERP','#3B6D11');
     setTimeout(function(){_erpSetStatus('');},3000);
-    return norm;
+    return carregarFornDB().then(function(){ return norm; });
   }).catch(function(e){
     console.error('ERP:',e);
     _erpSetStatus('⚠️ ERP indisponível','#854F0B');
     setTimeout(function(){_erpSetStatus('');},4000);
-    return sbFetch('fornecedores',{filters:['status=eq.Ativo'],order:'razao_social'})
-      .then(function(r){if(r&&r.length)fornecedores=r;return r||[];});
+    return carregarFornDB().then(function(r){
+      if(r&&r.length && !(fornecedores||[]).some(function(f){return f._erp;}))
+        fornecedores=r.slice();
+      return r||[];
+    });
   });
 }
 // ── FIM INTEGRAÇÃO ERP ────────────────────────────────────────────────
@@ -5141,7 +5181,11 @@ var contratos=[],categorias=[],subcategorias=[],verbas=[],lancamentos=[],fornece
 var _fornDB=[]; // fornecedores da tabela Supabase (uuids reais) — não é sobrescrito pelo cache do ERP
 function carregarFornDB(){
   if(DEMO) return Promise.resolve(_fornDB);
-  return sbFetch('fornecedores',{order:'razao_social'}).then(function(r){
+  // Sem filtro de status e com paginação: evita sumir ativos além do limite 1000
+  var fetchFn = typeof sbFetchAll==='function'
+    ? sbFetchAll('fornecedores',{order:'razao_social.asc',pageSize:1000,maxPages:20})
+    : sbFetch('fornecedores',{order:'razao_social',limit:5000});
+  return fetchFn.then(function(r){
     if(Array.isArray(r)) _fornDB=r.filter(function(f){ return f.deleted_at==null; });
     return _fornDB||[];
   }).catch(function(){ return _fornDB||[]; });
@@ -5149,6 +5193,35 @@ function carregarFornDB(){
 function _fornFindById(fid){
   return (_fornDB||[]).find(function(x){ return x.id===fid; })
     || (fornecedores||[]).find(function(x){ return x.id===fid && !x._erp; });
+}
+/** Opções de &lt;select&gt;: cadastro local (UUID) + ERP, sem duplicar CNPJ. */
+function _fornOptsSelectHtml(selectedId){
+  var sel = selectedId!=null && selectedId!=='' ? String(selectedId) : '';
+  var lst = typeof frtFornecedoresLista==='function'
+    ? frtFornecedoresLista()
+    : { db: (_fornDB||[]).slice(), erp: (fornecedores||[]).filter(function(f){return f._erp;}) };
+  var db = (lst.db||[]).filter(function(f){
+    return f.status==='Ativo' || String(f.id)===sel;
+  });
+  var erp = (lst.erp||[]).filter(function(f){
+    return f.status==='Ativo' || String(f.id)===sel;
+  });
+  var html = '<option value="">Selecione (opcional)</option>';
+  if(db.length){
+    html += '<optgroup label="Cadastrados">'+db.map(function(f){
+      return '<option value="'+f.id+'"'+(String(f.id)===sel?' selected':'')+'>'
+        +(typeof _escAttrLanc==='function'?_escAttrLanc(f.razao_social||''):String(f.razao_social||'').replace(/"/g,'&quot;'))
+        +'</option>';
+    }).join('')+'</optgroup>';
+  }
+  if(erp.length){
+    html += '<optgroup label="ERP CenaBR">'+erp.map(function(f){
+      return '<option value="'+f.id+'"'+(String(f.id)===sel?' selected':'')+'>'
+        +(typeof _escAttrLanc==='function'?_escAttrLanc(f.razao_social||''):String(f.razao_social||'').replace(/"/g,'&quot;'))
+        +'</option>';
+    }).join('')+'</optgroup>';
+  }
+  return html;
 }
 function _fornChaveNome(s){
   return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
@@ -9157,7 +9230,9 @@ function vbeHtmlBlocoClassificacaoLanc(prefix, l){
 function openNovoLancamento(){
   var contOpts=contratos.map(function(c){return '<option value="'+c.id+'">'+c.nome+'</option>';}).join('');
   var catOpts=categorias.map(function(c){return '<option value="'+c.id+'">'+c.nome+'</option>';}).join('');
-  var fornOpts='<option value="">Selecione (opcional)</option>'+fornecedores.map(function(f){return '<option value="'+f.id+'">'+f.razao_social+'</option>';}).join('');
+  var fornOpts=typeof _fornOptsSelectHtml==='function'
+    ? _fornOptsSelectHtml('')
+    : '<option value="">Selecione (opcional)</option>'+fornecedores.map(function(f){return '<option value="'+f.id+'">'+f.razao_social+'</option>';}).join('');
   setModal('<div class="modal-bg"><div class="modal" style="max-width:600px"><h3>Novo lançamento</h3>'
     +'<div class="g2">'
     +'<div class="fg"><label>Contrato</label><select id="nl-cont">'+contOpts+'</select></div>'
@@ -9263,7 +9338,9 @@ function openEditarLancamento(lid){
   var catOpts=categorias.filter(function(c){return c.ativa!==false;}).map(function(c){
     return '<option value="'+c.id+'"'+(String(c.id)===String(l.categoria_id)?' selected':'')+'>'+_escAttrLanc(c.nome)+'</option>';
   }).join('');
-  var fornOpts='<option value="">Selecione (opcional)</option>'+fornecedores.map(function(f){
+  var fornOpts=typeof _fornOptsSelectHtml==='function'
+    ? _fornOptsSelectHtml(l.fornecedor_id||'')
+    : '<option value="">Selecione (opcional)</option>'+fornecedores.map(function(f){
     return '<option value="'+f.id+'"'+(String(f.id)===String(l.fornecedor_id)?' selected':'')+'>'+_escAttrLanc(f.razao_social)+'</option>';
   }).join('');
   var stOpts=['Lançado','Em análise','Aprovado','Reprovado','Pago','Pago parcial','Cancelado'].map(function(s){
@@ -13192,7 +13269,10 @@ function renderConteudoCadastro(id){
     return;
   }
   else if(id==='fornecedores') {
-    erpCarregarFornecedores(false).then(function(){ renderFornecedoresVis(); });
+    Promise.resolve(carregarFornDB())
+      .then(function(){ return erpCarregarFornecedores(false); })
+      .then(function(){ renderFornecedoresVis(); })
+      .catch(function(){ renderFornecedoresVis(); });
   }
   else if(id==='categorias') renderCategoriasVis();
   else if(id==='equipes-obs') renderEquipesVis();
@@ -13401,12 +13481,18 @@ function renderFornecedoresVis(){
   var tb = document.getElementById('tbody-forn-vis'); if(!tb) return;
 
   var cacheEl = document.getElementById('forn-cache-info');
-  if(cacheEl) cacheEl.textContent = erpCacheInfo();
+  if(cacheEl){
+    var nDb = (_fornDB||[]).length;
+    var nErp = (fornecedores||[]).filter(function(f){return f._erp;}).length;
+    cacheEl.textContent = (erpCacheInfo()||'') + (nDb||nErp ? ' · banco '+nDb+(nErp?' · ERP '+nErp:'') : '');
+  }
 
   var busca  = ((document.getElementById('forn-busca')||{}).value||'').trim();
   var status = ((document.getElementById('forn-fil-status')||{}).value||'');
 
-  var base = fornecedores.filter(function(f){
+  // Mescla cadastro Supabase + ERP (antes o sync ERP apagava o local da tela)
+  var merged = typeof _fornListaBusca==='function' ? _fornListaBusca() : (fornecedores||[]);
+  var base = merged.filter(function(f){
     if(status && f.status !== status) return false;
     return true;
   });
@@ -13427,9 +13513,9 @@ function renderFornecedoresVis(){
 
   if(!lista.length){
     tb.innerHTML = '<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">'
-      + (fornecedores.length
+      + (merged.length
           ? 'Nenhum resultado para os filtros aplicados.'
-          : 'Nenhum fornecedor. Clique em 🔄 Sincronizar para buscar do ERP.')
+          : 'Nenhum fornecedor. Clique em 🔄 Sincronizar para buscar do ERP ou + Novo para cadastrar.')
       + '</td></tr>';
     return;
   }
@@ -37922,10 +38008,34 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.778',
-  data:   '05/08/2026',
-  build:  '20260805-0830',
+  numero: '7.9.786',
+  data:   '10/08/2026',
+  build:  '20260810-1215',
   log: [
+    {v:'7.9.786', d:'10/08/2026', itens:[
+      'Programação TMA — nova aba Relatórios: casos do dia com thread (criar relato, responder, resolver/reabrir); grava nome do usuário; SQL sql_prog_relatos.sql.',
+    ]},
+    {v:'7.9.785', d:'07/08/2026', itens:[
+      'Programação TMA: slot Folguista (T3) oculto de novo; Disponíveis não lista mais quem já está escalado no dia (id/RE) — contagem e chips corrigidos.',
+    ]},
+    {v:'7.9.784', d:'07/08/2026', itens:[
+      'Programação TMA — Indisponíveis: Folga + Presente (ponto) ou escalado (id/RE) passa a mostrar “🔧 Trabalhou”, alinhado ao badge do slot da escala; não depende de Confirmar saída.',
+    ]},
+    {v:'7.9.783', d:'07/08/2026', itens:[
+      'Programação TMA: “🔧 Trabalhou” no slot e em Indisponíveis para folguista escalado — não depende de Confirmar saída; coluna Folguista (T3) restaurada; folga por calendário case-insensitive.',
+    ]},
+    {v:'7.9.782', d:'07/08/2026', itens:[
+      'Programação TMA — Indisponíveis: folguista escalado (ex.: RE 1130 na EON321) volta a mostrar “🔧 Trabalhou”; comparação de data/id na composição era estrita e falhava; removido rótulo Folga duplicado no chip.',
+    ]},
+    {v:'7.9.781', d:'07/08/2026', itens:[
+      'Portaria: verificar placa e liberar saída aceitam equipe programada do dia anterior (liberação atrasada / turno noturno); lista Equipes do dia reconhece saída registrada hoje para programação de ontem.',
+    ]},
+    {v:'7.9.780', d:'07/08/2026', itens:[
+      'Programação TMA: placa obrigatória de novo — Salvar / Salvar todas / mobile bloqueiam sem placa; Moto Dupla exige 2 placas; Remover veículo bloqueado se equipe já programada; recuperação de placas do dia (SQL + botão).',
+    ]},
+    {v:'7.9.779', d:'05/08/2026', itens:[
+      'Fornecedores: sincronizar ERP não esconde mais o cadastro local (Supabase) — lista e selects mesclam ERP + banco (ex.: Amplitude volta a aparecer).',
+    ]},
     {v:'7.9.778', d:'05/08/2026', itens:[
       'Frotas → Manutenções → Controle: campo Validade (ensaio/inspeção etc.); em branco = sem prazo; alerta na lista e notificações aos 20 e 10 dias; SQL sql_frotas_manut_validade.sql.',
     ]},
@@ -42342,7 +42452,6 @@ function progRenderGrupo(tNome, grupo, data){
     +'<th style="padding:6px 10px;text-align:left;width:150px">Equipe</th>'
     +'<th style="padding:6px 10px;text-align:left">Titular 1</th>'
     +'<th style="padding:6px 10px;text-align:left">Titular 2</th>'
-    +'<th style="padding:6px 10px;text-align:left">Folguista</th>'
     +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
     +'<th style="padding:6px 10px;text-align:center;width:90px">Status</th>'
     +'<th style="padding:6px 10px;width:40px"></th>'
@@ -42635,12 +42744,12 @@ function progRenderEquipeRow(eq, data){
     return c.equipe_id===eq.id && (cd===data||c.data===data);
   });
   var ids = parseColabIds(compAtual ? compAtual.colaborador_ids : []);
-  // Slots T1/T2 — escalados permanecem visíveis mesmo com status bloqueante (falta, treinamento, etc.)
+  // Slots T1/T2 apenas — T3 (Folguista) descontinuado na UI
   var slots = [null, null];
   var slotsPos = parseColabIdsSlots(compAtual ? compAtual.colaborador_ids : '[]', 2);
   slotsPos.forEach(function(id, i){
     if(i >= 2 || !id) return;
-    var col = colaboradores.find(function(c){return c.id===id;});
+    var col = colaboradores.find(function(c){return c.id===id || String(c.id)===String(id);});
     slots[i] = col || {id:id, nome:'Colaborador não carregado', re:'', cargo:''};
   });
 
@@ -42699,13 +42808,15 @@ function progRenderEquipeRow(eq, data){
     // Verificar folga por calendário de escala
     var corDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
     var corColab = col.cor_escala || '';
-    var isFolgaCalendario = corDia && corColab && corDia === corColab;
+    var isFolgaCalendario = progEhFolgaNoDia(col, data, st) && st==='disponivel';
     var folgaBadge = '';
-    if(isFolgaCalendario && st === 'disponivel'){
+    if(isFolgaCalendario){
       var corSt = {verde:{bg:'#92D050',cl:'#fff'},azul:{bg:'#00B0F0',cl:'#fff'},amarelo:{bg:'#FFD700',cl:'#555'}};
-      var cs = corSt[corDia]||{bg:'#e0dfd8',cl:'#555'};
+      var cs = corSt[(corDia||'').toLowerCase()]||corSt[corDia]||{bg:'#e0dfd8',cl:'#555'};
       folgaBadge = '<div style="margin-top:2px;background:'+cs.bg+';color:'+cs.cl+';border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block" title="Folga por escala '+corDia+'">📅 Folga '+corDia+'</div>';
     }
+    // No slot = já escalado. Se é folga (manual ou calendário) → Trabalhou / HE (não exige confirmar saída)
+    var trabalhouBadge = progFolguistaTrabalhou(col, data, st) ? progBadgeTrabalhouHtml() : '';
 
     // Folguista escalado — destaque laranja vibrante
     var isFolguista = (pos === 2);
@@ -42722,7 +42833,7 @@ function progRenderEquipeRow(eq, data){
     }
 
     // Motorista do dia
-    var compSlot = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
+    var compSlot = composicao_dia.find(function(c){return c.equipe_id===eqId&&((c.data||'').split('T')[0]===data||c.data===data);});
     var isMotoristaDia = compSlot && compSlot.motorista_id === col.id;
     var motoristaBadge = isMotoristaDia ? '<div style="margin-top:2px;background:#185FA5;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block">🚗 Dirigida</div>' : '';
     var cnhValBadge = (isMotoristaDia && typeof fmdAvaliarCnh==='function') ? fmdBadgeHtml(fmdAvaliarCnh(col)) : '';
@@ -42736,14 +42847,14 @@ function progRenderEquipeRow(eq, data){
         +'ondragstart="progDragStart(event,\''+col.id+'\',\''+eqId+'\')" '
         +'ondragover="progDragOver(event)" ondrop="progDrop(event,\''+eqId+'\','+pos+')" '
       )
-      +'style="background:'+(isFolguista?BG_FOLG:isFolgaCalendario&&st==='disponivel'?'#FFFBEB':stInfo.bg)+';border:1.5px solid '+(isFolguista?COR_FOLG:isFolgaCalendario&&st==='disponivel'?'#FFD70088':alertaCnhD?'#ff444488':stInfo.cor+'44')+(alertaCnhD?';outline:1px solid #ff444422':'')+';border-radius:6px;'
+      +'style="background:'+(isFolguista||trabalhouBadge?BG_FOLG:isFolgaCalendario?'#FFFBEB':stInfo.bg)+';border:1.5px solid '+(isFolguista||trabalhouBadge?COR_FOLG:isFolgaCalendario?'#FFD70088':alertaCnhD?'#ff444488':stInfo.cor+'44')+(alertaCnhD?';outline:1px solid #ff444422':'')+';border-radius:6px;'
       +'padding:2px 6px;min-width:100px;'+(confirmada?'cursor:default;':'cursor:grab;')+'font-size:11px;position:relative">'
-      +'<div style="font-weight:600;color:'+(isFolguista?COR_FOLG:stInfo.cor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;padding-right:14px;display:flex;align-items:center">'+(isFolguista?'<span style="font-size:9px;background:'+COR_FOLG+';color:#fff;border-radius:3px;padding:0 3px;margin-right:3px;font-weight:700">T3</span>':'')+corBall+cnhBadge+escHtml(nomeExib)+'</div>'
+      +'<div style="font-weight:600;color:'+(isFolguista||trabalhouBadge?COR_FOLG:stInfo.cor)+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;padding-right:14px;display:flex;align-items:center">'+(isFolguista?'<span style="font-size:9px;background:'+COR_FOLG+';color:#fff;border-radius:3px;padding:0 3px;margin-right:3px;font-weight:700">T3</span>':'')+corBall+cnhBadge+escHtml(nomeExib)+'</div>'
       +'<div style="font-size:9px;color:#888;margin-top:1px">RE '+(col.re||'—')+'</div>'
       +'<div style="font-size:9px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:115px">'+(col.cargo||'')+'</div>'
       +'<div style="font-size:9px;color:'+stInfo.cor+';margin-top:1px">'+stInfo.label+'</div>'
       +(progObsCardPorStatus(st, _progStatusInfo[col.id]||{}, stInfo))
-      +folgaBadge+alertaCnhD+motoristaBadge
+      +folgaBadge+trabalhouBadge+alertaCnhD+motoristaBadge
       +((_progStatusInfo[col.id]||{}).just_folga
         ?'<div style="margin-top:3px;background:#FFF0E0;border:.5px solid #E65C0055;color:#854F0B;border-radius:4px;padding:2px 5px;font-size:9px;line-height:1.3;word-break:break-word">📝 '+escHtml(_progStatusInfo[col.id].just_folga)+'</div>':'')
       +((_progStatusInfo[col.id]||{}).just_turno
@@ -42955,7 +43066,7 @@ function progSalvarTodas(){
   var eqs  = equipes.filter(function(e){
     return e.status==='Ativo' && (!cid||e.contrato_id===cid);
   });
-  var salvos=0, pulados=0, semCel=0, semMot=0;
+  var salvos=0, pulados=0, semCel=0, semMot=0, semPlaca=0;
   eqs.forEach(function(eq){
     var comp = composicao_dia.find(function(c){
       return c.equipe_id===eq.id && c.data===data && !c._local;
@@ -42968,13 +43079,36 @@ function progSalvarTodas(){
     // Celular obrigatório — não confirmar sem o aparelho selecionado
     if(!comp.celular_id){ semCel++; return; }
     if(progValidarMotoristaObrigatorio(comp, ids, eq.id, data)){ semMot++; return; }
+    // Placa obrigatória (mesma regra do salvar individual)
+    var errPlaca = progValidarPlacaObrigatoria(eq, eq.id, data);
+    if(errPlaca){ semPlaca++; return; }
     comp.confirmada = true;
-    if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+    var veicSave = progGetVeiculo(eq.id, data) || {};
+    if(!DEMO){
+      sbUpdate('composicao_dia',{
+        confirmada:true,
+        veiculo_id:veicSave.id||null,
+        placa:veicSave.placa||null,
+        modelo:veicSave.modelo||null
+      },'id=eq.'+comp.id);
+      if(veicSave.placa) progSalvarVeiculoNoBanco(eq.id, data, veicSave, 1);
+      var veicB = progGetVeiculoB(eq.id, data);
+      if(veicB && veicB.placa) progSalvarVeiculoNoBanco(eq.id, data, veicB, 2);
+    }
+    if(veicSave.placa){
+      comp.veiculo_id = veicSave.id||null;
+      comp.placa = veicSave.placa||'';
+      comp.modelo = veicSave.modelo||'';
+    }
     almOnComposicaoConfirmada(comp);
     salvos++;
   });
   progRenderQuadro();
-  progShowToast('✅ '+salvos+' equipe(s) programada(s)'+(pulados?' · '+pulados+' sem escala ou já programadas':'')+(semCel?' · ⚠ '+semCel+' sem celular':'')+(semMot?' · ⚠ '+semMot+' sem motorista':''));
+  progShowToast('✅ '+salvos+' equipe(s) programada(s)'
+    +(pulados?' · '+pulados+' sem escala ou já programadas':'')
+    +(semCel?' · ⚠ '+semCel+' sem celular':'')
+    +(semMot?' · ⚠ '+semMot+' sem motorista':'')
+    +(semPlaca?' · ⚠ '+semPlaca+' sem placa':''));
 }
 
 function progDesprogramarEquipe(eqId){
@@ -43049,12 +43183,9 @@ function progSalvarEquipe(eqId){
     return;
   }
   var ids = idsRaw;
-  // Validar veículo selecionado
-  var veicDia = progGetVeiculo(eqId, data);
-  if(!veicDia || !veicDia.id){
-    progShowToast('⚠ Selecione um veículo para a equipe antes de salvar a programação.');
-    return;
-  }
+  // Validar veículo / placa (obrigatório) — aceita placa mesmo sem veiculo_id
+  var errPlaca = progValidarPlacaObrigatoria(eq, eqId, data);
+  if(errPlaca){ progShowToast(errPlaca); return; }
   // Validar celular da equipe (obrigatório) — usa o aparelho já selecionado no quadro
   if(!comp.celular_id){
     progShowToast('⚠ Selecione o celular da equipe antes de salvar a programação.');
@@ -43165,13 +43296,38 @@ function progListaStatusPontoResumoHtml(res){
 function progMostrarListaStatus(statusFiltro){
   var cid = progGetCont();
   var data = progGetData();
+  var dataNorm = (typeof _compDataStr==='function') ? _compDataStr(data) : String(data||'').split('T')[0];
   var s = PROG_STATUS[statusFiltro];
   if(!s) return;
+
+  var escaladosIds={}, escaladosRe={};
+  (composicao_dia||[]).forEach(function(comp){
+    var cd=(typeof _compDataStr==='function')?_compDataStr(comp.data):String(comp.data||'').split('T')[0];
+    if(cd!==dataNorm||comp.deleted_at) return;
+    parseColabIds(comp.colaborador_ids).forEach(function(id){
+      if(!id) return;
+      escaladosIds[String(id).trim()]=true;
+      var colC=(colaboradores||[]).find(function(x){return String(x.id)===String(id);});
+      if(colC&&colC.re) escaladosRe[String(colC.re).replace(/\D/g,'')]=true;
+    });
+  });
 
   var cols = colaboradores.filter(function(c){
     if(c.ativo===false) return false;
     if(cid&&c.contrato_id!==cid) return false;
-    return (_progStatus[c.id]||'disponivel')===statusFiltro;
+    var st = _progStatus[c.id]||'disponivel';
+    if(st===statusFiltro){
+      // Lista "Disponível": ocultar quem já está escalado
+      if(statusFiltro==='disponivel'){
+        if(escaladosIds[String(c.id).trim()]) return false;
+        var reN=String(c.re||'').replace(/\D/g,'');
+        if(reN&&escaladosRe[reN]) return false;
+      }
+      return true;
+    }
+    // Incluir folga por calendário na lista de Folga
+    if(statusFiltro==='folga' && progEhFolgaNoDia(c, dataNorm, st)) return true;
+    return false;
   });
 
   if(!cols.length){
@@ -43187,9 +43343,24 @@ function progMostrarListaStatus(statusFiltro){
     var justif = info.justificativa ? ' ('+escHtml(info.justificativa)+')' : '';
     var obsTexto = info.obs ? '💬 '+escHtml(info.obs) : '';
     var obsAutor = info.obs && progStatusAutor(info) ? ' · 👤 '+escHtml(progStatusAutor(info)) : '';
-    return '<div style="padding:8px 12px;border-bottom:.5px solid #f0efe8;display:flex;align-items:center;justify-content:space-between;gap:8px">'
+    var trabalhou = progFolguistaTrabalhou(c, data);
+    var eqProg = '';
+    if(trabalhou){
+      var compEsc = (composicao_dia||[]).find(function(comp){
+        var cd=(comp.data||'').split('T')[0];
+        if(cd!==data&&comp.data!==data) return false;
+        return parseColabIds(comp.colaborador_ids).some(function(id){return String(id)===String(c.id);});
+      });
+      if(compEsc){
+        var eqE = equipes_disp.find(function(e){return e.id===compEsc.equipe_id;});
+        if(eqE) eqProg = eqE.codigo||'';
+      }
+    }
+    return '<div style="padding:8px 12px;border-bottom:.5px solid #f0efe8;display:flex;align-items:center;justify-content:space-between;gap:8px;background:'+(trabalhou?'#FFF8F0':'#fff')+'">'
       +'<div style="flex:1;min-width:0">'
-      +'<div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(c.nome)+'</div>'
+      +'<div style="font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(c.nome)
+      +(trabalhou?' <span style="font-size:9px;background:#E65C00;color:#fff;border-radius:3px;padding:1px 5px;font-weight:700">🔧 Trabalhou'+(eqProg?' '+escHtml(eqProg):'')+'</span>':'')
+      +'</div>'
       +'<div style="font-size:11px;color:#888">'+eq.codigo+(c.cargo?' · '+c.cargo:'')+retorno+justif+'</div>'
       +(obsTexto?'<div style="font-size:11px;color:#8B1A6B;margin-top:2px;font-style:italic">'+obsTexto+obsAutor+'</div>':'')
       +'</div>'
@@ -43231,7 +43402,12 @@ function progBuscarParaSlot(eqId, pos){
   var eq   = equipes_disp.find(function(e){return e.id===eqId;})
           || equipes.find(function(e){return e.id===eqId;})
           || {codigo:eqId};
-  var slotLabel = pos===0?'Titular 1':pos===1?'Titular 2':'Folguista';
+  // Slot T3 (Folguista) descontinuado
+  if(pos===2 || pos>1){
+    progShowToast('⚠ Slot Folguista (T3) não é mais utilizado. Use Titular 1 ou 2.');
+    return;
+  }
+  var slotLabel = pos===0?'Titular 1':'Titular 2';
 
   var STATUS_BLOQ = BLOQ_STATUS;
 
@@ -44110,13 +44286,24 @@ function progMobileProgramar(eqId){
   if(idsRaw.length > 3){ progShowToast('Maximo de 3 colaboradores por equipe'); return; }
 
   var veicDia = progGetVeiculo(eqId, data);
-  if(!veicDia || !veicDia.id){
-    progShowToast('Selecione um veiculo antes de programar');
-    return;
-  }
+  var errPlacaMob = progValidarPlacaObrigatoria(eqMob, eqId, data);
+  if(errPlacaMob){ progShowToast(errPlacaMob); return; }
 
   comp.confirmada = true;
-  if(!DEMO) sbUpdate('composicao_dia',{confirmada:true},'id=eq.'+comp.id);
+  if(!DEMO){
+    sbUpdate('composicao_dia',{
+      confirmada:true,
+      veiculo_id:(veicDia&&veicDia.id)||null,
+      placa:(veicDia&&veicDia.placa)||null,
+      modelo:(veicDia&&veicDia.modelo)||null
+    },'id=eq.'+comp.id);
+    if(veicDia && veicDia.placa) progSalvarVeiculoNoBanco(eqId, data, veicDia, 1);
+  }
+  if(veicDia && veicDia.placa){
+    comp.veiculo_id = veicDia.id||null;
+    comp.placa = veicDia.placa||'';
+    comp.modelo = veicDia.modelo||'';
+  }
   almOnComposicaoConfirmada(comp);
   progShowToast('Equipe programada!');
   progMobileRenderEquipe(eqId);
@@ -44437,6 +44624,55 @@ function parseColabIds(raw){
   try{ var r=JSON.parse(raw); return Array.isArray(r)?r.filter(Boolean):[]; }catch(e){ return []; }
 }
 
+/** True se o colaborador está na composição do dia (qualquer slot). Compara data normalizada e id/RE. */
+function progColabEscaladoNoDia(colabId, data, reOpt){
+  if(!colabId && !reOpt) return false;
+  var d = (typeof _compDataStr==='function') ? _compDataStr(data) : String(data||'').split('T')[0];
+  var idStr = colabId ? String(colabId).trim() : '';
+  var reNorm = String(reOpt||'').replace(/\D/g,'');
+  return (composicao_dia||[]).some(function(comp){
+    if(comp.deleted_at) return false;
+    var cd = (typeof _compDataStr==='function') ? _compDataStr(comp.data) : String(comp.data||'').split('T')[0];
+    if(cd!==d) return false;
+    return parseColabIds(comp.colaborador_ids).some(function(id){
+      if(!id) return false;
+      if(idStr && String(id).trim()===idStr) return true;
+      if(!reNorm) return false;
+      var col=(colaboradores||[]).find(function(c){return String(c.id)===String(id);});
+      return !!(col && String(col.re||'').replace(/\D/g,'')===reNorm);
+    });
+  });
+}
+
+/** Folga no dia: status manual 'folga' OU cor de escala = cor do calendário (case-insensitive). */
+function progEhFolgaNoDia(col, data, stOpt){
+  if(!col) return false;
+  var st = stOpt != null ? stOpt : ((_progStatus||{})[col.id]||'disponivel');
+  if(st==='folga') return true;
+  if(st!=='disponivel') return false;
+  var d = (typeof _compDataStr==='function') ? _compDataStr(data) : String(data||'').split('T')[0];
+  var corDia = ((_calDados&&_calDados[d]) || (typeof CAL_CORES_2026!=='undefined'&&CAL_CORES_2026[d]) || '').toString().toLowerCase();
+  var corCol = (col.cor_escala||'').toString().toLowerCase();
+  return !!(corDia && corCol && corDia===corCol);
+}
+
+/** Folguista que trabalhou: escalado na composição OU com batida Presente no ponto (não exige confirmar saída). */
+function progFolguistaTrabalhou(col, data, stOpt){
+  if(!col || !progEhFolgaNoDia(col, data, stOpt)) return false;
+  if(progColabEscaladoNoDia(col.id, data, col.re)) return true;
+  try{
+    if(typeof pontoCacheGet==='function' && typeof _pontoTemEntrada==='function'){
+      return !!_pontoTemEntrada(pontoCacheGet(col.re, data));
+    }
+  }catch(e){}
+  return false;
+}
+
+/** Badge HTML: folguista na escala do dia = hora extra / trabalhou (independente de confirmar saída). */
+function progBadgeTrabalhouHtml(){
+  return '<div style="margin-top:2px;background:#E65C00;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block" title="Folguista que trabalhou — hora extra (independente de confirmar saída)">🔧 Trabalhou</div>';
+}
+
 // Preserva posição T1/T2 (null = slot vazio) — não usar filter(Boolean) antes do render
 function parseColabIdsSlots(raw, slotCount){
   slotCount = slotCount || 2;
@@ -44500,19 +44736,26 @@ function progRenderPainelDisp(eqs, data, cid){
   });
 
   var disp = grupos_st['disponivel'];
-  // Escalados = quem está em composicao_dia desta data E com status não bloqueante
-  var escalados = {};
-  // Mesma lista do renderSlot — quem tem esses status não ocupa slot
-  var STATUS_BLOQ_POOL = BLOQ_STATUS;
-  composicao_dia.forEach(function(comp){
-    if(comp.data !== data) return;
-    var ids=parseColabIds(comp.colaborador_ids);
-    ids.filter(Boolean).forEach(function(id){
-      var st = _progStatus[id]||'disponivel';
-      // Só conta como escalado se realmente ocupa um slot (status não bloqueante)
-      if(STATUS_BLOQ_POOL.indexOf(st) < 0) escalados[id]=true;
+  var dataNorm = (typeof _compDataStr==='function') ? _compDataStr(data) : String(data||'').split('T')[0];
+  // Quem já está na composição do dia NÃO entra em Disponíveis (por id ou RE)
+  var idsNaComposicao = {};
+  var resNaComposicao = {};
+  (composicao_dia||[]).forEach(function(comp){
+    var cd = (typeof _compDataStr==='function') ? _compDataStr(comp.data) : String(comp.data||'').split('T')[0];
+    if(cd !== dataNorm || comp.deleted_at) return;
+    parseColabIds(comp.colaborador_ids).forEach(function(id){
+      if(!id) return;
+      idsNaComposicao[String(id).trim()]=true;
+      var colC=(colaboradores||[]).find(function(x){return String(x.id)===String(id);});
+      if(colC&&colC.re) resNaComposicao[String(colC.re).replace(/\D/g,'')]=true;
     });
   });
+  function progJaEscaladoHoje(c){
+    if(!c) return false;
+    if(idsNaComposicao[String(c.id).trim()]) return true;
+    var reN=String(c.re||'').replace(/\D/g,'');
+    return !!(reN && resNaComposicao[reN]);
+  }
 
   // Verificar retorno automático de férias com data prevista
   var hoje = dataHojeLocal();
@@ -44526,21 +44769,21 @@ function progRenderPainelDisp(eqs, data, cid){
 
   // Colaboradores indisponíveis (folga, ferias, afastado, treinamento, faltou) — ficam no painel lateral
   var STATUS_INDISPONIVEIS = ['folga','ferias','afastado','falta','integracao','patio','verificar'];
-  // Também considerar folga por calendário como indisponível no pool
-  var corDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  var corDia = (_calDados&&_calDados[dataNorm]) || (_calDados&&_calDados[data]) || CAL_CORES_2026[dataNorm] || CAL_CORES_2026[data] || '';
   var indisponiveis = cols.filter(function(c){
     var st = _progStatus[c.id] || 'disponivel';
     if(STATUS_INDISPONIVEIS.indexOf(st) >= 0) return true;
-    if(corDia && c.cor_escala && c.cor_escala === corDia && st === 'disponivel') return true;
+    if(progEhFolgaNoDia(c, dataNorm, st)) return true;
     return false;
   });
 
   // Filtro de escala (definido pelo usuário via dropdown)
   var _filtroEscalaAtivo = window._progFiltroEscalaId || '';
   // 'observacao' é não bloqueante → entra junto dos disponíveis (escalável), só carrega o motivo
+  // Escalados (já na composição) NUNCA aparecem para reescalar
   var livres = disp.concat(grupos_st['observacao']||[]).filter(function(c){
-    if(escalados[c.id]) return false;
-    if(corDia && c.cor_escala && c.cor_escala === corDia) return false;
+    if(progJaEscaladoHoje(c)) return false;
+    if(progEhFolgaNoDia(c, dataNorm, _progStatus[c.id]||'disponivel')) return false;
     if(_filtroEscalaAtivo && (c.escala_id||'') !== _filtroEscalaAtivo) return false;
     return true;
   });
@@ -44552,10 +44795,11 @@ function progRenderPainelDisp(eqs, data, cid){
     +'</select>';
 
   var countHtml = Object.keys(PROG_STATUS).map(function(k){
-    var n = grupos_st[k] ? grupos_st[k].filter(function(c){
-      if(k==='disponivel') return true;
-      return true;
-    }).length : 0;
+    var lista = grupos_st[k] || [];
+    // Contagem "Disponível" exclui quem já está escalado no dia
+    var n = (k==='disponivel')
+      ? lista.filter(function(c){ return !progJaEscaladoHoje(c); }).length
+      : lista.length;
     if(!n) return '';
     var s = PROG_STATUS[k];
     return '<div id="prog-count-'+k+'" style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:'+s.bg
@@ -44595,33 +44839,29 @@ function progRenderPainelDisp(eqs, data, cid){
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +indispFiltrados.map(function(c){
         var st = _progStatus[c.id]||'folga';
-        var isCal = corDia && c.cor_escala && c.cor_escala === corDia && st==='disponivel';
-        var label = isCal ? '📅 Folga '+corDia : (INDISP_LABEL[st]||st);
+        var isCal = progEhFolgaNoDia(c, dataNorm, st) && st==='disponivel';
+        var label = isCal ? '📅 Folga '+(corDia||c.cor_escala||'') : (INDISP_LABEL[st]||st);
         var podeAuto = (st==='ferias');
         var podeManual = true;
         var stInfo = PROG_STATUS[st]||PROG_STATUS.folga;
         var infoSt=_progStatusInfo[c.id]||{};
         var obsTexto=infoSt.obs||infoSt.justificativa||'';
         var retornoTexto=infoSt.retorno?' · retorno '+fmtD(infoSt.retorno):'';
-        // Verificar se folguista foi escalado (está em composicao_dia do dia)
-        var foiEscalado = false;
-        if(st==='folga'||isCal){
-          foiEscalado = composicao_dia.some(function(comp){
-            if(comp.data!==data||comp.deleted_at) return false;
-            var ids=parseColabIds(comp.colaborador_ids);
-            return ids.indexOf(c.id)>=0;
-          });
-        }
-        var BG_CHIP  = foiEscalado ? '#FFF0E0' : stInfo.bg;
-        var COR_CHIP = foiEscalado ? '#E65C00' : stInfo.cor;
-        var BRD_CHIP = foiEscalado ? '#E65C0066' : stInfo.cor+'44';
-        var labelExtra = foiEscalado ? ' 🔧 Trabalhou' : '';
+        // Trabalhou = escalado (id/RE) OU Presente no ponto — igual ao badge do slot da escala
+        var reNorm = String(c.re||'').replace(/\D/g,'');
+        var foiEscalado = !!(idsNaComposicao[String(c.id).trim()] || (reNorm&&resNaComposicao[reNorm]) || progColabEscaladoNoDia(c.id, dataNorm, c.re));
+        var temPonto = false;
+        try{ temPonto = !!(typeof _pontoTemEntrada==='function' && _pontoTemEntrada(pontoCacheGet(c.re, dataNorm))); }catch(eP){}
+        var mostraTrabalhou = progEhFolgaNoDia(c, dataNorm, st) && (foiEscalado || temPonto);
+        var BG_CHIP  = mostraTrabalhou ? '#FFF0E0' : stInfo.bg;
+        var COR_CHIP = mostraTrabalhou ? '#E65C00' : stInfo.cor;
+        var BRD_CHIP = mostraTrabalhou ? '#E65C0066' : stInfo.cor+'44';
+        var labelExtra = mostraTrabalhou ? ' · 🔧 Trabalhou' : '';
         return '<div style="display:inline-flex;flex-direction:column;background:'+BG_CHIP
           +';border:.5px solid '+BRD_CHIP+';border-radius:6px;padding:4px 8px;font-size:11px;margin:1px;max-width:220px">'
           +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
-          +'<span style="color:'+COR_CHIP+';font-weight:'+(foiEscalado?'700':'500')+'">'+nomeAbrev(c.nome)+'</span>'
-          +'<span style="font-size:9px;color:'+COR_CHIP+'">'+label+labelExtra+retornoTexto+'</span>'
-          +'<span style="font-size:9px;color:'+stInfo.cor+'">'+label+retornoTexto+'</span>'
+          +'<span style="color:'+COR_CHIP+';font-weight:'+(mostraTrabalhou?'700':'500')+'">'+nomeAbrev(c.nome)+'</span>'
+          +'<span style="font-size:9px;color:'+COR_CHIP+';font-weight:'+(mostraTrabalhou?'700':'500')+'">'+label+labelExtra+retornoTexto+'</span>'
           +(podeManual && !isCal
             ? '<span onclick="progRelevarIndisponivel(\''+c.id+'\')" style="cursor:pointer;color:#185FA5;font-size:10px;margin-left:2px" title="Liberar manualmente">↩</span>'
             : '')
@@ -44630,8 +44870,8 @@ function progRenderPainelDisp(eqs, data, cid){
           +(obsTexto?progObsLinhaHtml(obsTexto, infoSt, stInfo):'')
           +(function(){
             if((c.vinculo||'campo')!=='campo') return '';
-            var p=pontoCacheGet(c.re,data);
-            var html=_pontoBadgeHtml(p,data,false);
+            var p=pontoCacheGet(c.re,dataNorm);
+            var html=_pontoBadgeHtml(p,dataNorm,false);
             if(html) return html;
             return '<div id="ponto-badge-'+c.id+'" style="margin-top:2px"></div>';
           }())
@@ -44985,12 +45225,15 @@ function progValidarComposicao(colabId, toEqId, data){
 // Retorna null se OK, ou {eqCod, eqId} se já escalado em outra equipe no dia
 function _checarDuplicidadeEscala(colabId, toEqId, data){
   var conflito = null;
+  var d = (typeof _compDataStr==='function') ? _compDataStr(data) : String(data||'').split('T')[0];
+  var idStr = String(colabId);
   composicao_dia.forEach(function(comp){
-    if(comp.data !== data) return;
-    if(comp.equipe_id === toEqId) return; // mesma equipe = OK
+    var cd = (typeof _compDataStr==='function') ? _compDataStr(comp.data) : String(comp.data||'').split('T')[0];
+    if(cd !== d) return;
+    if(String(comp.equipe_id) === String(toEqId)) return; // mesma equipe = OK
     if(comp.deleted_at) return;
     var ids = parseColabIds(comp.colaborador_ids);
-    if(ids.indexOf(colabId) >= 0){
+    if(ids.some(function(id){ return String(id)===idStr; })){
       var eq = equipes_disp.find(function(e){ return e.id === comp.equipe_id; });
       conflito = { eqCod: eq ? eq.codigo : comp.equipe_id, eqId: comp.equipe_id };
     }
@@ -45099,9 +45342,13 @@ function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
       if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{colaborador_ids:idsC},'id=eq.'+comp.id);
     });
   }
-  var comp=composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
-  var ids=parseColabIdsSlots(comp?comp.colaborador_ids:'[]', 3);
-  while(ids.length<3) ids.push(null);
+  var comp=composicao_dia.find(function(c){
+    return c.equipe_id===toEqId && ((c.data||'').split('T')[0]===data || c.data===data);
+  });
+  // T3 descontinuado — só T1/T2
+  if(toPos > 1) toPos = 1;
+  var ids=parseColabIdsSlots(comp?comp.colaborador_ids:'[]', 2);
+  while(ids.length<2) ids.push(null);
   ids[toPos]=colabId;
   if(comp){
     comp.colaborador_ids=JSON.stringify(ids);
@@ -47505,14 +47752,17 @@ function progAbaSelecionar(aba){
   var escala = document.getElementById('prog-aba-escala');
   var cal    = document.getElementById('prog-aba-calendario');
   var vt     = document.getElementById('prog-aba-verificar');
+  var rel    = document.getElementById('prog-aba-relatos');
   var btnE   = document.getElementById('tab-prog-escala');
   var btnC   = document.getElementById('tab-prog-calendario');
   var btnV   = document.getElementById('tab-prog-verificar');
+  var btnR   = document.getElementById('tab-prog-relatos');
   // Ocultar tudo
   if(escala) escala.style.display='none';
   if(cal)    cal.style.display='none';
   if(vt)     vt.style.display='none';
-  [btnE,btnC,btnV].forEach(function(b){ if(b){b.style.borderBottomColor='transparent';b.style.color='#888';b.style.fontWeight='500';} });
+  if(rel)    rel.style.display='none';
+  [btnE,btnC,btnV,btnR].forEach(function(b){ if(b){b.style.borderBottomColor='transparent';b.style.color='#888';b.style.fontWeight='500';} });
   if(aba==='escala'){
     if(escala) escala.style.display='';
     if(btnE){btnE.style.borderBottomColor='#1a1a18';btnE.style.color='#1a1a18';btnE.style.fontWeight='600';}
@@ -47530,7 +47780,348 @@ function progAbaSelecionar(aba){
     setTimeout(function(){
       if(vt) vt.scrollIntoView({behavior:'smooth', block:'start'});
     }, 80);
+  } else if(aba==='relatos'){
+    if(rel) rel.style.display='';
+    if(btnR){btnR.style.borderBottomColor='#185FA5';btnR.style.color='#185FA5';btnR.style.fontWeight='600';}
+    progRelInit();
+    setTimeout(function(){
+      if(rel) rel.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 80);
   }
+}
+
+// ══ Relatórios / Casos do dia (Programação) ═══════════════════════════════
+var _progRelatos = [];
+var _progRelMsgs = {}; // relato_id -> [msgs]
+var _progRelAbertoId = null;
+
+function progRelNomeUsuario(){
+  if(usuarioLogado) return usuarioLogado.nome || usuarioLogado.email || 'Usuário';
+  return 'Usuário';
+}
+function progRelUserId(){
+  return usuarioLogado ? String(usuarioLogado.id||'') : '';
+}
+function progRelGetData(){
+  var el = document.getElementById('prog-rel-data');
+  if(el && el.value) return el.value.split('T')[0];
+  return (typeof progGetData==='function' ? progGetData() : dataHojeLocal()).split('T')[0];
+}
+function progRelOnDataChange(){
+  var d = progRelGetData();
+  var elProg = document.getElementById('prog-av-data');
+  if(elProg) elProg.value = d;
+  if(typeof _progData!=='undefined') _progData = d;
+  _progRelAbertoId = null;
+  progRelCarregar();
+}
+function progRelInit(){
+  var el = document.getElementById('prog-rel-data');
+  var d = (typeof progGetData==='function' ? progGetData() : dataHojeLocal()).split('T')[0];
+  if(el && !el.value) el.value = d;
+  else if(el) el.value = d;
+  progRelCarregar();
+}
+function progRelFmtTs(iso){
+  if(!iso) return '—';
+  try{
+    var d = new Date(iso);
+    if(isNaN(d.getTime())) return String(iso).slice(0,16);
+    return d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  }catch(e){ return String(iso).slice(0,16); }
+}
+
+function progRelCarregar(){
+  var data = progRelGetData();
+  var lista = document.getElementById('prog-rel-lista');
+  if(lista) lista.innerHTML = '<div style="color:#aaa;font-size:12px;padding:1rem;text-align:center">Carregando…</div>';
+  _progRelMsgs = {};
+
+  function afterLoad(rows){
+    _progRelatos = (rows||[]).slice().sort(function(a,b){
+      return String(b.atualizado_em||b.criado_em||'').localeCompare(String(a.atualizado_em||a.criado_em||''));
+    });
+    progRelRender();
+    if(_progRelAbertoId){
+      var still = _progRelatos.some(function(r){return String(r.id)===String(_progRelAbertoId);});
+      if(still) progRelAbrirCaso(_progRelAbertoId, true);
+      else { _progRelAbertoId=null; progRelRenderDetalheVazio(); }
+    } else {
+      progRelRenderDetalheVazio();
+    }
+  }
+
+  if(DEMO){
+    afterLoad(_progRelatos.filter(function(r){return (r.data||'').split('T')[0]===data;}));
+    return;
+  }
+  var filters = ['data=eq.'+data];
+  var cid = (typeof progGetCont==='function') ? progGetCont() : '';
+  // Mostra relatos do contrato atual + sem contrato (gerais do dia)
+  sbFetch('prog_relatos',{filters:filters, order:'atualizado_em.desc', limit:200})
+    .then(function(rows){
+      rows = rows||[];
+      if(cid){
+        rows = rows.filter(function(r){ return !r.contrato_id || String(r.contrato_id)===String(cid); });
+      }
+      afterLoad(rows);
+    })
+    .catch(function(e){
+      console.warn('[progRel]', e);
+      if(lista) lista.innerHTML = '<div style="color:#A32D2D;font-size:12px;padding:1rem">⚠ Não foi possível carregar. Rode o SQL <code>sql_prog_relatos.sql</code> no Supabase.</div>';
+    });
+}
+
+function progRelRender(){
+  var lista = document.getElementById('prog-rel-lista');
+  var countEl = document.getElementById('prog-rel-count');
+  if(!lista) return;
+  var fil = ((document.getElementById('prog-rel-filtro')||{}).value)||'abertos';
+  var rows = _progRelatos.filter(function(r){
+    if(fil==='abertos') return (r.status||'aberto')==='aberto';
+    if(fil==='resolvidos') return r.status==='resolvido';
+    return true;
+  });
+  if(countEl) countEl.textContent = rows.length+' caso(s) · '+progRelGetData().split('-').reverse().join('/');
+  if(!rows.length){
+    lista.innerHTML = '<div style="color:#aaa;font-size:12px;padding:1.25rem;text-align:center">Nenhum relato neste filtro.<br><button class="btn btn-pri" style="margin-top:10px;font-size:12px" onclick="progRelNovoCaso()">+ Novo relato</button></div>';
+    return;
+  }
+  lista.innerHTML = rows.map(function(r){
+    var aberto = String(r.id)===String(_progRelAbertoId);
+    var st = r.status||'aberto';
+    var stBg = st==='resolvido'?'#EAF3DE':'#FEF3E2';
+    var stCor = st==='resolvido'?'#3B6D11':'#854F0B';
+    var stLbl = st==='resolvido'?'Resolvido':'Aberto';
+    return '<div onclick="progRelAbrirCaso(\''+String(r.id).replace(/'/g,"\\'")+'\')" style="cursor:pointer;padding:10px 12px;border-radius:8px;margin-bottom:6px;border:.5px solid '+(aberto?'#185FA5':'#e0dfd8')+';background:'+(aberto?'#E6F1FB':'#fff')+'">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px">'
+      +'<span style="font-size:9px;font-weight:700;background:'+stBg+';color:'+stCor+';border-radius:4px;padding:1px 6px">'+stLbl+'</span>'
+      +'<span style="font-size:10px;color:#888">'+escHtml(progRelFmtTs(r.atualizado_em||r.criado_em))+'</span>'
+      +'</div>'
+      +'<div style="font-size:13px;font-weight:600;color:#1a1a18;line-height:1.3">'+escHtml(r.assunto||'Sem assunto')+'</div>'
+      +'<div style="font-size:11px;color:#888;margin-top:3px">👤 '+escHtml(r.criado_por||'—')+'</div>'
+      +'</div>';
+  }).join('');
+}
+
+function progRelRenderDetalheVazio(){
+  var det = document.getElementById('prog-rel-detalhe');
+  if(det) det.innerHTML = '<div style="color:#aaa;font-size:13px;text-align:center;padding:2.5rem 1rem">Selecione um caso à esquerda ou crie um novo relato.</div>';
+}
+
+function progRelAbrirCaso(id, skipList){
+  _progRelAbertoId = id;
+  if(!skipList) progRelRender();
+  var r = _progRelatos.find(function(x){return String(x.id)===String(id);});
+  var det = document.getElementById('prog-rel-detalhe');
+  if(!det || !r){ progRelRenderDetalheVazio(); return; }
+
+  function paint(msgs){
+    _progRelMsgs[id] = msgs||[];
+    var st = r.status||'aberto';
+    var html = '<div style="display:flex;flex-direction:column;gap:10px;min-height:280px">'
+      +'<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:180px">'
+      +'<div style="font-size:16px;font-weight:700;color:#1a1a18;margin-bottom:4px">'+escHtml(r.assunto||'')+'</div>'
+      +'<div style="font-size:11px;color:#888">Aberto por <b>'+escHtml(r.criado_por||'—')+'</b> · '+escHtml(progRelFmtTs(r.criado_em))
+      +(st==='resolvido'?' · Resolvido por <b>'+escHtml(r.resolvido_por||'—')+'</b>':'')
+      +'</div></div>'
+      +'<div style="display:flex;gap:6px">'
+      +(st==='aberto'
+        ? '<button class="btn" onclick="progRelResolver(\''+String(id).replace(/'/g,"\\'")+'\')" style="font-size:11px;color:#3B6D11;border-color:#3B6D11">✓ Resolver</button>'
+        : '<button class="btn" onclick="progRelReabrir(\''+String(id).replace(/'/g,"\\'")+'\')" style="font-size:11px;color:#854F0B;border-color:#854F0B">↩ Reabrir</button>')
+      +'</div></div>'
+      +'<div id="prog-rel-msgs" style="flex:1;background:#f9f9f7;border-radius:8px;border:.5px solid #e0dfd8;padding:12px;max-height:420px;overflow-y:auto">';
+
+    if(!(msgs&&msgs.length)){
+      html += '<div style="color:#aaa;font-size:12px;text-align:center;padding:1rem">Sem mensagens ainda.</div>';
+    } else {
+      html += msgs.map(function(m){
+        return '<div style="margin-bottom:10px;padding:8px 10px;background:#fff;border-radius:8px;border:.5px solid #e8e8e5">'
+          +'<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:4px">'
+          +'<span style="font-size:12px;font-weight:700;color:#185FA5">'+escHtml(m.autor||'—')+'</span>'
+          +'<span style="font-size:10px;color:#aaa">'+escHtml(progRelFmtTs(m.criado_em))+'</span>'
+          +'</div>'
+          +'<div style="font-size:13px;color:#333;white-space:pre-wrap;line-height:1.45">'+escHtml(m.texto||'')+'</div>'
+          +'</div>';
+      }).join('');
+    }
+    html += '</div>';
+    if(st==='aberto'){
+      html += '<div style="display:flex;flex-direction:column;gap:6px">'
+        +'<textarea id="prog-rel-resp" class="inp" rows="3" placeholder="Escreva uma resposta… (será gravada com seu nome)" style="width:100%;resize:vertical;font-size:13px"></textarea>'
+        +'<div style="display:flex;justify-content:flex-end">'
+        +'<button class="btn btn-pri" onclick="progRelResponder()" style="font-size:12px">💬 Responder</button>'
+        +'</div></div>';
+    } else {
+      html += '<div style="font-size:11px;color:#888;text-align:center">Caso resolvido — reabra para continuar a discussão.</div>';
+    }
+    html += '</div>';
+    det.innerHTML = html;
+    var box = document.getElementById('prog-rel-msgs');
+    if(box) box.scrollTop = box.scrollHeight;
+  }
+
+  if(DEMO){
+    paint(_progRelMsgs[id]||[]);
+    return;
+  }
+  if(_progRelMsgs[id]){ paint(_progRelMsgs[id]); return; }
+  det.innerHTML = '<div style="color:#aaa;font-size:12px;padding:1rem;text-align:center">Carregando mensagens…</div>';
+  sbFetch('prog_relato_msgs',{filters:['relato_id=eq.'+id], order:'criado_em.asc', limit:500})
+    .then(function(msgs){ paint(msgs||[]); })
+    .catch(function(){ paint([]); });
+}
+
+function progRelNovoCaso(){
+  var data = progRelGetData();
+  var assunto = prompt('Assunto do relato (ex.: Não consegui escalar RE 123):');
+  if(assunto==null) return;
+  assunto = String(assunto).trim();
+  if(!assunto){ progShowToast('⚠ Informe o assunto.'); return; }
+  var texto = prompt('Descreva o que aconteceu:');
+  if(texto==null) return;
+  texto = String(texto).trim();
+  if(!texto){ progShowToast('⚠ Informe a descrição.'); return; }
+
+  var autor = progRelNomeUsuario();
+  var agora = new Date().toISOString();
+  var cid = (typeof progGetCont==='function') ? (progGetCont()||null) : null;
+
+  if(DEMO){
+    var id = 'rel_'+Date.now();
+    var caso = {id:id, data:data, contrato_id:cid, assunto:assunto, status:'aberto', criado_por:autor, criado_por_id:progRelUserId(), criado_em:agora, atualizado_em:agora};
+    _progRelatos.unshift(caso);
+    _progRelMsgs[id] = [{id:'m'+Date.now(), relato_id:id, autor:autor, autor_id:progRelUserId(), texto:texto, criado_em:agora}];
+    _progRelAbertoId = id;
+    progRelRender();
+    progRelAbrirCaso(id, true);
+    progShowToast('✅ Relato criado');
+    return;
+  }
+
+  sbInsert('prog_relatos', {
+    data: data,
+    contrato_id: cid||null,
+    assunto: assunto,
+    status: 'aberto',
+    criado_por: autor,
+    criado_por_id: progRelUserId()||null,
+    atualizado_em: agora
+  }).then(function(rows){
+    var caso = (rows&&rows[0]) || null;
+    if(!caso || !caso.id){
+      progShowToast('⚠ Relato criado, mas sem retorno do id. Atualize a lista.','erro');
+      progRelCarregar();
+      return;
+    }
+    return sbInsert('prog_relato_msgs', {
+      relato_id: caso.id,
+      autor: autor,
+      autor_id: progRelUserId()||null,
+      texto: texto
+    }).then(function(){
+      _progRelAbertoId = caso.id;
+      progShowToast('✅ Relato criado');
+      progRelCarregar();
+    });
+  }).catch(function(e){
+    console.warn('[progRel] novo', e);
+    progShowToast('⚠ Falha ao criar relato. Confira se o SQL sql_prog_relatos.sql foi executado.','erro');
+  });
+}
+
+function progRelResponder(){
+  if(!_progRelAbertoId) return;
+  var el = document.getElementById('prog-rel-resp');
+  var texto = ((el&&el.value)||'').trim();
+  if(!texto){ progShowToast('⚠ Digite a resposta.'); return; }
+  var autor = progRelNomeUsuario();
+  var agora = new Date().toISOString();
+  var id = _progRelAbertoId;
+
+  function okLocal(msg){
+    if(!_progRelMsgs[id]) _progRelMsgs[id]=[];
+    _progRelMsgs[id].push(msg);
+    var caso = _progRelatos.find(function(r){return String(r.id)===String(id);});
+    if(caso) caso.atualizado_em = agora;
+    progRelAbrirCaso(id, true);
+    progRelRender();
+    progShowToast('💬 Resposta registrada');
+  }
+
+  if(DEMO){
+    okLocal({id:'m'+Date.now(), relato_id:id, autor:autor, autor_id:progRelUserId(), texto:texto, criado_em:agora});
+    return;
+  }
+
+  sbInsert('prog_relato_msgs', {
+    relato_id: id,
+    autor: autor,
+    autor_id: progRelUserId()||null,
+    texto: texto
+  }).then(function(rows){
+    var msg = (rows&&rows[0]) || {relato_id:id, autor:autor, texto:texto, criado_em:agora};
+    return sbUpdate('prog_relatos', {atualizado_em: agora}, 'id=eq.'+id).then(function(){
+      delete _progRelMsgs[id]; // forçar reload
+      okLocal(msg);
+      progRelCarregar();
+    });
+  }).catch(function(e){
+    console.warn('[progRel] resp', e);
+    progShowToast('⚠ Falha ao gravar resposta.','erro');
+  });
+}
+
+function progRelResolver(id){
+  id = id || _progRelAbertoId;
+  if(!id) return;
+  var autor = progRelNomeUsuario();
+  var agora = new Date().toISOString();
+  function done(){
+    var caso = _progRelatos.find(function(r){return String(r.id)===String(id);});
+    if(caso){
+      caso.status='resolvido';
+      caso.resolvido_por=autor;
+      caso.resolvido_em=agora;
+      caso.atualizado_em=agora;
+    }
+    progRelAbrirCaso(id, true);
+    progRelRender();
+    progShowToast('✅ Caso resolvido');
+  }
+  if(DEMO){ done(); return; }
+  sbUpdate('prog_relatos', {
+    status:'resolvido',
+    resolvido_por:autor,
+    resolvido_em:agora,
+    atualizado_em:agora
+  }, 'id=eq.'+id).then(done).catch(function(){ progShowToast('⚠ Falha ao resolver.','erro'); });
+}
+
+function progRelReabrir(id){
+  id = id || _progRelAbertoId;
+  if(!id) return;
+  var agora = new Date().toISOString();
+  function done(){
+    var caso = _progRelatos.find(function(r){return String(r.id)===String(id);});
+    if(caso){
+      caso.status='aberto';
+      caso.resolvido_por=null;
+      caso.resolvido_em=null;
+      caso.atualizado_em=agora;
+    }
+    progRelAbrirCaso(id, true);
+    progRelRender();
+    progShowToast('↩ Caso reaberto');
+  }
+  if(DEMO){ done(); return; }
+  sbUpdate('prog_relatos', {
+    status:'aberto',
+    resolvido_por:null,
+    resolvido_em:null,
+    atualizado_em:agora
+  }, 'id=eq.'+id).then(done).catch(function(){ progShowToast('⚠ Falha ao reabrir.','erro'); });
 }
 
 function calCarregar(){
@@ -47656,15 +48247,23 @@ function showTMA(aba){
     // Mostrar botão voltar ao TMA
     var btnBack = document.getElementById('prog-eq-back-tma');
     if(btnBack) btnBack.style.display='block';
-    // Garantir que a aba escala está visível (pode estar oculta se veio do Calendário)
+    // Garantir que a aba escala está visível (pode estar oculta se veio do Calendário/Relatórios)
     var escala = document.getElementById('prog-aba-escala');
     var cal    = document.getElementById('prog-aba-calendario');
+    var rel    = document.getElementById('prog-aba-relatos');
+    var vt     = document.getElementById('prog-aba-verificar');
     if(escala) escala.style.display='';
-    if(cal)    cal.style.display='none';
+    if(cal) cal.style.display='none';
+    if(rel) rel.style.display='none';
+    if(vt) vt.style.display='none';
     var btnE = document.getElementById('tab-prog-escala');
     var btnC = document.getElementById('tab-prog-calendario');
+    var btnR = document.getElementById('tab-prog-relatos');
+    var btnV = document.getElementById('tab-prog-verificar');
     if(btnE){btnE.style.borderBottomColor='#1a1a18';btnE.style.color='#1a1a18';btnE.style.fontWeight='600';}
     if(btnC){btnC.style.borderBottomColor='transparent';btnC.style.color='#888';btnC.style.fontWeight='500';}
+    if(btnR){btnR.style.borderBottomColor='transparent';btnR.style.color='#888';btnR.style.fontWeight='500';}
+    if(btnV){btnV.style.borderBottomColor='transparent';btnV.style.color='#888';btnV.style.fontWeight='500';}
     // Scroll ao topo
     var area = document.getElementById('app-content-area');
     if(area) area.scrollTop = 0;
@@ -66543,10 +67142,8 @@ function progProjetoCoreSalvarEquipe(eqId){
     return;
   }
   var veicDiaPP = progGetVeiculo(eqId, data);
-  if(!veicDiaPP || !veicDiaPP.id){
-    progShowToast('⚠ Selecione um veículo para a equipe antes de salvar a programação.');
-    return;
-  }
+  var errPlacaPP = progValidarPlacaObrigatoria(eq, eqId, data);
+  if(errPlacaPP){ progShowToast(errPlacaPP); return; }
   if(!telefoneEquipeValido(eq.telefone)){
     progShowToast(MSG_CEL_OBRIG);
     return;
@@ -69454,6 +70051,43 @@ function progGetVeiculoB(eqId, data){
   return _progVeiculos[progVeiculoKeyB(eqId, data)] || null;
 }
 
+/** Tem placa no mapa do dia OU na composição (fonte alternativa). */
+function progEquipeTemPlaca(eqId, data){
+  var v = progGetVeiculo(eqId, data);
+  if(v && String(v.placa||'').trim()) return true;
+  var comp = typeof progFindCompDia==='function' ? progFindCompDia(eqId, data) : null;
+  if(comp && (String(comp.placa||'').trim() || String(comp.veiculo_placa||'').trim())) return true;
+  return false;
+}
+
+/** Retorna mensagem de erro se faltar placa; null se OK. Moto Dupla exige 2 placas. */
+function progValidarPlacaObrigatoria(eq, eqId, data){
+  var v = progGetVeiculo(eqId, data);
+  var temPlaca = !!(v && String(v.placa||'').trim());
+  if(!temPlaca){
+    var comp = typeof progFindCompDia==='function' ? progFindCompDia(eqId, data) : null;
+    if(comp && (String(comp.placa||'').trim() || String(comp.veiculo_placa||'').trim())){
+      // Rehidrata mapa a partir da composição para o save gravar em prog_veiculos_dia
+      _progVeiculos[progVeiculoKey(eqId, data)] = {
+        id: comp.veiculo_id || null,
+        placa: comp.placa || comp.veiculo_placa || '',
+        modelo: comp.modelo || ''
+      };
+      temPlaca = true;
+    }
+  }
+  if(!temPlaca){
+    return '⚠ Selecione a placa do veículo antes de salvar a programação.';
+  }
+  if(typeof isMotoDupla==='function' && isMotoDupla(eq)){
+    var v2 = progGetVeiculoB(eqId, data);
+    if(!v2 || !String(v2.placa||'').trim()){
+      return '⚠ Moto Dupla: selecione as duas placas (Moto 1 e Moto 2) antes de salvar.';
+    }
+  }
+  return null;
+}
+
 // Retorna true se a equipe é do tipo "Moto Dupla"
 function isMotoDupla(eq){
   if(!eq) return false;
@@ -69601,8 +70235,13 @@ function progSetVeiculoB(eqId, data, veiculoObj){
 }
 
 function progRemoverVeiculoB(eqId, data){
-  if(!confirm('Remover 2ª moto desta equipe?')) return;
   var d=(data||'').split('T')[0];
+  var compB = typeof progFindCompDia==='function' ? progFindCompDia(eqId, d) : null;
+  if(compB && (compB.confirmada===true || compB.confirmada==='true' || compB.confirmada===1)){
+    progShowToast('🔒 Equipe já programada — desprograme antes de remover a placa.','erro');
+    return;
+  }
+  if(!confirm('Remover 2ª moto desta equipe?')) return;
   delete _progVeiculos[progVeiculoKeyB(eqId, d)];
   progPersistVeiculosLocal(d);
   window._veicEscCache = {};
@@ -69681,6 +70320,108 @@ function progCarregarVeiculos(data){
     console.error('[veic load] ERRO:',e);
     progRenderQuadro();
   });
+}
+
+/**
+ * Recupera placas de equipes programadas sem veículo:
+ * 1) composicao_dia.placa do próprio dia
+ * 2) prog_veiculos_dia / composicao do dia anterior (mesma equipe)
+ */
+function progRecuperarPlacasDia(dataOpt){
+  var data = (dataOpt || (typeof progGetData==='function'?progGetData():'') || '').split('T')[0];
+  if(!data){ progShowToast('⚠ Informe a data da programação.'); return; }
+  if(DEMO){ progShowToast('Indisponível no demo.'); return; }
+  progShowToast('🔍 Buscando placas para recuperar…');
+  var p=data.split('-');
+  var dt=new Date(Date.UTC(+p[0], +p[1]-1, +p[2]));
+  dt.setUTCDate(dt.getUTCDate()-1);
+  var diaAnt = dt.toISOString().slice(0,10);
+
+  function listarSemPlaca(comps){
+    return (comps||[]).filter(function(c){
+      var cd=(c.data||'').split('T')[0];
+      if(cd!==data || c.deleted_at) return false;
+      if(!(c.confirmada===true||c.confirmada==='true'||c.confirmada===1)) return false;
+      return !progEquipeTemPlaca(c.equipe_id, data);
+    });
+  }
+
+  var comps = (composicao_dia||[]).filter(function(c){
+    return (c.data||'').split('T')[0]===data && !c.deleted_at;
+  });
+  var go = function(compsDia){
+    var semPlaca = listarSemPlaca(compsDia);
+    if(!semPlaca.length){
+      progShowToast('✅ Nenhuma equipe programada sem placa neste dia.');
+      return;
+    }
+    Promise.all([
+      progFetchVeiculosDia(diaAnt),
+      sbFetch('composicao_dia',{filters:['data=eq.'+diaAnt,'deleted_at=is.null'],limit:500}).catch(function(){return[];})
+    ]).then(function(res){
+      var veicsAnt = res[0]||[];
+      var compsAnt = res[1]||[];
+      var recuperados = 0, falhas = 0;
+      var chain = Promise.resolve();
+      semPlaca.forEach(function(comp){
+        chain = chain.then(function(){
+          var eqId = comp.equipe_id;
+          var placa = (comp.placa||comp.veiculo_placa||'').trim();
+          var veicId = comp.veiculo_id||null;
+          var modelo = comp.modelo||'';
+          if(!placa){
+            var pv = veicsAnt.find(function(r){
+              return String(r.equipe_id)===String(eqId) && (!r.slot||r.slot===1||r.slot==='1') && r.placa;
+            });
+            if(pv){ placa=pv.placa; veicId=pv.veiculo_id||veicId; modelo=pv.modelo||modelo; }
+          }
+          if(!placa){
+            var ca = compsAnt.find(function(c){
+              return String(c.equipe_id)===String(eqId) && (c.placa||c.veiculo_placa);
+            });
+            if(ca){ placa=ca.placa||ca.veiculo_placa; veicId=ca.veiculo_id||veicId; modelo=ca.modelo||modelo; }
+          }
+          if(!placa){ falhas++; return; }
+          if(!veicId && (frt_veiculos||[]).length){
+            var fv=(frt_veiculos||[]).find(function(v){
+              return String(v.placa||'').toUpperCase().replace(/[-\s]/g,'')===String(placa).toUpperCase().replace(/[-\s]/g,'');
+            });
+            if(fv){ veicId=fv.id; modelo=modelo||fv.modelo||''; }
+          }
+          var veicObj={id:veicId,placa:placa,modelo:modelo,alterado_por:(usuarioLogado&&usuarioLogado.nome)||'Recuperação'};
+          progSetVeiculo(eqId, data, veicObj);
+          return progSalvarVeiculoNoBanco(eqId, data, veicObj, 1).then(function(ok){
+            if(ok){
+              recuperados++;
+              comp.placa=placa; comp.veiculo_id=veicId; comp.modelo=modelo;
+              if(comp.id && !comp._local){
+                return sbUpdate('composicao_dia',{placa:placa,veiculo_id:veicId,modelo:modelo},'id=eq.'+comp.id);
+              }
+            } else falhas++;
+          });
+        });
+      });
+      return chain.then(function(){
+        progCarregarVeiculos(data);
+        progShowToast('🚗 Recuperadas: '+recuperados+' · sem fonte: '+falhas+' (de '+semPlaca.length+' sem placa)');
+      });
+    }).catch(function(e){
+      console.error('progRecuperarPlacasDia',e);
+      progShowToast('⚠ Erro ao recuperar placas.','erro');
+    });
+  };
+
+  if(!comps.length){
+    sbFetch('composicao_dia',{filters:['data=eq.'+data,'confirmada=eq.true','deleted_at=is.null'],limit:500})
+      .then(function(rows){
+        (rows||[]).forEach(function(r){
+          if(!(composicao_dia||[]).some(function(c){return c.id===r.id;})) composicao_dia.push(r);
+        });
+        go(composicao_dia);
+      });
+  } else {
+    go(comps);
+  }
 }
 
 // ── Renderiza mini-card de um slot de veículo (a=moto1, b=moto2) ─
@@ -69782,6 +70523,11 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
   var eq = equipes_disp.find(function(e){return e.id===eqId;})
         || equipes.find(function(e){return e.id===eqId;});
   if(!eq) return;
+  var _compLock = typeof progFindCompDia==='function' ? progFindCompDia(eqId, data) : null;
+  if(_compLock && (_compLock.confirmada===true||_compLock.confirmada==='true'||_compLock.confirmada===1)){
+    progShowToast('🔒 Equipe já programada — desprograme para alterar a placa.');
+    return;
+  }
   var vAtual = slot==='b' ? progGetVeiculoB(eqId, data) : progGetVeiculo(eqId, data);
   var perfil = usuarioLogado ? usuarioLogado.perfil : '';
   var precisaJustif = vAtual && perfil !== 'programador' && perfil !== 'gestor' && perfil !== 'administrador';
@@ -70134,9 +70880,14 @@ function progPreencherVeicSel(){
 }
 
 function progRemoverVeiculo(eqId, data){
+  var d=(data||'').split('T')[0];
+  var comp = typeof progFindCompDia==='function' ? progFindCompDia(eqId, d) : null;
+  if(comp && (comp.confirmada===true || comp.confirmada==='true' || comp.confirmada===1)){
+    progShowToast('🔒 Equipe já programada — desprograme antes de remover a placa.','erro');
+    return;
+  }
   if(!confirm('Remover veículo desta equipe?')) return;
 
-  var d=(data||'').split('T')[0];
   delete _progVeiculos[progVeiculoKey(eqId, d)];
   progPersistVeiculosLocal(d);
   window._veicEscCache = {};
@@ -72368,25 +73119,47 @@ function portRenderEquipesDia(){
     return temComp||isTMA;
   });
 
-  // Veículos que saíram hoje (na portaria)
+  // Saídas do dia selecionado + liberação atrasada (prog. ontem, saída hoje)
+  var hojePort = dataHojeLocal();
+  var ontemPort = (typeof _diasAtras==='function') ? _diasAtras(1) : hojePort;
   var saidasHoje = frt_portaria.filter(function(p){
     return (p.data_saida||'').split('T')[0]===data;
   });
   var placasEmCampo = saidasHoje.filter(function(p){return p.status==='Em campo';}).map(function(p){return p.placa;});
   var placasRetornadas = saidasHoje.filter(function(p){return p.status==='Retornado';}).map(function(p){return p.placa;});
 
+  function portMatchSaidaEquipe(p, eq){
+    var nomeEq=portNomeEquipe(eq,'');
+    return p.equipe_id===eq.id
+        || p.equipe===eq.codigo
+        || p.equipe===eq.nome_equipe
+        || (nomeEq && p.equipe===nomeEq)
+        || p.equipe===eq.id; // compatibilidade com registros antigos que gravaram UUID em equipe
+  }
+  function portSaidaEquipeDia(eq, dataProg){
+    var sameDay = saidasHoje.find(function(p){ return portMatchSaidaEquipe(p, eq); });
+    if(sameDay) return sameDay;
+    // Liberação atrasada: programação do dia anterior, saída registrada hoje
+    if(dataProg===ontemPort){
+      return frt_portaria.find(function(p){
+        if(!portMatchSaidaEquipe(p, eq)) return false;
+        var ds=(p.data_saida||'').split('T')[0];
+        return ds===hojePort || p.status==='Em campo';
+      })||null;
+    }
+    // Ainda em campo com saída após a data da programação
+    return frt_portaria.find(function(p){
+      if(p.status!=='Em campo' || !portMatchSaidaEquipe(p, eq)) return false;
+      var ds=(p.data_saida||'').split('T')[0];
+      return ds>=dataProg;
+    })||null;
+  }
+
   // Separar equipes por situação
   var eqsProgramadas=[], eqsNaoSairam=[], eqsEmCampo=[];
   eqsFil.forEach(function(eq){
     var comp=comps.find(function(c){return c.equipe_id===eq.id;});
-    var saida=saidasHoje.find(function(p){
-      var nomeEq=portNomeEquipe(eq,'');
-      return p.equipe_id===eq.id
-          || p.equipe===eq.codigo
-          || p.equipe===eq.nome_equipe
-          || (nomeEq && p.equipe===nomeEq)
-          || p.equipe===eq.id; // compatibilidade com registros antigos que gravaram UUID em equipe
-    });
+    var saida=portSaidaEquipeDia(eq, data);
     if(saida&&saida.status==='Em campo') eqsEmCampo.push({eq:eq,comp:comp,saida:saida});
     else if(comp&&!saida) eqsNaoSairam.push({eq:eq,comp:comp});
     else if(comp&&saida&&saida.status==='Retornado') eqsProgramadas.push({eq:eq,comp:comp,saida:saida});
@@ -72522,7 +73295,9 @@ function portVerificarPlaca(){
   var res   = document.getElementById('port-chk-resultado'); if(!res) return;
   if(placa.length<5){res.style.display='none';return;}
 
-  var data = dataHojeLocal();
+  var hoje = dataHojeLocal();
+  var ontem = (typeof _diasAtras==='function') ? _diasAtras(1) : hoje;
+  var dataSel = ((document.getElementById('port-eq-data')||{}).value||'').split('T')[0] || hoje;
   res.style.display='';
 
   // 1. Verificar se é veículo de supervisor/gestor
@@ -72532,17 +73307,51 @@ function portVerificarPlaca(){
   var reserva = frt_reservas.find(function(r){
     return (r.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')=== placa
       && r.status==='Ativa'
-      && r.data_inicio<=data
-      && r.data_fim>=data;
+      && r.data_inicio<=hoje
+      && r.data_fim>=hoje;
   });
 
-  // 3. Verificar equipe programada com essa placa
-  var comp = composicao_dia.find(function(c){
-    var d=(c.data||'').split('T')[0];
-    return d===data && (c.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')=== placa;
+  // 3. Equipe programada: data selecionada na aba → hoje → ontem (liberação atrasada)
+  function portCompPorPlacaDia(d){
+    return composicao_dia.find(function(c){
+      var cd=(c.data||'').split('T')[0];
+      return cd===d && (c.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')=== placa;
+    });
+  }
+  var dataProg = null;
+  var comp = null;
+  var candDatas = [];
+  [dataSel, hoje, ontem].forEach(function(d){
+    if(d && candDatas.indexOf(d)<0) candDatas.push(d);
   });
+  for(var i=0;i<candDatas.length;i++){
+    comp = portCompPorPlacaDia(candDatas[i]);
+    if(comp){ dataProg = candDatas[i]; break; }
+  }
+  // Fallback: placa só em prog_veiculos_dia (memória)
+  if(!comp && typeof _progVeiculos!=='undefined'){
+    for(var j=0;j<candDatas.length;j++){
+      var d2=candDatas[j];
+      var keys=Object.keys(_progVeiculos||{});
+      for(var k=0;k<keys.length;k++){
+        var key=keys[k];
+        if(!key.endsWith('_'+d2)) continue;
+        var pv=_progVeiculos[key];
+        if(!pv||!pv.placa) continue;
+        if((pv.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'')!==placa) continue;
+        var eqId=key.slice(0, -(d2.length+1));
+        comp = composicao_dia.find(function(c){
+          return String(c.equipe_id)===String(eqId)&&(c.data||'').split('T')[0]===d2;
+        }) || {equipe_id:eqId, data:d2, placa:placa, turno:'', colaborador_ids:'[]'};
+        dataProg = d2;
+        break;
+      }
+      if(comp) break;
+    }
+  }
 
   var html='';
+  var progOntem = !!(comp && dataProg && dataProg!==hoje);
 
   if(comp){
     var eq   = portBuscarEquipe(comp.equipe_id)||{};
@@ -72553,7 +73362,9 @@ function portVerificarPlaca(){
     var TURNO_HR={Manha:'06:00',Tarde:'14:00',Noite:'20:00'};
     html+='<div style="background:#EAF3DE;border-radius:8px;padding:10px 12px;margin-bottom:.6rem">'
       +'<div style="font-size:12px;font-weight:600;color:#3B6D11;margin-bottom:6px">✅ Equipe programada encontrada: '+escHtml(portNomeEquipe(eq))+'</div>'
-      +'<div style="font-size:11px;color:#555;margin-bottom:4px">Turno: <b>'+escHtml(comp.turno||'—')+'</b> · Saída prevista: <b>'+(TURNO_HR[comp.turno]||'—')+'</b></div>'
+      +(progOntem?'<div style="font-size:11px;background:#FEF3E2;color:#854F0B;border-radius:5px;padding:4px 8px;margin-bottom:6px;font-weight:600">📅 Programação do dia anterior ('+fmtD(dataProg)+') — liberação atrasada permitida</div>':'')
+      +'<div style="font-size:11px;color:#555;margin-bottom:4px">Turno: <b>'+escHtml(comp.turno||'—')+'</b> · Saída prevista: <b>'+(TURNO_HR[comp.turno]||'—')+'</b>'
+      +(dataProg?' · Data prog.: <b>'+fmtD(dataProg)+'</b>':'')+'</div>'
       +(mot?'<div style="font-size:11px;margin-bottom:4px"><b>Motorista:</b> '+escHtml(nomeAbrev(mot.nome))+(avCnh?fmdBadgeHtml(avCnh):'')+'</div>':'')
       +(avCnh?fmdAlertaBoxHtml(avCnh):'')
       +'<div style="font-size:11px;margin-bottom:6px"><b>Integrantes esperados:</b> '
@@ -72567,9 +73378,9 @@ function portVerificarPlaca(){
       +'<div style="display:flex;gap:6px;margin-top:.6rem">'
       +(avCnh&&avCnh.bloqueia&&!portCnhExcecaoAtiva(mot&&mot.id)
         ?(fmdPodeLiberarExcecao()
-          ?'<button class="btn btn-pri" onclick="portPedirExcecaoCnhVerificacao(\''+comp.equipe_id+'\',\''+placa+'\')" style="flex:1;background:#854F0B;border-color:#854F0B">⚠ Liberação excepcional CNH</button>'
+          ?'<button class="btn btn-pri" onclick="portPedirExcecaoCnhVerificacao(\''+comp.equipe_id+'\',\''+placa+'\',\''+dataProg+'\')" style="flex:1;background:#854F0B;border-color:#854F0B">⚠ Liberação excepcional CNH</button>'
           :'<button class="btn" disabled style="flex:1;opacity:.6;cursor:not-allowed">🚫 CNH vencida — bloqueado</button>')
-        :'<button class="btn btn-pri" onclick="portLiberar(\'equipe\',\''+comp.equipe_id+'\',\''+placa+'\')" style="flex:1;background:#3B6D11;border-color:#3B6D11">✅ Liberar saída</button>')
+        :'<button class="btn btn-pri" onclick="portLiberar(\'equipe\',\''+comp.equipe_id+'\',\''+placa+'\',\''+dataProg+'\')" style="flex:1;background:#3B6D11;border-color:#3B6D11">✅ Liberar saída</button>')
       +'<button class="btn" onclick="portBloquear(\''+placa+'\')" style="flex:1;color:#A32D2D;border-color:#A32D2D">🚫 Bloquear</button>'
       +'</div></div>';
     window._portKmPlacaCtx=placa;
@@ -72608,10 +73419,10 @@ function portVerificarPlaca(){
     html='<div style="background:#FCEBEB;border-radius:8px;padding:10px 12px">'
       +'<div style="font-size:13px;font-weight:600;color:#A32D2D;margin-bottom:4px">🚫 Saída não autorizada</div>'
       +'<div style="font-size:12px;color:#555">O veículo <b>'+placa+'</b> não possui:<br>'
-      +'• Equipe programada para hoje com esta placa<br>'
+      +'• Equipe programada para hoje ou ontem com esta placa<br>'
       +'• Reserva ativa cadastrada<br>'
       +'• Vínculo com supervisor/gestor</div>'
-      +'<div style="font-size:11px;color:#A32D2D;margin-top:.5rem">Acione a supervisão ou programe a equipe antes de liberar a saída.</div>'
+      +'<div style="font-size:11px;color:#A32D2D;margin-top:.5rem">Na aba Equipes do dia, selecione a data da programação e use Liberar — ou programe a equipe antes.</div>'
       +'</div>';
   }
 
@@ -72623,8 +73434,8 @@ function portLimparVerificacao(){
   var r=document.getElementById('port-chk-resultado'); if(r){r.style.display='none';r.innerHTML='';}
 }
 
-function portPedirExcecaoCnhVerificacao(eqId, placa){
-  var data=dataHojeLocal();
+function portPedirExcecaoCnhVerificacao(eqId, placa, dataProg){
+  var data=dataProg || dataHojeLocal();
   var comp=(composicao_dia||[]).find(function(c){
     return String(c.equipe_id)===String(eqId)&&(c.data||'').split('T')[0]===data;
   });
@@ -72634,7 +73445,7 @@ function portPedirExcecaoCnhVerificacao(eqId, placa){
   portAbrirLiberacaoCnhExcecao(av, placa, function(){ portVerificarPlaca(); });
 }
 
-function portLiberar(tipo, id, placa){
+function portLiberar(tipo, id, placa, dataProg){
   var destino=((document.getElementById('port-chk-destino')||{}).value||'').trim();
   var km=parseInt((document.getElementById('port-chk-km')||{}).value||'0')||0;
   var quem=((document.getElementById('port-chk-quem')||{}).value||'').trim();
@@ -72663,6 +73474,7 @@ function portLiberar(tipo, id, placa){
   var _motorista = quem||'—';
   var _motObj = null;
   var _reserva = null;
+  var _dataProg = (dataProg||dataHojeLocal()).split('T')[0];
 
   if(tipo==='reserva'){
     _reserva = (frt_reservas||[]).find(function(r){return String(r.id)===String(id);})||null;
@@ -72677,7 +73489,10 @@ function portLiberar(tipo, id, placa){
     _contId   = _eq.contrato_id||'';
     var _cont = _contId ? (contratos||[]).find(function(ct){return ct.id===_contId;})||{} : {};
     _contNome = _cont.nome||_cont.numero||'—';
-    var _comp = (composicao_dia||[]).find(function(cx){return cx.equipe_id===_eq.id&&(cx.data||'').split('T')[0]===dataHojeLocal();});
+    var _comp = (composicao_dia||[]).find(function(cx){return cx.equipe_id===_eq.id&&(cx.data||'').split('T')[0]===_dataProg;});
+    if(!_comp){
+      _comp = (composicao_dia||[]).find(function(cx){return cx.equipe_id===_eq.id&&(cx.data||'').split('T')[0]===dataHojeLocal();});
+    }
     _motObj   = portResolverMotoristaComp(_comp);
     if(_motObj) _motorista = _motObj.nome||'—';
     if(!_motorista||_motorista==='—'){
@@ -72706,7 +73521,7 @@ function portLiberar(tipo, id, placa){
         return;
       }
       if(fmdPodeLiberarExcecao()){
-        portAbrirLiberacaoCnhExcecao(_valCnh.av, placa, function(){ portLiberar(tipo, id, placa); });
+        portAbrirLiberacaoCnhExcecao(_valCnh.av, placa, function(){ portLiberar(tipo, id, placa, _dataProg); });
       } else {
         progShowToast(_valCnh.av.msg||'Motorista com CNH vencida. Saída bloqueada. Solicite liberação de responsável autorizado.','erro');
       }
@@ -72763,7 +73578,7 @@ function portLiberar(tipo, id, placa){
 
   if(tipo==='equipe' && _eq.id){
     (composicao_dia||[]).forEach(function(cx){
-      if(cx.equipe_id===_eq.id) cx._portaria_liberado=true;
+      if(cx.equipe_id===_eq.id && (cx.data||'').split('T')[0]===_dataProg) cx._portaria_liberado=true;
     });
   }
   if(tipo==='reserva' && _reserva){
@@ -73143,24 +73958,33 @@ function portBloquearEquipe(eqId, data){
 
 function portRenderAguardando(){
   var wrap=document.getElementById('port-aguardando'); if(!wrap) return;
-  var data=dataHojeLocal();
+  var hoje=dataHojeLocal();
+  var ontem=(typeof _diasAtras==='function')?_diasAtras(1):hoje;
+  var data=((document.getElementById('port-eq-data')||{}).value||hoje).split('T')[0]||hoje;
+  var datas=[data];
+  if(datas.indexOf(hoje)<0) datas.push(hoje);
+  if(datas.indexOf(ontem)<0) datas.push(ontem);
   var aguard=composicao_dia.filter(function(c){
-    return (c.data||'').split('T')[0]===data && !c._portaria_liberado && !c._portaria_bloqueado;
+    var cd=(c.data||'').split('T')[0];
+    return datas.indexOf(cd)>=0 && !c._portaria_liberado && !c._portaria_bloqueado;
   });
-  var rsvPend=portReservasAtivasDia(data).filter(function(r){return !portReservaJaSaiu(r,data);});
+  var rsvPend=portReservasAtivasDia(hoje).filter(function(r){return !portReservaJaSaiu(r,hoje);});
   if(!aguard.length && !rsvPend.length){
     wrap.innerHTML='<div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">Nenhuma equipe/reserva aguardando saída.</div>';
     return;
   }
   var htmlEq=aguard.slice(0,10).map(function(c){
+    var cd=(c.data||'').split('T')[0];
     var eq=equipes_disp.find(function(e){return e.id===c.equipe_id||e.codigo===c.equipe_id;})||{codigo:'—'};
     var ids=parseColabIds(c.colaborador_ids).filter(Boolean);
     var nomes=ids.map(function(id){var col=colaboradores.find(function(x){return x.id===id;});return col?col.nome.split(' ')[0]:'?';}).join(', ');
+    var tagOntem=cd!==hoje?'<span style="font-size:9px;background:#FEF3E2;color:#854F0B;border-radius:3px;padding:1px 5px;font-weight:700;margin-right:4px">'+fmtD(cd)+'</span>':'';
     return '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#FEF9EE;border-radius:7px;border:.5px solid #e0dfd8">'
+      +tagOntem
       +'<span style="font-weight:700;color:#185FA5;width:80px;flex-shrink:0">'+escHtml(eq.codigo||portNomeEquipe(eq))+'</span>'
       +'<span style="font-size:11px;color:#555;flex:1">'+escHtml(nomes)+'</span>'
       +(c.placa?'<span style="font-family:monospace;font-size:11px;color:#888">'+escHtml(c.placa)+'</span>':'')
-      +'<button class="btn btn-sm" onclick="portLiberarEquipe(\''+c.equipe_id+'\',\''+data+'\')" style="font-size:10px;color:#3B6D11;border-color:#3B6D11">✅ Liberar</button>'
+      +'<button class="btn btn-sm" onclick="portLiberarEquipe(\''+c.equipe_id+'\',\''+cd+'\')" style="font-size:10px;color:#3B6D11;border-color:#3B6D11">✅ Liberar</button>'
       +'</div>';
   }).join('');
   var htmlRsv=rsvPend.slice(0,10).map(function(r){
