@@ -5746,7 +5746,8 @@ async function sbInsert(table,data){
       'movimentacao_origem_id','tipo_ajuste','colaborador_id','equipe_id','veiculo_id','projeto_id','previsao_devolucao'],
     'frotas_avarias':['placa','modelo','veiculo_id','motorista','tipo','descricao','data','custo_estimado','custo_final','status'],
     'frotas_multas':['placa','modelo','veiculo_id','motorista','colaborador_id','descricao','data_infracao','valor','vencimento','status'],
-    'frotas_documentos':['placa','tipo','numero_documento','data_emissao','data_vencimento','valor','status','observacao',
+    // Colunas reais no Supabase: numero/emissao/validade (não numero_documento/data_emissao/data_vencimento)
+    'frotas_documentos':['placa','modelo','tipo','numero','emissao','validade','valor','status','observacao',
       'anexo_url','data_validade','empresa_executora','laudo_certificado','colaborador_id',
       'numero_auto','orgao_emissor','data_infracao','hora_infracao','local_infracao','condutor_responsavel',
       'pontos_cnh','desconto_disponivel','status_recurso','pago','data_pagamento'],
@@ -6816,7 +6817,7 @@ function showRoomFetchLeve(){
   }
   if(!(typeof frt_documentos!=='undefined' && frt_documentos && frt_documentos.length)){
     jobs.push(sbFetch('frotas_documentos',{order:'validade',limit:3000})
-      .then(function(r){ if(r&&r.length) frt_documentos=r; }).catch(function(){}));
+      .then(function(r){ if(r&&r.length) frt_documentos=(typeof fdocNormRows==='function'?fdocNormRows(r):r); }).catch(function(){}));
   }
   if(!(typeof frt_veiculos!=='undefined' && frt_veiculos && frt_veiculos.length)){
     jobs.push(sbFetch('frotas_veiculos',{filters:['status=neq.Inativo'],order:'placa',limit:3000})
@@ -38086,10 +38087,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.793',
+  numero: '7.9.794',
   data:   '14/08/2026',
-  build:  '20260814-0745',
+  build:  '20260814-1140',
   log: [
+    {v:'7.9.794', d:'14/08/2026', itens:[
+      'Frotas → Documentos: corrige erro ao salvar (PGRST204 data_emissao) — payload usa colunas reais numero/emissao/validade; aliases da UI normalizados na leitura.',
+    ]},
     {v:'7.9.793', d:'14/08/2026', itens:[
       'Cadastro de usuários: novos perfis Gerente de Frotas e Supervisor de Frotas — bloqueiam Financeiro, Almoxarifado, Viabilidade, Projetos/Obras, SESMT e PLR (Supervisor também sem Cadastros); tela inicial Frotas.',
     ]},
@@ -72591,7 +72595,7 @@ function frtInit(subpage){
       if(res[2]&&res[2].length) frt_combustivel = res[2];
       if(res[3]&&res[3].length) frt_multas      = res[3];
       if(res[4]&&res[4].length) frt_avarias     = res[4];
-      if(res[5]&&res[5].length) frt_documentos  = res[5];
+      if(res[5]&&res[5].length) frt_documentos  = (typeof fdocNormRows==='function'?fdocNormRows(res[5]):res[5]);
       if(res[6]&&res[6].length) frt_riscos      = res[6];
       if(res[7]){ frt_motorista_docs = res[7]||[]; _fmdLoaded=true; }
       if(res[8]){ frt_condutas = res[8]||[]; _fcdLoaded=true; if(subpage==='frotas-conduta') fcdRender(); }
@@ -72633,7 +72637,7 @@ function frtCarregarDados(){
       if(res[2]&&res[2].length) frt_combustivel = res[2];
       if(res[3]&&res[3].length) frt_multas      = res[3];
       if(res[4]&&res[4].length) frt_avarias     = res[4];
-      if(res[5]&&res[5].length) frt_documentos  = res[5];
+      if(res[5]&&res[5].length) frt_documentos  = (typeof fdocNormRows==='function'?fdocNormRows(res[5]):res[5]);
       if(res[6]&&res[6].length) frt_riscos      = res[6];
       if(res[7]){ frt_motorista_docs = res[7]||[]; _fmdLoaded=true; }
     });
@@ -75837,6 +75841,43 @@ function fdocCorVenc(venc, hoje, em30){
   return {bg:'#EAF3DE',cor:'#3B6D11',label:'Regular'};
 }
 
+/** Alinha colunas legadas (numero/emissao/validade) com aliases da UI (numero_documento/data_*). */
+function fdocNormRow(d){
+  if(!d) return d;
+  var num=d.numero_documento||d.numero||'';
+  var emi=d.data_emissao||d.emissao||null;
+  var venc=d.data_vencimento||d.validade||d.data_validade||null;
+  d.numero=d.numero||num||null;
+  d.numero_documento=num||null;
+  d.emissao=d.emissao||emi||null;
+  d.data_emissao=emi||null;
+  d.validade=d.validade||venc||null;
+  d.data_vencimento=venc||null;
+  return d;
+}
+function fdocNormRows(rows){
+  return (rows||[]).map(function(r){ return fdocNormRow(Object.assign({},r)); });
+}
+/** Payload com nomes de coluna reais do Supabase. */
+function fdocPayloadDb(dados){
+  var p={
+    placa:dados.placa||null,
+    tipo:dados.tipo||null,
+    numero:dados.numero_documento||dados.numero||null,
+    emissao:dados.data_emissao||dados.emissao||null,
+    validade:dados.data_vencimento||dados.validade||null,
+    valor:dados.valor,
+    status:dados.status||null,
+    observacao:dados.observacao||null
+  };
+  ['modelo','anexo_url','data_validade','empresa_executora','laudo_certificado','colaborador_id',
+   'numero_auto','orgao_emissor','data_infracao','hora_infracao','local_infracao','condutor_responsavel',
+   'pontos_cnh','desconto_disponivel','status_recurso','pago','data_pagamento'].forEach(function(k){
+    if(dados[k]!==undefined&&dados[k]!==null&&dados[k]!=='') p[k]=dados[k];
+  });
+  return p;
+}
+
 function fdocDiasVenc(venc, hoje){
   if(!venc) return null;
   return Math.floor((new Date(venc)-new Date(hoje))/86400000);
@@ -76713,11 +76754,11 @@ function fdocAbrirModal(d, isMulta){
     +'<div class="fg"><label style="font-size:11px">Tipo de documento *</label>'
     +'<select class="inp" id="fdoc-tipo" style="width:100%"'+(isMulta?'':' onchange="fdocAtualizarCamposTipo()"')+'><option value="">Selecione</option>'+optsTipo+'</select></div>'
     +'<div class="fg"><label style="font-size:11px">Nº Documento</label>'
-    +'<input class="inp" id="fdoc-numero" style="width:100%" value="'+escHtml(d.numero_documento||'')+'"/></div>'
+    +'<input class="inp" id="fdoc-numero" style="width:100%" value="'+escHtml(d.numero_documento||d.numero||'')+'"/></div>'
     +'<div class="fg"><label style="font-size:11px">Data de emissão</label>'
-    +'<input class="inp" type="date" id="fdoc-emissao" value="'+(d.data_emissao||'')+'" style="width:100%"/></div>'
+    +'<input class="inp" type="date" id="fdoc-emissao" value="'+(d.data_emissao||d.emissao||'')+'" style="width:100%"/></div>'
     +'<div class="fg"><label style="font-size:11px">Data de vencimento</label>'
-    +'<input class="inp" type="date" id="fdoc-vencimento" value="'+(d.data_vencimento||'')+'" style="width:100%"/></div>'
+    +'<input class="inp" type="date" id="fdoc-vencimento" value="'+(d.data_vencimento||d.validade||'')+'" style="width:100%"/></div>'
     +'<div id="fdoc-campos-dinamicos" style="display:contents"></div>'
     +'<div class="fg"><label style="font-size:11px">Valor (R$)</label>'
     +'<input class="inp" type="number" step="0.01" id="fdoc-valor" style="width:100%" value="'+(d.valor||'')+'"/></div>'
@@ -76840,8 +76881,9 @@ function fdocAbrirModal(d, isMulta){
       if(!placa||!tipo){progShowToast('⚠ Selecione a placa na lista e o tipo.');return;}
       if(isMulta===false && tipo==='Multa'){progShowToast('⚠ Use a aba Multas para registrar multa.');return;}
       var dados={
-        placa:placa, tipo:tipo, numero_documento:numero,
-        data_emissao:emissao, data_vencimento:venc,
+        placa:placa, tipo:tipo, numero_documento:numero, numero:numero,
+        data_emissao:emissao, emissao:emissao,
+        data_vencimento:venc, validade:venc,
         valor:valor, status:status, observacao:obs
       };
       if(!isMulta){
@@ -76885,10 +76927,10 @@ function fdocAbrirModal(d, isMulta){
       if(isNew){
         dados.id=Date.now().toString();
         if(!frt_documentos) frt_documentos=[];
-        frt_documentos.unshift(dados);
+        frt_documentos.unshift(fdocNormRow(dados));
       } else {
         var idx=(frt_documentos||[]).findIndex(function(x){return x.id===d.id;});
-        if(idx>=0) frt_documentos[idx]=Object.assign({},d,dados);
+        if(idx>=0) frt_documentos[idx]=fdocNormRow(Object.assign({},d,dados));
       }
       var afterSave=function(){
         closeModal();
@@ -76896,15 +76938,18 @@ function fdocAbrirModal(d, isMulta){
         progShowToast('✅ Documento salvo.');
       };
       if(DEMO){ afterSave(); return; }
-      var payload=_semId(dados);
+      var payload=fdocPayloadDb(dados);
       // Colunas que podem não existir no schema (não enviar)
-      ['created_at','updated_at'].forEach(function(k){ delete payload[k]; });
+      ['created_at','updated_at','data_emissao','data_vencimento','numero_documento'].forEach(function(k){ delete payload[k]; });
       var req=isNew?sbInsert('frotas_documentos',payload):sbUpdate('frotas_documentos',payload,'id=eq.'+d.id);
       Promise.resolve(req).then(function(res){
         if(res===null){
-          // Retry sem colunas novas da 5A se SQL ainda não aplicado
+          // Retry sem colunas novas da 5A / multas se SQL ainda não aplicado
           var p2=Object.assign({},payload);
-          ['colaborador_id','anexo_url','data_validade','empresa_executora','laudo_certificado','created_at','updated_at'].forEach(function(k){ delete p2[k]; });
+          ['colaborador_id','anexo_url','data_validade','empresa_executora','laudo_certificado',
+           'numero_auto','orgao_emissor','data_infracao','hora_infracao','local_infracao','condutor_responsavel',
+           'pontos_cnh','desconto_disponivel','status_recurso','pago','data_pagamento',
+           'created_at','updated_at','data_emissao','data_vencimento','numero_documento'].forEach(function(k){ delete p2[k]; });
           return Promise.resolve(isNew?sbInsert('frotas_documentos',p2):sbUpdate('frotas_documentos',p2,'id=eq.'+d.id));
         }
       }).then(function(){ afterSave(); }).catch(function(){ afterSave(); });
