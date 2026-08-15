@@ -907,6 +907,33 @@ body.perfil-supervisor_frotas #pg-sesmt-dashboard,
 body.perfil-supervisor_frotas #pg-plr,
 body.perfil-supervisor_frotas #pg-cadastros { display:none !important; }
 
+/* ALMOXARIFE — só Almoxarifado + Operacional (Requisições) */
+body.perfil-almoxarife #mn-dashboard,
+body.perfil-almoxarife #mn-contratos,
+body.perfil-almoxarife #mn-obras,
+body.perfil-almoxarife #mn-movimentacao,
+body.perfil-almoxarife #mn-viabilidade,
+body.perfil-almoxarife #mn-frotas,
+body.perfil-almoxarife #mn-sesmt,
+body.perfil-almoxarife #mn-relatorios,
+body.perfil-almoxarife #mn-cadastros,
+body.perfil-almoxarife #mn-plr,
+body.perfil-almoxarife #mn-gestao-pessoas,
+body.perfil-almoxarife #pg-dashboard,
+body.perfil-almoxarife #pg-contratos,
+body.perfil-almoxarife #pg-obras,
+body.perfil-almoxarife #pg-lancamentos,
+body.perfil-almoxarife #pg-verbas,
+body.perfil-almoxarife #pg-aprovacao,
+body.perfil-almoxarife #pg-adiantamentos,
+body.perfil-almoxarife #pg-viabilidade-contratos,
+body.perfil-almoxarife #pg-frotas,
+body.perfil-almoxarife #pg-sesmt-dashboard,
+body.perfil-almoxarife #pg-relatorios,
+body.perfil-almoxarife #pg-cadastros,
+body.perfil-almoxarife #pg-plr,
+body.perfil-almoxarife #pg-av-colaborador { display:none !important; }
+
 
 
 /* ── DIÁRIO TMA MOBILE ──────────────────────────────────── */
@@ -2283,7 +2310,7 @@ body.insp-campo-ativo #app-content-area {
     </div>
   </div>
   <div style="overflow-x:auto"><table class="tbl"><thead><tr>
-    <th>Código</th><th>Nome do Contrato</th><th>Cliente</th><th>Responsável</th><th>Início</th><th>Término</th><th>Valor Total</th><th>Status</th><th></th>
+    <th>Código</th><th>Nome do Contrato</th><th>Cliente</th><th>Responsável</th><th>Início</th><th>Término</th><th>Valor Total</th><th>Valor Consumido</th><th>Saldo do Contrato</th><th>Status</th><th></th>
   </tr></thead><tbody id="tbody-cont"></tbody></table></div></div>
 
 </div>
@@ -5075,11 +5102,22 @@ try{
 var DEMO=false;
 
 // ── INTEGRAÇÃO ERP CENABR ─────────────────────────────────────────────
+// Fase 1 segurança: Bearer removido do frontend. Sync HTTP direto desativado.
+// Futuro: chamarApiCenaSegura → backend/Edge Function com segredo no servidor.
 var ERP = {
-  url:   'https://erp.cenabr.app/api/external/v1',
-  token: '3ef63343d60c1819dcca665a8731a49f',
+  url:   'https://erp.cenabr.app/api/external/v1', // URL pública (sem segredo)
+  token: null, // NUNCA armazenar Bearer no frontend / localStorage / sessionStorage
+  disabled: true,
+  disabledMsg: 'Esta integração foi temporariamente desativada para adequação de segurança. Será reativada via backend seguro.',
   cache: { key:'cena_erp_forn_v6', keyTs:'cena_erp_forn_ts_v6', ttl:30*60*1000 }
 };
+
+/** Wrapper futuro para API CenaBR — sem token e sem chamada externa nesta fase. */
+function chamarApiCenaSegura(payload){
+  // payload esperado no futuro: { path, method, query, body }
+  console.warn('[ERP] chamarApiCenaSegura bloqueada (Fase 1):', payload&&payload.path);
+  return Promise.reject(new Error(ERP.disabledMsg));
+}
 
 // Restaurar cache do localStorage ao iniciar
 (function(){
@@ -5118,9 +5156,11 @@ function _erpSetStatus(txt,cor){
 }
 
 function erpFetchPagina(pg){
-  return fetch(ERP.url+'/suppliers?page='+pg,{
-    headers:{'Accept':'application/json','Authorization':'Bearer '+ERP.token}
-  }).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();});
+  if(ERP.disabled || !ERP.token){
+    return Promise.reject(new Error(ERP.disabledMsg));
+  }
+  // Não chamar API externa com Bearer a partir do browser.
+  return chamarApiCenaSegura({ path:'/suppliers', method:'GET', query:{ page:pg } });
 }
 
 // Remove duplicados por CNPJ válido — mantém o cadastro matriz (is_root_supplier).
@@ -5193,6 +5233,20 @@ function erpFetchTodos(){
 }
 
 function erpCarregarFornecedores(forceRefresh){
+  if(ERP.disabled){
+    _erpSetStatus('⚠ Sync ERP desativado (segurança)','#854F0B');
+    if(forceRefresh && typeof progShowToast==='function'){
+      progShowToast('⚠ '+ERP.disabledMsg);
+    }
+    // Continua com fornecedores já cadastrados no Supabase (sem chamada externa)
+    return carregarFornDB().then(function(r){
+      if(r&&r.length && !(fornecedores||[]).some(function(f){return f._erp;}))
+        fornecedores=r.slice();
+      setTimeout(function(){_erpSetStatus('');},4000);
+      return r||[];
+    });
+  }
+
   if(!forceRefresh&&erpCacheValido()&&fornecedores.length>50)
     return Promise.resolve(fornecedores);
 
@@ -7761,6 +7815,26 @@ function showRoomRender(){
 }
 
 // CONTRATOS
+// Valor Consumido = valor lançado manualmente até a data de corte + soma do
+// faturamento (financeiro_faturamentos) do contrato a partir da data de corte.
+// Sem data de corte cadastrada, soma TODO o faturamento do contrato (a data de
+// corte só serve pra restringir a partir de quando a soma automática conta —
+// sem ela, não há nada a excluir).
+function contratoValorConsumido(c){
+  var inicial = Number(c.valor_consumido_inicial||0);
+  var corte = c.data_corte ? String(c.data_corte).slice(0,10) : null;
+  var faturado = (fin_faturamentos||[]).filter(function(f){
+    if(f.contrato_id!==c.id && f.contratante_id!==c.id) return false;
+    if(finEhRetencaoAvulsa(f)) return false;
+    if(corte && String(f.data_emissao||'').slice(0,10) < corte) return false;
+    return true;
+  }).reduce(function(s,f){return s+Number(f.valor_bruto||0);},0);
+  return inicial + faturado;
+}
+function contratoSaldo(c){
+  return Number(c.valor_total||0) - contratoValorConsumido(c);
+}
+
 function renderContratos(){
   var q=((document.getElementById('fil-cont-q')||{}).value||'').toLowerCase();
   var st=(document.getElementById('fil-cont-status')||{}).value||'';
@@ -7774,17 +7848,21 @@ function renderContratos(){
       +'<td style="color:#888">'+(c.cliente||'—')+'</td><td>'+(c.responsavel||'—')+'</td>'
       +'<td style="font-size:11px">'+fmtD(c.data_inicio)+'</td><td style="font-size:11px">'+fmtD(c.data_termino)+'</td>'
       +'<td style="font-weight:500">'+fmtR(c.valor_total)+'</td>'
+      +'<td>'+fmtR(contratoValorConsumido(c))+'</td>'
+      +'<td style="font-weight:500;color:'+(contratoSaldo(c)<0?'#A32D2D':'#3B6D11')+'">'+fmtR(contratoSaldo(c))+'</td>'
       +'<td><span class="bdg '+(stCls[c.status]||'gray')+'">'+c.status+'</span></td>'
       +'<td style="display:flex;gap:4px">'
       +'<button class="btn btn-sm" title="Editar contrato" onclick="openEditarContrato(\''+c.id+'\')">Editar</button>'
       +'<button class="btn btn-sm" onclick="irVerbas(\''+c.id+'\')">Verbas</button>'
       +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="excluirContrato(\''+c.id+'\')">Excluir</button>'
       +'</td></tr>';
-  }).join('')||'<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum contrato</td></tr>';
+  }).join('')||'<tr><td colspan="11" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum contrato</td></tr>';
 
   // Totalizador
   var totalQtd = rows.length;
   var totalValor = rows.reduce(function(s,c){return s+Number(c.valor_total||0);},0);
+  var totalConsumido = rows.reduce(function(s,c){return s+contratoValorConsumido(c);},0);
+  var totalSaldo = totalValor - totalConsumido;
   var totalOrc = rows.reduce(function(s,c){
     return s+verbas.filter(function(v){return v.contrato_id===c.id;})
       .reduce(function(sv,v){return sv+Number(v.valor_planejado||0);},0);
@@ -7809,6 +7887,12 @@ function renderContratos(){
         ?'<td style="padding:.6rem 1rem;font-size:12px;text-align:right;font-weight:600">'
           +'Orçado: <b>'+fmtR(totalOrc)+'</b>'+'</td>'
         :'<td></td>')
+      +'<td style="padding:.6rem 1rem;font-size:12px;text-align:right;font-weight:600">'
+        +'Consumido: <b>'+fmtR(totalConsumido)+'</b>'
+      +'</td>'
+      +'<td style="padding:.6rem 1rem;font-size:12px;text-align:right;font-weight:600;color:'+(totalSaldo<0?'#F3A6A6':'#9FE0A6')+'">'
+        +'Saldo: <b>'+fmtR(totalSaldo)+'</b>'
+      +'</td>'
       +'<td colspan="2"></td>'
       +'</tr>';
     tbl.appendChild(tfoot);
@@ -7846,6 +7930,8 @@ function _openNovoContratoModal(){
     +'<div class="fg"><label>Data de reajuste</label><input id="nc-reaj" type="date"/></div>'
     +'<div class="fg"><label>Valor negociado (R$)</label><input id="nc-valneg" type="number" step="0.01" placeholder="0,00"/></div>'
     +'<div class="fg"><label>Retenção contratual (%)</label><input id="nc-retencao" type="number" step="0.001" placeholder="ex: 11"/><div style="font-size:10px;color:#888">Aplicada sobre faturamento bruto no Financeiro.</div></div>'
+    +'<div class="fg"><label>Valor consumido (até a data de corte)</label><input id="nc-consumido" type="number" step="0.01" placeholder="0,00"/><div style="font-size:10px;color:#888">Faturamento já executado antes de existir o lançamento no Financeiro.</div></div>'
+    +'<div class="fg"><label>Data de corte</label><input id="nc-corte" type="date"/><div style="font-size:10px;color:#888">A partir dela, o Valor Consumido soma automaticamente o faturamento do contrato lançado no Financeiro.</div></div>'
     +'</div>'
     +'<h4 style="font-size:12px;font-weight:600;margin:.75rem 0 .25rem;color:#555">Aditivos</h4>'
     +'<div id="nc-aditivos-lista" style="margin-bottom:.5rem"></div>'
@@ -7900,7 +7986,7 @@ function _doOpenEditarContrato(cid){
   var aditsC=aditivos.filter(function(a){return a.contrato_id===cid;});
   _aditivosTemp=aditsC.map(function(a){return Object.assign({},a);});
   setModal('<div class="modal-bg"><div class="modal" style="max-width:620px"><h3>Editar contrato — '+c.codigo+'</h3>'    +'<div class="g2">'    +'<div class="fg"><label>Código</label><input id="nc-cod" value="'+c.codigo+'"/></div>'    +'<div class="fg"><label>Nome</label><input id="nc-nome" value="'+c.nome+'"/></div>'    +'<div class="fg"><label>Cliente</label><input id="nc-cli" value="'+(c.cliente||'')+'"/></div>'    +'<div class="fg"><label>Responsável</label><input id="nc-resp" value="'+(c.responsavel||'')+'"/></div>'    +'<div class="fg"><label>Valor total (R$)</label><input id="nc-val" type="number" value="'+(c.valor_total||'')+'"/></div>'    +'<div class="fg"><label>Valor negociado (R$)</label><input id="nc-valneg" type="number" value="'+(c.valor_negociado||'')+'"/></div>'    +'<div class="fg"><label>Retenção contratual (%)</label><input id="nc-retencao" type="number" step="0.001" value="'+(c.retencao_percentual!=null?c.retencao_percentual:'')+'" placeholder="ex: 11"/></div>'    +'<div class="fg"><label>Centro resultado</label><input id="nc-cr" value="'+(c.centro_resultado||'')+'"/></div>'    +'<div class="fg"><label>Data início</label><input id="nc-ini" type="date" value="'+(c.data_inicio||'')+'"/></div>'    +'<div class="fg"><label>Data término</label><input id="nc-fim" type="date" value="'+(c.data_termino||'')+'"/></div>'    +'<div class="fg"><label>Data de reajuste</label><input id="nc-reaj" type="date" value="'+(c.data_reajuste||'')+'"/></div>'    +'<div class="fg"><label>Modalidade de trabalho</label><select id="nc-modal">'+['','UPS','Disponibilidade','Lista de preços'].map(function(m){return '<option value="'+m+'"'+((c.modalidade_trabalho||'')=== m?' selected':'')+'>'+( m||'Selecione')+'</option>';}).join('')+'</select></div>'
-    +'<div class="fg"><label>Status</label><select id="nc-status"><option>Ativo</option><option>Em negociação</option><option>Suspenso</option><option>Encerrado</option></select></div>'    +'<div class="fg"><label>Filial responsável</label><select id="nc-filial"><option value="">Nenhuma</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')+'</select></div>'    +'</div>'    +'<h4 style="font-size:12px;font-weight:600;margin:.75rem 0 .25rem;color:#555">Aditivos</h4>'    +'<div id="nc-aditivos-lista"></div>'    +'<button class="btn btn-sm" onclick="adicionarAditivoNovo()">+ Adicionar aditivo</button>'    +'<h4 style="font-size:12px;font-weight:600;margin:.75rem 0 .25rem;color:#555">Adiantamento do cliente</h4>'    +'<div class="g2">'    +'<div class="fg"><label>Valor total adiantado (R$)</label><input id="nc-adv" type="number" value="'+(c.adiantamento_valor||'')+'"/></div>'    +'<div class="fg"><label>Nº de parcelas</label><input id="nc-adparc" type="number" value="'+(c.adiantamento_parcelas||'')+'"/></div>'    +'<div class="fg"><label>Índice de correção</label><select id="nc-adindice">'+['','IPCA','IGPM','INPC'].map(function(i){return '<option value="'+i+'"'+((c.adiantamento_indice||'')=== i?' selected':'')+'>'+( i||'Nenhum')+'</option>';}).join('')+'</select></div>'    +'<div class="fg"><label>% correção anual</label><input id="nc-adperc" type="number" step="0.01" value="'+(c.adiantamento_perc||'')+'"/></div>'    +'</div>'    +'<div class="fg"><label>Observações</label><textarea id="nc-obs">'+(c.observacoes||'')+'</textarea></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-edit-cont">Salvar</button></div></div></div>');
+    +'<div class="fg"><label>Status</label><select id="nc-status"><option>Ativo</option><option>Em negociação</option><option>Suspenso</option><option>Encerrado</option></select></div>'    +'<div class="fg"><label>Filial responsável</label><select id="nc-filial"><option value="">Nenhuma</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')+'</select></div>'    +'<div class="fg"><label>Valor consumido (até a data de corte)</label><input id="nc-consumido" type="number" step="0.01" value="'+(c.valor_consumido_inicial||'')+'"/></div>'    +'<div class="fg"><label>Data de corte</label><input id="nc-corte" type="date" value="'+(c.data_corte||'')+'"/><div style="font-size:10px;color:#888">A partir dela, soma automático o faturamento do Financeiro.</div></div>'    +'</div>'    +'<h4 style="font-size:12px;font-weight:600;margin:.75rem 0 .25rem;color:#555">Aditivos</h4>'    +'<div id="nc-aditivos-lista"></div>'    +'<button class="btn btn-sm" onclick="adicionarAditivoNovo()">+ Adicionar aditivo</button>'    +'<h4 style="font-size:12px;font-weight:600;margin:.75rem 0 .25rem;color:#555">Adiantamento do cliente</h4>'    +'<div class="g2">'    +'<div class="fg"><label>Valor total adiantado (R$)</label><input id="nc-adv" type="number" value="'+(c.adiantamento_valor||'')+'"/></div>'    +'<div class="fg"><label>Nº de parcelas</label><input id="nc-adparc" type="number" value="'+(c.adiantamento_parcelas||'')+'"/></div>'    +'<div class="fg"><label>Índice de correção</label><select id="nc-adindice">'+['','IPCA','IGPM','INPC'].map(function(i){return '<option value="'+i+'"'+((c.adiantamento_indice||'')=== i?' selected':'')+'>'+( i||'Nenhum')+'</option>';}).join('')+'</select></div>'    +'<div class="fg"><label>% correção anual</label><input id="nc-adperc" type="number" step="0.01" value="'+(c.adiantamento_perc||'')+'"/></div>'    +'</div>'    +'<div class="fg"><label>Observações</label><textarea id="nc-obs">'+(c.observacoes||'')+'</textarea></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-edit-cont">Salvar</button></div></div></div>');
   renderAditivosTemp();
   document.getElementById('btn-salvar-edit-cont').onclick = function(){ salvarEditarContrato(cid); };
   // Setar selects após render (evita bug do 'selected' em string HTML)
@@ -7932,6 +8018,8 @@ async function salvarEditarContrato(cid){
   c.adiantamento_perc=parseFloat((document.getElementById('nc-adperc')||{}).value)||0;
   c.retencao_percentual=parseFloat((document.getElementById('nc-retencao')||{}).value);
   if(isNaN(c.retencao_percentual)) c.retencao_percentual=null;
+  c.valor_consumido_inicial=parseFloat((document.getElementById('nc-consumido')||{}).value)||0;
+  c.data_corte=(document.getElementById('nc-corte')||{}).value||null;
   c.observacoes=(document.getElementById('nc-obs')||{}).value||'';
   if(!DEMO){
     var ok=await sbUpdate('contratos',_contratoPayloadSupabase(c),'id=eq.'+cid);
@@ -12632,14 +12720,15 @@ var _usuariosCarregadosDB = false;
 // Perfis base do sistema (hardcoded — NÃO remover, usados em CSS e JS)
 var PERFIS_BASE = {
   admin:          {label:'Administrador',   cor:'danger', nivel:10},
-  gestor:         {label:'Gestor',          cor:'warn',   nivel:8},
+  gestor:         {label:'Gerente de Contratos', cor:'warn', nivel:8},
   gerente_frotas: {label:'Gerente de Frotas', cor:'warn', nivel:8},
   coordenador:    {label:'Coordenador',     cor:'info',   nivel:7},
-  supervisor:     {label:'Supervisor',      cor:'info',   nivel:6},
+  supervisor:     {label:'Supervisor Operacional', cor:'info', nivel:6},
   supervisor_frotas:{label:'Supervisor de Frotas', cor:'info', nivel:6},
   administrativo: {label:'Administrativo', cor:'ok',     nivel:5},
+  almoxarife:     {label:'Almoxarife',      cor:'teal',   nivel:5},
   encarregado:    {label:'Encarregado',     cor:'teal',   nivel:4},
-  equipe:         {label:'Eletricista TMA', cor:'ok',     nivel:2},
+  equipe:         {label:'Operacional',     cor:'ok',     nivel:2},
 };
 
 var perfis_extra = []; // perfis adicionais cadastrados pelo usuário [{codigo, label, cor, nivel, obs}]
@@ -12653,15 +12742,25 @@ function _recalcPerfisLabel(){
 }
 _recalcPerfisLabel();
 
-/** Módulos bloqueados para perfis de Frotas (showMain + CSS). */
+/** Módulos bloqueados / allowlist por perfil especializado. */
 var PERFIS_FROTAS_BLOQ = {
   gerente_frotas: ['movimentacao','almoxarifado','viabilidade','obras','sesmt','plr'],
   supervisor_frotas: ['movimentacao','almoxarifado','viabilidade','obras','sesmt','plr','cadastros']
+};
+/** Perfis com allowlist (só estes módulos). */
+var PERFIS_MODULO_ALLOW = {
+  almoxarife: ['almoxarifado','operacional'] // operacional = Requisição de Materiais
 };
 function perfilFrotasModuloBloqueado(main){
   if(!usuarioLogado||!main) return false;
   var bloq=PERFIS_FROTAS_BLOQ[usuarioLogado.perfil];
   return !!(bloq && bloq.indexOf(main)>=0);
+}
+function perfilModuloBloqueado(main){
+  if(!usuarioLogado||!main) return false;
+  var allow=PERFIS_MODULO_ALLOW[usuarioLogado.perfil];
+  if(allow) return allow.indexOf(main)<0;
+  return perfilFrotasModuloBloqueado(main);
 }
 
 function _todosPerfis(){
@@ -12683,6 +12782,10 @@ function _renderSubNav(main, subAtivo){
   // Portaria: só mostrar item portaria no subnav
   if(usuarioLogado && usuarioLogado.perfil==='portaria' && main==='frotas'){
     grupos = [{label:'Portaria', items:[{id:'frotas-portaria', label:'🏠 Portaria', icon:'🏠'}]}];
+  }
+  // Almoxarife: em Operacional, só Requisição de Materiais
+  if(usuarioLogado && usuarioLogado.perfil==='almoxarife' && main==='operacional'){
+    grupos = [{label:'Materiais', items:[{id:'obras-requisicao', label:'📥 Requisição de Materiais', icon:'📥'}]}];
   }
   if(!Array.isArray(grupos) || !grupos.length){ bar.innerHTML=''; bar.style.display='none'; return; }
 
@@ -13238,7 +13341,7 @@ function renderConteudoCadastro(id){
       +'<select class="inp" id="perm-fil-perfil" style="width:150px;font-size:12px" onchange="permRenderTabela()">'
       +'<option value="">Todos os perfis</option>'
       +'<option>admin</option><option>gestor</option><option>gerente_frotas</option><option>coordenador</option>'
-      +'<option>supervisor</option><option>supervisor_frotas</option><option>administrativo</option><option>encarregado</option><option>equipe</option>'
+      +'<option>supervisor</option><option>supervisor_frotas</option><option>administrativo</option><option>almoxarife</option><option>encarregado</option><option>equipe</option>'
       +'</select>'
       +'<button class="btn btn-pri" onclick="permSalvarTodas()" style="white-space:nowrap">💾 Salvar alterações</button>'
       +'</div></div>'
@@ -13260,14 +13363,15 @@ function renderConteudoCadastro(id){
       +'<select id="usr-fil-perfil" style="border:.5px solid #e0dfd8;border-radius:8px;padding:7px 10px;font-size:12px" onchange="renderUsuariosVis()">'
       +'<option value="">Todos os perfis</option>'
       +'<option value="admin">Administrador</option>'
-      +'<option value="gestor">Gestor</option>'
+      +'<option value="gestor">Gerente de Contratos</option>'
       +'<option value="gerente_frotas">Gerente de Frotas</option>'
       +'<option value="coordenador">Coordenador</option>'
-      +'<option value="supervisor">Supervisor</option>'
+      +'<option value="supervisor">Supervisor Operacional</option>'
       +'<option value="supervisor_frotas">Supervisor de Frotas</option>'
       +'<option value="administrativo">Administrativo</option>'
+      +'<option value="almoxarife">Almoxarife</option>'
       +'<option value="encarregado">Encarregado</option>'
-      +'<option value="equipe">Equipe</option>'
+      +'<option value="equipe">Operacional</option>'
       +'</select>'
       +'<select id="usr-fil-status" style="border:.5px solid #e0dfd8;border-radius:8px;padding:7px 10px;font-size:12px" onchange="renderUsuariosVis()">'
       +'<option value="">Todos</option>'
@@ -13320,7 +13424,7 @@ function renderConteudoCadastro(id){
       +'<select class="inp" id="perm-fil-perfil" style="width:150px;font-size:12px" onchange="permRenderTabela()">'
       +'<option value="">Todos os perfis</option>'
       +'<option>admin</option><option>gestor</option><option>gerente_frotas</option><option>coordenador</option>'
-      +'<option>supervisor</option><option>supervisor_frotas</option><option>administrativo</option><option>encarregado</option><option>equipe</option>'
+      +'<option>supervisor</option><option>supervisor_frotas</option><option>administrativo</option><option>almoxarife</option><option>encarregado</option><option>equipe</option>'
       +'</select>'
       +'<button class="btn btn-pri" onclick="permSalvarTodas()" style="white-space:nowrap">💾 Salvar alterações</button>'
       +'</div></div>'
@@ -13411,6 +13515,10 @@ function renderPerfisUsuario(){
         :k==='encarregado'?'Operacional'
         :k==='gerente_frotas'?'Frotas (sem Fin/Almox/Viab/Obras/SESMT/PLR)'
         :k==='supervisor_frotas'?'Frotas (sem Fin/Almox/Viab/Obras/SESMT/PLR/Cadastros)'
+        :k==='almoxarife'?'Almoxarifado + Requisições'
+        :k==='gestor'?'Gerente de Contratos'
+        :k==='supervisor'?'Supervisor Operacional'
+        :k==='equipe'?'Operacional (Diário)'
         :'Geral';
       return '<tr><td style="font-family:monospace;font-weight:600">'+k+'</td><td style="font-weight:500">'+p.label+'</td>'
         +'<td style="text-align:center">'+p.nivel+'</td><td><span class="bdg '+p.cor+'">'+p.cor+'</span></td>'
@@ -16074,6 +16182,8 @@ salvarContrato = function(){
     status:(document.getElementById('nc-status')||{}).value||'Ativo',
     filial_id:(document.getElementById('nc-filial')||{}).value||null,
     retencao_percentual:isNaN(rp)?null:rp,
+    valor_consumido_inicial:parseFloat((document.getElementById('nc-consumido')||{}).value)||0,
+    data_corte:(document.getElementById('nc-corte')||{}).value||null,
     observacoes:(document.getElementById('nc-obs')||{}).value||''};
   contratos.push(novo);
   if(!DEMO)sbInsert('contratos',_contratoPayloadSupabase(_semId(novo)));
@@ -38087,10 +38197,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.794',
-  data:   '14/08/2026',
-  build:  '20260814-1140',
+  numero: '7.9.796',
+  data:   '15/08/2026',
+  build:  '20260815-1115',
   log: [
+    {v:'7.9.796', d:'15/08/2026', itens:[
+      'Segurança Fase 1: remove Bearer erp.cenabr.app do frontend; sync de fornecedores ERP desativado temporariamente (reativação via backend seguro); credenciais locais removidas do workspace.',
+    ]},
+    {v:'7.9.795', d:'14/08/2026', itens:[
+      'Perfis: Almoxarife (só Almoxarifado + Requisições); Gestor→Gerente de Contratos; Supervisor→Supervisor Operacional; Eletricista TMA→Operacional.',
+    ]},
     {v:'7.9.794', d:'14/08/2026', itens:[
       'Frotas → Documentos: corrige erro ao salvar (PGRST204 data_emissao) — payload usa colunas reais numero/emissao/validade; aliases da UI normalizados na leitura.',
     ]},
@@ -52938,7 +53054,7 @@ function _contratoPayloadSupabase(c){
   var allowed=['codigo','nome','cliente','responsavel','valor_total','valor_negociado','centro_resultado',
     'data_inicio','data_termino','data_reajuste','status','filial_id',
     'adiantamento_valor','adiantamento_parcelas','modalidade_trabalho','adiantamento_indice','adiantamento_perc',
-    'retencao_percentual','observacoes',
+    'retencao_percentual','observacoes','valor_consumido_inicial','data_corte',
     'historico_reajuste','ultimo_reajuste_data','ultimo_reajuste_indice','ultimo_reajuste_pct'];
   var out={};
   allowed.forEach(function(k){
@@ -52946,6 +53062,7 @@ function _contratoPayloadSupabase(c){
     var v=c[k];
     if(k==='historico_reajuste'&&v!=null&&typeof v!=='string') v=JSON.stringify(v);
     if(k==='filial_id'&&v==='') v=null;
+    if(k==='data_corte'&&v==='') v=null;
     if(k==='data_inicio'||k==='data_termino'||k==='data_reajuste'||k==='ultimo_reajuste_data'){ if(v==='') v=null; }
     out[k]=v;
   });
@@ -56917,7 +57034,7 @@ function vbeCompetenciaAtual(){
 
 function vbeModuloPermitido(){
   if(!usuarioLogado) return false;
-  if(['equipe','encarregado','portaria','gerente_frotas','supervisor_frotas'].indexOf(usuarioLogado.perfil)>=0) return false;
+  if(['equipe','encarregado','portaria','gerente_frotas','supervisor_frotas','almoxarife'].indexOf(usuarioLogado.perfil)>=0) return false;
   if(usuarioLogado.perfil==='admin') return true;
   if(typeof permTemAcesso==='function'&&permTemAcesso('viabilidade-economica')===false) return false;
   return true;
@@ -65680,6 +65797,10 @@ function sidebarMostrarItens(main, subAtivo){
   if(usuarioLogado && usuarioLogado.perfil==='portaria' && main==='frotas'){
     grupos = [{label:'Portaria', items:[{id:'frotas-portaria', label:'🏠 Portaria', icon:'🏠'}]}];
   }
+  // Almoxarife: em Operacional, só Requisição de Materiais
+  if(usuarioLogado && usuarioLogado.perfil==='almoxarife' && main==='operacional'){
+    grupos = [{label:'Materiais', items:[{id:'obras-requisicao', label:'Requisição de Materiais', icon:'📥'}]}];
+  }
   // Segurança: SIDEBAR_GROUPS deve ser array; se for objeto (erro config), usar []
   if(!Array.isArray(grupos)){
     console.error('SIDEBAR_GROUPS['+main+'] deve ser array. Verifique a configuração.', grupos);
@@ -65745,10 +65866,12 @@ function showMain(main){
       showPage('frotas-portaria'); return;
     }
   }
-  // Perfis de Frotas: bloquear módulos restritos
-  if(usuarioLogado && typeof perfilFrotasModuloBloqueado==='function' && perfilFrotasModuloBloqueado(main)){
+  // Perfis de Frotas / Almoxarife: bloquear módulos restritos
+  if(usuarioLogado && typeof perfilModuloBloqueado==='function' && perfilModuloBloqueado(main)){
     if(typeof progShowToast==='function') progShowToast('⚠ Seu perfil não tem acesso a este módulo.','erro');
-    showMain('frotas');
+    var dest = (usuarioLogado.perfil==='almoxarife') ? 'almoxarifado'
+      : (PERFIS_FROTAS_BLOQ[usuarioLogado.perfil] ? 'frotas' : 'dashboard');
+    showMain(dest);
     return;
   }
   _mainAtual = main;
@@ -65771,6 +65894,11 @@ function showMain(main){
   var CAMPO_SUBS = ['campo-diario','campo-checklist','campo-apr','campo-execucao-field'];
   if(_subAtual[main] && CAMPO_SUBS.indexOf(_subAtual[main]) >= 0){
     delete _subAtual[main];
+  }
+
+  // Almoxarife em Operacional: forçar Requisição de Materiais
+  if(usuarioLogado && usuarioLogado.perfil==='almoxarife' && main==='operacional'){
+    _subAtual[main]='obras-requisicao';
   }
 
   // Descobrir primeiro sub: MAIN_CONFIG.subs → fallback SIDEBAR_GROUPS
@@ -66023,7 +66151,7 @@ function showPage(pageId){
 
   if(pageId==='dashboard')renderDashboard();
   else if(pageId==='show-room-cena'){ if(typeof showRoomInit==='function') showRoomInit(); }
-  else if(pageId==='contratos-lista')renderContratos();
+  else if(pageId==='contratos-lista')_precisaModulo('financeiro',function(){renderContratos();});
   else if(pageId==='adiantamentos'){_precisaModulo('financeiro',function(){renderAdiantamentos();});}
   else if(pageId==='operacional-prod'){
     _precisaModulo('financeiro',function(){
@@ -67264,7 +67392,7 @@ async function fazerLogin(){
     document.body.classList.remove('perfil-equipe','perfil-encarregado','perfil-supervisor',
       'perfil-administrativo','perfil-gestor','perfil-coordenador',
       'perfil-gerente_frotas','perfil-supervisor_frotas','perfil-portaria',
-      'perfil-supervisor_tma','perfil-coordenador_tma');
+      'perfil-supervisor_tma','perfil-coordenador_tma','perfil-almoxarife');
     document.body.classList.add('perfil-'+user.perfil);
 
     // ── Configurar filtro de contratos por perfil ──────────
@@ -67293,6 +67421,8 @@ async function fazerLogin(){
       showMain('campo');
     } else if(user.perfil==='gerente_frotas'||user.perfil==='supervisor_frotas'){
       showMain('frotas');
+    } else if(user.perfil==='almoxarife'){
+      showMain('almoxarifado');
     } else if(user.perfil==='gestor'||user.perfil==='coordenador'){
       showMain('dashboard');
     } else {
@@ -80124,6 +80254,9 @@ window.addEventListener('load',async function(){
       if(usuarioLogado.perfil==='gerente_frotas'||usuarioLogado.perfil==='supervisor_frotas'){
         document.body.classList.add('perfil-'+usuarioLogado.perfil);
       }
+      if(usuarioLogado.perfil==='almoxarife'){
+        document.body.classList.add('perfil-almoxarife');
+      }
 
       document.getElementById('pg-login').classList.add('hidden');
       document.getElementById('pg-app').classList.remove('hidden');
@@ -80237,6 +80370,10 @@ window.addEventListener('load',async function(){
         console.log('[INIT] perfil frotas → showMain frotas');
         document.body.classList.add('perfil-'+usuarioLogado.perfil);
         showMain('frotas');
+      }else if(usuarioLogado.perfil==='almoxarife'){
+        console.log('[INIT] almoxarife → showMain almoxarifado');
+        document.body.classList.add('perfil-almoxarife');
+        showMain('almoxarifado');
       }else if(usuarioLogado.perfil==='portaria'){
         console.log('[INIT] portaria → frotas-portaria');
         document.body.classList.add('perfil-portaria');
