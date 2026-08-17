@@ -38537,10 +38537,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.804',
+  numero: '7.9.805',
   data:   '17/08/2026',
-  build:  '20260817-1005',
+  build:  '20260817-1015',
   log: [
+    {v:'7.9.805', d:'17/08/2026', itens:[
+      'Controle de Manutenção: seção Laudo/Documento/Garantia (múltiplos + excluir) abaixo da Validade; aba Documentos passa a listar esses anexos; Anexo OC/RC migrado e removido do formulário (SQL sql_frotas_manut_documentos_anexos.sql).',
+    ]},
     {v:'7.9.804', d:'17/08/2026', itens:[
       'Programação TMA: lista de veículos ganha colunas Defeito real identificado e Status (do Controle de Manutenção); situação operacional permanece em coluna própria.',
     ]},
@@ -77134,21 +77137,135 @@ function fdocRenderDashVeiculos(hoje, em30){
   wrap.innerHTML=html+'</tbody></table>';
 }
 
-// ── Aba Documentos (consulta manutenções + anexos) ─────────
+// ── Aba Documentos (consulta manutenções + anexos Laudo/Documento/Garantia) ─
+function frtManutParseDocs(m){
+  if(!m) return [];
+  var d=m.documentos_anexos;
+  if(typeof d==='string'){
+    try{ d=JSON.parse(d); }catch(e){ d=[]; }
+  }
+  if(!Array.isArray(d)) d=[];
+  return d.filter(function(x){ return x && x.url; }).map(function(x,i){
+    return {
+      id: x.id || ('doc_'+i+'_'+String(x.url).slice(-8)),
+      nome: x.nome || x.name || 'Documento',
+      url: x.url,
+      tipo: x.tipo || 'Documento',
+      criado_em: x.criado_em || x.created_at || ''
+    };
+  });
+}
+/** Migra anexo_compra_url legado para documentos_anexos (em memória). */
+function frtManutEnsureDocsMigrated(m){
+  if(!m) return [];
+  var docs=frtManutParseDocs(m);
+  var urlLegado=(m.anexo_compra_url||'').trim();
+  if(urlLegado){
+    var ja=docs.some(function(d){ return String(d.url)===urlLegado; });
+    if(!ja){
+      docs.push({
+        id:'migrado_'+Date.now(),
+        nome:'Anexo OC/RC (migrado)',
+        url:urlLegado,
+        tipo:'Documento',
+        criado_em:new Date().toISOString()
+      });
+    }
+    m.anexo_compra_url=null;
+    m._docsDirty=true;
+  }
+  m.documentos_anexos=docs;
+  return docs;
+}
 function fdocManutTemAnexo(m){
   if(!m) return false;
-  return !!(m.anexo_compra_url || m.link_requisicao_compra);
+  if(frtManutParseDocs(m).length>0) return true;
+  // Legado até rodar SQL / abrir Controle (migra anexo_compra_url)
+  return !!(m.anexo_compra_url&&String(m.anexo_compra_url).trim());
 }
 function fdocManutAnexosHtml(m){
-  var parts=[];
-  if(m.anexo_compra_url){
-    parts.push('<a href="'+escHtml(m.anexo_compra_url)+'" target="_blank" rel="noopener" style="font-size:11px;color:#185FA5;margin-right:6px" onclick="event.stopPropagation()">📎 Anexo OC/RC</a>');
+  var docs=frtManutParseDocs(m);
+  if(!docs.length && m.anexo_compra_url){
+    docs=[{nome:'Anexo OC/RC (pendente migração)',url:m.anexo_compra_url,tipo:'Documento'}];
   }
-  if(m.link_requisicao_compra){
-    parts.push('<a href="'+escHtml(m.link_requisicao_compra)+'" target="_blank" rel="noopener" style="font-size:11px;color:#3B6D11" onclick="event.stopPropagation()">🔗 Link RC</a>');
+  if(!docs.length) return '<span style="color:#ccc;font-size:11px">—</span>';
+  return docs.map(function(d){
+    var rot=escHtml((d.tipo?d.tipo+': ':'')+(d.nome||'Documento'));
+    return '<a href="'+escHtml(d.url)+'" target="_blank" rel="noopener" style="font-size:11px;color:#185FA5;margin-right:6px;display:inline-block" onclick="event.stopPropagation()" title="'+rot+'">📎 '+rot+'</a>';
+  }).join(' ');
+}
+function frtManutDocsListaHtml(docs){
+  docs=docs||[];
+  if(!docs.length){
+    return '<div style="font-size:11px;color:#888;padding:4px 0">Nenhum documento anexado.</div>';
   }
-  if(!parts.length) return '<span style="color:#ccc;font-size:11px">—</span>';
-  return parts.join(' ');
+  return '<div style="display:flex;flex-direction:column;gap:6px">'+docs.map(function(d){
+    var id=escHtml(String(d.id||''));
+    return '<div style="display:flex;align-items:center;gap:8px;background:#fff;border:.5px solid #e0dfd8;border-radius:6px;padding:6px 8px">'
+      +'<span style="font-size:10px;font-weight:700;color:#534AB7;background:#EEEDFE;border-radius:4px;padding:1px 6px;white-space:nowrap">'+escHtml(d.tipo||'Documento')+'</span>'
+      +'<a href="'+escHtml(d.url)+'" target="_blank" rel="noopener" style="flex:1;font-size:12px;color:#185FA5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(d.nome||'')+'">'+escHtml(d.nome||'Documento')+'</a>'
+      +'<button type="button" class="btn btn-sm" data-fc-doc-del="'+id+'" style="font-size:10px;color:#A32D2D;border-color:#E1A9A9;padding:1px 7px" title="Excluir documento">✕</button>'
+      +'</div>';
+  }).join('')+'</div>';
+}
+function frtManutBindDocsUI(m){
+  var list=document.getElementById('fc-docs-lista');
+  var fileInp=document.getElementById('fc-docs-file');
+  var tipoSel=document.getElementById('fc-docs-tipo');
+  if(!list||!m) return;
+  function refresh(){
+    var docs=frtManutParseDocs(m);
+    list.innerHTML=frtManutDocsListaHtml(docs);
+    list.querySelectorAll('[data-fc-doc-del]').forEach(function(btn){
+      btn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        var id=this.getAttribute('data-fc-doc-del');
+        if(!confirm('Excluir este documento da manutenção?')) return;
+        m.documentos_anexos=frtManutParseDocs(m).filter(function(d){ return String(d.id)!==String(id); });
+        m._docsDirty=true;
+        refresh();
+      };
+    });
+  }
+  refresh();
+  if(fileInp){
+    fileInp.onchange=async function(){
+      var files=Array.prototype.slice.call(fileInp.files||[]);
+      if(!files.length) return;
+      var tipo=(tipoSel&&tipoSel.value)||'Documento';
+      var statusEl=document.getElementById('fc-docs-status');
+      for(var i=0;i<files.length;i++){
+        var file=files[i];
+        if(statusEl) statusEl.textContent='Enviando '+(i+1)+'/'+files.length+': '+file.name+'…';
+        var url='';
+        if(typeof sbUpload==='function'&&!DEMO){
+          try{
+            url=await sbUpload(file,'frotas/manutencao/docs/'+Date.now()+'_'+file.name);
+          }catch(err){ console.warn('fc docs upload',err); }
+        } else {
+          // DEMO: object URL local
+          try{ url=URL.createObjectURL(file); }catch(e2){ url='#'; }
+        }
+        if(!url){
+          if(statusEl) statusEl.textContent='Falha ao enviar '+file.name;
+          continue;
+        }
+        var docs=frtManutParseDocs(m);
+        docs.push({
+          id:'doc_'+Date.now()+'_'+i,
+          nome:file.name,
+          url:url,
+          tipo:tipo,
+          criado_em:new Date().toISOString()
+        });
+        m.documentos_anexos=docs;
+        m._docsDirty=true;
+      }
+      fileInp.value='';
+      if(statusEl) statusEl.textContent=files.length?('✅ '+files.length+' arquivo(s) adicionado(s). Salve o controle para gravar.'):'';
+      refresh();
+    };
+  }
 }
 function fdocRenderDocs(opts){
   opts=opts||{};
@@ -79685,7 +79802,7 @@ function frtManutSyncFromForm(m){
       m.link_requisicao_compra=link||null;
     }
     if(document.getElementById('fc-obs-compra')) m.obs_compra=g('fc-obs-compra').trim()||null;
-    if(document.getElementById('fc-anexo-url')) m.anexo_compra_url=g('fc-anexo-url')||m.anexo_compra_url||null;
+    // anexo OC/RC legado removido; docs via documentos_anexos
     if(document.getElementById('fc-valor')) m.valor=parseFloat(g('fc-valor'))||m.valor||0;
     if(document.getElementById('fc-defeito')) m.defeito_real=g('fc-defeito')||m.defeito_real;
   }
@@ -79716,7 +79833,12 @@ function frtManutAbrirEmail(id){
   if(!email){ progShowToast('⚠ Informe o e-mail do fornecedor.','erro'); return; }
   var assunto='Manutenção frota '+ (m.placa||'') +(m.ordem_compra?' — OC '+m.ordem_compra:'');
   var corpo=frtManutMsgFornecedor(m);
-  if(m.anexo_compra_url) corpo+='\n\nAnexo OC/RC: '+m.anexo_compra_url;
+  var _docsMsg=typeof frtManutParseDocs==='function'?frtManutParseDocs(m):[];
+  if(!_docsMsg.length && m.anexo_compra_url) _docsMsg=[{nome:'Anexo OC/RC',url:m.anexo_compra_url}];
+  if(_docsMsg.length){
+    corpo+='\n\nDocumentos:';
+    _docsMsg.forEach(function(d){ corpo+='\n- '+(d.tipo?d.tipo+': ':'')+(d.nome||'Arquivo')+': '+d.url; });
+  }
   var url='mailto:'+encodeURIComponent(email)
     +'?subject='+encodeURIComponent(assunto)
     +'&body='+encodeURIComponent(corpo);
@@ -79922,7 +80044,14 @@ function frtAbrirFichaManutencao(id){
     +(m.validade?'<div style="grid-column:span 2"><b>Validade'+(m.validade_item?' ('+escHtml(m.validade_item)+')':'')+':</b> '+fmtD(m.validade)
       +(function(){ var vi=frtManutValidadeInfo(m); return vi&&vi.nivel!=='ok'?' <span style="color:'+(vi.nivel==='d20'?'#C97A1F':'#A32D2D')+';font-weight:700">'+escHtml(vi.label)+'</span>':''; })()
       +'</div>':'')
-    +(m.anexo_compra_url?'<div style="grid-column:span 2"><b>Anexo:</b> <a href="'+escHtml(m.anexo_compra_url)+'" target="_blank" rel="noopener">Ver arquivo ↗</a></div>':'')
+    +(function(){
+      var docs=typeof frtManutParseDocs==='function'?frtManutParseDocs(m):[];
+      if(!docs.length && m.anexo_compra_url) docs=[{nome:'Anexo OC/RC',url:m.anexo_compra_url,tipo:'Documento'}];
+      if(!docs.length) return '';
+      return '<div style="grid-column:span 2"><b>Documentos:</b> '+docs.map(function(d){
+        return '<a href="'+escHtml(d.url)+'" target="_blank" rel="noopener" style="margin-right:8px">'+(escHtml((d.tipo?d.tipo+': ':'')+(d.nome||'Arquivo')))+' ↗</a>';
+      }).join(' ')+'</div>';
+    })()
     +(m.obs_compra?'<div style="grid-column:span 2"><b>Obs. compra:</b> '+escHtml(m.obs_compra)+'</div>':'')
     +(m.justificativa_negativa?'<div style="grid-column:span 2;color:#A32D2D"><b>Negativa:</b> '+escHtml(m.justificativa_negativa)+'</div>':'')
     +'</div></div>'
@@ -79981,6 +80110,8 @@ function frtAbrirControleManutencao(id){
   var m=frt_manutencoes.find(function(x){return x.id===id;}); if(!m)return;
   // Aprovar automaticamente ao abrir controle
   if(m.status==='Solicitada'||m.status==='Em Análise'){m.status='Aprovada';}
+  // Transfere Anexo OC/RC legado para Laudo/Documento/Garantia e remove o campo antigo
+  if(typeof frtManutEnsureDocsMigrated==='function') frtManutEnsureDocsMigrated(m);
   var dias=0;
   if(m.data_inicio_reparo){
     dias=Math.floor((Date.now()-new Date(m.data_inicio_reparo).getTime())/(1000*60*60*24));
@@ -80030,8 +80161,25 @@ function frtAbrirControleManutencao(id){
       return '<div style="margin-top:.5rem;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;background:'+bg+';color:'+cor+'">'+escHtml(vi.label)+'</div>';
     })()
     +'</div>'
+    // ── Laudo / Documento / Garantia (aparece na aba Documentos) ──
+    +'<div style="grid-column:span 2;margin-top:.15rem;padding:.65rem .75rem;background:#F7F5FC;border-radius:8px;border:.5px solid #D9D4F0">'
+    +'<div style="font-size:12px;font-weight:700;color:#534AB7;margin-bottom:.35rem">📎 Laudo / Documento / Garantia</div>'
+    +'<div style="font-size:10px;color:#666;margin-bottom:.5rem">Estes arquivos aparecem em Frotas → Documentos. É possível anexar vários e excluir individualmente.</div>'
+    +'<div id="fc-docs-lista"></div>'
+    +'<div style="display:grid;grid-template-columns:140px 1fr;gap:8px;margin-top:8px;align-items:end">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Tipo</label>'
+    +'<select class="inp" id="fc-docs-tipo" data-nosort style="width:100%">'
+    +'<option value="Laudo">Laudo</option>'
+    +'<option value="Documento" selected>Documento</option>'
+    +'<option value="Garantia">Garantia</option>'
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Adicionar arquivo(s)</label>'
+    +'<input type="file" id="fc-docs-file" accept="image/*,.pdf,application/pdf" multiple style="width:100%;font-size:11px"/></div>'
+    +'</div>'
+    +'<div id="fc-docs-status" style="font-size:10px;color:#666;margin-top:4px"></div>'
+    +'</div>'
     +(dias>0?'<div style="grid-column:span 2"><div style="border-radius:8px;padding:6px 12px;font-size:12px;font-weight:700;text-align:center;background:'+(dias>=15?'#FCEBEB':dias>=10?'#FEF0E2':'#FEF9EE')+';color:'+(dias>=15?'#A32D2D':dias>=10?'#C97A1F':'#854F0B')+'">⏱ '+dias+' dias em reparo'+(dias>=15?' — CRÍTICO':dias>=10?' — ALERTA':' — ATENÇÃO')+'</div></div>':'')
-    // ── Processo de compra (Fase 4) ──
+    // ── Processo de compra (Fase 4) — Anexo OC/RC removido (migrado para documentos acima) ──
     +'<div style="grid-column:span 2;margin-top:.25rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
     +'<div style="font-size:12px;font-weight:700;color:#185FA5;margin-bottom:.5rem">🛒 Processo de compra</div></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Nº Requisição (RC)</label>'
@@ -80044,12 +80192,8 @@ function frtAbrirControleManutencao(id){
     +'<input class="inp" id="fc-forn-email" type="email" style="width:100%" value="'+escHtml(m.fornecedor_email||'')+'"/></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Telefone / WhatsApp</label>'
     +'<input class="inp" id="fc-forn-tel" style="width:100%" value="'+escHtml(m.fornecedor_telefone||'')+'" placeholder="11999999999"/></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Status da compra</label>'
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Status da compra</label>'
     +'<select class="inp" id="fc-st-compra" data-nosort style="width:100%">'+optsStCompra+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Anexo OC/RC</label>'
-    +'<input type="file" id="fc-anexo-file" accept="image/*,.pdf,application/pdf" style="width:100%;font-size:11px"/>'
-    +'<input type="hidden" id="fc-anexo-url" value="'+escHtml(m.anexo_compra_url||'')+'"/>'
-    +'<div style="font-size:10px;color:#666;margin-top:2px">'+(m.anexo_compra_url?'📎 <a href="'+escHtml(m.anexo_compra_url)+'" target="_blank" rel="noopener">Ver anexo</a>':'Sem anexo')+'</div></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Observação de compra</label>'
     +'<textarea class="inp" id="fc-obs-compra" style="width:100%;height:48px">'+escHtml(m.obs_compra||'')+'</textarea></div>'
     +'</div>'
@@ -80065,6 +80209,7 @@ function frtAbrirControleManutencao(id){
     +'</div></div></div>';
   setModal(html);
   setTimeout(function(){
+    if(typeof frtManutBindDocsUI==='function') frtManutBindDocsUI(m);
     var btn=document.getElementById('fc-salvar');if(!btn)return;
     btn.onclick=async function(){
       var g=function(id){return (document.getElementById(id)||{}).value||'';};
@@ -80090,19 +80235,9 @@ function frtAbrirControleManutencao(id){
       m.obs_compra=g('fc-obs-compra').trim()||null;
       var fornSel=g('fc-forn-id');
 
-      // Upload anexo se houver
-      var fileInp=document.getElementById('fc-anexo-file');
-      var file=fileInp&&fileInp.files&&fileInp.files[0]?fileInp.files[0]:null;
-      var anexoUrl=g('fc-anexo-url')||m.anexo_compra_url||'';
-      if(file&&typeof sbUpload==='function'&&!DEMO){
-        btn.disabled=true; btn.textContent='Enviando anexo...';
-        try{
-          var up=await sbUpload(file,'frotas/manutencao/'+Date.now()+'_'+file.name);
-          if(up) anexoUrl=up;
-        }catch(e){ console.warn('fc anexo',e); }
-        btn.disabled=false; btn.textContent='💾 Salvar Controle';
-      }
-      m.anexo_compra_url=anexoUrl||null;
+      // Documentos (já enviados na UI); limpa anexo OC/RC legado após migração
+      m.documentos_anexos=frtManutParseDocs(m);
+      m.anexo_compra_url=null;
 
       // Se Disponível: voltar veículo ao status disponível
       if(m.status==='Disponível'){
@@ -80133,7 +80268,8 @@ function frtAbrirControleManutencao(id){
           fornecedor_id:m.fornecedor_id,
           fornecedor_email:m.fornecedor_email,
           fornecedor_telefone:m.fornecedor_telefone,
-          anexo_compra_url:m.anexo_compra_url,
+          anexo_compra_url:null,
+          documentos_anexos:m.documentos_anexos||[],
           obs_compra:m.obs_compra,
           status_compra:m.status_compra
         };
@@ -80144,24 +80280,34 @@ function frtAbrirControleManutencao(id){
           var payload=buildPayload(fornId);
           sbUpdate('frotas_manutencoes',payload,'id=eq.'+_id).then(function(ok){
             if(ok===false){
-              // Retry sem colunas novas se SQL não aplicado
-              var p2={
-                fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
-                km:m.km,garantia:m.garantia,status:m.status,
-                data_inicio_reparo:m.data_inicio_reparo||null,
-                previsao_retorno:m.previsao_retorno||null,
-                justificativa_negativa:m.justificativa_negativa||null,
-                link_requisicao_compra:m.link_requisicao_compra
-              };
-              return sbUpdate('frotas_manutencoes',p2,'id=eq.'+_id).then(function(ok2){
-                if(ok2===false){
-                  if(fcErrEl){fcErrEl.textContent='⚠ Erro ao salvar. Rode sql_frotas_manut_fase4_compras.sql / sql_frotas_manut_validade.sql no Supabase.';fcErrEl.style.display='block';}
-                  if(btnSav){btnSav.textContent='💾 Salvar Controle';btnSav.disabled=false;}
-                  progShowToast('❌ Erro ao salvar manutenção.','erro');
+              // Retry sem documentos_anexos (coluna ainda não criada)
+              var pMid=Object.assign({},payload);
+              delete pMid.documentos_anexos;
+              return sbUpdate('frotas_manutencoes',pMid,'id=eq.'+_id).then(function(okMid){
+                if(okMid!==false){
+                  closeModal();frtManutRender();
+                  progShowToast('✅ Controle salvo. Rode sql_frotas_manut_documentos_anexos.sql para gravar os anexos Laudo/Documento/Garantia.');
                   return;
                 }
-                closeModal();frtManutRender();
-                progShowToast('✅ Controle salvo (validade pendente: rode sql_frotas_manut_validade.sql).');
+                // Retry mínimo
+                var p2={
+                  fornecedor:m.fornecedor,defeito_real:m.defeito_real,valor:m.valor,
+                  km:m.km,garantia:m.garantia,status:m.status,
+                  data_inicio_reparo:m.data_inicio_reparo||null,
+                  previsao_retorno:m.previsao_retorno||null,
+                  justificativa_negativa:m.justificativa_negativa||null,
+                  link_requisicao_compra:m.link_requisicao_compra
+                };
+                return sbUpdate('frotas_manutencoes',p2,'id=eq.'+_id).then(function(ok2){
+                  if(ok2===false){
+                    if(fcErrEl){fcErrEl.textContent='⚠ Erro ao salvar. Rode sql_frotas_manut_documentos_anexos.sql (e fase4/validade se ainda faltarem) no Supabase.';fcErrEl.style.display='block';}
+                    if(btnSav){btnSav.textContent='💾 Salvar Controle';btnSav.disabled=false;}
+                    progShowToast('❌ Erro ao salvar manutenção.','erro');
+                    return;
+                  }
+                  closeModal();frtManutRender();
+                  progShowToast('✅ Controle salvo (campos extras pendentes: rode SQLs de manutenção).');
+                });
               });
             }
             closeModal();frtManutRender();
@@ -81546,7 +81692,7 @@ window.addEventListener('load',async function(){
     <div style="overflow-x:auto"><table class="tbl">
       <thead><tr>
         <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Data</th>
-        <th>Descrição</th><th>Validade</th><th>Status</th><th>Anexos</th><th></th>
+        <th>Descrição</th><th>Validade</th><th>Status</th><th>Laudo / Doc / Garantia</th><th></th>
       </tr></thead>
       <tbody id="frt-doc-tbody"></tbody>
     </table></div>
@@ -107090,7 +107236,7 @@ function comgasRemoverFoto(ncId, idx) {
     <div style="overflow-x:auto"><table class="tbl">
       <thead><tr>
         <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Data</th>
-        <th>Descrição</th><th>Validade</th><th>Status</th><th>Anexos</th><th></th>
+        <th>Descrição</th><th>Validade</th><th>Status</th><th>Laudo / Doc / Garantia</th><th></th>
       </tr></thead>
       <tbody id="frt-doc-tbody"></tbody>
     </table></div>
