@@ -38537,10 +38537,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.803',
+  numero: '7.9.804',
   data:   '17/08/2026',
-  build:  '20260817-0905',
+  build:  '20260817-1005',
   log: [
+    {v:'7.9.804', d:'17/08/2026', itens:[
+      'Programação TMA: lista de veículos ganha colunas Defeito real identificado e Status (do Controle de Manutenção); situação operacional permanece em coluna própria.',
+    ]},
     {v:'7.9.803', d:'17/08/2026', itens:[
       'Frotas → Documentos: aba passa a consultar manutenções (atuais/anteriores) com filtros placa/tipo/status/anexo/contrato; visualiza anexo OC/RC e link RC; remove botão + Documento (só consulta).',
     ]},
@@ -42160,6 +42163,15 @@ function progVeicConflitos(data){
 
 function progVeicPainel(cid, data){
   if(!cid) return '';
+  // Garante manutenções para colunas Defeito/Status (carga lazy se vazia)
+  if(!DEMO && !(frt_manutencoes&&frt_manutencoes.length) && typeof frtFetchManutencoesCompleto==='function' && !window._progVeicManutLoading){
+    window._progVeicManutLoading=true;
+    frtFetchManutencoesCompleto().then(function(r){
+      if(r&&r.length) frt_manutencoes=r;
+      window._progVeicManutLoading=false;
+      try{ progVeicPainelRefresh(cid, data); }catch(e){}
+    }).catch(function(){ window._progVeicManutLoading=false; });
+  }
   var _veicAnchor = '<div id="prog-sec-veic"></div>';
   // Usar mesma lógica de matching do PLPT: id exato OU vazio OU match por código/nome
   var contRef = contratos.find(function(x){return x.id===cid;});
@@ -42225,14 +42237,34 @@ function progVeicPainel(cid, data){
 
   // ── Helpers de manutenção ──────────────────────────────────
   var hoje0=new Date();hoje0.setHours(0,0,0,0);
-  // Pre-build mapa de manutenções ativas (O(1) lookup)
-  var _manutPorPlaca={}, _manutPorVeicId={};
+  var _ATIVOS_MANUT=['Solicitada','Em Análise','Aprovada','Requisição','Aguardando Peça','Em Execução'];
+  // Pre-build mapa: prioriza manutenção ativa; senão a mais recente da placa
+  var _manutPorPlaca={}, _manutPorVeicId={}, _manutRecentePorPlaca={}, _manutRecentePorVeicId={};
+  function _normPlc(p){ return String(p||'').replace(/[-\s]/g,'').toUpperCase(); }
+  function _manutDataKey(m){ return String(m.data||m.data_solicitacao||m.updated_at||m.created_at||''); }
   (frt_manutencoes||[]).forEach(function(m){
-    if(['Solicitada','Em Análise','Aprovada','Requisição','Aguardando Peça','Em Execução'].indexOf(m.status)<0) return;
-    if(m.placa && !_manutPorPlaca[m.placa]) _manutPorPlaca[m.placa]=m;
-    if(m.veiculo_id && !_manutPorVeicId[m.veiculo_id]) _manutPorVeicId[m.veiculo_id]=m;
+    if(!m) return;
+    var ativo=_ATIVOS_MANUT.indexOf(m.status)>=0;
+    var plc=_normPlc(m.placa);
+    if(ativo){
+      if(plc && !_manutPorPlaca[plc]) _manutPorPlaca[plc]=m;
+      if(m.veiculo_id && !_manutPorVeicId[m.veiculo_id]) _manutPorVeicId[m.veiculo_id]=m;
+    }
+    if(plc){
+      var prev=_manutRecentePorPlaca[plc];
+      if(!prev || _manutDataKey(m)>_manutDataKey(prev)) _manutRecentePorPlaca[plc]=m;
+    }
+    if(m.veiculo_id){
+      var prevV=_manutRecentePorVeicId[m.veiculo_id];
+      if(!prevV || _manutDataKey(m)>_manutDataKey(prevV)) _manutRecentePorVeicId[m.veiculo_id]=m;
+    }
   });
-  function getManutAtiva(veic){ return _manutPorVeicId[veic.id]||_manutPorPlaca[veic.placa]||null; }
+  function getManutAtiva(veic){
+    return _manutPorVeicId[veic.id]||_manutPorPlaca[_normPlc(veic.placa)]||null;
+  }
+  function getManutControle(veic){
+    return getManutAtiva(veic)||_manutRecentePorVeicId[veic.id]||_manutRecentePorPlaca[_normPlc(veic.placa)]||null;
+  }
   function flagReparo(manut){
     if(!manut||!manut.data_inicio_reparo)return '';
     var ini=new Date(manut.data_inicio_reparo);ini.setHours(0,0,0,0);
@@ -42251,12 +42283,25 @@ function progVeicPainel(cid, data){
     if(atr>0)return '<span style="font-size:10px;font-weight:700;color:#A32D2D">'+fmtD(manut.previsao_retorno)+' ⚠+'+atr+'d</span>';
     return '<span style="font-size:10px;color:#3B6D11">'+fmtD(manut.previsao_retorno)+'</span>';
   }
+  function defeitoRealHtml(manut){
+    if(!manut) return '<span style="color:#aaa;font-size:10px">—</span>';
+    var txt=(manut.defeito_real||'').trim();
+    if(!txt) return '<span style="color:#aaa;font-size:10px">—</span>';
+    var short=txt.length>70?txt.slice(0,70)+'…':txt;
+    return '<span style="font-size:11px;color:#333" title="'+escHtml(txt)+'">'+escHtml(short)+'</span>';
+  }
+  function statusManutHtml(manut){
+    if(!manut||!manut.status) return '<span style="color:#aaa;font-size:10px">—</span>';
+    var cor=(typeof FRT_MANUT_COR!=='undefined'&&FRT_MANUT_COR[manut.status])?FRT_MANUT_COR[manut.status]:'#534AB7';
+    return '<span style="background:'+cor+'18;color:'+cor+';border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap">'+escHtml(manut.status)+'</span>';
+  }
 
   var linhas = lista.map(function(v){
     var st=progGetVeicStatusReal(v,data);
     var s=PROG_VEIC_STATUS[st]||{cor:'#555',bg:'#f9f9f7'};
     var conf=conflitos[v.placa];
     var manut=getManutAtiva(v);
+    var manutCtrl=getManutControle(v);
     var brdConflito=conf?';box-shadow:0 0 0 1.5px #A32D2D':'';
     // bg row por alerta de reparo
     var bgRow='';
@@ -42274,17 +42319,16 @@ function progVeicPainel(cid, data){
       +'</td>'
       +'<td style="font-size:11px;padding:5px 8px;color:#888">'+escHtml(v.modelo||v.tipo||'—')+'</td>'
       +'<td style="font-size:11px;padding:5px 8px">'
-        +'<div style="display:flex;align-items:center;gap:5px;flex-wrap:nowrap">'
         +'<span style="background:'+s.bg+';color:'+s.cor+';border-radius:4px;padding:1px 8px;font-weight:600;font-size:10px;white-space:nowrap">'+st+'</span>'
-        +(manut?'<span style="background:#EEEDFE;color:#534AB7;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:600;white-space:nowrap">'+escHtml(manut.status)+'</span>':'')
-        +'</div>'
       +'</td>'
+      +'<td style="font-size:11px;padding:5px 8px;max-width:220px">'+defeitoRealHtml(manutCtrl)+'</td>'
+      +'<td style="font-size:11px;padding:5px 8px">'+statusManutHtml(manutCtrl)+'</td>'
       +'<td style="font-size:11px;padding:5px 8px">'
         +(manut?(flagReparo(manut)?(flagReparo(manut)+'<br>'):'')+prevRetornoHtml(manut):'<span style="color:#aaa;font-size:10px">—</span>')
       +'</td>'
       +'<td style="padding:5px 8px;text-align:right;white-space:nowrap">'
         +'<button class="btn btn-sm" data-pvid="'+v.id+'" style="font-size:10px;padding:1px 7px" title="Alterar status">⚙</button>'
-        +(manut?'<button class="btn btn-sm" data-ctrl-manut="'+manut.id+'" style="font-size:9px;padding:1px 5px;margin-left:3px;color:#534AB7;border-color:#534AB7" title="Controle manutenção">📋</button>':'')
+        +(manutCtrl?'<button class="btn btn-sm" data-ctrl-manut="'+manutCtrl.id+'" style="font-size:9px;padding:1px 5px;margin-left:3px;color:#534AB7;border-color:#534AB7" title="Controle manutenção">📋</button>':'')
       +'</td>'
       +'</tr>';
   }).join('');
@@ -42299,6 +42343,8 @@ function progVeicPainel(cid, data){
     +'<thead><tr style="background:#fafaf8;font-size:10px;color:#888">'
     +'<th style="padding:4px 8px;text-align:left">Placa / Flag</th>'
     +'<th style="padding:4px 8px;text-align:left">Modelo</th>'
+    +'<th style="padding:4px 8px;text-align:left">Situação</th>'
+    +'<th style="padding:4px 8px;text-align:left">Defeito real identificado</th>'
     +'<th style="padding:4px 8px;text-align:left">Status</th>'
     +'<th style="padding:4px 8px;text-align:left">Prev. Retorno</th>'
     +'<th style="padding:4px 8px"></th>'
