@@ -5102,21 +5102,69 @@ try{
 var DEMO=false;
 
 // ── INTEGRAÇÃO ERP CENABR ─────────────────────────────────────────────
-// Fase 1 segurança: Bearer removido do frontend. Sync HTTP direto desativado.
-// Futuro: chamarApiCenaSegura → backend/Edge Function com segredo no servidor.
+// Fase 2B: Bearer NUNCA no frontend. Sync via Edge Function erp-cenabr-proxy (JWT).
 var ERP = {
   url:   'https://erp.cenabr.app/api/external/v1', // URL pública (sem segredo)
   token: null, // NUNCA armazenar Bearer no frontend / localStorage / sessionStorage
-  disabled: true,
-  disabledMsg: 'Esta integração foi temporariamente desativada para adequação de segurança. Será reativada via backend seguro.',
+  disabled: false, // sync liberado via proxy; exige sessão Auth (_sbAuthToken)
+  disabledMsg: 'Sincronização ERP exige login via Supabase Auth (JWT). Faça login Auth ou configure o proxy.',
   cache: { key:'cena_erp_forn_v6', keyTs:'cena_erp_forn_ts_v6', ttl:30*60*1000 }
 };
 
-/** Wrapper futuro para API CenaBR — sem token e sem chamada externa nesta fase. */
-function chamarApiCenaSegura(payload){
-  // payload esperado no futuro: { path, method, query, body }
-  console.warn('[ERP] chamarApiCenaSegura bloqueada (Fase 1):', payload&&payload.path);
-  return Promise.reject(new Error(ERP.disabledMsg));
+/** Chama Edge Function Supabase com JWT do usuário (nunca service_role). */
+async function chamarEdgeFunction(nome, body){
+  if(!_sbAuthToken){
+    return Promise.reject(new Error('Sessão Auth necessária (JWT). Login MD5 não chama Edge Functions.'));
+  }
+  var r = await fetch(SB_URL+'/functions/v1/'+nome,{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'apikey':SB_KEY,
+      'Authorization':'Bearer '+_sbAuthToken
+    },
+    body:JSON.stringify(body||{})
+  });
+  var txt = await r.text();
+  var data = null;
+  try{ data = txt ? JSON.parse(txt) : null; }catch(e){ data = { raw:txt }; }
+  if(!r.ok){
+    var err = (data && (data.message || data.error || data.detail)) || ('HTTP '+r.status);
+    var e2 = new Error(typeof err==='string'?err:JSON.stringify(err));
+    e2.status = r.status;
+    e2.payload = data;
+    throw e2;
+  }
+  return data;
+}
+
+/** Provisiona/atualiza usuário no Supabase Auth (admin JWT). */
+async function provisionarUsuarioAuth(acao, opts){
+  opts = opts || {};
+  return chamarEdgeFunction('provisionar-usuario-auth',{
+    acao:acao,
+    usuario_id:opts.usuario_id,
+    email:opts.email,
+    senha:opts.senha||undefined,
+    auth_user_id:opts.auth_user_id||undefined
+  });
+}
+
+/** API CenaBR via proxy — Bearer só no servidor. Retorna corpo upstream. */
+async function chamarApiCenaSegura(payload){
+  if(!_sbAuthToken){
+    console.warn('[ERP] chamarApiCenaSegura sem JWT:', payload&&payload.path);
+    return Promise.reject(new Error(ERP.disabledMsg));
+  }
+  var res = await chamarEdgeFunction('erp-cenabr-proxy', payload||{});
+  if(!res || res.error){
+    throw new Error((res && (res.message || res.error)) || 'Proxy ERP falhou');
+  }
+  if(res.ok === false){
+    throw new Error('ERP retornou status '+(res.status||'?')+(res.message?': '+res.message:''));
+  }
+  // Proxy: { ok, status, data: upstreamBody }
+  return (res.data !== undefined) ? res.data : res;
 }
 
 // Restaurar cache do localStorage ao iniciar
@@ -5156,11 +5204,8 @@ function _erpSetStatus(txt,cor){
 }
 
 function erpFetchPagina(pg){
-  if(ERP.disabled || !ERP.token){
-    return Promise.reject(new Error(ERP.disabledMsg));
-  }
-  // Não chamar API externa com Bearer a partir do browser.
-  return chamarApiCenaSegura({ path:'/suppliers', method:'GET', query:{ page:pg } });
+  // Fase 2B: proxy Edge Function com JWT — sem Bearer no browser.
+  return chamarApiCenaSegura({ path:'/suppliers', method:'GET', query:{ page:String(pg) } });
 }
 
 // Remove duplicados por CNPJ válido — mantém o cadastro matriz (is_root_supplier).
@@ -5233,12 +5278,11 @@ function erpFetchTodos(){
 }
 
 function erpCarregarFornecedores(forceRefresh){
-  if(ERP.disabled){
-    _erpSetStatus('⚠ Sync ERP desativado (segurança)','#854F0B');
+  if(!_sbAuthToken){
+    _erpSetStatus('⚠ Sync ERP exige login Auth','#854F0B');
     if(forceRefresh && typeof progShowToast==='function'){
       progShowToast('⚠ '+ERP.disabledMsg);
     }
-    // Continua com fornecedores já cadastrados no Supabase (sem chamada externa)
     return carregarFornDB().then(function(r){
       if(r&&r.length && !(fornecedores||[]).some(function(f){return f._erp;}))
         fornecedores=r.slice();
@@ -5875,8 +5919,22 @@ function gerarUUID(){
 }
 
 // ── SOFT DELETE — nunca apaga dados, apenas marca deleted_at ──────────
-// Tabelas sem coluna deleted_at fazem DELETE real (fallback de segurança)
-var _SOFT_DELETE_TABLES = []; // Soft delete desabilitado — todos os deletes são hard delete
+// Tabelas fora da lista fazem DELETE real (fallback). Rode SQLS/sql_fase2_soft_delete_colunas.sql antes.
+var _SOFT_DELETE_TABLES = [
+  'lancamentos','financeiro_faturamentos','usuarios_sistema','user_permissoes',
+  'fornecedores','colaboradores','estoque','contratos',
+  'frotas_veiculos','frotas_manutencoes','frotas_documentos',
+  'sot_materiais','alm_movimentos',
+  'prog_status_diario','composicao_dia','equipes_disp','locacoes','prog_veiculos_dia'
+];
+
+/** Guardrail FE Fase 2 — exclusões críticas (não substitui RLS). */
+function _podeExcluirCritico(nivel){
+  if(!usuarioLogado) return false;
+  var p = String(usuarioLogado.perfil||'');
+  if(nivel==='admin') return p==='admin';
+  return p==='admin' || p==='gestor';
+}
 
 async function sbDelete(table, filter){
   if(DEMO) return;
@@ -5886,7 +5944,7 @@ async function sbDelete(table, filter){
 
   var h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
 
-  // SOFT DELETE: tabelas com deleted_at → UPDATE em vez de DELETE
+  // SOFT DELETE: tabelas com deleted_at → UPDATE; se coluna ausente, cai no hard delete
   if(_SOFT_DELETE_TABLES.indexOf(table) >= 0){
     var now = new Date().toISOString();
     try{
@@ -5895,14 +5953,18 @@ async function sbDelete(table, filter){
         headers: h,
         body: JSON.stringify({ deleted_at: now })
       });
-      if(!r.ok){ var err=await r.text(); console.error('sbDelete(soft) erro ['+table+']', r.status, err); }
-      else{ console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now); _auditAuto('excluir', table, null, filter); }
-    }catch(e){ console.error('sbDelete(soft) exception', e); }
-    return;
+      if(r.ok){
+        console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now);
+        _auditAuto('excluir', table, null, filter);
+        return;
+      }
+      var err=await r.text();
+      console.warn('sbDelete(soft) falhou ['+table+']', r.status, err, '— tentando hard delete');
+    }catch(e){ console.warn('sbDelete(soft) exception', e, '— tentando hard delete'); }
   }
 
-  // HARD DELETE: tabelas sem deleted_at (fallback — raramente usado)
-  console.warn('[hard-delete] tabela sem soft-delete:', table);
+  // HARD DELETE (tabela fora da lista, ou soft-delete indisponível)
+  console.warn('[hard-delete]', table, filter);
   try{
     var r2 = await fetch(SB.url+'/rest/v1/'+table+'?'+filter, {method:'DELETE', headers:h});
     if(!r2.ok){ var err2=await r2.text(); console.error('sbDelete erro ['+table+']', r2.status, err2); }
@@ -6132,7 +6194,7 @@ async function carregarDadosBase(){
       sbFetch('categorias_despesa',{filters:['ativa=eq.true'],order:'nome'}),
       sbFetch('subcategorias_despesa',{filters:['ativa=eq.true']}),
       sbFetch('verbas_contrato'),
-      sbFetch('fornecedores',{filters:['status=eq.Ativo'],order:'razao_social'}),
+      sbFetch('fornecedores',{filters:['status=eq.Ativo','deleted_at=is.null'],order:'razao_social'}),
       sbFetch('equipes',{filters:['status=neq.Inativo']}),
       sbFetch('causas_codx',{filters:['ativa=eq.true']}),
       sbFetch('servicos_contrato'),
@@ -6146,7 +6208,7 @@ async function carregarDadosBase(){
     if(resA[6]&&resA[6].length)causas_codx=resA[6];
     if(resA[7]&&resA[7].length)servicos=resA[7];
     var resB=await Promise.all([
-      sbFetch('usuarios_sistema',{filters:['ativo=eq.true'],order:'nome'}),
+      sbFetch('usuarios_sistema',{filters:['ativo=eq.true','deleted_at=is.null'],order:'nome'}),
       sbFetch('tipos_equipe',{order:'nome'}),
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
       sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome'}),
@@ -6194,7 +6256,7 @@ async function carregarModuloFinanceiro(){
     sbFetchAll('financeiro_faturamentos',{order:'data_emissao.desc'}),
     sbFetch('fin_indices_ipca',{order:'competencia',limit:500}).catch(function(){return[];}),
   ]);
-  if(res[0]&&res[0].length)lancamentos=res[0];
+  if(res[0]&&res[0].length)lancamentos=res[0].filter(function(r){return !r.deleted_at;});
   if(res[1]&&res[1].length)produtividade=res[1];
   if(res[2]&&res[2].length)aditivos=res[2];
   if(res[3]&&res[3].length)requisicoes=res[3];
@@ -6202,7 +6264,7 @@ async function carregarModuloFinanceiro(){
   if(res[5]&&res[5].length)parcelas_adi=res[5];
   if(res[6]&&res[6].length)prod_diaria=res[6];
   if(res[7]&&res[7].length)cod_x_lanc=res[7];
-  if(res[8]&&res[8].length)fin_faturamentos=res[8];
+  if(res[8]&&res[8].length)fin_faturamentos=res[8].filter(function(r){return !r.deleted_at;});
   if(res[9]&&res[9].length)fin_indices_ipca=res[9];
   finAplicarRetencoesAutomaticas();
   // Auto-calcular status vencido
@@ -8927,6 +8989,11 @@ function finEditarFaturamento(id){
 }
 
 async function finExcluirFaturamento(id){
+  if(!_podeExcluirCritico()){
+    if(typeof progShowToast==='function') progShowToast('Somente admin/gestor pode excluir faturamentos.','erro');
+    else alert('Somente admin/gestor pode excluir faturamentos.');
+    return;
+  }
   var f=(fin_faturamentos||[]).find(function(x){return String(x.id)===String(id);});
   if(!f){
     if(typeof progShowToast==='function') progShowToast('Faturamento não encontrado.','erro');
@@ -8937,12 +9004,13 @@ async function finExcluirFaturamento(id){
   var msg='Excluir este faturamento?\n\n'
     +'NF-e '+nfe+'\n'
     +brutoTxt+' · '+(f.status||'—')
-    +'\n\nEsta ação remove o registro permanentemente'
+    +'\n\nO registro será desativado (soft-delete), não apagado do banco'
     +(Number(f.valor_retencao||0)>0?' (inclui a retenção vinculada)':'')+'.';
   if(f.status==='Recebido'){
     msg+='\n\nAtenção: o faturamento já está marcado como Recebido.';
   }
   if(!confirm(msg)) return;
+  if(f.status==='Recebido' && !confirm('Confirma exclusão de faturamento JÁ RECEBIDO?\nNF-e '+nfe)) return;
   try{
     if(!DEMO){
       if(typeof isUUID==='function'&&!isUUID(String(id))){
@@ -9090,7 +9158,8 @@ function finSincronizar(){
   progShowToast('🔄 Iniciando sincronização com API financeiro CENA...');
   setTimeout(function(){
     sbFetch('financeiro_faturamentos',{order:'data_emissao.desc'}).then(function(rows){
-      if(rows&&rows.length){ fin_faturamentos=rows; finAtualizarStatusVencidos(); finRenderFaturados(); progShowToast('✅ Sincronização concluída — '+rows.length+' faturamentos.'); }
+      rows=(rows||[]).filter(function(r){return !r.deleted_at;});
+      if(rows.length){ fin_faturamentos=rows; finAtualizarStatusVencidos(); finRenderFaturados(); progShowToast('✅ Sincronização concluída — '+rows.length+' faturamentos.'); }
       else progShowToast('⚠ Nenhum dado retornado da API.');
     }).catch(function(){ progShowToast('⚠ Erro na sincronização.'); });
   },500);
@@ -9166,8 +9235,9 @@ function finSincronizarLancamentos(){
   // Buscar do banco (aguarda integração real com API CENA)
   var d = _diasAtras(parseInt(dias)||90);
   sbFetch('lancamentos',{order:'data_emissao.desc',filters:['data_emissao=gte.'+d]}).then(function(rows){
-    if(rows&&rows.length){ lancamentos=rows; renderLancamentos(); }
-    var n = rows?rows.length:0;
+    rows=(rows||[]).filter(function(r){return !r.deleted_at;});
+    if(rows.length){ lancamentos=rows; renderLancamentos(); }
+    var n = rows.length;
     finAddLog('Lançamentos', url||'supabase/lancamentos', 'OK', n, 'Últimos '+dias+' dias');
     finSetProgresso(100,'');
     finRenderSincCards();
@@ -9186,8 +9256,9 @@ function finSincronizarFaturamentos(){
   progShowToast('🔄 Sincronizando faturamentos...');
 
   sbFetch('financeiro_faturamentos',{order:'data_emissao.desc'}).then(function(rows){
-    if(rows&&rows.length){ fin_faturamentos=rows; finAtualizarStatusVencidos(); finRenderFaturados(); }
-    var n = rows?rows.length:0;
+    rows=(rows||[]).filter(function(r){return !r.deleted_at;});
+    if(rows.length){ fin_faturamentos=rows; finAtualizarStatusVencidos(); finRenderFaturados(); }
+    var n = rows.length;
     finAddLog('Faturamentos', url||'supabase/financeiro_faturamentos', 'OK', n, 'Todos os registros');
     finSetProgresso(100,'');
     finRenderSincCards();
@@ -9214,8 +9285,8 @@ function finSincronizarTudo(){
     sbFetch('financeiro_faturamentos',{order:'data_emissao.desc'}),
   ]).then(function(res){
     var nLanc=0, nFat=0;
-    if(res[0]&&res[0].length){ lancamentos=res[0]; nLanc=res[0].length; renderLancamentos(); }
-    if(res[1]&&res[1].length){ fin_faturamentos=res[1]; nFat=res[1].length; finAtualizarStatusVencidos(); finRenderFaturados(); }
+    if(res[0]&&res[0].length){ lancamentos=res[0].filter(function(r){return !r.deleted_at;}); nLanc=lancamentos.length; renderLancamentos(); }
+    if(res[1]&&res[1].length){ fin_faturamentos=res[1].filter(function(r){return !r.deleted_at;}); nFat=fin_faturamentos.length; finAtualizarStatusVencidos(); finRenderFaturados(); }
     finAddLog('Completa', url||'supabase', 'OK', nLanc+nFat, 'Lanç:'+nLanc+' | Fat:'+nFat);
     finSetProgresso(100,'');
     finRenderSincCards();
@@ -9591,6 +9662,11 @@ function salvarEditarLanc(lid){
   closeModal();renderLancamentos();atualizarMetricas();
 }
 async function excluirLancamento(lid){
+  if(!_podeExcluirCritico()){
+    if(typeof progShowToast==='function') progShowToast('Somente admin/gestor pode excluir lançamentos.','erro');
+    else alert('Somente admin/gestor pode excluir lançamentos.');
+    return;
+  }
   var l=lancamentos.find(function(x){return String(x.id)===String(lid);});
   if(!l){
     if(typeof progShowToast==='function') progShowToast('Lançamento não encontrado.','erro');
@@ -9601,11 +9677,12 @@ async function excluirLancamento(lid){
   var msg='Excluir este lançamento financeiro?\n\n'
     +desc+'\n'
     +valorTxt+' · '+(l.status||'—')
-    +'\n\nEsta ação remove o registro permanentemente.';
+    +'\n\nO registro será desativado (soft-delete), não apagado do banco.';
   if(l.status==='Pago'||l.status==='Pago parcial'){
     msg+='\n\nAtenção: o lançamento já está marcado como '+(l.status)+'.';
   }
   if(!confirm(msg)) return;
+  if((l.status==='Pago'||l.status==='Pago parcial') && !confirm('Confirma exclusão de lançamento já '+l.status+'?')) return;
   try{
     if(!DEMO){
       if(typeof isUUID==='function'&&!isUUID(String(lid))){
@@ -12860,22 +12937,42 @@ function renderUsuarios(){
         return c?c.codigo:'?';
       }).join(', ')||'—';
     }
-    return '<tr>'      +'<td style="font-weight:500">'+u.nome+'</td>'      +'<td style="color:#888">'+u.email+'</td>'      +'<td><span class="bdg '+(u.perfil==='admin'?'danger':u.perfil==='gestor'?'warn':u.perfil==='coordenador'||u.perfil==='supervisor'?'info':u.perfil==='encarregado'?'teal':'ok')+'">'+( PERFIS_LABEL[u.perfil]||u.perfil)+'</span></td>'      +'<td style="font-size:11px">'+(u.perfil==='equipe'?eqNome:u.perfil==='encarregado'?(eqNome!=='—'?eqNome+' | ':'')+contNomes:contNomes)+'</td>'      +'<td><span class="bdg '+(u.ativo?'ok':'gray')+'">'+(u.ativo?'Ativo':'Inativo')+'</span></td>'      +'<td style="display:flex;gap:4px">'      +'<button class="btn btn-sm" id="btn-edit-usr-'+u.id+'">Editar</button>'      +'<button class="btn btn-sm" id="btn-senha-usr-'+u.id+'">Senha</button>'      +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="btn-del-usr-'+u.id+'">Excluir</button>'      +'</td></tr>';
+    var authBdg = u.auth_user_id
+      ? '<span class="bdg ok">Auth</span>'
+      : '<span class="bdg gray">MD5</span>';
+    return '<tr>'      +'<td style="font-weight:500">'+u.nome+'</td>'      +'<td style="color:#888">'+u.email+'</td>'      +'<td><span class="bdg '+(u.perfil==='admin'?'danger':u.perfil==='gestor'?'warn':u.perfil==='coordenador'||u.perfil==='supervisor'?'info':u.perfil==='encarregado'?'teal':'ok')+'">'+( PERFIS_LABEL[u.perfil]||u.perfil)+'</span></td>'      +'<td style="font-size:11px">'+(u.perfil==='equipe'?eqNome:u.perfil==='encarregado'?(eqNome!=='—'?eqNome+' | ':'')+contNomes:contNomes)+'</td>'      +'<td><span class="bdg '+(u.ativo?'ok':'gray')+'">'+(u.ativo?'Ativo':'Inativo')+'</span> '+authBdg+'</td>'      +'<td style="display:flex;gap:4px;flex-wrap:wrap">'      +'<button class="btn btn-sm" id="btn-edit-usr-'+u.id+'">Editar</button>'      +'<button class="btn btn-sm" id="btn-senha-usr-'+u.id+'">Senha</button>'
+      +(u.auth_user_id?'':'<button class="btn btn-sm" id="btn-mig-usr-'+u.id+'" style="border-color:#185FA5;color:#185FA5">Migrar Auth</button>')
+      +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="btn-del-usr-'+u.id+'">Excluir</button>'      +'</td></tr>';
   }).join('')||'<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum usuário</td></tr>';
   usuarios_lista.forEach(function(u){
     var be=document.getElementById('btn-edit-usr-'+u.id);
     if(be)be.onclick=function(){openEditarUsuario(u.id);};
     var bs=document.getElementById('btn-senha-usr-'+u.id);
     if(bs)bs.onclick=function(){openAlterarSenha(u.id);};
+    var bm=document.getElementById('btn-mig-usr-'+u.id);
+    if(bm)bm.onclick=function(){openMigrarUsuarioAuth(u.id);};
     var bd=document.getElementById('btn-del-usr-'+u.id);
     if(bd)bd.onclick=function(){excluirUsuario(u.id);};
   });
 }
 function excluirUsuario(uid){
+  if(!_podeExcluirCritico('admin')){
+    if(typeof progShowToast==='function') progShowToast('Somente admin pode excluir usuários.','erro');
+    else alert('Somente admin pode excluir usuários.');
+    return;
+  }
   var u=usuarios_lista.find(function(x){return x.id===uid;});if(!u)return;
-  if(!confirm('Excluir usuário "'+u.nome+'"? Esta ação não pode ser desfeita.'))return;
+  if(u.perfil==='admin' && usuarioLogado && String(usuarioLogado.id)===String(uid)){
+    alert('Você não pode excluir o próprio usuário admin.');
+    return;
+  }
+  if(!confirm('Excluir usuário "'+u.nome+'"?\n\nO usuário será desativado (soft-delete + ativo=false).'))return;
+  if(!confirm('Confirma exclusão do usuário "'+u.nome+'" ('+u.email+')?'))return;
   usuarios_lista=usuarios_lista.filter(function(x){return x.id!==uid;});
-  if(!DEMO)sbDelete('usuarios_sistema','id=eq.'+uid);
+  if(!DEMO){
+    sbDelete('usuarios_sistema','id=eq.'+uid);
+    if(typeof sbUpdate==='function') sbUpdate('usuarios_sistema',{ativo:false},'id=eq.'+uid);
+  }
   renderUsuarios();
 }
 
@@ -12953,10 +13050,25 @@ async function salvarNovoUsuario(){
     }
     // Atualizar id local com o UUID do banco
     if(resultado[0] && resultado[0].id) novo.id = resultado[0].id;
+    // Fase 2B: provisionar Supabase Auth (MD5 permanece; falha Auth nao desfaz cadastro)
+    if(_sbAuthToken && typeof provisionarUsuarioAuth==='function'){
+      try{
+        var authProv = await provisionarUsuarioAuth('criar',{usuario_id:novo.id,email:email,senha:senha});
+        if(authProv && authProv.auth_user_id){
+          novo.auth_user_id = authProv.auth_user_id;
+          progShowToast('Auth vinculado para '+nome);
+        }
+      }catch(eAuth){
+        console.warn('[Auth] provisionar novo usuario:', eAuth);
+        progShowToast('Usuario salvo (MD5). Auth pendente: '+(eAuth&&eAuth.message?eAuth.message:eAuth),'erro');
+      }
+    } else if(!_sbAuthToken){
+      progShowToast('Usuario salvo (MD5). Login Auth do admin necessario para provisionar Auth.','erro');
+    }
   }
 
   usuarios_lista.push(novo);
-  closeModal();renderUsuarios();
+  closeModal();renderUsuarios();renderUsuariosVis();
   progShowToast('✅ Usuário '+nome+' cadastrado com sucesso.');
 }
 
@@ -13040,16 +13152,69 @@ function toggleEquipeFieldEdit(){
 function openAlterarSenha(uid){
   var u=usuarios_lista.find(function(x){return x.id===uid;});if(!u)return;
   setModal('<div class="modal-bg"><div class="modal"><h3>Alterar senha — '+u.nome+'</h3>'    +'<div class="fg"><label>Nova senha</label><input id="ns-senha" type="password" style="width:100%" placeholder="Mínimo 6 caracteres"/></div>'    +'<div class="fg"><label>Confirmar nova senha</label><input id="ns-senha2" type="password" style="width:100%"/></div>'    +'<div id="ns-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-ns">Alterar senha</button></div></div></div>');
-  document.getElementById('btn-salvar-ns').onclick=function(){
+  document.getElementById('btn-salvar-ns').onclick=async function(){
     var s1=(document.getElementById('ns-senha')||{}).value||'';
     var s2=(document.getElementById('ns-senha2')||{}).value||'';
     var err=document.getElementById('ns-erro');
     if(s1.length<6){if(err){err.textContent='Mínimo 6 caracteres.';err.style.display='block';}return;}
     if(s1!==s2){if(err){err.textContent='As senhas não coincidem.';err.style.display='block';}return;}
     u.senha_hash=md5js(s1);
-    if(!DEMO)sbUpdate('usuarios_sistema',{senha_hash:u.senha_hash},'id=eq.'+uid);
+    if(!DEMO){
+      await sbUpdate('usuarios_sistema',{senha_hash:u.senha_hash},'id=eq.'+uid);
+      if(_sbAuthToken && typeof provisionarUsuarioAuth==='function'){
+        try{
+          var authProv=await provisionarUsuarioAuth('atualizar_senha',{usuario_id:u.id,email:u.email,senha:s1});
+          if(authProv && authProv.auth_user_id) u.auth_user_id=authProv.auth_user_id;
+        }catch(eAuth){
+          console.warn('[Auth] atualizar senha:',eAuth);
+          if(err){err.textContent='MD5 ok; Auth: '+(eAuth&&eAuth.message?eAuth.message:eAuth);err.style.display='block';}
+          progShowToast('Senha MD5 alterada. Auth pendente.','erro');
+          return;
+        }
+      }
+    }
     closeModal();
-    alert('✓ Senha alterada com sucesso!');
+    if(typeof renderUsuariosVis==='function') renderUsuariosVis();
+    if(typeof renderUsuarios==='function') renderUsuarios();
+    progShowToast('✓ Senha alterada'+(u.auth_user_id?' (MD5 + Auth)':' (MD5)'));
+  };
+}
+
+/** Migrar usuario legado para Supabase Auth (admin com JWT). */
+function openMigrarUsuarioAuth(uid){
+  var u=usuarios_lista.find(function(x){return x.id===uid;});if(!u)return;
+  if(!_sbAuthToken){
+    progShowToast('Faça login via Supabase Auth (admin) para migrar.','erro');
+    return;
+  }
+  if(u.auth_user_id){
+    progShowToast('Usuario já vinculado ao Auth.');
+    return;
+  }
+  setModal('<div class="modal-bg"><div class="modal"><h3>Migrar Auth — '+u.nome+'</h3>'
+    +'<p style="font-size:12px;color:#666;margin-bottom:.75rem">Cria conta no Supabase Auth e vincula <code>auth_user_id</code>. A senha MD5 atual é substituída pela nova.</p>'
+    +'<div class="fg"><label>Nova senha Auth</label><input id="ma-senha" type="password" style="width:100%" placeholder="Mínimo 6 caracteres"/></div>'
+    +'<div class="fg"><label>Confirmar</label><input id="ma-senha2" type="password" style="width:100%"/></div>'
+    +'<div id="ma-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'
+    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="btn-salvar-ma">Migrar</button></div></div></div>');
+  document.getElementById('btn-salvar-ma').onclick=async function(){
+    var s1=(document.getElementById('ma-senha')||{}).value||'';
+    var s2=(document.getElementById('ma-senha2')||{}).value||'';
+    var err=document.getElementById('ma-erro');
+    if(s1.length<6){if(err){err.textContent='Mínimo 6 caracteres.';err.style.display='block';}return;}
+    if(s1!==s2){if(err){err.textContent='As senhas não coincidem.';err.style.display='block';}return;}
+    u.senha_hash=md5js(s1);
+    try{
+      if(!DEMO) await sbUpdate('usuarios_sistema',{senha_hash:u.senha_hash},'id=eq.'+uid);
+      var authProv=await provisionarUsuarioAuth('criar',{usuario_id:u.id,email:u.email,senha:s1});
+      if(authProv && authProv.auth_user_id) u.auth_user_id=authProv.auth_user_id;
+      closeModal();
+      if(typeof renderUsuariosVis==='function') renderUsuariosVis();
+      progShowToast('✅ '+u.nome+' migrado para Auth');
+    }catch(e){
+      if(err){err.textContent=(e&&e.message)||String(e);err.style.display='block';}
+    }
   };
 }
 
@@ -13358,7 +13523,8 @@ function renderConteudoCadastro(id){
   }
   var htmls={
     usuarios:'<div class="card"><div class="ch"><span class="ct">👤 Usuários do sistema</span><button class="btn btn-pri" onclick="openNovoUsuario()">+ Novo usuário</button></div>'
-      +'<div style="padding:.75rem 1rem;display:grid;grid-template-columns:1fr auto auto;gap:8px;border-bottom:.5px solid #f0efe8">'
+      +'<div id="auth-mig-painel" style="padding:.75rem 1rem;border-bottom:.5px solid #f0efe8;background:#F8FAFC"></div>'
+      +'<div style="padding:.75rem 1rem;display:grid;grid-template-columns:1fr auto auto auto;gap:8px;border-bottom:.5px solid #f0efe8">'
       +'<input id="usr-busca" placeholder="🔍 Buscar por nome, e-mail ou equipe..." style="border:.5px solid #e0dfd8;border-radius:8px;padding:7px 12px;font-size:13px;width:100%" oninput="renderUsuariosVis()"/>'
       +'<select id="usr-fil-perfil" style="border:.5px solid #e0dfd8;border-radius:8px;padding:7px 10px;font-size:12px" onchange="renderUsuariosVis()">'
       +'<option value="">Todos os perfis</option>'
@@ -13378,8 +13544,13 @@ function renderConteudoCadastro(id){
       +'<option value="ativo">Ativos</option>'
       +'<option value="inativo">Inativos</option>'
       +'</select>'
+      +'<select id="usr-fil-auth" style="border:.5px solid #e0dfd8;border-radius:8px;padding:7px 10px;font-size:12px" onchange="renderUsuariosVis()">'
+      +'<option value="">Auth: todos</option>'
+      +'<option value="auth">Só Auth</option>'
+      +'<option value="md5">Só MD5 (pendentes)</option>'
+      +'</select>'
       +'</div>'
-      +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe / Contrato</th><th>Status</th><th></th></tr></thead><tbody id="tbody-usuarios-vis"></tbody></table></div></div>',
+      +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Equipe / Contrato</th><th>Status</th><th>Auth</th><th></th></tr></thead><tbody id="tbody-usuarios-vis"></tbody></table></div></div>',
     fornecedores:'<div class="card"><div class="ch"><span class="ct">🏢 Fornecedores</span><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
       +'<span id="forn-erp-badge" style="font-size:10px;background:#E8F0FE;color:#185FA5;padding:2px 8px;border-radius:99px;font-weight:600">🔌 ERP CenaBR</span>'
       +'<span id="forn-load-status" style="font-size:11px;color:#888"></span>'
@@ -13623,16 +13794,119 @@ function excluirPerfilExtra(codigo){
   progShowToast('Perfil excluído.');
 }
 
+/** Fase 2C: progresso Auth (antes de desligar MD5 / RLS). */
+function authMigracaoStats(){
+  var ativos=(usuarios_lista||[]).filter(function(u){ return u && u.ativo!==false; });
+  var com=ativos.filter(function(u){ return !!u.auth_user_id; });
+  var sem=ativos.filter(function(u){ return !u.auth_user_id; });
+  var total=ativos.length;
+  return {
+    total:total,
+    comAuth:com.length,
+    semAuth:sem.length,
+    pct:total?Math.round(100*com.length/total):0,
+    sessaoJwt:!!_sbAuthToken,
+    checklistOk:total>0 && sem.length===0 && !!_sbAuthToken
+  };
+}
+
+function renderAuthMigracaoPainel(){
+  var el=document.getElementById('auth-mig-painel');
+  if(!el) return;
+  var s=authMigracaoStats();
+  var barCor=s.pct>=100?'#0F6E3D':(s.pct>=50?'#185FA5':'#854F0B');
+  var sessaoHtml=s.sessaoJwt
+    ? '<span class="bdg ok">Sessão JWT (Auth)</span>'
+    : '<span class="bdg warn">Sessão MD5 (anon)</span>';
+  var checkItems=[
+    {ok:s.sessaoJwt, t:'Admin logado com JWT'},
+    {ok:s.semAuth===0 && s.total>0, t:'Todos os ativos com auth_user_id ('+s.comAuth+'/'+s.total+')'},
+    {ok:false, t:'Frontend sem fallback MD5 (Fase 3)'},
+    {ok:false, t:'RLS + REVOKE anon (Fase 3)'}
+  ];
+  var checksHtml=checkItems.map(function(c){
+    return '<div style="font-size:11px;color:'+(c.ok?'#0F6E3D':'#888')+'">'+(c.ok?'✓':'○')+' '+c.t+'</div>';
+  }).join('');
+  var aviso=!s.sessaoJwt
+    ? '<div style="margin-top:8px;font-size:12px;color:#854F0B;background:#FAEEDA;border-radius:6px;padding:8px 10px">⚠ Você ainda está em MD5. Conclua o bootstrap Auth do admin (Dashboard → apagar/ajustar usuário Auth → relogar) antes de migrar outros.</div>'
+    : (s.checklistOk
+      ? '<div style="margin-top:8px;font-size:12px;color:#0F6E3D;background:#EAF3DE;border-radius:6px;padding:8px 10px">✓ Migração operacional completa. Próximo passo: Fase 3 (desligar MD5 + RLS) — sob demanda.</div>'
+      : '<div style="margin-top:8px;font-size:12px;color:#185FA5;background:#EBF4FD;border-radius:6px;padding:8px 10px">MD5 pendentes migram no próximo login (upgrade automático). Use <b>Migrar Auth</b> só quando a senha Auth divergir ou o upgrade falhar. Filtro: Só MD5.</div>');
+  el.innerHTML='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
+    +'<div style="flex:1;min-width:220px">'
+    +'<div style="font-size:12px;font-weight:700;color:#1a1a18;margin-bottom:4px">Segurança Fase 2C — Migração Auth</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">'
+    +sessaoHtml
+    +'<span class="bdg '+(s.semAuth?'warn':'ok')+'">Auth '+s.comAuth+'/'+s.total+' ('+s.pct+'%)</span>'
+    +(s.semAuth?'<span class="bdg gray">'+s.semAuth+' pendente(s)</span>':'')
+    +'</div>'
+    +'<div style="height:6px;background:#e8e7e2;border-radius:99px;overflow:hidden;max-width:320px">'
+    +'<div style="height:100%;width:'+s.pct+'%;background:'+barCor+';transition:width .3s"></div></div>'
+    +aviso
+    +'</div>'
+    +'<div style="min-width:200px">'
+    +'<div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;margin-bottom:4px">Checklist → Fase 3</div>'
+    +checksHtml
+    +'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+    +'<button class="btn btn-sm" onclick="authMigracaoRecarregar()" title="Recarregar usuarios do banco">↻ Atualizar</button>'
+    +(s.semAuth?'<button class="btn btn-sm" onclick="authMigracaoFiltrarPendentes()" style="border-color:#185FA5;color:#185FA5">Ver pendentes</button>':'')
+    +(s.semAuth?'<button class="btn btn-sm" onclick="authMigracaoExportarPendentes()">Exportar e-mails</button>':'')
+    +'</div></div></div>';
+}
+
+function authMigracaoFiltrarPendentes(){
+  var sel=document.getElementById('usr-fil-auth');
+  if(sel) sel.value='md5';
+  var st=document.getElementById('usr-fil-status');
+  if(st) st.value='ativo';
+  renderUsuariosVis();
+}
+
+function authMigracaoExportarPendentes(){
+  var pend=(usuarios_lista||[]).filter(function(u){ return u && u.ativo!==false && !u.auth_user_id; });
+  if(!pend.length){ progShowToast('Nenhum pendente.'); return; }
+  var lines=['nome;email;perfil'].concat(pend.map(function(u){
+    return [u.nome,u.email,u.perfil].map(function(x){ return '"'+String(x||'').replace(/"/g,'""')+'"'; }).join(';');
+  }));
+  var blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='auth_pendentes_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },500);
+  progShowToast(pend.length+' e-mail(s) exportado(s)');
+}
+
+async function authMigracaoRecarregar(){
+  if(DEMO){ renderAuthMigracaoPainel(); renderUsuariosVis(); return; }
+  try{
+    var rows=await sbFetch('usuarios_sistema',{filters:['ativo=eq.true','deleted_at=is.null'],order:'nome'});
+    if(rows && rows.length){
+      usuarios_lista=rows;
+      progShowToast('Lista atualizada ('+rows.length+')');
+    }
+  }catch(e){
+    console.warn('[Auth 2C] reload:', e);
+    progShowToast('Falha ao recarregar usuários','erro');
+  }
+  renderAuthMigracaoPainel();
+  renderUsuariosVis();
+}
+
 function renderUsuariosVis(){
   var tb=document.getElementById('tbody-usuarios-vis');if(!tb)return;
+  renderAuthMigracaoPainel();
   var busca=((document.getElementById('usr-busca')||{}).value||'').toLowerCase().trim();
   var filPerfil=(document.getElementById('usr-fil-perfil')||{}).value||'';
   var filStatus=(document.getElementById('usr-fil-status')||{}).value||'';
+  var filAuth=(document.getElementById('usr-fil-auth')||{}).value||'';
 
   var rows=usuarios_lista.filter(function(u){
     if(filPerfil&&u.perfil!==filPerfil)return false;
     if(filStatus==='ativo'&&u.ativo===false)return false;
     if(filStatus==='inativo'&&u.ativo!==false)return false;
+    if(filAuth==='auth'&&!u.auth_user_id)return false;
+    if(filAuth==='md5'&&u.auth_user_id)return false;
     if(busca){
       var eq=u.equipe_codigo||'';
       var cont=u.contrato_id||'';
@@ -13655,11 +13929,20 @@ function renderUsuariosVis(){
       var cids=(u.contrato_id||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
       contNomes=cids.map(function(cid){var c=contratos.find(function(x){return x.id===cid;});return c?c.codigo:'?';}).join(', ')||'—';
     }
-    return '<tr><td style="font-weight:500">'+u.nome+'</td><td style="color:#888">'+u.email+'</td>'      +'<td><span class="bdg '+(u.perfil==='admin'?'danger':u.perfil==='gestor'?'warn':u.perfil==='coordenador'||u.perfil==='supervisor'?'info':u.perfil==='encarregado'?'teal':'ok')+'">'+( PERFIS_LABEL[u.perfil]||u.perfil)+'</span></td>'      +'<td style="font-size:11px">'+(u.perfil==='equipe'?eqNome:u.perfil==='encarregado'?(eqNome!=='—'?eqNome+' | ':'')+contNomes:contNomes)+'</td>'      +'<td><span class="bdg '+(u.ativo?'ok':'gray')+'">'+(u.ativo?'Ativo':'Inativo')+'</span></td>'      +'<td style="display:flex;gap:4px">'      +'<button class="btn btn-sm" id="vedit-usr-'+u.id+'">Editar</button>'      +'<button class="btn btn-sm" id="vsenha-usr-'+u.id+'">Senha</button>'      +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="vdel-usr-'+u.id+'">Excluir</button>'      +'</td></tr>';
-  }).join('')||'<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum usuário encontrado</td></tr>';
+    var authBdg = u.auth_user_id
+      ? '<span class="bdg ok" title="'+u.auth_user_id+'">Auth</span>'
+      : '<span class="bdg gray" title="Somente MD5">MD5</span>';
+    var btnMigrar = (!u.auth_user_id)
+      ? '<button class="btn btn-sm" id="vmig-usr-'+u.id+'" title="Migrar para Supabase Auth" style="border-color:#185FA5;color:#185FA5">Migrar Auth</button>'
+      : '';
+    return '<tr><td style="font-weight:500">'+u.nome+'</td><td style="color:#888">'+u.email+'</td>'      +'<td><span class="bdg '+(u.perfil==='admin'?'danger':u.perfil==='gestor'?'warn':u.perfil==='coordenador'||u.perfil==='supervisor'?'info':u.perfil==='encarregado'?'teal':'ok')+'">'+( PERFIS_LABEL[u.perfil]||u.perfil)+'</span></td>'      +'<td style="font-size:11px">'+(u.perfil==='equipe'?eqNome:u.perfil==='encarregado'?(eqNome!=='—'?eqNome+' | ':'')+contNomes:contNomes)+'</td>'      +'<td><span class="bdg '+(u.ativo?'ok':'gray')+'">'+(u.ativo?'Ativo':'Inativo')+'</span></td>'      +'<td>'+authBdg+'</td>'      +'<td style="display:flex;gap:4px;flex-wrap:wrap">'      +'<button class="btn btn-sm" id="vedit-usr-'+u.id+'">Editar</button>'      +'<button class="btn btn-sm" id="vsenha-usr-'+u.id+'">Senha</button>'
+      +btnMigrar
+      +'<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="vdel-usr-'+u.id+'">Excluir</button>'      +'</td></tr>';
+  }).join('')||'<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum usuário encontrado</td></tr>';
   rows.forEach(function(u){
     var be=document.getElementById('vedit-usr-'+u.id);if(be)be.onclick=function(){openEditarUsuario(u.id);};
     var bs=document.getElementById('vsenha-usr-'+u.id);if(bs)bs.onclick=function(){openAlterarSenha(u.id);};
+    var bm=document.getElementById('vmig-usr-'+u.id);if(bm)bm.onclick=function(){openMigrarUsuarioAuth(u.id);};
     var bd=document.getElementById('vdel-usr-'+u.id);if(bd)bd.onclick=function(){excluirUsuario(u.id);setTimeout(function(){renderUsuariosVis();},100);};
   });
 }
@@ -16024,43 +16307,100 @@ function openNovoFornecedor(){
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" onclick="salvarFornecedor()">Salvar</button></div></div></div>');
 }
-function salvarFornecedor(){
-  var rs=(document.getElementById('nf-rs')||{}).value||'';if(!rs.trim())return;
-  var novo={id:'f'+Date.now(),razao_social:rs.trim(),cnpj_cpf:(document.getElementById('nf-cnpj')||{}).value||'',tipo:(document.getElementById('nf-tipo')||{}).value||'Fornecedor',contato:(document.getElementById('nf-cont')||{}).value||'',telefone:(document.getElementById('nf-tel')||{}).value||'',email:(document.getElementById('nf-email')||{}).value||'',status:'Ativo'};
-  fornecedores.push(novo);if(!DEMO)sbInsert('fornecedores',_semId(novo));
-  closeModal();renderCadastros();
+function _fornRefreshLista(){
+  if(document.getElementById('tbody-forn-vis') && typeof renderFornecedoresVis==='function') renderFornecedoresVis();
+  else if(typeof renderCadastros==='function') renderCadastros();
 }
-function excluirFornecedor(fid){
-  var f=fornecedores.find(function(x){return x.id===fid;});if(!f)return;
-  if(!confirm('Excluir fornecedor "'+f.razao_social+'"?'))return;
-  fornecedores=fornecedores.filter(function(x){return x.id!==fid;});
-  if(!DEMO)sbDelete('fornecedores','id=eq.'+fid);
-  renderCadastros();
+async function salvarFornecedor(){
+  var rs=(document.getElementById('nf-rs')||{}).value||'';if(!rs.trim())return;
+  var payload={
+    razao_social:rs.trim(),
+    cnpj_cpf:(document.getElementById('nf-cnpj')||{}).value||'',
+    tipo:(document.getElementById('nf-tipo')||{}).value||'Fornecedor',
+    contato:(document.getElementById('nf-cont')||{}).value||'',
+    telefone:(document.getElementById('nf-tel')||{}).value||'',
+    email:(document.getElementById('nf-email')||{}).value||'',
+    status:'Ativo'
+  };
+  closeModal();
+  var novo=null;
+  if(DEMO){
+    novo=Object.assign({id:'f'+Date.now()},payload);
+  } else {
+    var rows=await sbInsert('fornecedores',payload);
+    if(!rows||!rows[0]){
+      if(typeof progShowToast==='function') progShowToast('Erro ao salvar fornecedor.','erro');
+      else alert('Erro ao salvar fornecedor.');
+      return;
+    }
+    novo=rows[0];
+  }
+  if(!_fornDB) _fornDB=[];
+  if(!_fornDB.some(function(x){return String(x.id)===String(novo.id);})) _fornDB.push(novo);
+  if(!(fornecedores||[]).some(function(x){return String(x.id)===String(novo.id);})) fornecedores.push(novo);
+  _fornRefreshLista();
+  if(typeof progShowToast==='function') progShowToast('Fornecedor cadastrado.');
+}
+async function excluirFornecedor(fid){
+  var f=(typeof _fornFindById==='function'?_fornFindById(fid):null)
+    || (fornecedores||[]).find(function(x){return String(x.id)===String(fid);})
+    || (_fornDB||[]).find(function(x){return String(x.id)===String(fid);});
+  if(!f){
+    if(typeof progShowToast==='function') progShowToast('Fornecedor não encontrado.','erro');
+    else alert('Fornecedor não encontrado.');
+    return;
+  }
+  if(f._erp){
+    if(typeof progShowToast==='function') progShowToast('Fornecedor do ERP não pode ser excluído aqui.','erro');
+    return;
+  }
+  if(!confirm('Excluir fornecedor "'+(f.razao_social||'')+'"?\n\nO registro será removido da lista (soft-delete no banco quando disponível).'))return;
+  var idStr=String(fid);
+  fornecedores=(fornecedores||[]).filter(function(x){return String(x.id)!==idStr;});
+  _fornDB=(_fornDB||[]).filter(function(x){return String(x.id)!==idStr;});
+  if(!DEMO && typeof isUUID==='function' && isUUID(idStr)){
+    await sbDelete('fornecedores','id=eq.'+idStr);
+  } else if(!DEMO){
+    console.warn('[forn] exclusão só local — id não é UUID:', idStr);
+  }
+  _fornRefreshLista();
+  if(typeof progShowToast==='function') progShowToast('Fornecedor excluído.');
 }
 function editarFornecedor(fid){
-  var f=fornecedores.find(function(x){return x.id===fid;});if(!f)return;
+  var f=(typeof _fornFindById==='function'?_fornFindById(fid):null)
+    || (fornecedores||[]).find(function(x){return String(x.id)===String(fid);});
+  if(!f)return;
+  var esc=typeof escHtml==='function'?escHtml:function(s){return String(s||'').replace(/"/g,'&quot;');};
   setModal('<div class="modal-bg"><div class="modal"><h3>Editar fornecedor</h3>'
     +'<div class="g2">'
-    +'<div class="fg" style="grid-column:1/-1"><label>Razão social</label><input id="nf-rs" value="'+f.razao_social+'"/></div>'
-    +'<div class="fg"><label>CNPJ/CPF</label><input id="nf-cnpj" value="'+(f.cnpj_cpf||'')+'"/></div>'
+    +'<div class="fg" style="grid-column:1/-1"><label>Razão social</label><input id="nf-rs" value="'+esc(f.razao_social||'')+'"/></div>'
+    +'<div class="fg"><label>CNPJ/CPF</label><input id="nf-cnpj" value="'+esc(f.cnpj_cpf||'')+'"/></div>'
     +'<div class="fg"><label>Tipo</label><select id="nf-tipo">'+['Fornecedor','Locadora','Prestador','Transportadora'].map(function(t){return '<option'+(f.tipo===t?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div>'
-    +'<div class="fg"><label>Contato</label><input id="nf-cont" value="'+(f.contato||'')+'"/></div>'
-    +'<div class="fg"><label>Telefone</label><input id="nf-tel" value="'+(f.telefone||'')+'"/></div>'
-    +'<div class="fg"><label>E-mail</label><input id="nf-email" value="'+(f.email||'')+'"/></div>'
+    +'<div class="fg"><label>Contato</label><input id="nf-cont" value="'+esc(f.contato||'')+'"/></div>'
+    +'<div class="fg"><label>Telefone</label><input id="nf-tel" value="'+esc(f.telefone||'')+'"/></div>'
+    +'<div class="fg"><label>E-mail</label><input id="nf-email" value="'+esc(f.email||'')+'"/></div>'
     +'</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
-    +'<button class="btn btn-pri" onclick="salvarEditarForn(\''+fid+'\')">Salvar</button></div></div></div>');
+    +'<button class="btn btn-pri" onclick="salvarEditarForn(\''+String(fid).replace(/'/g,"\\'")+'\')">Salvar</button></div></div></div>');
 }
 function salvarEditarForn(fid){
-  var f=fornecedores.find(function(x){return x.id===fid;});if(!f)return;
+  var f=(typeof _fornFindById==='function'?_fornFindById(fid):null)
+    || (fornecedores||[]).find(function(x){return String(x.id)===String(fid);});
+  if(!f)return;
   f.razao_social=(document.getElementById('nf-rs')||{}).value||f.razao_social;
   f.cnpj_cpf=(document.getElementById('nf-cnpj')||{}).value||'';
   f.tipo=(document.getElementById('nf-tipo')||{}).value||f.tipo;
   f.contato=(document.getElementById('nf-cont')||{}).value||'';
   f.telefone=(document.getElementById('nf-tel')||{}).value||'';
   f.email=(document.getElementById('nf-email')||{}).value||'';
-  if(!DEMO)sbUpdate('fornecedores',f,'id=eq.'+fid);
-  closeModal();renderCadastros();
+  if(!DEMO && typeof isUUID==='function' && isUUID(String(fid))){
+    sbUpdate('fornecedores',{
+      razao_social:f.razao_social,cnpj_cpf:f.cnpj_cpf,tipo:f.tipo,
+      contato:f.contato,telefone:f.telefone,email:f.email,status:f.status||'Ativo'
+    },'id=eq.'+fid);
+  }
+  closeModal();
+  _fornRefreshLista();
 }
 function openNovaCategoria(){
   setModal('<div class="modal-bg"><div class="modal"><h3>Nova categoria</h3>'
@@ -38197,10 +38537,31 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.796',
-  data:   '15/08/2026',
-  build:  '20260815-1115',
+  numero: '7.9.803',
+  data:   '17/08/2026',
+  build:  '20260817-0905',
   log: [
+    {v:'7.9.803', d:'17/08/2026', itens:[
+      'Frotas → Documentos: aba passa a consultar manutenções (atuais/anteriores) com filtros placa/tipo/status/anexo/contrato; visualiza anexo OC/RC e link RC; remove botão + Documento (só consulta).',
+    ]},
+    {v:'7.9.802', d:'16/08/2026', itens:[
+      'Segurança Fase 2C: painel de migração Auth em Cadastros → Usuários (sessão JWT/MD5, progresso auth_user_id, checklist Fase 3); filtro Só MD5; exportar pendentes; SQL sql_fase2c_auth_migracao_diagnostico.sql. MD5 e RLS bloqueante ainda NÃO desligados.',
+    ]},
+    {v:'7.9.801', d:'16/08/2026', itens:[
+      'Login: Auth 400 esperado não bloqueia mais; MD5 recupera e tenta upgrade; se Auth já existe com senha diferente, mensagem clara (apagar/ajustar usuário no Dashboard Auth).',
+    ]},
+    {v:'7.9.800', d:'16/08/2026', itens:[
+      'Login Auth-first: tenta Auth; se já tem auth_user_id não cai no MD5; se só MD5, valida hash e faz upgrade automático (signUp/signIn) para ficar com JWT. Console: [Login] via=auth|auth-upgrade|md5.',
+    ]},
+    {v:'7.9.799', d:'16/08/2026', itens:[
+      'Segurança Fase 2B: coluna auth_user_id (SQL sql_fase2b_auth_user_id.sql); Edge Function provisionar-usuario-auth; criar/alterar senha/migrar provisiona Auth; badge Auth/MD5 na lista de usuários; auto-vínculo no login Auth; sync fornecedores via erp-cenabr-proxy com JWT. Login MD5 e RLS bloqueante ainda NÃO alterados.',
+    ]},
+    {v:'7.9.798', d:'15/08/2026', itens:[
+      'Cadastros → Fornecedores: corrige exclusão que não sumia da lista (buscava só em fornecedores e ignorava _fornDB); cadastro passa a gravar UUID real do Supabase; soft-delete com fallback hard se coluna ausente.',
+    ]},
+    {v:'7.9.797', d:'15/08/2026', itens:[
+      'Segurança Fase 2A: soft-delete em tabelas críticas; Edge Functions scaffold (erp-cenabr-proxy, teste-auth-segura); SQL deleted_at + auth_user_id (rascunho); exclusões financeiras/usuário com guardrail admin/gestor. Login MD5 e RLS bloqueante ainda NÃO alterados.',
+    ]},
     {v:'7.9.796', d:'15/08/2026', itens:[
       'Segurança Fase 1: remove Bearer erp.cenabr.app do frontend; sync de fornecedores ERP desativado temporariamente (reativação via backend seguro); credenciais locais removidas do workspace.',
     ]},
@@ -67289,6 +67650,58 @@ function _salvarEquipeLocal(){
   }catch(e){}
 }
 
+/** Após MD5 válido: cria/entra no Auth com a mesma senha e vincula auth_user_id.
+ *  Retorna {ok:true}|{ok:false, motivo, mensagem} */
+async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
+  if(!supabaseClient || !userRow || !userRow.id) return {ok:false, motivo:'no_client'};
+  try{
+    var signIn = await supabaseClient.auth.signInWithPassword({email:email, password:senha});
+    if(signIn.error || !(signIn.data && signIn.data.session)){
+      var signUp = await supabaseClient.auth.signUp({
+        email:email,
+        password:senha,
+        options:{ data:{ erp_usuario_id:userRow.id, nome:userRow.nome||'' } }
+      });
+      if(signUp.error){
+        var msg = String(signUp.error.message||signUp.error||'');
+        var already = /already|registered|exists/i.test(msg);
+        console.warn('[Auth] upgrade signUp:', msg);
+        if(already){
+          return {
+            ok:false,
+            motivo:'auth_senha_divergente',
+            mensagem:'Conta Auth já existe com outra senha. No Supabase → Authentication → Users: apague o usuário deste e-mail (ou defina a mesma senha do ERP) e entre de novo.'
+          };
+        }
+        return {ok:false, motivo:'signup_error', mensagem:msg};
+      }
+      if(signUp.data && signUp.data.session){
+        signIn = signUp;
+      } else {
+        signIn = await supabaseClient.auth.signInWithPassword({email:email, password:senha});
+        if(signIn.error || !(signIn.data && signIn.data.session)){
+          return {
+            ok:false,
+            motivo:'confirm_email',
+            mensagem:'Auth criado, mas sem sessão. Em Authentication → Providers → Email, desative Confirm email e tente de novo.'
+          };
+        }
+      }
+    }
+    _sbAuthToken = signIn.data.session.access_token;
+    var authUid = signIn.data.session.user && signIn.data.session.user.id;
+    if(authUid && userRow.auth_user_id !== authUid){
+      await sbUpdate('usuarios_sistema',{auth_user_id:authUid},'id=eq.'+userRow.id);
+      userRow.auth_user_id = authUid;
+    }
+    console.log('[Auth] upgrade MD5→Auth OK', authUid);
+    return {ok:true, auth_user_id:authUid};
+  }catch(e){
+    console.warn('[Auth] upgrade MD5→Auth falhou:', e);
+    return {ok:false, motivo:'exception', mensagem:String(e&&e.message||e)};
+  }
+}
+
 var _loginTentativas=0,_loginBloqueadoAte=0;
 async function fazerLogin(){
   var email=document.getElementById('login-email').value.trim();
@@ -67303,26 +67716,73 @@ async function fazerLogin(){
   if(!email||!senha){document.getElementById('login-err').textContent='Preencha e-mail e senha.';document.getElementById('login-err').classList.remove('hidden');return;}
   try{
     var user=null;
-    if(DEMO){user={id:'u0',nome:'Demo Admin',email:email,perfil:'admin'};}
+    var loginVia='';
+    if(DEMO){user={id:'u0',nome:'Demo Admin',email:email,perfil:'admin'}; loginVia='demo';}
     else{
-      // ── 1ª tentativa: Supabase Auth (usuários migrados) ──────────────
+      // ── 1ª tentativa: Supabase Auth ────────────────────────────────
+      var authErrMsg='';
       if(supabaseClient){
         try{
           var authRes = await supabaseClient.auth.signInWithPassword({email:email,password:senha});
           if(!authRes.error && authRes.data && authRes.data.session){
             _sbAuthToken = authRes.data.session.access_token;
+            var authUid = authRes.data.session.user && authRes.data.session.user.id;
             var uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'ativo=eq.true']});
-            if(uRes&&uRes.length) user = uRes[0];
+            if(uRes&&uRes.length){
+              user = uRes[0];
+              loginVia='auth';
+              if(authUid && !user.auth_user_id){
+                try{
+                  await sbUpdate('usuarios_sistema',{auth_user_id:authUid},'id=eq.'+user.id);
+                  user.auth_user_id = authUid;
+                  console.log('[Auth] auto-vinculo auth_user_id', authUid);
+                }catch(eLink){ console.warn('[Auth] auto-vinculo falhou:', eLink); }
+              }
+            } else {
+              // Auth OK mas sem linha em usuarios_sistema
+              await supabaseClient.auth.signOut().catch(function(){});
+              _sbAuthToken=null;
+              document.getElementById('login-err').textContent='Conta Auth existe, mas não há usuário ativo no ERP com este e-mail.';
+              document.getElementById('login-err').classList.remove('hidden');
+              return;
+            }
+          } else if(authRes && authRes.error){
+            authErrMsg = authRes.error.message||'';
+            // Invalid login credentials é esperado antes do upgrade MD5→Auth
+            if(!/invalid login credentials/i.test(authErrMsg))
+              console.warn('[Auth] signIn:', authErrMsg);
+            else
+              console.log('[Auth] sem sessão Auth — tentando MD5/upgrade…');
           }
-        }catch(e){ console.warn('[Auth] signInWithPassword falhou:',e); }
+        }catch(e){ console.warn('[Auth] signInWithPassword falhou:',e); authErrMsg=String(e&&e.message||e); }
       }
-      // ── 2ª tentativa: MD5 legado (usuários ainda não migrados) ───────
+      // ── Auth falhou: ponte MD5 + upgrade (mesmo se já tiver auth_user_id) ──
       if(!user){
         var hash=md5js(senha);
         var res=await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'senha_hash=eq.'+hash,'ativo=eq.true']});
-        if(res&&res.length>0) user=res[0];
-        // MD5 bem-sucedido: garantir que não fica com token de sessão anterior
-        if(user) _sbAuthToken=null;
+        if(res&&res.length>0){
+          user=res[0];
+          var up = await _loginUpgradeMd5ParaAuth(email, senha, user);
+          if(up && up.ok){
+            loginVia='auth-upgrade';
+          } else {
+            _sbAuthToken=null;
+            loginVia='md5';
+            var motivo = up && up.motivo;
+            console.warn('[Auth] permaneceu em MD5', motivo||'', up&&up.mensagem||'');
+            // Conta Auth com senha diferente: avisa e não deixa “falso Auth”
+            if(motivo==='auth_senha_divergente' || motivo==='confirm_email'){
+              document.getElementById('login-err').textContent=(up&&up.mensagem)||'Não foi possível ativar Auth.';
+              document.getElementById('login-err').classList.remove('hidden');
+              // ainda entra via MD5 (user já setado) — só aviso visual no erro; limpa após 8s
+              setTimeout(function(){
+                var el=document.getElementById('login-err');
+                if(el && !document.getElementById('pg-login').classList.contains('hidden')===false){ /* app aberta */ }
+              }, 50);
+              if(typeof progShowToast==='function') progShowToast('⚠ Login MD5 OK, Auth pendente: '+(up.mensagem||motivo),'erro');
+            }
+          }
+        }
       }
     }
     if(!user){
@@ -67332,6 +67792,7 @@ async function fazerLogin(){
       document.getElementById('login-err').textContent='E-mail ou senha incorretos.'+(restam>0?' ('+restam+' tentativa'+(restam>1?'s':'')+' restante'+(restam>1?'s':'')+')':'');
       document.getElementById('login-err').classList.remove('hidden');return;
     }
+    console.log('[Login] via='+loginVia+' authToken='+(!!_sbAuthToken)+' auth_user_id='+(user.auth_user_id||'null'));
     _loginTentativas=0;_loginBloqueadoAte=0;
     usuarioLogado=user;
     try{localStorage.setItem('cena_user',JSON.stringify({id:user.id,nome:user.nome,email:user.email,perfil:user.perfil,contrato_id:user.contrato_id||'',equipe_id:user.equipe_id||'',equipe_codigo:user.equipe_codigo||'',ts:Date.now()}));}catch(e){}
@@ -76027,7 +76488,7 @@ function fdocAba(aba){
     }
   });
   if(aba==='dashboard') fdocRenderDashboard();
-  if(aba==='docs')      { fdocRenderDocs(); fdocPopularContratos(); }
+  if(aba==='docs')      { fdocPopularContratos(); fdocRenderDocs(); }
   if(aba==='motoristas'){ fmdEnsureLoaded().then(function(){ fmdRender(); }); }
   if(aba==='multas')    fdocRenderMultas();
   if(aba==='alertas')   fdocRenderAlertas();
@@ -76627,72 +77088,148 @@ function fdocRenderDashVeiculos(hoje, em30){
   wrap.innerHTML=html+'</tbody></table>';
 }
 
-// ── Aba Documentos ─────────────────────────────────────────
-function fdocRenderDocs(){
+// ── Aba Documentos (consulta manutenções + anexos) ─────────
+function fdocManutTemAnexo(m){
+  if(!m) return false;
+  return !!(m.anexo_compra_url || m.link_requisicao_compra);
+}
+function fdocManutAnexosHtml(m){
+  var parts=[];
+  if(m.anexo_compra_url){
+    parts.push('<a href="'+escHtml(m.anexo_compra_url)+'" target="_blank" rel="noopener" style="font-size:11px;color:#185FA5;margin-right:6px" onclick="event.stopPropagation()">📎 Anexo OC/RC</a>');
+  }
+  if(m.link_requisicao_compra){
+    parts.push('<a href="'+escHtml(m.link_requisicao_compra)+'" target="_blank" rel="noopener" style="font-size:11px;color:#3B6D11" onclick="event.stopPropagation()">🔗 Link RC</a>');
+  }
+  if(!parts.length) return '<span style="color:#ccc;font-size:11px">—</span>';
+  return parts.join(' ');
+}
+function fdocRenderDocs(opts){
+  opts=opts||{};
   var hoje=dataHojeLocal();
   var em30=_diasAdiante(30);
   var tb=document.getElementById('frt-doc-tbody'); if(!tb) return;
-  var placa  =((document.getElementById('fdoc-fil-placa')||{}).value||'').toUpperCase();
-  var tipo   =(document.getElementById('fdoc-fil-tipo')||{}).value||'';
-  var status =(document.getElementById('fdoc-fil-status')||{}).value||'';
-  var cid    =(document.getElementById('fdoc-fil-cont')||{}).value||'';
+  var busca =((document.getElementById('fdoc-fil-placa')||{}).value||'').trim();
+  var tipo  =(document.getElementById('fdoc-fil-tipo')||{}).value||'';
+  var status=(document.getElementById('fdoc-fil-status')||{}).value||'';
+  var anexo =(document.getElementById('fdoc-fil-anexo')||{}).value||'';
+  var cid   =(document.getElementById('fdoc-fil-cont')||{}).value||'';
 
-  var todos=frt_documentos||[];
-  // Auto-calcular vencidos
-  todos.forEach(function(d){
-    if(d.status!=='Pago'&&d.status!=='Cancelado'&&d.data_vencimento&&d.data_vencimento<hoje) d.status='Vencido';
-  });
+  // Garante manutenções carregadas
+  if(!opts._skipDb && !DEMO && typeof frtFetchManutencoesCompleto==='function'){
+    var precisa=!(frt_manutencoes&&frt_manutencoes.length);
+    var precisaBusca=!!busca && String(busca).replace(/[^A-Za-z0-9]/g,'').length>=2;
+    if(precisa || precisaBusca){
+      if(window._fdocManutLock) return;
+      window._fdocManutLock=true;
+      tb.innerHTML='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#888">Carregando documentos de manutenção...</td></tr>';
+      var p=precisa?frtFetchManutencoesCompleto().then(function(r){ if(r&&r.length) frt_manutencoes=r; }):Promise.resolve();
+      p.then(function(){
+        if(precisaBusca && typeof frtManutBuscarPlacaNoBanco==='function') return frtManutBuscarPlacaNoBanco(busca);
+      }).then(function(){
+        window._fdocManutLock=false;
+        fdocRenderDocs({_skipDb:true});
+      }).catch(function(){
+        window._fdocManutLock=false;
+        fdocRenderDocs({_skipDb:true});
+      });
+      return;
+    }
+  }
 
-  var rows=todos.filter(function(d){
-    if(d.tipo==='Multa') return false; // multas na própria aba
-    if(placa&&(d.placa||'').toUpperCase().indexOf(placa)<0) return false;
-    if(tipo&&fdocNormTipo(d.tipo)!==fdocNormTipo(tipo)) return false;
-    if(status&&d.status!==status) return false;
-    if(cid){var v=frt_veiculos.find(function(x){return x.placa===d.placa;});if(!v||v.contrato_id!==cid)return false;}
+  var rows=(frt_manutencoes||[]).filter(function(m){
+    if(tipo && String(m.tipo||'')!==tipo) return false;
+    if(status && String(m.status||'')!==status) return false;
+    var tem=fdocManutTemAnexo(m);
+    if(anexo==='com' && !tem) return false;
+    if(anexo==='sem' && tem) return false;
+    if(busca){
+      var placa=typeof frtManutPlacaOf==='function'?frtManutPlacaOf(m):(m.placa||'');
+      var okPlaca=(typeof frtPlacaMatchBusca==='function')
+        ? (frtPlacaMatchBusca(placa,busca)||frtPlacaMatchBusca(m.placa,busca))
+        : (String(placa).toUpperCase().indexOf(busca.toUpperCase())>=0);
+      var okMod=String(m.modelo||'').toLowerCase().indexOf(busca.toLowerCase())>=0;
+      var okDesc=String(m.descricao||'').toLowerCase().indexOf(busca.toLowerCase())>=0;
+      if(!okPlaca && !okMod && !okDesc) return false;
+    }
+    if(cid){
+      var placa2=typeof frtManutPlacaOf==='function'?frtManutPlacaOf(m):(m.placa||'');
+      var v=(frt_veiculos||[]).find(function(x){ return String(x.placa||'')===String(placa2||'') || String(x.id)===String(m.veiculo_id||''); });
+      if(!v || String(v.contrato_id||'')!==String(cid)) return false;
+    }
     return true;
   });
 
-  var nVenc=rows.filter(function(d){return d.status==='Vencido';}).length;
-  var nAV  =rows.filter(function(d){return d.status!=='Pago'&&d.data_vencimento&&d.data_vencimento>=hoje&&d.data_vencimento<=em30;}).length;
+  // mais recentes primeiro
+  rows=rows.slice().sort(function(a,b){
+    var da=String(a.data||a.data_solicitacao||a.created_at||'');
+    var db=String(b.data||b.data_solicitacao||b.created_at||'');
+    return db.localeCompare(da);
+  });
+
+  var nCom=rows.filter(fdocManutTemAnexo).length;
+  var nValVenc=rows.filter(function(m){
+    var i=typeof frtManutValidadeInfo==='function'?frtManutValidadeInfo(m):null;
+    return i&&i.nivel==='vencida';
+  }).length;
+  var nValAv=rows.filter(function(m){
+    var i=typeof frtManutValidadeInfo==='function'?frtManutValidadeInfo(m):null;
+    return i&&(i.nivel==='d10'||i.nivel==='d20');
+  }).length;
+
   var banner=document.getElementById('frt-doc-alerta-banner');
   if(banner){
-    if(nVenc||nAV){banner.style.display='';banner.textContent=(nVenc?nVenc+' vencido(s)  ':'')+( nAV?nAV+' vencendo em 30 dias':'');}
-    else banner.style.display='none';
+    if(busca || nCom || nValVenc){
+      banner.style.display='';
+      banner.textContent=(busca?('Filtro: '+busca+' · '):'')+rows.length+' manutenção(ões) · '+nCom+' com anexo'
+        +(nValVenc?(' · '+nValVenc+' validade vencida'):'')
+        +(nValAv?(' · '+nValAv+' validade a vencer'):'');
+    } else banner.style.display='none';
   }
 
   var met=document.getElementById('fdoc-docs-metricas');
   if(met) met.innerHTML=[
-    {l:'Total',    v:rows.length,                                             c:'#555'},
-    {l:'Regulares',v:rows.filter(function(d){return d.status!=='Vencido'&&!(d.data_vencimento&&d.data_vencimento<=em30);}).length,c:'#3B6D11'},
-    {l:'A vencer', v:nAV,                                                     c:'#854F0B'},
-    {l:'Vencidos', v:nVenc,                                                   c:'#A32D2D'},
-    {l:'Pagos',    v:rows.filter(function(d){return d.status==='Pago';}).length,c:'#185FA5'},
+    {l:'Total', v:rows.length, c:'#555'},
+    {l:'Com anexo', v:nCom, c:'#185FA5'},
+    {l:'Sem anexo', v:rows.length-nCom, c:'#888'},
+    {l:'Val. a vencer', v:nValAv, c:'#854F0B'},
+    {l:'Val. vencida', v:nValVenc, c:'#A32D2D'},
   ].map(function(x){
     return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.6rem .5rem;text-align:center">'
       +'<div style="font-size:9px;color:#888;margin-bottom:2px">'+x.l+'</div>'
       +'<div style="font-size:17px;font-weight:700;color:'+x.c+'">'+x.v+'</div></div>';
   }).join('');
 
-  if(!rows.length){tb.innerHTML='<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum documento encontrado.</td></tr>';return;}
+  if(!rows.length){
+    tb.innerHTML='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma manutenção encontrada. Ajuste os filtros ou cadastre em Frotas → Manutenções.</td></tr>';
+    return;
+  }
 
-  tb.innerHTML=rows.map(function(d){
-    var cv=fdocCorVenc(d.data_vencimento,hoje,em30);
-    var sc=FDOC_STATUS_COR[d.status]||{bg:'#f5f5f3',cor:'#888'};
-    var dias=fdocDiasVenc(d.data_vencimento,hoje);
-    return '<tr style="background:'+(d.status==='Vencido'?'#FFF5F5':'')+'">'
-      +'<td style="font-family:monospace;font-weight:700">'+escHtml(d.placa||'—')+'</td>'
-      +'<td style="font-size:12px">'+escHtml((function(){var v=frt_veiculos.find(function(x){return x.placa===d.placa;});return v?v.modelo||'—':'—';})())+'</td>'
-      +'<td><span class="bdg" style="background:'+cv.bg+';color:'+cv.cor+';font-size:11px">'+escHtml(d.tipo)+'</span></td>'
-      +'<td style="font-size:11px;color:#888;font-family:monospace">'+escHtml(d.numero_documento||'—')+'</td>'
-      +'<td style="font-size:12px">'+(d.data_emissao?fmtD(d.data_emissao):'—')+'</td>'
-      +'<td style="font-size:12px;font-weight:'+(dias!==null&&dias<=30?'600':'400')+';color:'+cv.cor+'">'
-        +(d.data_vencimento?fmtD(d.data_vencimento)+(dias!==null&&dias<=30&&dias>=0?' ('+dias+'d)':dias!==null&&dias<0?' ('+Math.abs(dias)+'d atrás)':''):'—')
-      +'</td>'
-      +'<td style="font-size:12px;text-align:right">'+(d.valor?'R$'+d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2}):'—')+'</td>'
-      +'<td><span class="bdg" style="background:'+sc.bg+';color:'+sc.cor+';font-size:11px">'+escHtml(d.status||'Pendente')+'</span></td>'
-      +'<td style="text-align:center">'+(d.pago?'<span style="color:#3B6D11;font-size:14px">✓</span>':'<span style="color:#ccc">—</span>')+'</td>'
-      +'<td style="white-space:nowrap"><button class="btn btn-sm" onclick="fdocVerDoc(\''+d.id+'\')" style="font-size:10px">Ver</button></td>'
-      +'</tr>';
+  tb.innerHTML=rows.map(function(m){
+    var placa=typeof frtManutPlacaOf==='function'?frtManutPlacaOf(m):(m.placa||'—');
+    var modelo=m.modelo||'';
+    if(!modelo){
+      var v=(frt_veiculos||[]).find(function(x){ return String(x.placa||'')===String(placa)||String(x.id)===String(m.veiculo_id||''); });
+      if(v) modelo=v.modelo||'';
+    }
+    var data=m.data||m.data_solicitacao||'';
+    var valInfo=typeof frtManutValidadeInfo==='function'?frtManutValidadeInfo(m):null;
+    var valHtml=typeof frtManutValidadeBadgeHtml==='function'?frtManutValidadeBadgeHtml(valInfo):(m.validade?fmtD(m.validade):'—');
+    var st=m.status||'—';
+    var mid=String(m.id||'').replace(/'/g,"\\'");
+    return '<tr>'
+      +'<td style="font-family:monospace;font-weight:700">'+escHtml(placa||'—')+'</td>'
+      +'<td style="font-size:12px">'+escHtml(modelo||'—')+'</td>'
+      +'<td style="font-size:12px">'+escHtml(m.tipo||'—')+'</td>'
+      +'<td style="font-size:12px">'+(data?fmtD(String(data).slice(0,10)):'—')+'</td>'
+      +'<td style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+escHtml(m.descricao||'')+'">'+escHtml((m.descricao||'—').slice(0,80))+'</td>'
+      +'<td style="font-size:11px">'+valHtml+'</td>'
+      +'<td><span class="bdg" style="font-size:11px">'+escHtml(st)+'</span></td>'
+      +'<td style="white-space:nowrap">'+fdocManutAnexosHtml(m)+'</td>'
+      +'<td style="white-space:nowrap">'
+        +'<button class="btn btn-sm" onclick="event.stopPropagation();frtAbrirFichaManutencao(\''+mid+'\')" style="font-size:10px">Ficha</button> '
+        +'<button class="btn btn-sm" onclick="event.stopPropagation();frtAbrirControleManutencao(\''+mid+'\')" style="font-size:10px">Controle</button>'
+      +'</td></tr>';
   }).join('');
 }
 
@@ -80195,6 +80732,13 @@ window.addEventListener('load',async function(){
         if(uRes && uRes.length){
           usuarioLogado = uRes[0];
           _restoredViaAuth = true;
+          var _authUidRest = sessRes.data.session.user && sessRes.data.session.user.id;
+          if(_authUidRest && !usuarioLogado.auth_user_id){
+            try{
+              await sbUpdate('usuarios_sistema',{auth_user_id:_authUidRest},'id=eq.'+usuarioLogado.id);
+              usuarioLogado.auth_user_id = _authUidRest;
+            }catch(eLink){ console.warn('[Auth] auto-vinculo restore falhou:', eLink); }
+          }
           console.log('[Auth] Sessão Supabase restaurada — perfil:',usuarioLogado.perfil);
           // Atualizar localStorage com dados do banco
           try{localStorage.setItem('cena_user',JSON.stringify({
@@ -80925,33 +81469,38 @@ window.addEventListener('load',async function(){
   <div id="fdoc-aba-docs" style="display:none">
     <div class="card" style="margin-bottom:1rem">
       <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📄 Documentos da Frota</span>
+        <span class="ct">📄 Documentos de Manutenção</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input class="inp" id="fdoc-fil-placa" placeholder="Buscar placa..." style="width:140px" oninput="fdocRenderDocs()"/>
-          <select class="inp" id="fdoc-fil-tipo" style="width:165px" onchange="fdocRenderDocs()">
+          <input class="inp" id="fdoc-fil-placa" placeholder="Placa / modelo..." style="width:160px" oninput="fdocRenderDocs()"/>
+          <select class="inp" id="fdoc-fil-tipo" style="width:160px" onchange="fdocRenderDocs()">
             <option value="">Todos os tipos</option>
-            <option>Taxa Municipal</option><option>IPVA</option><option>Licenciamento</option>
-            <option>Inspeção</option><option>Seguro</option><option>Cronotacógrafo</option>
-            <option>AET</option><option>Teste Dielétrico</option><option>Teste Acústico</option><option>Outros</option>
+            <option>Preventiva</option><option>Corretiva</option><option>Pneus</option>
+            <option>Elétrica</option><option>Freios</option><option>Motor</option><option>Outros</option>
           </select>
-          <select class="inp" id="fdoc-fil-status" style="width:155px" onchange="fdocRenderDocs()">
+          <select class="inp" id="fdoc-fil-status" style="width:150px" onchange="fdocRenderDocs()">
             <option value="">Todos os status</option>
-            <option>Pendente</option><option>Pago</option><option>Vencido</option>
-            <option>Parcelado</option><option>Em recurso</option><option>Cancelado</option>
+            <option>Solicitada</option><option>Em Análise</option><option>Aprovada</option>
+            <option>Requisição</option><option>Aguardando Peça</option><option>Em Execução</option>
+            <option>Concluída</option><option>Disponível</option><option>Negada</option>
+          </select>
+          <select class="inp" id="fdoc-fil-anexo" style="width:150px" onchange="fdocRenderDocs()">
+            <option value="">Anexos: todos</option>
+            <option value="com">Só com anexo</option>
+            <option value="sem">Sem anexo</option>
           </select>
           <select class="inp" id="fdoc-fil-cont" style="width:175px" onchange="fdocRenderDocs()">
             <option value="">Todos os contratos</option>
           </select>
-          <button class="btn btn-pri" onclick="fdocNovoDoc()">+ Documento</button>
+          <span style="font-size:11px;color:#888">Consulta — cadastro em Manutenções</span>
         </div>
       </div>
-      <div id="frt-doc-alerta-banner" style="display:none;background:#FCEBEB;border-radius:8px;padding:.6rem 1rem;margin:.5rem .75rem;font-size:12px;color:#A32D2D;font-weight:500"></div>
+      <div id="frt-doc-alerta-banner" style="display:none;background:#EBF4FD;border-radius:8px;padding:.6rem 1rem;margin:.5rem .75rem;font-size:12px;color:#185FA5;font-weight:500"></div>
     </div>
     <div id="fdoc-docs-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px;margin-bottom:1rem"></div>
     <div style="overflow-x:auto"><table class="tbl">
       <thead><tr>
-        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Nº Documento</th>
-        <th>Emissão</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Pago?</th><th></th>
+        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Data</th>
+        <th>Descrição</th><th>Validade</th><th>Status</th><th>Anexos</th><th></th>
       </tr></thead>
       <tbody id="frt-doc-tbody"></tbody>
     </table></div>
@@ -106464,33 +107013,38 @@ function comgasRemoverFoto(ncId, idx) {
   <div id="fdoc-aba-docs" style="display:none">
     <div class="card" style="margin-bottom:1rem">
       <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📄 Documentos da Frota</span>
+        <span class="ct">📄 Documentos de Manutenção</span>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input class="inp" id="fdoc-fil-placa" placeholder="Buscar placa..." style="width:140px" oninput="fdocRenderDocs()"/>
-          <select class="inp" id="fdoc-fil-tipo" style="width:165px" onchange="fdocRenderDocs()">
+          <input class="inp" id="fdoc-fil-placa" placeholder="Placa / modelo..." style="width:160px" oninput="fdocRenderDocs()"/>
+          <select class="inp" id="fdoc-fil-tipo" style="width:160px" onchange="fdocRenderDocs()">
             <option value="">Todos os tipos</option>
-            <option>Taxa Municipal</option><option>IPVA</option><option>Licenciamento</option>
-            <option>Inspeção</option><option>Seguro</option><option>Cronotacógrafo</option>
-            <option>AET</option><option>Teste Dielétrico</option><option>Teste Acústico</option><option>Outros</option>
+            <option>Preventiva</option><option>Corretiva</option><option>Pneus</option>
+            <option>Elétrica</option><option>Freios</option><option>Motor</option><option>Outros</option>
           </select>
-          <select class="inp" id="fdoc-fil-status" style="width:155px" onchange="fdocRenderDocs()">
+          <select class="inp" id="fdoc-fil-status" style="width:150px" onchange="fdocRenderDocs()">
             <option value="">Todos os status</option>
-            <option>Pendente</option><option>Pago</option><option>Vencido</option>
-            <option>Parcelado</option><option>Em recurso</option><option>Cancelado</option>
+            <option>Solicitada</option><option>Em Análise</option><option>Aprovada</option>
+            <option>Requisição</option><option>Aguardando Peça</option><option>Em Execução</option>
+            <option>Concluída</option><option>Disponível</option><option>Negada</option>
+          </select>
+          <select class="inp" id="fdoc-fil-anexo" style="width:150px" onchange="fdocRenderDocs()">
+            <option value="">Anexos: todos</option>
+            <option value="com">Só com anexo</option>
+            <option value="sem">Sem anexo</option>
           </select>
           <select class="inp" id="fdoc-fil-cont" style="width:175px" onchange="fdocRenderDocs()">
             <option value="">Todos os contratos</option>
           </select>
-          <button class="btn btn-pri" onclick="fdocNovoDoc()">+ Documento</button>
+          <span style="font-size:11px;color:#888">Consulta — cadastro em Manutenções</span>
         </div>
       </div>
-      <div id="frt-doc-alerta-banner" style="display:none;background:#FCEBEB;border-radius:8px;padding:.6rem 1rem;margin:.5rem .75rem;font-size:12px;color:#A32D2D;font-weight:500"></div>
+      <div id="frt-doc-alerta-banner" style="display:none;background:#EBF4FD;border-radius:8px;padding:.6rem 1rem;margin:.5rem .75rem;font-size:12px;color:#185FA5;font-weight:500"></div>
     </div>
     <div id="fdoc-docs-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px;margin-bottom:1rem"></div>
     <div style="overflow-x:auto"><table class="tbl">
       <thead><tr>
-        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Nº Documento</th>
-        <th>Emissão</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Pago?</th><th></th>
+        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Data</th>
+        <th>Descrição</th><th>Validade</th><th>Status</th><th>Anexos</th><th></th>
       </tr></thead>
       <tbody id="frt-doc-tbody"></tbody>
     </table></div>
