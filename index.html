@@ -5421,10 +5421,14 @@ async function chamarEdgeFunction(nome, body){
   var data = null;
   try{ data = txt ? JSON.parse(txt) : null; }catch(e){ data = { raw:txt }; }
   if(!r.ok){
-    var err = (data && (data.message || data.error || data.detail)) || ('HTTP '+r.status);
+    var code = data && (data.error || data.code);
+    var detail = data && (data.detail || data.message || data.msg);
+    var err = detail || code || ('HTTP '+r.status);
+    if(code && detail && String(code)!==String(detail)) err = String(code)+': '+String(detail);
     var e2 = new Error(typeof err==='string'?err:JSON.stringify(err));
     e2.status = r.status;
     e2.payload = data;
+    e2.code = code;
     throw e2;
   }
   return data;
@@ -5437,9 +5441,51 @@ async function provisionarUsuarioAuth(acao, opts){
     acao:acao,
     usuario_id:opts.usuario_id,
     email:opts.email,
+    email_anterior:opts.email_anterior||undefined,
     senha:opts.senha||undefined,
     auth_user_id:opts.auth_user_id||undefined
   });
+}
+
+/** Parte local só números → senha com 6 dígitos (zeros à esquerda). NÃO altera o e-mail. */
+function authPadReLocal(local){
+  var s=String(local||'').trim();
+  if(!/^\d+$/.test(s)) return null;
+  // Remove zeros à esquerda para achar o RE; depois completa 6 dígitos na senha
+  var re=s.replace(/^0+/,'');
+  if(!re) re='0';
+  if(re.length>=6) return re;
+  return ('000000'+re).slice(-6);
+}
+
+/** E-mail RE canônico: sem zeros à esquerda no local (000490@ → 490@). Senha = 6 dígitos. */
+function authNormalizarEmailRe(email){
+  var raw=String(email||'').trim().toLowerCase();
+  var at=raw.indexOf('@');
+  if(at<1) return { email:raw, emailAnterior:raw, senhaRe:null, mudou:false };
+  var local=raw.slice(0,at);
+  var dom=raw.slice(at+1);
+  if(!/^\d+$/.test(local)) return { email:raw, emailAnterior:raw, senhaRe:null, mudou:false };
+  var re=local.replace(/^0+/,'');
+  if(!re) re='0';
+  var emailCanon=re+'@'+dom;
+  var senha=authPadReLocal(local);
+  return { email:emailCanon, emailAnterior:raw, senhaRe:senha, mudou:emailCanon!==raw };
+}
+
+/** Variantes de e-mail RE para login Auth (com e sem zeros à esquerda). */
+function authEmailsLoginVariantes(email){
+  var raw=String(email||'').trim().toLowerCase();
+  var out=[];
+  function add(em){ if(em && out.indexOf(em)<0) out.push(em); }
+  add(raw);
+  var n=authNormalizarEmailRe(raw);
+  if(n && n.senhaRe){
+    add(n.email);
+    var at=raw.indexOf('@');
+    if(at>0) add(n.senhaRe+'@'+raw.slice(at+1));
+  }
+  return out;
 }
 
 /** API CenaBR via proxy — Bearer só no servidor. Retorna corpo upstream. */
@@ -13307,7 +13353,7 @@ function toggleEquipeField(){
 
 async function salvarNovoUsuario(){
   var nome=(document.getElementById('nu-nome')||{}).value.trim()||'';
-  var email=(document.getElementById('nu-email')||{}).value.trim()||'';
+  var email=((document.getElementById('nu-email')||{}).value||'').trim().toLowerCase();
   var senha=(document.getElementById('nu-senha')||{}).value||'';
   var senha2=(document.getElementById('nu-senha2')||{}).value||'';
   var perfil=(document.getElementById('nu-perfil')||{}).value||'admin';
@@ -13316,9 +13362,10 @@ async function salvarNovoUsuario(){
   var erroEl=document.getElementById('nu-erro');
 
   if(!nome||!email||!senha){if(erroEl){erroEl.textContent='Preencha nome, e-mail e senha.';erroEl.style.display='block';}return;}
+  if(email.indexOf('@')<0){if(erroEl){erroEl.textContent='E-mail inválido.';erroEl.style.display='block';}return;}
   if(senha.length<6){if(erroEl){erroEl.textContent='Senha deve ter no mínimo 6 caracteres.';erroEl.style.display='block';}return;}
   if(senha!==senha2){if(erroEl){erroEl.textContent='As senhas não coincidem.';erroEl.style.display='block';}return;}
-  if(usuarios_lista.find(function(u){return u.email.toLowerCase()===email.toLowerCase();})){
+  if(usuarios_lista.find(function(u){return String(u.email||'').toLowerCase()===email && u.ativo!==false && !u.deleted_at;})){
     if(erroEl){erroEl.textContent='Este e-mail já está cadastrado.';erroEl.style.display='block';}return;
   }
 
@@ -13331,18 +13378,62 @@ async function salvarNovoUsuario(){
     contrato_id:contId,filial_id:filialId||null,ativo:true};
 
   if(!DEMO){
-    // Verificar no banco antes de inserir — usuários_lista pode estar desatualizado
+    // Qualquer linha com o e-mail (ativo, inativo ou soft-deleted) — unique constraint cobre todos
     var existeNoBanco = await sbFetch('usuarios_sistema',{
-      filters:['email=eq.'+encodeURIComponent(email),'deleted_at=is.null'],
-      select:'id', limit:1
+      filters:['email=eq.'+encodeURIComponent(email)],
+      select:'id,nome,email,ativo,deleted_at,auth_user_id,perfil',
+      limit:5
     });
-    if(existeNoBanco && existeNoBanco.length){
-      if(erroEl){erroEl.textContent='Este e-mail já está cadastrado no sistema.';erroEl.style.display='block';}
+    var existente = (existeNoBanco && existeNoBanco[0]) || null;
+    if(existente){
+      var excluido = !!existente.deleted_at;
+      var inativo = existente.ativo===false;
+      if(!excluido && !inativo){
+        if(erroEl){erroEl.textContent='Este e-mail já está cadastrado ('+(existente.nome||email)+').';erroEl.style.display='block';}
+        return;
+      }
+      var acao = excluido ? 'reativar (estava excluído)' : 'reativar (estava inativo)';
+      if(!confirm('Já existe usuário com '+email+' — '+(existente.nome||'')+'.\n\nDeseja '+acao+' e atualizar nome/perfil/senha?')){
+        if(erroEl){erroEl.textContent='Cadastro cancelado. E-mail já existe no banco.';erroEl.style.display='block';}
+        return;
+      }
+      var patch={
+        nome:nome, email:email, senha_hash:hash, perfil:perfil,
+        equipe_id:eqId||'', equipe_codigo:eq?eq.codigo:'',
+        contrato_id:contId, filial_id:filialId||null,
+        ativo:true, deleted_at:null
+      };
+      var okRe = await sbUpdate('usuarios_sistema', patch, 'id=eq.'+existente.id);
+      if(!okRe){
+        if(erroEl){erroEl.textContent='Falha ao reativar usuário existente.';erroEl.style.display='block';}
+        return;
+      }
+      novo.id = existente.id;
+      novo.auth_user_id = existente.auth_user_id || null;
+      Object.assign(novo, patch);
+      // Atualiza lista local
+      var idxLoc = usuarios_lista.findIndex(function(x){return x.id===existente.id;});
+      if(idxLoc>=0) usuarios_lista[idxLoc]=Object.assign({},usuarios_lista[idxLoc],novo);
+      else usuarios_lista.push(novo);
+      if(_sbAuthToken && typeof provisionarUsuarioAuth==='function'){
+        try{
+          var authProvR = await provisionarUsuarioAuth('criar',{usuario_id:novo.id,email:email,senha:senha});
+          if(authProvR && authProvR.auth_user_id){
+            novo.auth_user_id = authProvR.auth_user_id;
+            if(idxLoc>=0) usuarios_lista[idxLoc].auth_user_id=authProvR.auth_user_id;
+          }
+        }catch(eAuthR){
+          console.warn('[Auth] reativar provisionar:', eAuthR);
+          progShowToast('Reativado (MD5). Auth pendente: '+(eAuthR&&eAuthR.message?eAuthR.message:eAuthR),'erro');
+        }
+      }
+      closeModal();renderUsuarios();renderUsuariosVis();
+      progShowToast('✅ Usuário '+nome+' reativado.');
       return;
     }
     var resultado = await sbInsert('usuarios_sistema', novo);
     if(!resultado){
-      if(erroEl){erroEl.textContent='Erro ao salvar. Verifique se o e-mail já existe ou tente novamente.';erroEl.style.display='block';}
+      if(erroEl){erroEl.textContent='Erro ao salvar. E-mail provavelmente já existe (constraint única). Busque o usuário na lista ou use filtro Todos.';erroEl.style.display='block';}
       return;
     }
     // Atualizar id local com o UUID do banco
@@ -13488,10 +13579,15 @@ function openMigrarUsuarioAuth(uid){
     progShowToast('Usuario já vinculado ao Auth.');
     return;
   }
+  var norm=authNormalizarEmailRe(u.email);
+  var hintSenha=norm.senhaRe
+    ? ('E-mail permanece <code>'+norm.email+'</code> · senha RE sugerida: <b>'+norm.senhaRe+'</b>'+(norm.mudou?' (corrigindo zeros no e-mail)':''))
+    : 'Defina uma senha (mín. 6). Pode ser só números.';
   setModal('<div class="modal-bg"><div class="modal"><h3>Migrar Auth — '+u.nome+'</h3>'
-    +'<p style="font-size:12px;color:#666;margin-bottom:.75rem">Cria conta no Supabase Auth e vincula <code>auth_user_id</code>. A senha MD5 atual é substituída pela nova.</p>'
-    +'<div class="fg"><label>Nova senha Auth</label><input id="ma-senha" type="password" style="width:100%" placeholder="Mínimo 6 caracteres"/></div>'
-    +'<div class="fg"><label>Confirmar</label><input id="ma-senha2" type="password" style="width:100%"/></div>'
+    +'<p style="font-size:12px;color:#666;margin-bottom:.75rem">E-mail RE <b>não</b> ganha zeros. Só a senha completa 6 dígitos (ex: 490@ → senha 000490).</p>'
+    +'<p style="font-size:12px;color:#185FA5;margin-bottom:.75rem">'+hintSenha+'</p>'
+    +'<div class="fg"><label>Nova senha Auth</label><input id="ma-senha" type="text" style="width:100%" placeholder="Mínimo 6" value="'+(norm.senhaRe||'')+'"/></div>'
+    +'<div class="fg"><label>Confirmar</label><input id="ma-senha2" type="text" style="width:100%" value="'+(norm.senhaRe||'')+'"/></div>'
     +'<div id="ma-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" id="btn-salvar-ma">Migrar</button></div></div></div>');
@@ -13499,18 +13595,62 @@ function openMigrarUsuarioAuth(uid){
     var s1=(document.getElementById('ma-senha')||{}).value||'';
     var s2=(document.getElementById('ma-senha2')||{}).value||'';
     var err=document.getElementById('ma-erro');
+    var btn=document.getElementById('btn-salvar-ma');
     if(s1.length<6){if(err){err.textContent='Mínimo 6 caracteres.';err.style.display='block';}return;}
     if(s1!==s2){if(err){err.textContent='As senhas não coincidem.';err.style.display='block';}return;}
+    if(!_sbAuthToken){
+      if(err){err.textContent='Sessão Auth necessária. Faça logout e login com um admin já migrado (JWT), não só MD5.';err.style.display='block';}
+      return;
+    }
+    if(err) err.style.display='none';
+    if(btn){ btn.disabled=true; btn.textContent='Migrando…'; }
+    var n=authNormalizarEmailRe(u.email);
+    var emailMig=n.email;
+    if(!emailMig || emailMig.indexOf('@')<0){
+      if(err){err.textContent='E-mail do usuário inválido ou vazio. Corrija o cadastro antes de migrar.';err.style.display='block';}
+      if(btn){ btn.disabled=false; btn.textContent='Migrar'; }
+      return;
+    }
     u.senha_hash=md5js(s1);
     try{
-      if(!DEMO) await sbUpdate('usuarios_sistema',{senha_hash:u.senha_hash},'id=eq.'+uid);
-      var authProv=await provisionarUsuarioAuth('criar',{usuario_id:u.id,email:u.email,senha:s1});
-      if(authProv && authProv.auth_user_id) u.auth_user_id=authProv.auth_user_id;
+      if(!DEMO){
+        var patch={senha_hash:u.senha_hash};
+        if(n.mudou) patch.email=emailMig;
+        await sbUpdate('usuarios_sistema',patch,'id=eq.'+uid);
+        if(n.mudou) u.email=emailMig;
+      }
+      var authProv=await provisionarUsuarioAuth('criar',{
+        usuario_id:u.id,
+        email:emailMig,
+        email_anterior:n.mudou?n.emailAnterior:undefined,
+        senha:s1
+      });
+      if(!authProv || authProv.ok===false || !authProv.auth_user_id){
+        var msgFalha=(authProv&&(authProv.message||authProv.detail||authProv.error))||'Edge Function não retornou auth_user_id.';
+        throw new Error(typeof msgFalha==='string'?msgFalha:JSON.stringify(msgFalha));
+      }
+      u.auth_user_id=authProv.auth_user_id;
+      if(authProv.email) u.email=authProv.email;
       closeModal();
       if(typeof renderUsuariosVis==='function') renderUsuariosVis();
-      progShowToast('✅ '+u.nome+' migrado para Auth');
+      if(typeof renderUsuarios==='function') renderUsuarios();
+      progShowToast('✅ '+u.nome+' migrado → '+u.email+(n.senhaRe&&s1===n.senhaRe?' (senha '+n.senhaRe+')':''));
     }catch(e){
-      if(err){err.textContent=(e&&e.message)||String(e);err.style.display='block';}
+      console.error('[Migrar Auth]',e,e&&e.payload);
+      var msg=(e&&e.message)||String(e);
+      var p=e&&e.payload;
+      if(p&&p.detail&&msg.indexOf(String(p.detail))<0) msg=msg+(msg?': ':'')+p.detail;
+      if(e&&e.status===401) msg='JWT inválido ou expirado. Faça login Auth (admin) de novo.';
+      if(e&&e.status===403) msg='Somente admin autenticado via Auth pode migrar usuários.';
+      if(e&&e.status===404) msg='Edge Function provisionar-usuario-auth não encontrada (deploy) ou usuário inexistente.';
+      var low=String(msg).toLowerCase();
+      if(low.indexOf('password')>=0||low.indexOf('senha')>=0)
+        msg+=' — Use senha com mín. 6 dígitos (números ok).';
+      if(low.indexOf('already')>=0||low.indexOf('registered')>=0||low.indexOf('exists')>=0)
+        msg='E-mail já existe no Auth. A função tenta vincular; se falhar, rode o UPDATE auth_user_id no SQL.';
+      if(err){err.textContent=msg;err.style.display='block';}
+      if(btn){ btn.disabled=false; btn.textContent='Migrar'; }
+      if(typeof progShowToast==='function') progShowToast('Falha na migração Auth: '+msg,'erro');
     }
   };
 }
@@ -14154,6 +14294,7 @@ function renderAuthMigracaoPainel(){
     +'<button class="btn btn-sm" onclick="authMigracaoMarcarRls2d()" title="Marcar que o SQL 2D foi aplicado neste ambiente">Marcar RLS 2D OK</button>'
     +(s.semAuth?'<button class="btn btn-sm" onclick="authMigracaoFiltrarPendentes()" style="border-color:#185FA5;color:#185FA5">Ver pendentes</button>':'')
     +(s.semAuth?'<button class="btn btn-sm" onclick="authMigracaoExportarPendentes()">Exportar e-mails</button>':'')
+    +(s.semAuth&&s.sessaoJwt?'<button class="btn btn-sm btn-pri" onclick="authMigracaoLoteTodos()" title="Migra TODOS os pendentes (RE = senha número; demais = senha temporária no CSV)">Migrar TODOS Auth</button>':'')
     +'</div></div></div>';
 }
 
@@ -14199,8 +14340,9 @@ function authMigracaoFiltrarPendentes(){
 function authMigracaoExportarPendentes(){
   var pend=(usuarios_lista||[]).filter(function(u){ return u && u.ativo!==false && !u.auth_user_id; });
   if(!pend.length){ progShowToast('Nenhum pendente.'); return; }
-  var lines=['nome;email;perfil'].concat(pend.map(function(u){
-    return [u.nome,u.email,u.perfil].map(function(x){ return '"'+String(x||'').replace(/"/g,'""')+'"'; }).join(';');
+  var lines=['nome;email;senha_sugerida;perfil'].concat(pend.map(function(u){
+    var n=authNormalizarEmailRe(u.email);
+    return [u.nome,n.email,n.senhaRe||'',u.perfil].map(function(x){ return '"'+String(x||'').replace(/"/g,'""')+'"'; }).join(';');
   }));
   var blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');
@@ -14210,6 +14352,97 @@ function authMigracaoExportarPendentes(){
   setTimeout(function(){ URL.revokeObjectURL(a.href); },500);
   progShowToast(pend.length+' e-mail(s) exportado(s)');
 }
+
+/** Senha temporária para e-mails não-RE (letras+números, 8 chars). */
+function authGerarSenhaTemp(){
+  var chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  var out='';
+  for(var i=0;i<8;i++) out+=chars.charAt(Math.floor(Math.random()*chars.length));
+  return out;
+}
+
+/** Migra TODOS os ativos sem auth_user_id.
+ *  RE (local só números): e-mail SEM zeros à esquerda; senha = número com 6 dígitos.
+ *  Demais: e-mail igual; senha temporária (CSV). */
+async function authMigracaoLoteTodos(){
+  if(!_sbAuthToken){
+    progShowToast('Login Auth (JWT) necessário.','erro');
+    return;
+  }
+  var pend=(usuarios_lista||[]).filter(function(u){
+    return u && u.ativo!==false && !u.deleted_at && !u.auth_user_id && u.email && String(u.email).indexOf('@')>0;
+  });
+  if(!pend.length){
+    progShowToast('Nenhum usuário ativo pendente de Auth.');
+    return;
+  }
+  var nRe=pend.filter(function(u){ return !!authNormalizarEmailRe(u.email).senhaRe; }).length;
+  var nOutros=pend.length-nRe;
+  if(!confirm(
+    'Migrar TODOS os '+pend.length+' pendente(s)?\n\n'+
+    '• RE ('+nRe+'): e-mail SEM zeros (490@); senha COM zeros (000490)\n'+
+    '• Outros ('+nOutros+'): senha temporária aleatória\n\n'+
+    'Baixa CSV com e-mail/senha de cada um. Continuar?'
+  )) return;
+
+  var ok=0, falha=0;
+  var linhas=['nome;email_antes;email_final;senha;tipo;status;detalhe'];
+  progShowToast('Migrando lote Auth… ('+pend.length+')');
+
+  for(var i=0;i<pend.length;i++){
+    var u=pend[i];
+    var n=authNormalizarEmailRe(u.email);
+    var tipo=n.senhaRe?'RE':'outro';
+    var senha=n.senhaRe || authGerarSenhaTemp();
+    var emailFinal=n.senhaRe ? n.email : String(u.email||'').trim().toLowerCase();
+    var emailAntes=String(u.email||'').trim().toLowerCase();
+    var st='ok', det='';
+    try{
+      u.senha_hash=md5js(senha);
+      if(!DEMO){
+        var patch={senha_hash:u.senha_hash};
+        if(emailFinal!==emailAntes) patch.email=emailFinal;
+        var updOk=await sbUpdate('usuarios_sistema',patch,'id=eq.'+u.id);
+        if(!updOk) throw new Error('Falha ao atualizar usuarios_sistema');
+        u.email=emailFinal;
+      }
+      var authProv=await provisionarUsuarioAuth('criar',{
+        usuario_id:u.id,
+        email:emailFinal,
+        email_anterior:(emailFinal!==emailAntes)?emailAntes:undefined,
+        senha:senha
+      });
+      if(!authProv || authProv.ok===false || !authProv.auth_user_id){
+        throw new Error((authProv&&(authProv.message||authProv.detail||authProv.error))||'sem auth_user_id');
+      }
+      u.auth_user_id=authProv.auth_user_id;
+      if(authProv.email) u.email=authProv.email;
+      ok++;
+    }catch(e){
+      falha++;
+      st='erro';
+      det=(e&&e.message)||String(e);
+      console.warn('[Auth lote]', emailAntes, e);
+    }
+    linhas.push([u.nome,emailAntes,emailFinal,senha,tipo,st,det].map(function(x){
+      return '"'+String(x||'').replace(/"/g,'""')+'"';
+    }).join(';'));
+  }
+
+  var blob=new Blob([linhas.join('\n')],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='auth_lote_todos_'+new Date().toISOString().slice(0,10)+'.csv';
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); },800);
+
+  renderAuthMigracaoPainel();
+  renderUsuariosVis();
+  progShowToast('Lote Auth: '+ok+' ok, '+falha+' falha(s). CSV baixado.', falha?'erro':'ok');
+}
+
+/** Alias legado */
+function authMigracaoLoteRe(){ return authMigracaoLoteTodos(); }
 
 async function authMigracaoRecarregar(){
   if(DEMO){ renderAuthMigracaoPainel(); renderUsuariosVis(); return; }
@@ -38871,10 +39104,22 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.824',
+  numero: '7.9.828',
   data:   '20/08/2026',
-  build:  '20260820-0110',
+  build:  '20260820-2020',
   log: [
+    {v:'7.9.828', d:'20/08/2026', itens:[
+      'Auth RE: email numerico completa 6 digitos; senha = o numero; Migrar lote RE; redeploy provisionar-usuario-auth.',
+    ]},
+    {v:'7.9.827', d:'20/08/2026', itens:[
+      'Novo usuário: se e-mail já existe (inativo/excluído) oferece sugerir reativar em vez de 409 duplicate key; e-mail normalizado em minúsculas.',
+    ]},
+    {v:'7.9.826', d:'20/08/2026', itens:[
+      'Migrar Auth: exibe detalhe real do Supabase (não só auth_create_failed); Edge Function melhora vínculo quando e-mail já existe no Auth.',
+    ]},
+    {v:'7.9.825', d:'20/08/2026', itens:[
+      'Corrige ping Azure da API de ponto (não bate mais na raiz / → 404 no console); Migrar Auth exibe erro real se a Edge Function falhar.',
+    ]},
     {v:'7.9.824', d:'20/08/2026', itens:[
       'SESMT Treinamentos/NRs: corrige nome "—" (resolve colaboradores.id); padrão oculta demitidos/inativos e órfãos; filtro Só ativos / Incluir demitidos / Só sem cadastro.',
     ]},
@@ -41135,9 +41380,13 @@ function pontoIniciarAgendador(){
   }, 5*60*1000); // a cada 5 minutos
 
   // Timer 3: ping a cada 10 minutos para evitar cold start do Azure App Service
+  // Usa /api/v1/health (ou /api/v1/ponto OPTIONS via HEAD) — NÃO a raiz /, que retorna 404.
   setInterval(function(){
     if(window.location.protocol==='file:') return;
-    fetch(pontoApiBase()).catch(function(){});
+    fetch(pontoApiBase()+'/api/v1/health',{method:'GET',mode:'cors'}).catch(function(){
+      // Fallback silencioso se /health não existir (evita poluir console com 404 da raiz)
+      fetch(pontoApiBase()+'/api/v1/ponto',{method:'OPTIONS'}).catch(function(){});
+    });
   }, 10*60*1000);
 }
 
@@ -70111,10 +70360,17 @@ function _salvarEquipeLocal(){
 async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
   if(!supabaseClient || !userRow || !userRow.id) return {ok:false, motivo:'no_client'};
   try{
-    var signIn = await supabaseClient.auth.signInWithPassword({email:email, password:senha});
-    if(signIn.error || !(signIn.data && signIn.data.session)){
+    var variantes=authEmailsLoginVariantes(email);
+    var signIn=null;
+    for(var vi=0;vi<variantes.length;vi++){
+      signIn = await supabaseClient.auth.signInWithPassword({email:variantes[vi], password:senha});
+      if(!signIn.error && signIn.data && signIn.data.session) break;
+      signIn=null;
+    }
+    if(!signIn || signIn.error || !(signIn.data && signIn.data.session)){
+      var emailSignUp=(authNormalizarEmailRe(email).email||email);
       var signUp = await supabaseClient.auth.signUp({
-        email:email,
+        email:emailSignUp,
         password:senha,
         options:{ data:{ erp_usuario_id:userRow.id, nome:userRow.nome||'' } }
       });
@@ -70126,7 +70382,7 @@ async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
           return {
             ok:false,
             motivo:'auth_senha_divergente',
-            mensagem:'Conta Auth já existe com outra senha. No Supabase → Authentication → Users: apague o usuário deste e-mail (ou defina a mesma senha do ERP) e entre de novo.'
+            mensagem:'Conta Auth já existe com outra senha. No ERP use Senha (admin) para alinhar MD5+Auth, ou ajuste no Dashboard Auth.'
           };
         }
         return {ok:false, motivo:'signup_error', mensagem:msg};
@@ -70134,8 +70390,12 @@ async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
       if(signUp.data && signUp.data.session){
         signIn = signUp;
       } else {
-        signIn = await supabaseClient.auth.signInWithPassword({email:email, password:senha});
-        if(signIn.error || !(signIn.data && signIn.data.session)){
+        for(var vj=0;vj<variantes.length;vj++){
+          signIn = await supabaseClient.auth.signInWithPassword({email:variantes[vj], password:senha});
+          if(!signIn.error && signIn.data && signIn.data.session) break;
+          signIn=null;
+        }
+        if(!signIn || signIn.error || !(signIn.data && signIn.data.session)){
           return {
             ok:false,
             motivo:'confirm_email',
@@ -70146,9 +70406,13 @@ async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
     }
     _sbAuthToken = signIn.data.session.access_token;
     var authUid = signIn.data.session.user && signIn.data.session.user.id;
-    if(authUid && userRow.auth_user_id !== authUid){
-      await sbUpdate('usuarios_sistema',{auth_user_id:authUid},'id=eq.'+userRow.id);
-      userRow.auth_user_id = authUid;
+    var patch={};
+    if(authUid && userRow.auth_user_id !== authUid) patch.auth_user_id=authUid;
+    var emailCanon=authNormalizarEmailRe(userRow.email||email).email;
+    if(emailCanon && userRow.email !== emailCanon) patch.email=emailCanon;
+    if(Object.keys(patch).length){
+      await sbUpdate('usuarios_sistema',patch,'id=eq.'+userRow.id);
+      Object.assign(userRow, patch);
     }
     console.log('[Auth] upgrade MD5→Auth OK', authUid);
     return {ok:true, auth_user_id:authUid};
@@ -70175,27 +70439,43 @@ async function fazerLogin(){
     var loginVia='';
     if(DEMO){user={id:'u0',nome:'Demo Admin',email:email,perfil:'admin'}; loginVia='demo';}
     else{
-      // ── 1ª tentativa: Supabase Auth ────────────────────────────────
+      // ── 1ª tentativa: Supabase Auth (tenta variantes RE com/sem zeros) ──
       var authErrMsg='';
       if(supabaseClient){
         try{
-          var authRes = await supabaseClient.auth.signInWithPassword({email:email,password:senha});
-          if(!authRes.error && authRes.data && authRes.data.session){
+          var variantesLogin=authEmailsLoginVariantes(email);
+          var authRes=null, emailAuthOk=null;
+          for(var li=0;li<variantesLogin.length;li++){
+            authRes = await supabaseClient.auth.signInWithPassword({email:variantesLogin[li],password:senha});
+            if(!authRes.error && authRes.data && authRes.data.session){ emailAuthOk=variantesLogin[li]; break; }
+          }
+          if(emailAuthOk && authRes && !authRes.error && authRes.data && authRes.data.session){
             _sbAuthToken = authRes.data.session.access_token;
             var authUid = authRes.data.session.user && authRes.data.session.user.id;
-            var uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'ativo=eq.true']});
+            // Busca usuário ERP pelo e-mail digitado OU pela variante canônica
+            var emailsBusca=variantesLogin.slice();
+            var uRes=null;
+            for(var bi=0;bi<emailsBusca.length && !(uRes&&uRes.length);bi++){
+              uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(emailsBusca[bi]),'ativo=eq.true']});
+            }
+            if(!(uRes&&uRes.length) && authUid){
+              uRes = await sbFetch('usuarios_sistema',{filters:['auth_user_id=eq.'+authUid,'ativo=eq.true']});
+            }
             if(uRes&&uRes.length){
               user = uRes[0];
               loginVia='auth';
-              if(authUid && !user.auth_user_id){
+              var emailCanon = authNormalizarEmailRe(user.email||email).email || user.email;
+              var patchLogin={};
+              if(authUid && !user.auth_user_id) patchLogin.auth_user_id=authUid;
+              if(emailCanon && user.email !== emailCanon) patchLogin.email=emailCanon;
+              if(Object.keys(patchLogin).length){
                 try{
-                  await sbUpdate('usuarios_sistema',{auth_user_id:authUid},'id=eq.'+user.id);
-                  user.auth_user_id = authUid;
-                  console.log('[Auth] auto-vinculo auth_user_id', authUid);
-                }catch(eLink){ console.warn('[Auth] auto-vinculo falhou:', eLink); }
+                  await sbUpdate('usuarios_sistema',patchLogin,'id=eq.'+user.id);
+                  Object.assign(user, patchLogin);
+                  console.log('[Auth] auto-ajuste', patchLogin);
+                }catch(eLink){ console.warn('[Auth] auto-ajuste falhou:', eLink); }
               }
             } else {
-              // Auth OK mas sem linha em usuarios_sistema
               await supabaseClient.auth.signOut().catch(function(){});
               _sbAuthToken=null;
               document.getElementById('login-err').textContent='Conta Auth existe, mas não há usuário ativo no ERP com este e-mail.';
@@ -70204,7 +70484,6 @@ async function fazerLogin(){
             }
           } else if(authRes && authRes.error){
             authErrMsg = authRes.error.message||'';
-            // Invalid login credentials é esperado antes do upgrade MD5→Auth
             if(!/invalid login credentials/i.test(authErrMsg))
               console.warn('[Auth] signIn:', authErrMsg);
             else
@@ -95304,7 +95583,7 @@ function sesmtCarregarTurmas(cb){
     promessas.push(sbFetchAll('treinamentos',{
       filters:['deleted_at=is.null'],
       order:'validade.desc',
-      select:'id,funcionario_id,curso_id,nr,titulo,val,validade,deleted_at'
+      select:'id,funcionario_id,curso_id,nr,titulo,validade,deleted_at'
     }));
   } else {
     promessas.push(Promise.resolve(null));
