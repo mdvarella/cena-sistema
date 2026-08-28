@@ -39495,10 +39495,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.841',
+  numero: '7.9.842',
   data:   '28/08/2026',
-  build:  '20260828-1815',
+  build:  '20260828-1840',
   log: [
+    {v:'7.9.842', d:'28/08/2026', itens:[
+      'Portaria: fotos de saída (odômetro, baú e extras) passam a gravar uma a uma no registro, no mesmo formato da foto de retorno — o Ver mostra todas.',
+    ]},
     {v:'7.9.841', d:'28/08/2026', itens:[
       'Portaria no tablet: fotos da câmera são comprimidas e guardadas em memória (não no campo hidden); se o Storage falhar, a foto pequena ainda fica no registro e aparece no Ver.',
     ]},
@@ -77362,7 +77365,24 @@ function portMesclarSaidas(rows){
   if(!rows||!rows.length) return;
   if(!frt_portaria) frt_portaria=[];
   function fotoOk(v){ return typeof portFotoSrcValido==='function' && !!portFotoSrcValido(v); }
-  function melhorFoto(a,b){ if(fotoOk(a)) return a; if(fotoOk(b)) return b; return a||b||null; }
+  function fotoScore(v){
+    var s=typeof portFotoSrcValido==='function'?portFotoSrcValido(v):'';
+    if(!s) return 0;
+    if(s.indexOf('data:image')===0) return 3;
+    if(s.indexOf('blob:')===0) return 2;
+    return 1;
+  }
+  function melhorFoto(a,b){ return fotoScore(a)>=fotoScore(b)?(a||b||null):(b||a||null); }
+  function extraScore(arr){
+    if(!Array.isArray(arr)||!arr.length) return 0;
+    var n=0, data=0;
+    arr.forEach(function(f){
+      var src=typeof f==='string'?f:(f&&(f.url||f.b64||f.src))||'';
+      var sc=fotoScore(src);
+      if(sc){ n++; if(sc>=3) data++; }
+    });
+    return data*10+n;
+  }
   rows.forEach(function(r){
     if(!r) return;
     var ix=frt_portaria.findIndex(function(p){return p && String(p.id)===String(r.id);});
@@ -77384,9 +77404,7 @@ function portMesclarSaidas(rows){
     merged.foto_carga_retorno_b64=melhorFoto(mem.foto_carga_retorno_b64, r.foto_carga_retorno_b64);
     var memExtras=Array.isArray(mem.fotos_carga_extras)?mem.fotos_carga_extras:[];
     var dbExtras=Array.isArray(r.fotos_carga_extras)?r.fotos_carga_extras:[];
-    var memTem=memExtras.some(function(f){return fotoOk(f)||fotoOk(f&&(f.url||f.b64));});
-    var dbTem=dbExtras.some(function(f){return fotoOk(f)||fotoOk(f&&(f.url||f.b64));});
-    merged.fotos_carga_extras=dbTem?dbExtras:(memTem?memExtras:dbExtras);
+    merged.fotos_carga_extras=extraScore(memExtras)>=extraScore(dbExtras)?memExtras:dbExtras;
     frt_portaria[ix]=merged;
   });
 }
@@ -78356,6 +78374,7 @@ function portAbrirLiberacaoEquipe(eqId, data){
       btn.textContent='⏳ Salvando fotos...';
       var _salvar=(!DEMO)?portInsertSaidaDB(saida):Promise.resolve();
       _salvar.then(function(){
+        portKmResetOcr();
         closeModal();
         portRenderEquipesDia();
         progShowToast('✅ Saída liberada'+(fotoB64?' com foto':'')+(temMateriais?' — '+todosItens.length+' item(ns) conferido(s)':'')+' · '+(placa||portNomeEquipe(eq)||''));
@@ -78367,7 +78386,6 @@ function portAbrirLiberacaoEquipe(eqId, data){
       });
       if(comp) comp._portaria_liberado = true;
       _portCnhExcecao=null;
-      portKmResetOcr();
     };
   },50);
 }
@@ -78889,8 +78907,8 @@ function portFotoLer(id){
 }
 function portComprimirArquivo(file, opts){
   opts = opts || {};
-  var MAX = opts.max || 720;
-  var Q = opts.q || 0.7;
+  var MAX = opts.max || 520;
+  var Q = opts.q || 0.58;
   return new Promise(function(resolve){
     function canvasDe(imgW, imgH, draw){
       var w=imgW, h=imgH;
@@ -78900,8 +78918,8 @@ function portComprimirArquivo(file, opts){
       draw(canvas.getContext('2d'), w, h);
       var q=Q, out='';
       try{ out=canvas.toDataURL('image/jpeg', q); }catch(e){ resolve(''); return; }
-      while(out && out.length>130000 && q>0.42){
-        q-=0.12;
+      while(out && out.length>100000 && q>0.38){
+        q-=0.1;
         try{ out=canvas.toDataURL('image/jpeg', q); }catch(e2){ break; }
       }
       resolve(out||'');
@@ -79045,7 +79063,7 @@ function portKmSetPreview(b64){
 }
 function portKmFotoManual(input, targetInputId){
   var file=input.files&&input.files[0]; if(!file) return;
-  portComprimirArquivo(file,{max:800,q:0.72}).then(function(b64){
+  portComprimirArquivo(file,{max:520,q:0.58}).then(function(b64){
     if(!b64){ progShowToast('Não foi possível ler a foto do odômetro. Tire de novo.','erro'); return; }
     portKmSetPreview(b64);
     var st=document.getElementById('port-km-status');
@@ -79071,18 +79089,9 @@ function portAbrirCameraOdometro(targetInputId){
     var reader=new FileReader();
     reader.onload=function(e){
       var dataUrl=e.target.result;
-      // preview compacto
-      var img=new Image();
-      img.onload=function(){
-        var canvas=document.createElement('canvas');
-        var MAX=800, w=img.width, h=img.height;
-        if(w>MAX||h>MAX){ if(w>h){h=Math.round(h*MAX/w);w=MAX;} else {w=Math.round(w*MAX/h);h=MAX;} }
-        canvas.width=w; canvas.height=h;
-        canvas.getContext('2d').drawImage(img,0,0,w,h);
-        var b64Prev=canvas.toDataURL('image/jpeg',0.8);
-        portKmSetPreview(b64Prev);
-      };
-      img.src=dataUrl;
+      portComprimirArquivo(file,{max:520,q:0.58}).then(function(b64Prev){
+        portKmSetPreview(b64Prev||dataUrl);
+      });
 
       var base64=String(dataUrl).split(',')[1];
       var mediaType=file.type||'image/jpeg';
@@ -79191,6 +79200,47 @@ function portKmAnexarSaida(saida, meta){
   return saida;
 }
 
+function portPickCols(obj, keys){
+  var o={};
+  (keys||[]).forEach(function(k){
+    if(obj[k]!==undefined && obj[k]!==null && obj[k]!=='') o[k]=obj[k];
+  });
+  return o;
+}
+function portOptsContratoHtml(selectedId){
+  var list=(contratos||[]).filter(function(c){ return c && c.ativo!==false; });
+  return '<option value="">Selecione o contrato...</option>'+list.map(function(c){
+    var lab=((c.codigo||c.numero)?(c.codigo||c.numero)+' — ':'')+(c.nome||c.id);
+    return '<option value="'+escHtml(String(c.id))+'"'+(String(c.id)===String(selectedId||'')?' selected':'')+'>'+escHtml(lab)+'</option>';
+  }).join('');
+}
+function portFotoEncolher(dataUrl, maxLen){
+  maxLen=maxLen||100000;
+  return new Promise(function(resolve){
+    if(!dataUrl || String(dataUrl).indexOf('data:image')!==0){ resolve(dataUrl||''); return; }
+    if(dataUrl.length<=maxLen){ resolve(dataUrl); return; }
+    var img=new Image();
+    img.onload=function(){
+      function tryDraw(side, q){
+        var w=img.width, h=img.height;
+        if(w>side||h>side){ if(w>h){h=Math.round(h*side/w);w=side;} else {w=Math.round(w*side/h);h=side;} }
+        var canvas=document.createElement('canvas');
+        canvas.width=w; canvas.height=h;
+        canvas.getContext('2d').drawImage(img,0,0,w,h);
+        try{ return canvas.toDataURL('image/jpeg', q); }catch(e){ return ''; }
+      }
+      var q=0.6, side=520, out=tryDraw(side,q);
+      while(out && out.length>maxLen && (q>0.34 || side>260)){
+        if(q>0.34) q-=0.08;
+        else { side=Math.round(side*0.75); q=0.52; }
+        out=tryDraw(side,q);
+      }
+      resolve(out||dataUrl);
+    };
+    img.onerror=function(){ resolve(dataUrl); };
+    img.src=dataUrl;
+  });
+}
 function portDataUrlToBlob(dataUrl, nome){
   if(!dataUrl || String(dataUrl).indexOf('data:')!==0) return null;
   var parts=String(dataUrl).split(',');
@@ -79206,46 +79256,38 @@ function portDataUrlToBlob(dataUrl, nome){
 async function portUploadFotoSaida(dataUrl, prefixo){
   if(!dataUrl) return null;
   var s=String(dataUrl);
-  if(/^https?:\/\//i.test(s)) return s;
   if(s.charAt(0)==='[') return null;
+  if(/^https?:\/\//i.test(s)) return s;
   if(s.indexOf('data:')!==0) return null;
-  var blob=portDataUrlToBlob(s, prefixo+'.jpg');
-  var dia=(typeof dataHojeLocal==='function'?dataHojeLocal():'dia');
-  var path='frotas/portaria/'+dia+'/'+Date.now()+'_'+Math.random().toString(36).slice(2,8)+'_'+prefixo+'.jpg';
-  if(blob && typeof SB!=='undefined' && SB.url){
-    try{
+  var compact=s;
+  try{ compact=await portFotoEncolher(s, 100000); }catch(e){ compact=s; }
+  if(!(compact && compact.indexOf('data:image')===0)) compact=s;
+  // Storage é opcional e em segundo plano: o Ver mostra o JPEG gravado no registro
+  // (URL pública do bucket costuma dar 403 no tablet — a foto de retorno já funciona assim).
+  try{
+    var blob=portDataUrlToBlob(compact, (prefixo||'foto')+'.jpg');
+    if(blob && typeof SB!=='undefined' && SB.url){
+      var dia=(typeof dataHojeLocal==='function'?dataHojeLocal():'dia');
+      var path='frotas/portaria/'+dia+'/'+Date.now()+'_'+Math.random().toString(36).slice(2,8)+'_'+(prefixo||'foto')+'.jpg';
       var tipo=(blob.type && String(blob.type).indexOf('image/')===0)?blob.type:'image/jpeg';
       var enc=path.split('/').map(encodeURIComponent).join('/');
       var url=SB.url+'/storage/v1/object/cena-docs/'+enc;
       var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':tipo,'x-upsert':'true'};
-      var r=await fetch(url,{method:'POST',headers:h,body:blob});
-      if(r.ok) return SB.url+'/storage/v1/object/public/cena-docs/'+enc;
-      console.warn('[Portaria] upload HTTP', r.status, await r.text().catch(function(){return '';}));
-    }catch(e){ console.warn('[Portaria] upload foto',e); }
-  }
-  // Tablet: se o Storage falhar, guarda JPEG compacto no próprio registro
-  if(s.indexOf('data:image')===0 && s.length<=140000) return s;
-  return null;
+      fetch(url,{method:'POST',headers:h,body:blob}).catch(function(){});
+    }
+  }catch(e){}
+  return compact;
 }
 
-function portPickCols(obj, keys){
-  var o={};
-  (keys||[]).forEach(function(k){
-    if(obj[k]!==undefined && obj[k]!==null && obj[k]!=='') o[k]=obj[k];
-  });
-  return o;
+async function portPatchFotoCampo(id, campo, valor){
+  if(!id || !campo || valor==null || valor==='') return false;
+  if(typeof isUUID==='function' && !isUUID(String(id))) return false;
+  var o={}; o[campo]=valor;
+  var ok=await sbUpdate('frotas_portaria_saidas', o, 'id=eq.'+id);
+  return !!ok;
 }
 
-/** Options HTML de contratos ativos (vistoria). */
-function portOptsContratoHtml(selectedId){
-  var list=(contratos||[]).filter(function(c){ return c && c.ativo!==false; });
-  return '<option value="">Selecione o contrato...</option>'+list.map(function(c){
-    var lab=((c.codigo||c.numero)?(c.codigo||c.numero)+' — ':'')+(c.nome||c.id);
-    return '<option value="'+escHtml(String(c.id))+'"'+(String(c.id)===String(selectedId||'')?' selected':'')+'>'+escHtml(lab)+'</option>';
-  }).join('');
-}
-
-/** Insere uma NOVA saída (não sobrescreve dia anterior) e grava fotos num PATCH separado. */
+/** Insere uma NOVA saída e grava cada foto num PATCH separado (igual o retorno). */
 async function portInsertSaidaDB(saida){
   if(DEMO||!saida) return null;
   var kmUrl=await portUploadFotoSaida(saida.km_foto_url,'km');
@@ -79260,13 +79302,11 @@ async function portInsertSaidaDB(saida){
   }
   if(kmUrl) saida.km_foto_url=kmUrl;
   if(cargaUrl) saida.foto_carga_saida_b64=cargaUrl;
-  saida.fotos_carga_extras=extras;
+  saida.fotos_carga_extras=extras.filter(function(x){return !!x.url;});
 
   var coreKeys=['placa','modelo','tipo_liberacao','destino','km_saida','data_saida','status',
     'previsao_retorno','equipe_id','motorista','contrato_id','contrato_nome',
     'base_saida','quem_saiu','liberado_por','obs','veiculo_id'];
-  var fotoKeys=['km_lido_ocr','km_foto_url','km_ocr_confianca','km_confirmado_por','km_confirmado_em',
-    'foto_carga_saida_b64','foto_carga_saida_ts','tem_materiais_saida','fotos_carga_extras'];
   var core=portPickCols(saida, coreKeys);
   if(core.equipe_id && typeof isUUID==='function' && !isUUID(String(core.equipe_id))) delete core.equipe_id;
 
@@ -79275,15 +79315,20 @@ async function portInsertSaidaDB(saida){
     var mini=portPickCols(saida, ['placa','km_saida','data_saida','status','motorista','liberado_por','obs','base_saida','contrato_id','contrato_nome','destino']);
     r=await sbInsert('frotas_portaria_saidas', mini, {silent:true});
   }
-  if(!r){
-    r=await sbInsert('frotas_portaria_saidas', core);
-  }
+  if(!r) r=await sbInsert('frotas_portaria_saidas', core);
   if(r && r[0] && r[0].id) saida.id=r[0].id;
-  if(saida.id && typeof isUUID==='function' && isUUID(String(saida.id))){
-    var fotos=portPickCols(saida, fotoKeys);
-    if(Object.keys(fotos).length){
-      await sbUpdate('frotas_portaria_saidas', fotos, 'id=eq.'+saida.id);
+  var id=saida.id;
+  if(id && typeof isUUID==='function' && isUUID(String(id))){
+    await portPatchFotoCampo(id,'km_foto_url', saida.km_foto_url);
+    await portPatchFotoCampo(id,'foto_carga_saida_b64', saida.foto_carga_saida_b64);
+    await portPatchFotoCampo(id,'foto_carga_saida_ts', saida.foto_carga_saida_ts);
+    if(saida.fotos_carga_extras && saida.fotos_carga_extras.length){
+      await portPatchFotoCampo(id,'fotos_carga_extras', saida.fotos_carga_extras);
     }
+    await portPatchFotoCampo(id,'km_lido_ocr', saida.km_lido_ocr);
+    await portPatchFotoCampo(id,'km_ocr_confianca', saida.km_ocr_confianca);
+    await portPatchFotoCampo(id,'km_confirmado_por', saida.km_confirmado_por);
+    await portPatchFotoCampo(id,'tem_materiais_saida', saida.tem_materiais_saida);
   }
   return r;
 }
@@ -79294,7 +79339,7 @@ function portFotosExtraAdd(input){
   var arr=portFotosExtraColetar();
   var pending=files.length;
   files.forEach(function(file){
-    portComprimirArquivo(file,{max:720,q:0.7}).then(function(b64){
+    portComprimirArquivo(file,{max:480,q:0.55}).then(function(b64){
       if(b64) arr.push({nome:file.name||('foto.jpg'), b64:b64});
       pending--;
       portFotosExtraPersist(arr);
@@ -83577,13 +83622,20 @@ function frtPortariaVerDetalhe(id){
   var p=(frt_portaria||[]).find(function(x){return String(x.id)===String(id);});
   if(!p){ progShowToast('Registro não encontrado.','erro'); return; }
   frtPortariaMostrarDetalhe(p);
+  if(DEMO || typeof isUUID!=='function' || !isUUID(String(p.id))) return;
+  sbFetch('frotas_portaria_saidas',{filters:['id=eq.'+p.id], limit:1}).then(function(rows){
+    if(!rows || !rows[0]) return;
+    portMesclarSaidas(rows);
+    var p2=(frt_portaria||[]).find(function(x){return String(x.id)===String(id);})||p;
+    frtPortariaMostrarDetalhe(p2);
+  }).catch(function(){});
 }
 function frtPortariaFotoThumb(src, label){
   var u=portFotoSrcValido(src);
   if(u){
     return '<div style="min-width:120px;max-width:180px">'
       +'<div style="font-size:10px;color:#888;margin-bottom:4px">'+escHtml(label)+'</div>'
-      +'<img src="'+u+'" alt="" style="width:100%;height:120px;object-fit:cover;border-radius:8px;border:.5px solid #e0dfd8;cursor:pointer" onclick="window.open(this.src)"/>'
+      +'<img src="'+u+'" alt="" style="width:100%;height:120px;object-fit:cover;border-radius:8px;border:.5px solid #e0dfd8;cursor:pointer" onclick="window.open(this.src)" onerror="this.onerror=null;this.style.display=\'none\';this.insertAdjacentHTML(\'afterend\',\'<div style=font-size:10px;color:#854F0B>Arquivo não abriu. Novas saídas gravam a foto no registro.</div>\')"/>'
       +'</div>';
   }
   if(src && (String(src).indexOf('[foto')>=0 || (typeof src==='object' && src.marcador))){
