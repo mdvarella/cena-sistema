@@ -39495,11 +39495,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.842',
+  numero: '7.9.843',
   data:   '28/08/2026',
-  build:  '20260828-1840',
+  build:  '20260828-1905',
   log: [
-    {v:'7.9.842', d:'28/08/2026', itens:[
+    {v:'7.9.843', d:'28/08/2026', itens:[
+      'Portaria: odômetro e fotos extras passam a gravar no mesmo tipo de campo da foto de carga (texto). Se a coluna antiga falhar, as três fotos de saída ficam juntas no registro da carga — o Ver separa e mostra todas.',
+    ]},
       'Portaria: fotos de saída (odômetro, baú e extras) passam a gravar uma a uma no registro, no mesmo formato da foto de retorno — o Ver mostra todas.',
     ]},
     {v:'7.9.841', d:'28/08/2026', itens:[
@@ -77361,6 +77363,35 @@ function portFiltrosDataSaida(ini, fim){
   if(!a) return [];
   return ['data_saida=gte.'+a, 'data_saida=lt.'+portIsoMais1(b)];
 }
+/** JPEG em coluna *_b64, ou pacote {v:1,carga,km,extras} gravado em foto_carga_saida_b64 quando km/extras falham. */
+function portAplicarFotosPacote(p){
+  if(!p) return p;
+  var raw=p.foto_carga_saida_b64;
+  if(typeof raw==='string' && raw.charAt(0)==='{'){
+    try{
+      var o=JSON.parse(raw);
+      if(o && (o.v===1 || o.carga || o.km)){
+        if(o.carga) p.foto_carga_saida_b64=o.carga;
+        if(o.km && !portFotoSrcValido(p.km_foto_url)) p.km_foto_url=o.km;
+        if(Array.isArray(o.extras) && o.extras.length){
+          var cur=Array.isArray(p.fotos_carga_extras)?p.fotos_carga_extras:[];
+          var curOk=cur.some(function(f){ return portFotoSrcValido(typeof f==='string'?f:(f&&(f.url||f.b64))); });
+          if(!curOk) p.fotos_carga_extras=o.extras;
+        }
+      }
+    }catch(e){}
+  }
+  if(!portFotoSrcValido(p.km_foto_url) && p.foto_odometro_b64) p.km_foto_url=p.foto_odometro_b64;
+  var extras=Array.isArray(p.fotos_carga_extras)?p.fotos_carga_extras.slice():[];
+  var extrasOk=extras.some(function(f){ return portFotoSrcValido(typeof f==='string'?f:(f&&(f.url||f.b64))); });
+  if(!extrasOk){
+    ['foto_extra_1_b64','foto_extra_2_b64'].forEach(function(k,i){
+      if(portFotoSrcValido(p[k])) extras.push({nome:'Foto extra '+(i+1), url:p[k], b64:p[k]});
+    });
+    if(extras.length) p.fotos_carga_extras=extras;
+  }
+  return p;
+}
 function portMesclarSaidas(rows){
   if(!rows||!rows.length) return;
   if(!frt_portaria) frt_portaria=[];
@@ -77396,8 +77427,10 @@ function portMesclarSaidas(rows){
           && String(p.equipe_id||p.equipe||'')===String(r.equipe_id||r.equipe||'');
       });
     }
-    if(ix<0){ frt_portaria.push(r); return; }
+    if(ix<0){ frt_portaria.push(portAplicarFotosPacote(r)); return; }
     var mem=frt_portaria[ix];
+    portAplicarFotosPacote(mem);
+    portAplicarFotosPacote(r);
     var merged=Object.assign({}, mem, r);
     merged.km_foto_url=melhorFoto(mem.km_foto_url, r.km_foto_url);
     merged.foto_carga_saida_b64=melhorFoto(mem.foto_carga_saida_b64, r.foto_carga_saida_b64);
@@ -79089,8 +79122,9 @@ function portAbrirCameraOdometro(targetInputId){
     var reader=new FileReader();
     reader.onload=function(e){
       var dataUrl=e.target.result;
-      portComprimirArquivo(file,{max:520,q:0.58}).then(function(b64Prev){
-        portKmSetPreview(b64Prev||dataUrl);
+      portComprimirArquivo(file,{max:480,q:0.55}).then(function(b64Prev){
+        if(b64Prev) portKmSetPreview(b64Prev);
+        else progShowToast('Não foi possível compactar a foto do odômetro. Tire de novo.','erro');
       });
 
       var base64=String(dataUrl).split(',')[1];
@@ -79286,8 +79320,13 @@ async function portPatchFotoCampo(id, campo, valor){
   var ok=await sbUpdate('frotas_portaria_saidas', o, 'id=eq.'+id);
   return !!ok;
 }
+function portFotoCampoSrc(f){
+  if(!f) return '';
+  if(typeof f==='string') return f;
+  return f.url||f.b64||f.src||'';
+}
 
-/** Insere uma NOVA saída e grava cada foto num PATCH separado (igual o retorno). */
+/** Insere uma NOVA saída e grava cada foto no mesmo formato da carga (texto). */
 async function portInsertSaidaDB(saida){
   if(DEMO||!saida) return null;
   var kmUrl=await portUploadFotoSaida(saida.km_foto_url,'km');
@@ -79296,13 +79335,13 @@ async function portInsertSaidaDB(saida){
   var extraSrc=Array.isArray(saida.fotos_carga_extras)?saida.fotos_carga_extras:[];
   for(var i=0;i<extraSrc.length;i++){
     var f=extraSrc[i];
-    var src=typeof f==='string'?f:(f&&(f.url||f.b64)||'');
+    var src=portFotoCampoSrc(f);
     var url=await portUploadFotoSaida(src,'extra_'+i);
-    extras.push({i:i, nome:(f&&f.nome)||('extra_'+(i+1)), url:url||null});
+    if(url) extras.push({i:i, nome:(f&&f.nome)||('extra_'+(i+1)), url:url, b64:url});
   }
   if(kmUrl) saida.km_foto_url=kmUrl;
   if(cargaUrl) saida.foto_carga_saida_b64=cargaUrl;
-  saida.fotos_carga_extras=extras.filter(function(x){return !!x.url;});
+  saida.fotos_carga_extras=extras;
 
   var coreKeys=['placa','modelo','tipo_liberacao','destino','km_saida','data_saida','status',
     'previsao_retorno','equipe_id','motorista','contrato_id','contrato_nome',
@@ -79319,11 +79358,25 @@ async function portInsertSaidaDB(saida){
   if(r && r[0] && r[0].id) saida.id=r[0].id;
   var id=saida.id;
   if(id && typeof isUUID==='function' && isUUID(String(id))){
-    await portPatchFotoCampo(id,'km_foto_url', saida.km_foto_url);
-    await portPatchFotoCampo(id,'foto_carga_saida_b64', saida.foto_carga_saida_b64);
+    var km=saida.km_foto_url;
+    var carga=saida.foto_carga_saida_b64;
+    var okKm=await portPatchFotoCampo(id,'km_foto_url', km);
+    if(!okKm) okKm=await portPatchFotoCampo(id,'foto_odometro_b64', km);
+    var okCarga=await portPatchFotoCampo(id,'foto_carga_saida_b64', carga);
     await portPatchFotoCampo(id,'foto_carga_saida_ts', saida.foto_carga_saida_ts);
-    if(saida.fotos_carga_extras && saida.fotos_carga_extras.length){
-      await portPatchFotoCampo(id,'fotos_carga_extras', saida.fotos_carga_extras);
+    var okEx=true;
+    if(extras.length){
+      okEx=await portPatchFotoCampo(id,'fotos_carga_extras', extras);
+      var e0=portFotoCampoSrc(extras[0]);
+      var e1=extras[1]?portFotoCampoSrc(extras[1]):'';
+      var okE1=e0?await portPatchFotoCampo(id,'foto_extra_1_b64', e0):true;
+      var okE2=e1?await portPatchFotoCampo(id,'foto_extra_2_b64', e1):true;
+      if(!okEx) okEx=okE1 && (!e1 || okE2);
+    }
+    if((km && !okKm) || (extras.length && !okEx)){
+      var pack=JSON.stringify({v:1, carga:carga||null, km:km||null, extras:extras||[]});
+      var okPack=await portPatchFotoCampo(id,'foto_carga_saida_b64', pack);
+      if(!okPack && carga && !okCarga) await portPatchFotoCampo(id,'foto_carga_saida_b64', carga);
     }
     await portPatchFotoCampo(id,'km_lido_ocr', saida.km_lido_ocr);
     await portPatchFotoCampo(id,'km_ocr_confianca', saida.km_ocr_confianca);
@@ -83654,6 +83707,7 @@ function frtPortariaFotosExtrasHtml(extras){
   }).join('');
 }
 function frtPortariaMostrarDetalhe(p){
+  p=portAplicarFotosPacote(Object.assign({}, p||{}));
   var eq=portBuscarEquipe(p.equipe_id||p.equipe)||{};
   var eqN=(p.equipe&&p.equipe!=='null'&&!/^[0-9a-f]{8}-/i.test(String(p.equipe))) ? p.equipe : portNomeEquipe(eq, p.equipe);
   var obs=p.obs||p.observacao||'';
