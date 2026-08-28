@@ -17809,7 +17809,7 @@ async function sbUpload(file, path){
   try{
     var SB_BUCKET='cena-docs';
     var url=SB.url+'/storage/v1/object/'+SB_BUCKET+'/'+path;
-    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':file.type};
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':(file&&file.type)?file.type:'application/octet-stream','x-upsert':'true'};
     var r=await fetch(url,{method:'POST',headers:h,body:file});
     if(r.ok) return SB.url+'/storage/v1/object/public/'+SB_BUCKET+'/'+path;
     // Fallback: converter para base64 e salvar inline
@@ -39495,10 +39495,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.840',
+  numero: '7.9.841',
   data:   '28/08/2026',
-  build:  '20260828-1735',
+  build:  '20260828-1815',
   log: [
+    {v:'7.9.841', d:'28/08/2026', itens:[
+      'Portaria no tablet: fotos da câmera são comprimidas e guardadas em memória (não no campo hidden); se o Storage falhar, a foto pequena ainda fica no registro e aparece no Ver.',
+    ]},
     {v:'7.9.840', d:'28/08/2026', itens:[
       'Portaria: fotos de saída e retorno ficam no registro (Storage + link); cada dia é uma saída nova — o dia seguinte não apaga as fotos anteriores.',
     ]},
@@ -77204,7 +77207,7 @@ function portAbrirVistoriaRetorno(saidaId){
       var km    = parseInt((document.getElementById('ret-km')||{}).value||'0')||0;
       var quem  = portNomePorteiroAtual();
       var obs   = ((document.getElementById('ret-obs')||{}).value||'').trim();
-      var fotoB64 = ((document.getElementById('ret-foto-b64')||{}).value||'');
+      var fotoB64 = portFotoLer('ret-foto-b64') || ((document.getElementById('ret-foto-b64')||{}).value||'');
 
       if(temMat && !fotoB64){
         progShowToast('⚠ Obrigatório: tire a foto da carga antes de confirmar o retorno.','erro');
@@ -78286,7 +78289,7 @@ function portAbrirLiberacaoEquipe(eqId, data){
       var km      = parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
       var quem    = ((document.getElementById('lib-eq-quem')||{}).value||'').trim();
       var obs     = ((document.getElementById('lib-eq-obs')||{}).value||'').trim();
-      var fotoB64 = ((document.getElementById('lib-foto-b64')||{}).value||'');
+      var fotoB64 = portFotoLer('lib-foto-b64') || ((document.getElementById('lib-foto-b64')||{}).value||'');
       var fotosExtra = portFotosExtraColetar();
 
       if(!contId){ progShowToast('⚠ Selecione o contrato.','erro'); return; }
@@ -78864,31 +78867,75 @@ function portToggleFotoAvaria(val){
 }
 
 
+window._portFotoMem = window._portFotoMem || {};
+function portFotoGuardar(id, dataUrl){
+  window._portFotoMem = window._portFotoMem || {};
+  if(id) window._portFotoMem[id] = dataUrl || null;
+  var hid = document.getElementById(id);
+  if(!hid) return;
+  try{
+    if(dataUrl && dataUrl.length < 60000) hid.value = dataUrl;
+    else hid.value = dataUrl ? '[mem]' : '';
+  }catch(e){ try{ hid.value=''; }catch(e2){} }
+}
+function portFotoLer(id){
+  var mem = (window._portFotoMem||{})[id];
+  if(mem && (String(mem).indexOf('data:image')===0 || /^https?:\/\//i.test(String(mem)))) return mem;
+  var hid = document.getElementById(id);
+  var v = hid && hid.value;
+  if(v && String(v).indexOf('data:image')===0) return v;
+  if(id==='port-km-foto' && _portKmOcr && _portKmOcr.km_foto_url) return _portKmOcr.km_foto_url;
+  return null;
+}
+function portComprimirArquivo(file, opts){
+  opts = opts || {};
+  var MAX = opts.max || 720;
+  var Q = opts.q || 0.7;
+  return new Promise(function(resolve){
+    function canvasDe(imgW, imgH, draw){
+      var w=imgW, h=imgH;
+      if(w>MAX||h>MAX){ if(w>h){h=Math.round(h*MAX/w);w=MAX;} else {w=Math.round(w*MAX/h);h=MAX;} }
+      var canvas=document.createElement('canvas');
+      canvas.width=w; canvas.height=h;
+      draw(canvas.getContext('2d'), w, h);
+      var q=Q, out='';
+      try{ out=canvas.toDataURL('image/jpeg', q); }catch(e){ resolve(''); return; }
+      while(out && out.length>130000 && q>0.42){
+        q-=0.12;
+        try{ out=canvas.toDataURL('image/jpeg', q); }catch(e2){ break; }
+      }
+      resolve(out||'');
+    }
+    if(typeof createImageBitmap==='function'){
+      createImageBitmap(file).then(function(bmp){
+        canvasDe(bmp.width, bmp.height, function(ctx,w,h){ ctx.drawImage(bmp,0,0,w,h); });
+        if(bmp.close) try{ bmp.close(); }catch(e){}
+      }).catch(function(){ viaReader(); });
+    } else viaReader();
+    function viaReader(){
+      var reader=new FileReader();
+      reader.onload=function(e){
+        var img=new Image();
+        img.onload=function(){
+          canvasDe(img.width, img.height, function(ctx,w,h){ ctx.drawImage(img,0,0,w,h); });
+        };
+        img.onerror=function(){ resolve(''); };
+        img.src=e.target.result;
+      };
+      reader.onerror=function(){ resolve(''); };
+      reader.readAsDataURL(file);
+    }
+  });
+}
+
 function portFotoPreview(input, previewId, hiddenId){
   var file = input.files && input.files[0]; if(!file) return;
-  // Limitar tamanho: redimensionar se necessário
-  var reader = new FileReader();
-  reader.onload = function(e){
-    var img = new Image();
-    img.onload = function(){
-      var canvas = document.createElement('canvas');
-      var MAX = 600;
-      var w = img.width, h = img.height;
-      if(w > MAX || h > MAX){
-        if(w > h){ h = Math.round(h*MAX/w); w = MAX; }
-        else      { w = Math.round(w*MAX/h); h = MAX; }
-      }
-      canvas.width=w; canvas.height=h;
-      canvas.getContext('2d').drawImage(img,0,0,w,h);
-      var b64 = canvas.toDataURL('image/jpeg',0.75);
-      var prev = document.getElementById(previewId);
-      if(prev) prev.innerHTML = '<img src="'+b64+'" style="width:100%;height:100%;object-fit:cover">';
-      var hid = document.getElementById(hiddenId);
-      if(hid) hid.value = b64;
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+  portComprimirArquivo(file).then(function(b64){
+    if(!b64){ progShowToast('Não foi possível ler a foto. Tire de novo.','erro'); return; }
+    portFotoGuardar(hiddenId, b64);
+    var prev = document.getElementById(previewId);
+    if(prev) prev.innerHTML = '<img src="'+b64+'" style="width:100%;height:100%;object-fit:cover">';
+  });
 }
 
 // ══ FASE 2 — KM Portaria com foto / OCR ═══════════════════════
@@ -78898,6 +78945,7 @@ var PORT_KM_CONF_BAIXA=0.5;
 
 function portKmResetOcr(){
   _portKmOcr={km_lido_ocr:null,km_foto_url:null,km_ocr_confianca:null,targetId:null};
+  if(typeof portFotoGuardar==='function') portFotoGuardar('port-km-foto', null);
 }
 function portKmUltimoRegistrado(placa){
   var pl=portNormPlaca(placa);
@@ -78988,34 +79036,21 @@ function portKmMostrarAlertasPlaca(inputId){
 }
 function portKmSetPreview(b64){
   var prev=document.getElementById('port-km-prev');
-  var hid=document.getElementById('port-km-foto');
-  if(hid) hid.value=b64||'';
+  portFotoGuardar('port-km-foto', b64||null);
+  _portKmOcr.km_foto_url=b64||null;
   if(prev){
     if(b64) prev.innerHTML='<img src="'+b64+'" style="width:100%;height:100%;object-fit:cover">';
     else prev.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:9px;text-align:center">Sem<br>foto</div>';
   }
-  _portKmOcr.km_foto_url=b64||null;
 }
 function portKmFotoManual(input, targetInputId){
   var file=input.files&&input.files[0]; if(!file) return;
-  if(file.size>2.5*1024*1024){ progShowToast('Foto maior que 2,5 MB. Reduza o tamanho.','erro'); input.value=''; return; }
-  var reader=new FileReader();
-  reader.onload=function(e){
-    var img=new Image();
-    img.onload=function(){
-      var canvas=document.createElement('canvas');
-      var MAX=800, w=img.width, h=img.height;
-      if(w>MAX||h>MAX){ if(w>h){h=Math.round(h*MAX/w);w=MAX;} else {w=Math.round(w*MAX/h);h=MAX;} }
-      canvas.width=w; canvas.height=h;
-      canvas.getContext('2d').drawImage(img,0,0,w,h);
-      var b64=canvas.toDataURL('image/jpeg',0.8);
-      portKmSetPreview(b64);
-      var st=document.getElementById('port-km-status');
-      if(st){ st.textContent='Foto anexada. Informe o KM manualmente ou use OCR.'; st.style.color='#185FA5'; }
-    };
-    img.src=e.target.result;
-  };
-  reader.readAsDataURL(file);
+  portComprimirArquivo(file,{max:800,q:0.72}).then(function(b64){
+    if(!b64){ progShowToast('Não foi possível ler a foto do odômetro. Tire de novo.','erro'); return; }
+    portKmSetPreview(b64);
+    var st=document.getElementById('port-km-status');
+    if(st){ st.textContent='Foto anexada. Informe o KM manualmente ou use OCR.'; st.style.color='#185FA5'; }
+  });
 }
 /** OCR odômetro — mesmo proxy do Diário de Bordo; grava evidência + confiança. */
 function portAbrirCameraOdometro(targetInputId){
@@ -79108,7 +79143,7 @@ function portAbrirCameraOdometro(targetInputId){
 }
 /** Coleta metadados KM/OCR dos campos ocultos + estado. */
 function portKmColetarMeta(){
-  var foto=((document.getElementById('port-km-foto')||{}).value)||_portKmOcr.km_foto_url||null;
+  var foto=portFotoLer('port-km-foto')||_portKmOcr.km_foto_url||null;
   var ocrRaw=((document.getElementById('port-km-ocr')||{}).value);
   var confRaw=((document.getElementById('port-km-conf')||{}).value);
   var ocr=ocrRaw!==''&&ocrRaw!=null?parseFloat(ocrRaw):( _portKmOcr.km_lido_ocr!=null?_portKmOcr.km_lido_ocr:null);
@@ -79173,14 +79208,23 @@ async function portUploadFotoSaida(dataUrl, prefixo){
   var s=String(dataUrl);
   if(/^https?:\/\//i.test(s)) return s;
   if(s.charAt(0)==='[') return null;
-  if(s.indexOf('data:')!==0) return /^https?:\/\//i.test(s)?s:null;
+  if(s.indexOf('data:')!==0) return null;
   var blob=portDataUrlToBlob(s, prefixo+'.jpg');
-  if(!blob || typeof sbUpload!=='function') return null;
-  var path='frotas/portaria/'+(typeof dataHojeLocal==='function'?dataHojeLocal():'dia')+'/'+Date.now()+'_'+Math.random().toString(36).slice(2,8)+'_'+prefixo+'.jpg';
-  try{
-    var url=await sbUpload(blob, path);
-    if(url && /^https?:\/\//i.test(String(url))) return url;
-  }catch(e){ console.warn('[Portaria] upload foto',e); }
+  var dia=(typeof dataHojeLocal==='function'?dataHojeLocal():'dia');
+  var path='frotas/portaria/'+dia+'/'+Date.now()+'_'+Math.random().toString(36).slice(2,8)+'_'+prefixo+'.jpg';
+  if(blob && typeof SB!=='undefined' && SB.url){
+    try{
+      var tipo=(blob.type && String(blob.type).indexOf('image/')===0)?blob.type:'image/jpeg';
+      var enc=path.split('/').map(encodeURIComponent).join('/');
+      var url=SB.url+'/storage/v1/object/cena-docs/'+enc;
+      var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':tipo,'x-upsert':'true'};
+      var r=await fetch(url,{method:'POST',headers:h,body:blob});
+      if(r.ok) return SB.url+'/storage/v1/object/public/cena-docs/'+enc;
+      console.warn('[Portaria] upload HTTP', r.status, await r.text().catch(function(){return '';}));
+    }catch(e){ console.warn('[Portaria] upload foto',e); }
+  }
+  // Tablet: se o Storage falhar, guarda JPEG compacto no próprio registro
+  if(s.indexOf('data:image')===0 && s.length<=140000) return s;
   return null;
 }
 
@@ -79215,9 +79259,7 @@ async function portInsertSaidaDB(saida){
     extras.push({i:i, nome:(f&&f.nome)||('extra_'+(i+1)), url:url||null});
   }
   if(kmUrl) saida.km_foto_url=kmUrl;
-  else if(saida.km_foto_url && String(saida.km_foto_url).indexOf('data:')===0) saida.km_foto_url=null;
   if(cargaUrl) saida.foto_carga_saida_b64=cargaUrl;
-  else if(saida.foto_carga_saida_b64 && String(saida.foto_carga_saida_b64).indexOf('data:')===0) saida.foto_carga_saida_b64=null;
   saida.fotos_carga_extras=extras;
 
   var coreKeys=['placa','modelo','tipo_liberacao','destino','km_saida','data_saida','status',
@@ -79249,58 +79291,46 @@ async function portInsertSaidaDB(saida){
 function portFotosExtraAdd(input){
   var files=input&&input.files?Array.prototype.slice.call(input.files):[];
   if(!files.length) return;
-  var wrap=document.getElementById('lib-fotos-extra-prev');
-  var hid=document.getElementById('lib-fotos-extra-json');
-  var arr=[];
-  try{ arr=JSON.parse((hid&&hid.value)||'[]'); }catch(e){ arr=[]; }
-  if(!Array.isArray(arr)) arr=[];
+  var arr=portFotosExtraColetar();
   var pending=files.length;
   files.forEach(function(file){
-    var reader=new FileReader();
-    reader.onload=function(e){
-      var img=new Image();
-      img.onload=function(){
-        var canvas=document.createElement('canvas');
-        var MAX=600, w=img.width, h=img.height;
-        if(w>MAX||h>MAX){ if(w>h){h=Math.round(h*MAX/w);w=MAX;} else {w=Math.round(w*MAX/h);h=MAX;} }
-        canvas.width=w; canvas.height=h;
-        canvas.getContext('2d').drawImage(img,0,0,w,h);
-        var b64=canvas.toDataURL('image/jpeg',0.75);
-        arr.push({nome:file.name, b64:b64});
-        if(hid) hid.value=JSON.stringify(arr);
-        if(wrap){
-          wrap.innerHTML=arr.map(function(f,i){
-            return '<div style="position:relative;width:72px;height:54px;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8">'
-              +'<img src="'+f.b64+'" style="width:100%;height:100%;object-fit:cover"/>'
-              +'<button type="button" onclick="portFotosExtraDel('+i+')" style="position:absolute;top:2px;right:2px;background:#A32D2D;color:#fff;border:0;border-radius:3px;font-size:10px;padding:0 4px;cursor:pointer">×</button>'
-              +'</div>';
-          }).join('');
-        }
-        pending--;
-        if(pending<=0 && input) input.value='';
-      };
-      img.src=e.target.result;
-    };
-    reader.readAsDataURL(file);
+    portComprimirArquivo(file,{max:720,q:0.7}).then(function(b64){
+      if(b64) arr.push({nome:file.name||('foto.jpg'), b64:b64});
+      pending--;
+      portFotosExtraPersist(arr);
+      if(pending<=0 && input) input.value='';
+    });
   });
 }
-function portFotosExtraDel(idx){
+function portFotosExtraPersist(arr){
+  window._portFotoMem = window._portFotoMem || {};
+  window._portFotoMem['lib-fotos-extra-json'] = arr;
   var hid=document.getElementById('lib-fotos-extra-json');
   var wrap=document.getElementById('lib-fotos-extra-prev');
-  var arr=[];
-  try{ arr=JSON.parse((hid&&hid.value)||'[]'); }catch(e){ arr=[]; }
-  arr.splice(idx,1);
-  if(hid) hid.value=JSON.stringify(arr);
+  try{
+    if(hid){
+      var js=JSON.stringify(arr);
+      hid.value = js.length<50000 ? js : JSON.stringify(arr.map(function(f,i){return {nome:f.nome,i:i,tem:true};}));
+    }
+  }catch(e){ if(hid) hid.value='[]'; }
   if(wrap){
-    wrap.innerHTML=arr.map(function(f,i){
+    wrap.innerHTML=(arr||[]).map(function(f,i){
+      var src=f.b64||f.url||'';
       return '<div style="position:relative;width:72px;height:54px;border-radius:6px;overflow:hidden;border:.5px solid #e0dfd8">'
-        +'<img src="'+f.b64+'" style="width:100%;height:100%;object-fit:cover"/>'
+        +'<img src="'+src+'" style="width:100%;height:100%;object-fit:cover"/>'
         +'<button type="button" onclick="portFotosExtraDel('+i+')" style="position:absolute;top:2px;right:2px;background:#A32D2D;color:#fff;border:0;border-radius:3px;font-size:10px;padding:0 4px;cursor:pointer">×</button>'
         +'</div>';
     }).join('');
   }
 }
+function portFotosExtraDel(idx){
+  var arr=portFotosExtraColetar();
+  arr.splice(idx,1);
+  portFotosExtraPersist(arr);
+}
 function portFotosExtraColetar(){
+  var mem=(window._portFotoMem||{})['lib-fotos-extra-json'];
+  if(Array.isArray(mem) && mem.length) return mem.slice();
   var hid=document.getElementById('lib-fotos-extra-json');
   try{ var a=JSON.parse((hid&&hid.value)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; }
 }
