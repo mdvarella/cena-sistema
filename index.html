@@ -39495,10 +39495,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.833',
+  numero: '7.9.834',
   data:   '28/08/2026',
-  build:  '20260828-1215',
+  build:  '20260828-1315',
   log: [
+    {v:'7.9.834', d:'28/08/2026', itens:[
+      'Programação de equipes: permite escalar veículo com status Baixado no cadastro de Frotas (aparece na lista e no painel; Auto Escalar também copia).',
+    ]},
     {v:'7.9.833', d:'28/08/2026', itens:[
       'Relatórios → aba Frotas: cadastro completo de veículos (PDF/Excel) com posse, status, docs (CRLV/licenciamento/ensaios), locação, combustível, rastreador e empresa locadora.',
     ]},
@@ -42334,14 +42337,11 @@ function progInit(){
     }
   }
 
-  // Carregar veículos da frota se ainda não foram carregados
-  if(!frt_veiculos || !frt_veiculos.length){
-    if(!DEMO){
-      sbFetch('frotas_veiculos',{filters:['ativo=eq.true'],order:'placa'})
-        .then(function(rows){
-          if(rows&&rows.length){ frt_veiculos=rows; }
-        }).catch(function(){});
-    }
+  // Carregar frota completa (inclui Baixado) — ativo=eq.true escondia placas baixadas da escala
+  if(!DEMO){
+    progGarantirFrotaCompleta(function(){
+      try{ progRenderQuadro(); }catch(e){}
+    });
   }
 
   var selData = document.getElementById('prog-av-data');
@@ -43288,6 +43288,29 @@ var PROG_VEIC_STATUS = {
   'Substituído':   {cor:'#888',    bg:'#f5f5f3'},
 };
 
+function progVeicEhBaixado(v){
+  if(!v) return false;
+  var st=String(v.status||v.situacao||'');
+  return st==='Baixado' || st.toLowerCase()==='baixado';
+}
+
+/** Garante frota em memória com veículos Baixados (cadastro usa ativo=false). */
+function progGarantirFrotaCompleta(cb){
+  if(DEMO || typeof frtFetchVeiculosCompleto!=='function'){
+    if(cb) cb();
+    return Promise.resolve(frt_veiculos||[]);
+  }
+  return frtFetchVeiculosCompleto().then(function(rows){
+    if(rows&&rows.length){
+      var byId={}; (frt_veiculos||[]).forEach(function(v){ if(v&&v.id) byId[v.id]=v; });
+      rows.forEach(function(v){ if(v&&v.id) byId[v.id]=v; });
+      frt_veiculos=Object.keys(byId).map(function(k){return byId[k];});
+    }
+    if(cb) cb();
+    return frt_veiculos||[];
+  }).catch(function(){ if(cb) cb(); return frt_veiculos||[]; });
+}
+
 // Calcula status real de um veículo para uma data
 function progGetVeicStatusReal(veic, data){
   // Verificar escalado na Disponibilidade TMA (_progVeiculos)
@@ -43364,7 +43387,7 @@ function progVeicPainel(cid, data){
   // Usar mesma lógica de matching do PLPT: id exato OU vazio OU match por código/nome
   var contRef = contratos.find(function(x){return x.id===cid;});
   var veics = frt_veiculos.filter(function(v){
-    if(v.ativo===false) return false;
+    if(v.ativo===false && !progVeicEhBaixado(v)) return false;
     var vcid=(v.contrato_id||'').trim();
     if(!vcid) return false; // só trazer veículos com contrato definido
     if(vcid===cid) return true;
@@ -48653,7 +48676,8 @@ function progVeiculoAtivoCopia(veiculoId, placa){
   }
   if(!v) return {ok:true,veic:null,warn:false}; // sem cadastro em memória — não bloquear
   var st=String(v.status||v.situacao||'').toLowerCase();
-  if(v.ativo===false || st==='inativo' || st==='baixado' || st==='vendido' || st==='bloqueado'){
+  if(progVeicEhBaixado(v)) return {ok:true,veic:v,warn:true}; // Baixado pode ser escalado
+  if(v.ativo===false || st==='inativo' || st==='vendido' || st==='bloqueado'){
     return {ok:false,veic:v,warn:true};
   }
   return {ok:true,veic:v,warn:false};
@@ -71655,13 +71679,9 @@ function progProjInit(opts){
   else if(!_pp.data) _pp.data = dataHojeLocal();
   if(selData) selData.value = _pp.data;
 
-  // Carregar veículos se não estiverem em memória
-  if(!frt_veiculos || !frt_veiculos.length){
-    if(!DEMO){
-      sbFetch('frotas_veiculos',{filters:['ativo=eq.true'],order:'placa'})
-        .then(function(rows){ if(rows&&rows.length) frt_veiculos=rows; })
-        .catch(function(){});
-    }
+  // Carregar frota completa (inclui Baixado) para permitir escalar na programação
+  if(!DEMO){
+    progGarantirFrotaCompleta();
   }
 
   var selCont = document.getElementById('pp-cont');
@@ -74651,6 +74671,13 @@ function turnsoSeSobrepoe(ini1, fim1, ini2, fim2){
 
 function progAbrirSelecionarVeiculo(eqId, data, slot){
   slot = slot || 'a'; // 'a' = slot 1, 'b' = slot 2 (Moto Dupla)
+  if(!DEMO && typeof progGarantirFrotaCompleta==='function' && !window._progFrotaBaixadosOk){
+    window._progFrotaBaixadosOk=true;
+    if(!(frt_veiculos||[]).some(function(v){ return progVeicEhBaixado(v); })){
+      progGarantirFrotaCompleta(function(){ progAbrirSelecionarVeiculo(eqId, data, slot); });
+      return;
+    }
+  }
   // Aceita equipes de equipes_disp (Disponibilidade) OU equipes (Projetos)
   var eq = equipes_disp.find(function(e){return e.id===eqId;})
         || equipes.find(function(e){return e.id===eqId;});
@@ -74682,8 +74709,14 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
     _veicTiposCompativeis = ['Van','Carro leve','Caminhonete'];
   }
   // Se houver filtro, separar compatíveis de incompatíveis
-  // Mostrar todos os veículos — veículos de outro contrato aparecem marcados
-  var veicsFrota = frt_veiculos || [];
+  // Inclui Baixado (pode escalar); oculta demais inativos (Vendido, Descartado, etc.)
+  var veicsFrota = (frt_veiculos || []).filter(function(v){
+    if(progVeicEhBaixado(v)) return true;
+    if(v.ativo===false) return false;
+    var st=String(v.status||'').toLowerCase();
+    if(st==='vendido'||st==='descartado'||st==='extraviado'||st==='inativo') return false;
+    return true;
+  });
   if(_veicTiposCompativeis){
     // Compatíveis primeiro, depois incompatíveis com badge de aviso
     var _compat = veicsFrota.filter(function(v){ return _veicTiposCompativeis.indexOf(v.tipo||'') >= 0; });
@@ -74720,7 +74753,8 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
 
     var emManutencao = ['Em manutenção','Aguardando peça','Aguardando oficina',
       'Solicitação de manutenção','Em análise pela frota'].indexOf(v.status)>=0;
-    var bloqueado = ['Bloqueado','Em quarentena','Baixado'].indexOf(v.status)>=0;
+    var bloqueado = ['Bloqueado','Em quarentena'].indexOf(v.status)>=0;
+    var ehBaixado = progVeicEhBaixado(v);
 
     if(outraEquipe && turnoConflito){
       classe = 'red'; cor = '#A32D2D'; bg = '#FCEBEB'; icone = '🔴';
@@ -74734,6 +74768,12 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
       bg = '#FCEBEB';
       icone = '🔴';
       titulo = v.status;
+    } else if(ehBaixado){
+      classe = 'gray';
+      cor = '#555';
+      bg = '#f0f0ee';
+      icone = '⚪';
+      titulo = 'Baixado — pode escalar';
     } else if(emManutencao){
       classe = 'yellow';
       cor = '#854F0B';
@@ -74771,9 +74811,9 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
       bloqueado: bloqueado || (outraEquipe !== null && turnoConflito) || (v.status==='Em uso' && !(eq && v.contrato_id && v.contrato_id===eq.contrato_id))};
   });
 
-  // Ordenar: do contrato (green) → outro contrato (brown) → manutenção (yellow) → bloqueados (red)
+  // Ordenar: do contrato → outro contrato → baixado → manutenção → bloqueados
   veicsClassif.sort(function(a,b){
-    var ordem = {green:0, brown:1, yellow:2, red:3};
+    var ordem = {green:0, brown:1, gray:2, yellow:3, red:4};
     var oa = ordem[a.classe]||0, ob = ordem[b.classe]||0;
     if(oa!==ob) return oa-ob;
     // Dentro do mesmo grupo, ordenar por placa
@@ -74785,6 +74825,7 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
   var grupoCores = {
     green:  {label:'✅ Do contrato — disponíveis', cor:'#3B6D11'},
     brown:  {label:'🟤 Outro contrato — uso esporádico/provisório', cor:'#7B4A1E'},
+    gray:   {label:'⚪ Baixado no cadastro — pode escalar', cor:'#555'},
     yellow: {label:'🟡 Em manutenção / Em uso', cor:'#854F0B'},
     red:    {label:'🔴 Bloqueado / Outra equipe', cor:'#A32D2D'},
   };
@@ -74824,6 +74865,7 @@ function progAbrirSelecionarVeiculo(eqId, data, slot){
   var legendaHtml = '<div style="display:flex;gap:10px;font-size:10px;flex-wrap:wrap;margin-bottom:.75rem;padding:.5rem .75rem;background:#f9f9f7;border-radius:8px">'
     +'<span>🟢 Do contrato</span>'
     +'<span>🟤 Outro contrato (esporádico)</span>'
+    +'<span>⚪ Baixado (pode escalar)</span>'
     +'<span>🟡 Manutenção / Em uso</span>'
     +'<span>🔴 Bloqueado / Outra equipe</span>'
     +'</div>';
