@@ -16427,25 +16427,54 @@ function progTurnosIguais(a,b){
   return !!na && na===nb;
 }
 
-function calcularTurnoTipo(horaInicio){
+function calcularTurnoTipoFaixa(horaInicio){
   if(!horaInicio) return 'Manhã';
-  // Tentar casar com escalas cadastradas
-  if(typeof escalas_cad !== 'undefined' && escalas_cad && escalas_cad.length){
-    var h = horaInicio.substring(0,5); // HH:MM
-    var melhor = null;
-    escalas_cad.forEach(function(esc){
-      var ini = (esc.inicio||'').substring(0,5);
-      if(ini === h) melhor = esc.tipo;
-    });
-    if(melhor) return melhor;
-  }
-  // Fallback por faixa de horário
-  var p=horaInicio.split(':'), hh=parseInt(p[0]||0), mm=parseInt(p[1]||0);
+  var p=String(horaInicio).split(':'), hh=parseInt(p[0]||0,10), mm=parseInt(p[1]||0,10);
   var min=hh*60+mm;
   if(min>=390&&min<720)  return 'Manhã';   // 06:30–11:59
   if(min>=720&&min<1140) return 'Tarde';   // 12:00–18:59
   if(min>=1140&&min<1260) return 'Noite 1'; // 19:00–20:59
   return 'Noite 2';                          // 21:00+
+}
+
+/** Manhã | Tarde | Noite | Noite 1 | Noite 2 — ignora rótulo livre de escalas_cad. */
+function progTurnoTipoCanonico(t, horaInicio){
+  var n=progNormalizarTurnoTipo(t);
+  if(n==='noite 1'||n==='noite1') return 'Noite 1';
+  if(n==='noite 2'||n==='noite2') return 'Noite 2';
+  if(n==='noite'||n.indexOf('noturn')>=0) return 'Noite';
+  if(n.indexOf('tarde')>=0||n.indexOf('vespert')>=0) return 'Tarde';
+  if(n.indexOf('manh')>=0||n.indexOf('matut')>=0) return 'Manhã';
+  if(horaInicio) return calcularTurnoTipoFaixa(horaInicio);
+  return t ? 'Manhã' : (horaInicio?calcularTurnoTipoFaixa(horaInicio):'Manhã');
+}
+
+/** CHECK equipes_turno_tipo_check: em geral só Manhã / Tarde / Noite (sem Noite 1/2). */
+function progTurnoTipoParaTabelaEquipes(t, horaInicio){
+  var c=progTurnoTipoCanonico(t, horaInicio);
+  if(c==='Tarde') return 'Tarde';
+  if(c==='Noite'||c==='Noite 1'||c==='Noite 2') return 'Noite';
+  return 'Manhã';
+}
+
+function calcularTurnoTipo(horaInicio){
+  if(!horaInicio) return 'Manhã';
+  if(typeof escalas_cad !== 'undefined' && escalas_cad && escalas_cad.length){
+    var h = String(horaInicio).substring(0,5);
+    var melhor = null;
+    escalas_cad.forEach(function(esc){
+      var ini = (esc.inicio||'').substring(0,5);
+      if(ini === h) melhor = esc.tipo;
+    });
+    if(melhor){
+      var n=progNormalizarTurnoTipo(melhor);
+      var conhecido = n.indexOf('manh')>=0||n.indexOf('matut')>=0
+        ||n.indexOf('tarde')>=0||n.indexOf('vespert')>=0
+        ||n.indexOf('noite')>=0||n.indexOf('noturn')>=0;
+      if(conhecido) return progTurnoTipoCanonico(melhor, horaInicio);
+    }
+  }
+  return calcularTurnoTipoFaixa(horaInicio);
 }
 
 function progGetTurnoEquipe(eq){
@@ -19002,18 +19031,27 @@ function openEditarEquipe(eid){
     e.status=(document.getElementById('ne-status')||{}).value||e.status;
     e.hora_inicio=horaIni;
     e.hora_fim=horaFim;
-    e.turno_tipo=horaIni?calcularTurnoTipo(horaIni):(e.turno_tipo||'Manhã');
+    e.turno_tipo=progTurnoTipoParaTabelaEquipes(
+      horaIni?calcularTurnoTipo(horaIni):(e.turno_tipo||'Manhã'),
+      horaIni||e.hora_inicio
+    );
     e.escala=(document.getElementById('ne-escala')||{}).value||null;
     e.veiculo_padrao_id=(document.getElementById('ne-veic')||{}).value||null;
     e.telefone=(document.getElementById('ne-tel')||{}).value.trim()||null;
     if(DEMO){ closeModal();renderEquipes(); return; }
     var btn=this; btn.disabled=true; btn.textContent='Salvando...';
-    var ok=await sbUpdate('equipes',{
+    var payloadEq={
       contrato_id:e.contrato_id,supervisor:e.supervisor,nome_equipe:e.nome_equipe,
       cargo:e.cargo,status:e.status,hora_inicio:e.hora_inicio,hora_fim:e.hora_fim,
       turno_tipo:e.turno_tipo,escala:e.escala,veiculo_padrao_id:e.veiculo_padrao_id||null,
       telefone:e.telefone||null
-    },'id=eq.'+eid);
+    };
+    var ok=await sbUpdate('equipes',payloadEq,'id=eq.'+eid);
+    if(!ok && e.turno_tipo==='Manhã'){
+      payloadEq.turno_tipo='Manha';
+      ok=await sbUpdate('equipes',payloadEq,'id=eq.'+eid);
+      if(ok) e.turno_tipo='Manha';
+    }
     if(!ok){
       Object.assign(e, prev);
       btn.disabled=false; btn.textContent='Salvar';
@@ -39815,10 +39853,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.881',
+  numero: '7.9.883',
   data:   '02/09/2026',
-  build:  '20260902-1000',
+  build:  '20260902-1105',
   log: [
+    {v:'7.9.883', d:'02/09/2026', itens:[
+      'Cadastro de equipe PLPT: salvar turno não viola mais equipes_turno_tipo_check. Grava só Manhã/Tarde/Noite (Noite 1/2 e nome de escala livre são convertidos).',
+    ]},
+    {v:'7.9.882', d:'02/09/2026', itens:[
+      'Requisição CENA: o botão Confirmar recebimento volta a mostrar o texto (contraste). O destaque do passo não pinta mais o fundo claro por cima da letra branca.',
+    ]},
     {v:'7.9.881', d:'02/09/2026', itens:[
       'Programação TMA: Salvar encontra a escala que está no quadro (mesmo se o registro do dia estava marcado como excluído) e reativa. Deixa de dizer que não há colaborador quando T1/T2 já estão preenchidos.',
     ]},
@@ -90955,7 +90999,16 @@ function almReqFocoEl(el, msg){
   if(!el) return;
   el.style.outline='2px solid #C99212';
   el.style.boxShadow='0 0 0 4px rgba(232,185,49,.5)';
-  if(el.tagName==='SELECT'||el.tagName==='INPUT'||el.tagName==='BUTTON') el.style.background='#FFFBEB';
+  if(el.tagName==='SELECT'||el.tagName==='INPUT') el.style.background='#FFFBEB';
+  if(el.tagName==='BUTTON'){
+    if((el.className||'').indexOf('btn-pri')>=0){
+      el.style.background='#1a1a18';
+      el.style.color='#fff';
+    } else {
+      el.style.background='#FFFBEB';
+      el.style.color='#1a1a18';
+    }
+  }
   if(el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'center'});
   try{ if(!el.disabled && el.focus) el.focus(); }catch(e){}
   if(msg) progShowToast(msg);
@@ -90970,6 +91023,7 @@ function almReqDirigirPasso(opts){
     if(id==='arq-dest-wrap'||id==='arq-receber-box') return;
     x.style.outline=''; x.style.boxShadow='';
     if(x.tagName==='SELECT'||x.tagName==='INPUT') x.style.background='';
+    if(x.tagName==='BUTTON'){ x.style.background=''; x.style.color=''; }
   });
   var st=d.status;
   if(st==='separada'||st==='atendida'){
@@ -91096,7 +91150,7 @@ function almReqModal(){
         ? ('<br>Receber em: <b>'+_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''))+'</b>')
         : '<br>Preencha a <b>base destino</b> e o <b>depósito destino</b> destacados acima — depois este botão avança.')
       +'</div>'
-      +'<button class="btn btn-pri" id="arq-btn-receber" onclick="almReqConfirmarRecebimento()">Confirmar recebimento</button>'
+      +'<button class="btn btn-pri" id="arq-btn-receber" onclick="almReqConfirmarRecebimento()" style="background:#1a1a18;color:#fff;border-color:#1a1a18;font-weight:700">Confirmar recebimento</button>'
       +'</div>';
   }
   var addHtml=ro?'':'<div style="margin-top:1rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
