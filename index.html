@@ -1935,6 +1935,7 @@ body.insp-campo-ativo #app-content-area {
   <div id="subnav-bar" style="display:none;background:#fff;border-bottom:1px solid #e0dfd8;padding:6px 12px;overflow-x:auto;white-space:nowrap;scrollbar-width:none;flex-shrink:0;z-index:100;">
   </div>
   <div id="app-content-area">
+  <div id="alm-est-alertas"></div>
 
 <!-- DASHBOARD -->
 <div id="pg-dashboard" class="hidden">
@@ -6376,9 +6377,10 @@ async function sbInsert(table,data,opts){
     'comgas_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','status','criado_em','criado_por'],
     'enel_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','status','criado_em','criado_por'],
     'alm_requisicoes':['id','numero','data','solicitante_id','solicitante_nome','area_solicitante','contrato_id','contrato_nome',
-      'base_id','base_nome','deposito_id','deposito_nome','centro_custo','prioridade','finalidade','status','observacao',
+      'base_id','base_nome','deposito_id','deposito_nome','dest_base_id','dest_base_nome','dest_deposito_id','dest_deposito_nome',
+      'centro_custo','prioridade','finalidade','status','observacao',
       'motivo_recusa','criado_por','enviado_em','aprovado_por','aprovado_em','recusado_por','recusado_em',
-      'cancelado_por','cancelado_em','atendido_por','atendido_em'],
+      'cancelado_por','cancelado_em','atendido_por','atendido_em','recebido_por','recebido_em'],
     'alm_requisicao_itens':['id','requisicao_id','tipo_item','item_id','item_codigo','item_descricao','unidade',
       'quantidade_solicitada','quantidade_aprovada','quantidade_atendida','entrega_individual',
       'colaborador_id','colaborador_re','colaborador_nome','colaborador_cpf','equipe_id','equipe_nome','veiculo_id',
@@ -6605,21 +6607,35 @@ function _compDataStr(v){
   return s.indexOf('T')>=0 ? s.split('T')[0] : s.slice(0,10);
 }
 function _findComposicaoEquipe(equipeId, dataRef){
+  if(typeof progFindCompDia==='function') return progFindCompDia(equipeId, dataRef);
   var d=_compDataStr(dataRef||dataHoje());
   return composicao_dia.find(function(c){
-    return c.equipe_id===equipeId && _compDataStr(c.data)===d;
-  });
+    return String(c.equipe_id)===String(equipeId) && _compDataStr(c.data)===d;
+  })||null;
 }
 function _mergeComposicaoDia(c){
   if(!c) return;
   c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
   var d=_compDataStr(c.data);
   var ci=composicao_dia.findIndex(function(x){
-    return x.equipe_id===c.equipe_id && _compDataStr(x.data)===d;
+    return String(x.equipe_id)===String(c.equipe_id) && _compDataStr(x.data)===d;
   });
   if(ci>=0){
-    if(!c.motorista_id && composicao_dia[ci].motorista_id) c.motorista_id=composicao_dia[ci].motorista_id;
-    c.colaborador_ids = progMergeColaboradorIdsConfirmada(composicao_dia[ci], c);
+    var prev=composicao_dia[ci];
+    if(c.deleted_at && prev && !prev.deleted_at) return;
+    if(!c.motorista_id && prev.motorista_id) c.motorista_id=prev.motorista_id;
+    if(!c.placa && prev.placa){
+      c.placa=prev.placa;
+      c.veiculo_id=c.veiculo_id||prev.veiculo_id;
+      c.modelo=c.modelo||prev.modelo;
+    }
+    if(!c.celular_id && prev.celular_id) c.celular_id=prev.celular_id;
+    if(!c.sup_confirmada && prev.sup_confirmada) c.sup_confirmada=prev.sup_confirmada;
+    if(!parseColabIds(c.colaborador_ids).length && parseColabIds(prev.colaborador_ids).length){
+      c.colaborador_ids=prev.colaborador_ids;
+    } else {
+      c.colaborador_ids = progMergeColaboradorIdsConfirmada(prev, c);
+    }
     composicao_dia[ci]=c;
   } else composicao_dia.push(c);
 }
@@ -12640,7 +12656,7 @@ function relTmaEqMatchTipo(eq, tipoKey){
     .toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   var cod=String(eq.codigo||'').toUpperCase();
   if(tipoKey==='FIORINO')
-    return blob.indexOf('FIORINO')>=0 || blob.indexOf('LEVE')>=0 || /^EIN|^FI|^EBN/i.test(cod);
+    return blob.indexOf('FIORINO')>=0 || blob.indexOf('LEVE')>=0 || /^EIN|^EJN|^FI|^EBN/i.test(cod);
   if(tipoKey==='CESTO')
     return blob.indexOf('CESTO')>=0 || blob.indexOf('AEREO')>=0 || /^LV|^CE/i.test(cod);
   if(tipoKey==='MOTO')
@@ -13907,15 +13923,65 @@ function excluirUsuario(uid){
   renderUsuarios();
 }
 
-function openNovoUsuario(){
-  // Load filiais if not yet loaded
-  if(!filiais.length && !DEMO){
-    sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){
-      if(rows&&rows.length){ filiais=rows; }
-      openNovoUsuario(); // re-open with filiais loaded
-    });
-    return; // wait for filiais, then re-open
+function usrGarantirLocaisUsuario(reabrir){
+  if(usrGarantirLocaisUsuario._done) return false;
+  var precisaFil=!(filiais||[]).length;
+  var precisaDep=!(depositos||[]).length;
+  if((precisaFil||precisaDep) && !DEMO){
+    usrGarantirLocaisUsuario._done=true;
+    var jobs=[];
+    if(precisaFil) jobs.push(sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){ if(rows&&rows.length) filiais=rows; }));
+    if(precisaDep) jobs.push(sbFetch('depositos',{order:'nome'}).then(function(rows){ if(rows&&rows.length) depositos=rows; }));
+    Promise.all(jobs).then(function(){ reabrir(); });
+    return true;
   }
+  return false;
+}
+function usrEstoqueCamposHtml(prefix, u){
+  u=u||{};
+  var ids=String(u.depositos_responsavel||'').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  var checked=u.responde_estoque===true || u.responde_estoque==='true' || ids.length>0;
+  var deps=(typeof depositos!=='undefined'?depositos:[]).filter(function(d){ return d && d.ativo!==false; });
+  var lista=deps.length?deps.map(function(d){
+    var on=ids.indexOf(String(d.id))>=0;
+    var fil=(filiais||[]).find(function(f){ return String(f.id)===String(d.filial_id); });
+    var rotulo=(fil?((fil.codigo||fil.nome)+' · '):'')+(d.nome||'');
+    return '<label style="display:flex;align-items:center;gap:8px;padding:5px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f5f5f3">'
+      +'<input type="checkbox" class="'+prefix+'-dep-cb" value="'+String(d.id).replace(/"/g,'')+'" '+(on?'checked':'')+' style="width:15px;height:15px"/>'
+      +'<span>'+_escapeHtml(rotulo)+'</span></label>';
+  }).join(''):'<div style="font-size:12px;color:#888">Nenhum depósito cadastrado.</div>';
+  return '<div class="fg" style="grid-column:1/-1;margin-top:4px">'
+    +'<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">'
+    +'<input type="checkbox" id="'+prefix+'-resp-est" '+(checked?'checked':'')+' onchange="usrToggleEstoqueWrap(\''+prefix+'\')" style="width:15px;height:15px">'
+    +'<span>Responde por estoque CENA?</span></label>'
+    +'<div style="font-size:11px;color:#666;margin:4px 0 6px">Se sim, escolha os depósitos. Este usuário recebe o banner de alerta nas movimentações desses estoques.</div>'
+    +'<div id="'+prefix+'-est-wrap" style="'+(checked?'':'display:none')+'">'
+    +'<label style="font-size:11px;display:block">Quais depósitos</label>'
+    +'<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px;max-height:160px;overflow-y:auto;margin-top:4px">'+lista+'</div></div></div>';
+}
+function usrToggleEstoqueWrap(prefix){
+  var cb=document.getElementById(prefix+'-resp-est');
+  var wrap=document.getElementById(prefix+'-est-wrap');
+  if(wrap) wrap.style.display=(cb&&cb.checked)?'block':'none';
+}
+function usrLerEstoque(prefix){
+  var cb=document.getElementById(prefix+'-resp-est');
+  var responde=!!(cb&&cb.checked);
+  var ids=[];
+  if(responde){
+    document.querySelectorAll('#modal-area .'+prefix+'-dep-cb:checked').forEach(function(el){ ids.push(el.value); });
+  }
+  return {responde_estoque:responde, depositos_responsavel:ids.join(',')};
+}
+function usrAplicarEstoqueLogado(uid, est){
+  if(!usuarioLogado || String(usuarioLogado.id)!==String(uid)) return;
+  usuarioLogado.responde_estoque=est.responde_estoque;
+  usuarioLogado.depositos_responsavel=est.depositos_responsavel;
+  if(typeof almReqInitAlertas==='function') almReqInitAlertas();
+}
+
+function openNovoUsuario(){
+  if(usrGarantirLocaisUsuario(openNovoUsuario)) return;
   // Equipes disponibilidade + equipes PLPT/obras
   var todasEquipes = (equipes_disp||[]).concat(
     (equipes||[]).map(function(e){
@@ -13925,7 +13991,7 @@ function openNovoUsuario(){
   var eqOpts='<option value="">Nenhuma</option>'+todasEquipes.map(function(e){
     return '<option value="'+e.id+'">'+e.codigo+(e.nome?' — '+e.nome:'')+'</option>';
   }).join('');
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Novo Usuário</h3>'    +'<div class="g2">'    +'<div class="fg" style="grid-column:1/-1"><label>Nome completo</label><input id="nu-nome" style="width:100%"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>E-mail (usado para login)</label><input id="nu-email" type="email" style="width:100%"/></div>'    +'<div class="fg"><label>Senha</label><input id="nu-senha" type="password" style="width:100%" placeholder="Mínimo 6 caracteres"/></div>'    +'<div class="fg"><label>Confirmar senha</label><input id="nu-senha2" type="password" style="width:100%"/></div>'    +'<div class="fg"><label>Perfil</label>'    +'<select id="nu-perfil" style="width:100%" onchange="toggleEquipeField()">'    +_todosPerfis().map(function(p){return '<option value="'+p.codigo+'">'+p.label+'</option>';}).join('')    +'</select></div>'    +'<div class="fg" id="nu-equipe-wrap" style="display:none"><label>Equipe vinculada</label><select id="nu-equipe" style="width:100%">'+eqOpts+'</select></div>'    +'<div class="fg" id="nu-contrato-wrap" style="display:none;grid-column:1/-1"><label>Contratos vinculados</label>'    +'<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px;max-height:160px;overflow-y:auto;margin-top:4px" id="nu-contratos-lista">'    +contratos.map(function(c){return '<label style="display:flex;align-items:center;gap:8px;padding:5px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f5f5f3">'      +'<input type="checkbox" value="'+c.id+'" class="nu-cont-cb" style="width:15px;height:15px"/>'      +'<span><b>'+c.codigo+'</b> — '+c.nome+'</span></label>';}).join('')    +'</div></div>'    +'<div class="fg" id="nu-filial-wrap" style="display:none;grid-column:1/-1"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="nu-filial" style="width:100%"><option value="">Selecione a filial...</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')+'</select></div>'    +'</div>'    +'<div id="nu-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-nu">Salvar</button></div></div></div>');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Novo Usuário</h3>'    +'<div class="g2">'    +'<div class="fg" style="grid-column:1/-1"><label>Nome completo</label><input id="nu-nome" style="width:100%"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>E-mail (usado para login)</label><input id="nu-email" type="email" style="width:100%"/></div>'    +'<div class="fg"><label>Senha</label><input id="nu-senha" type="password" style="width:100%" placeholder="Mínimo 6 caracteres"/></div>'    +'<div class="fg"><label>Confirmar senha</label><input id="nu-senha2" type="password" style="width:100%"/></div>'    +'<div class="fg"><label>Perfil</label>'    +'<select id="nu-perfil" style="width:100%" onchange="toggleEquipeField()">'    +_todosPerfis().map(function(p){return '<option value="'+p.codigo+'">'+p.label+'</option>';}).join('')    +'</select></div>'    +'<div class="fg" id="nu-equipe-wrap" style="display:none"><label>Equipe vinculada</label><select id="nu-equipe" style="width:100%">'+eqOpts+'</select></div>'    +'<div class="fg" id="nu-contrato-wrap" style="display:none;grid-column:1/-1"><label>Contratos vinculados</label>'    +'<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px;max-height:160px;overflow-y:auto;margin-top:4px" id="nu-contratos-lista">'    +contratos.map(function(c){return '<label style="display:flex;align-items:center;gap:8px;padding:5px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f5f5f3">'      +'<input type="checkbox" value="'+c.id+'" class="nu-cont-cb" style="width:15px;height:15px"/>'      +'<span><b>'+c.codigo+'</b> — '+c.nome+'</span></label>';}).join('')    +'</div></div>'    +'<div class="fg" id="nu-filial-wrap" style="display:none;grid-column:1/-1"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="nu-filial" style="width:100%"><option value="">Selecione a filial...</option>'+filiais.map(function(f){return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')+'</select></div>'    +usrEstoqueCamposHtml('nu',{})    +'</div>'    +'<div id="nu-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-nu">Salvar</button></div></div></div>');
   document.getElementById('btn-salvar-nu').onclick=salvarNovoUsuario;
 }
 
@@ -13960,10 +14026,12 @@ async function salvarNovoUsuario(){
   var eq=eqId?equipes_disp.find(function(e){return e.id===eqId;}):null;
   var contCbs=document.querySelectorAll('#modal-area .nu-cont-cb:checked');
   var contId=Array.from(contCbs).map(function(cb){return cb.value;}).join(',');
+  var est=usrLerEstoque('nu');
   var hash=md5js(senha);
   var novo={id:gerarUUID(),nome:nome,email:email,senha_hash:hash,
     perfil:perfil,equipe_id:eqId||'',equipe_codigo:eq?eq.codigo:'',
-    contrato_id:contId,filial_id:filialId||null,ativo:true};
+    contrato_id:contId,filial_id:filialId||null,ativo:true,
+    responde_estoque:est.responde_estoque, depositos_responsavel:est.depositos_responsavel};
 
   if(!DEMO){
     // Qualquer linha com o e-mail (ativo, inativo ou soft-deleted) — unique constraint cobre todos
@@ -13989,9 +14057,15 @@ async function salvarNovoUsuario(){
         nome:nome, email:email, senha_hash:hash, perfil:perfil,
         equipe_id:eqId||'', equipe_codigo:eq?eq.codigo:'',
         contrato_id:contId, filial_id:filialId||null,
-        ativo:true, deleted_at:null
+        ativo:true, deleted_at:null,
+        responde_estoque:est.responde_estoque, depositos_responsavel:est.depositos_responsavel
       };
       var okRe = await sbUpdate('usuarios_sistema', patch, 'id=eq.'+existente.id);
+      if(!okRe){
+        delete patch.responde_estoque; delete patch.depositos_responsavel;
+        okRe = await sbUpdate('usuarios_sistema', patch, 'id=eq.'+existente.id);
+        if(okRe) progShowToast('Usuário reativado. Aplique sql_alm_requisicao_c2.sql para gravar responsabilidade de estoque.','erro');
+      }
       if(!okRe){
         if(erroEl){erroEl.textContent='Falha ao reativar usuário existente.';erroEl.style.display='block';}
         return;
@@ -14020,6 +14094,12 @@ async function salvarNovoUsuario(){
       return;
     }
     var resultado = await sbInsert('usuarios_sistema', novo);
+    if(!resultado){
+      var semEst=Object.assign({}, novo);
+      delete semEst.responde_estoque; delete semEst.depositos_responsavel;
+      resultado = await sbInsert('usuarios_sistema', semEst);
+      if(resultado) progShowToast('Usuário salvo. Aplique sql_alm_requisicao_c2.sql para gravar responsabilidade de estoque.','erro');
+    }
     if(!resultado){
       if(erroEl){erroEl.textContent='Erro ao salvar. E-mail provavelmente já existe (constraint única). Busque o usuário na lista ou use filtro Todos.';erroEl.style.display='block';}
       return;
@@ -14050,14 +14130,7 @@ async function salvarNovoUsuario(){
 
 async function openEditarUsuario(uid){
   var u=usuarios_lista.find(function(x){return x.id===uid;});if(!u)return;
-  // Load filiais if not yet loaded
-  if(!filiais.length && !DEMO){
-    sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){
-      if(rows&&rows.length){ filiais=rows; }
-      openEditarUsuario(uid); // re-open with filiais
-    });
-    return;
-  }
+  if(usrGarantirLocaisUsuario(function(){ openEditarUsuario(uid); })) return;
   var todasEquipesEd = (equipes_disp||[]).concat(
     (equipes||[]).map(function(e){
       return {id:e.id, codigo:e.nome_equipe, nome:e.supervisor||'', contrato_id:e.contrato_id};
@@ -14069,7 +14142,7 @@ async function openEditarUsuario(uid){
   setModal('<div class="modal-bg"><div class="modal" style="max-width:500px"><h3>Editar Usuário</h3>'    +'<div class="g2">'    +'<div class="fg" style="grid-column:1/-1"><label>Nome completo</label><input id="eu-nome" value="'+u.nome+'" style="width:100%"/></div>'    +'<div class="fg" style="grid-column:1/-1"><label>E-mail</label><input id="eu-email" value="'+u.email+'" style="width:100%"/></div>'    +'<div class="fg"><label>Perfil</label>'    +'<select id="eu-perfil" style="width:100%" onchange="toggleEquipeFieldEdit()">'    +_todosPerfis().map(function(p){return '<option value="'+p.codigo+'"'+(u.perfil===p.codigo?' selected':'')+'>'+p.label+'</option>';}).join('')    +'</select></div>'    +'<div class="fg"><label>Status</label>'    +'<select id="eu-ativo" style="width:100%">'    +'<option value="true"'+(u.ativo?' selected':'')+'>Ativo</option>'    +'<option value="false"'+(!u.ativo?' selected':'')+'>Inativo</option>'    +'</select></div>'    +'<div class="fg" id="eu-equipe-wrap" style="'+((u.perfil==='equipe'||u.perfil==='encarregado')?'':'display:none')+'"><label>Equipe vinculada</label><select id="eu-equipe" style="width:100%">'+eqOpts+'</select></div>'+'<div class="fg" id="eu-contrato-wrap" style="'+(['gestor','coordenador','supervisor','administrativo','encarregado'].indexOf(u.perfil)>=0?'grid-column:1/-1':'display:none')+';margin-top:4px"><label>Contratos vinculados</label>'
     +'<div style="border:.5px solid #e0dfd8;border-radius:8px;padding:8px;max-height:150px;overflow-y:auto;margin-top:4px">'
     +(contratos.map(function(c){var sel=(u.contrato_id||'').split(',').indexOf(c.id)>=0;return '<label style="display:flex;align-items:center;gap:8px;padding:5px;cursor:pointer;font-size:12px;border-bottom:.5px solid #f5f5f3"><input type="checkbox" value="'+c.id+'" class="eu-cont-cb" '+(sel?'checked':'')+' style="width:15px;height:15px"/><span><b>'+c.codigo+'</b> — '+c.nome+'</span></label>';}).join(''))
-    +'</div></div>'    +'<div class="fg" id="eu-filial-wrap" style="'+(u.perfil==='portaria'?'grid-column:1/-1':'display:none')+'"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="eu-filial" style="width:100%"><option value="">Selecione a filial...</option>'    +filiais.map(function(f){return '<option value="'+f.id+'"'+(u.filial_id===f.id?' selected':'')+'>'+( f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')    +'</select></div>'    +'</div>'    +'<div id="eu-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-eu">Salvar</button></div></div></div>');
+    +'</div></div>'    +'<div class="fg" id="eu-filial-wrap" style="'+(u.perfil==='portaria'?'grid-column:1/-1':'display:none')+'"><label>Filial (obrigatório para perfil Portaria)</label>'    +'<select id="eu-filial" style="width:100%"><option value="">Selecione a filial...</option>'    +filiais.map(function(f){return '<option value="'+f.id+'"'+(u.filial_id===f.id?' selected':'')+'>'+( f.codigo?f.codigo+' — ':'')+f.nome+'</option>';}).join('')    +'</select></div>'    +usrEstoqueCamposHtml('eu',u)    +'</div>'    +'<div id="eu-erro" style="font-size:12px;color:#A32D2D;margin-bottom:.5rem;display:none"></div>'    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'    +'<button class="btn btn-pri" id="btn-salvar-eu">Salvar</button></div></div></div>');
   document.getElementById('btn-salvar-eu').onclick=async function(){
     u.nome=(document.getElementById('eu-nome')||{}).value.trim()||u.nome;
     u.email=(document.getElementById('eu-email')||{}).value.trim()||u.email;
@@ -14082,6 +14155,9 @@ async function openEditarUsuario(uid){
     u.contrato_id=Array.from(euCbs).map(function(cb){return cb.value;}).join(',');
     var euFilialId=(document.getElementById('eu-filial')||{}).value||'';
     u.filial_id=euFilialId||null;
+    var est=usrLerEstoque('eu');
+    u.responde_estoque=est.responde_estoque;
+    u.depositos_responsavel=est.depositos_responsavel;
     if(!DEMO){
       // Garantir que o uid é UUID — se não for, buscar o real no banco pelo email
       var _saveUid = uid;
@@ -14089,18 +14165,28 @@ async function openEditarUsuario(uid){
         var _rows = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(u.email)],select:'id',limit:1});
         if(_rows&&_rows[0]&&_rows[0].id){ _saveUid=_rows[0].id; u.id=_rows[0].id; }
       }
-      var ok = await sbUpdate('usuarios_sistema',{
+      var payloadEu={
         nome:u.nome,email:u.email,perfil:u.perfil,ativo:u.ativo,
         equipe_id:u.equipe_id,equipe_codigo:u.equipe_codigo,
-        filial_id:u.filial_id,contrato_id:u.contrato_id
-      },'id=eq.'+_saveUid);
+        filial_id:u.filial_id,contrato_id:u.contrato_id,
+        responde_estoque:est.responde_estoque, depositos_responsavel:est.depositos_responsavel
+      };
+      var ok = await sbUpdate('usuarios_sistema', payloadEu, 'id=eq.'+_saveUid);
+      if(!ok){
+        delete payloadEu.responde_estoque; delete payloadEu.depositos_responsavel;
+        ok = await sbUpdate('usuarios_sistema', payloadEu, 'id=eq.'+_saveUid);
+        if(ok) progShowToast('Usuário salvo. Aplique sql_alm_requisicao_c2.sql para gravar responsabilidade de estoque.','erro');
+      }
       if(!ok){
         var erroEdEl=document.getElementById('eu-erro');
         if(erroEdEl){erroEdEl.textContent='Erro ao salvar no banco. Verifique permissões (RLS) da tabela usuarios_sistema.';erroEdEl.style.display='block';}
         progShowToast('❌ Erro ao salvar usuário no banco.','erro');
         return;
       }
+      usrAplicarEstoqueLogado(_saveUid, est);
       progShowToast('✅ Usuário '+u.nome+' atualizado.');
+    } else {
+      usrAplicarEstoqueLogado(u.id, est);
     }
     closeModal();renderUsuarios();
   };
@@ -39729,10 +39815,34 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.873',
-  data:   '01/09/2026',
-  build:  '20260901-1445',
+  numero: '7.9.881',
+  data:   '02/09/2026',
+  build:  '20260902-1000',
   log: [
+    {v:'7.9.881', d:'02/09/2026', itens:[
+      'Programação TMA: Salvar encontra a escala que está no quadro (mesmo se o registro do dia estava marcado como excluído) e reativa. Deixa de dizer que não há colaborador quando T1/T2 já estão preenchidos.',
+    ]},
+    {v:'7.9.880', d:'02/09/2026', itens:[
+      'Programação TMA: salvar veículo não gera mais 409 (placa duplicada no dia). Se o registro já existe, atualiza a placa; não tenta inserir de novo.',
+    ]},
+    {v:'7.9.879', d:'02/09/2026', itens:[
+      'Programação TMA: EJN/EIN (Fiorino Lapa e Embu) confirmam saída com 1 colaborador. Veículo deixa de sumir após salvar — a placa fica na memória, na composição e no recarregar do dia.',
+    ]},
+    {v:'7.9.878', d:'02/09/2026', itens:[
+      'Programação TMA: Fiorino (EIN/FI/EBN) confirma com 1 colaborador; motorista preenchido sozinho nesse caso. Confirmar saída deixa de falhar em silêncio (busca a escala pelo dia e grava mesmo sem UUID local).',
+    ]},
+    {v:'7.9.877', d:'01/09/2026', itens:[
+      'Requisição CENA: ao confirmar recebimento, destaca base e depósito destino (e o botão) e dirige ao próximo passo — depois da confirmação, entrega ao colaborador com assinatura quando houver EPI/uniforme.',
+    ]},
+    {v:'7.9.876', d:'01/09/2026', itens:[
+      'Estoque (Almoxarifado CENA): colunas Reserva (requisições antes de Separada) e Saldo por reserva (saldo − reserva).',
+    ]},
+    {v:'7.9.875', d:'01/09/2026', itens:[
+      'Cadastro de usuário: campo “Responde por estoque CENA?” com depósitos. Banner de alerta no login para o responsável. Confirmar recebimento no aparelho logado só no depósito destino; depois entrega ao colaborador com assinatura.',
+    ]},
+    {v:'7.9.874', d:'01/09/2026', itens:[
+      'Almoxarifado CENA / Requisição: status Atendida passa a Separada. Colunas Estoque, Reserva (reqs antes de Separada) e Disponível. Ao separar, informa base e depósito destino; o recebedor confirma no aparelho logado; depois fica a entrega ao colaborador com assinatura. Usuário pode ser responsável por depósito e recebe banner de alerta. SQL: sql_alm_requisicao_c2.sql.',
+    ]},
     {v:'7.9.873', d:'01/09/2026', itens:[
       'Supervisores (operacional, TMA e frotas) passam a ver Cadastros e Relatórios. O bloqueio era do perfil (CSS + lista de módulos), não de usuário. Usuários, Perfis e Permissões continuam só para admin/gestão.',
     ]},
@@ -43272,6 +43382,12 @@ function progAtualizarQuadro(){
           if(!compMap[c.id]) return;
           var merged = Object.assign({}, compMap[c.id]);
           merged.colaborador_ids = progMergeColaboradorIdsConfirmada(c, compMap[c.id]);
+          if(c.placa && !merged.placa){
+            merged.placa=c.placa; merged.veiculo_id=merged.veiculo_id||c.veiculo_id; merged.modelo=merged.modelo||c.modelo;
+          }
+          if(c.celular_id && !merged.celular_id) merged.celular_id=c.celular_id;
+          if(c.sup_confirmada && !merged.sup_confirmada) merged.sup_confirmada=c.sup_confirmada;
+          if(c.confirmada && !merged.confirmada) merged.confirmada=c.confirmada;
           composicao_dia[i] = merged;
         });
         comps.forEach(function(c){
@@ -45005,11 +45121,13 @@ function progRenderEquipeRow(eq, data){
     return true;
   });
 
-  // Composição: busca robusta incluindo locais e normalizando data
-  var compAtual = composicao_dia.find(function(c){
-    var cd=(c.data||'').split('T')[0];
-    return c.equipe_id===eq.id && (cd===data||c.data===data);
-  });
+  // Composição: mesma busca do Salvar (data normalizada, UUID string, inclui registro reativável)
+  var compAtual = typeof progFindCompDia==='function'
+    ? progFindCompDia(eq.id, data)
+    : composicao_dia.find(function(c){
+        var cd=(c.data||'').split('T')[0];
+        return String(c.equipe_id)===String(eq.id) && (cd===data||c.data===data);
+      });
   var ids = parseColabIds(compAtual ? compAtual.colaborador_ids : []);
   // Slots T1/T2 apenas — T3 (Folguista) descontinuado na UI
   var slots = [null, null];
@@ -45277,21 +45395,37 @@ function progRenderEquipeRow(eq, data){
 
 function progSupConfirmar(eqId, confirmar){
   var data = progGetData();
-  var comp = composicao_dia.find(function(c){
-    return c.equipe_id===eqId && (c.data||'').slice(0,10)===data && !c.deleted_at;
-  });
-  if(!comp) return;
-  comp.sup_confirmada = confirmar;
-  if(!DEMO){
-    sbUpdate('composicao_dia', {sup_confirmada: confirmar}, 'id=eq.'+comp.id)
-      .then(function(){
-        progShowToast(confirmar ? '✅ Saída confirmada pela supervisão' : '↩ Confirmação removida');
-        progRenderQuadroDebounced();
+  var comp = typeof progFindCompDia==='function'
+    ? progFindCompDia(eqId, data)
+    : composicao_dia.find(function(c){
+        var cd=String(c.data||'').split('T')[0];
+        return String(c.equipe_id)===String(eqId) && cd===String(data||'').split('T')[0] && !c.deleted_at;
       });
-  } else {
-    progShowToast(confirmar ? '✅ Saída confirmada' : '↩ Confirmação removida');
-    progRenderQuadroDebounced();
+  if(!comp){
+    progShowToast('⚠ Não achei a programação desta equipe neste dia. Salve a escala antes de confirmar a saída.','erro');
+    return;
   }
+  if(!comp.confirmada){
+    progShowToast('⚠ Salve a programação (💾) antes de confirmar a saída.','erro');
+    return;
+  }
+  comp.sup_confirmada = confirmar;
+  function okToast(){
+    progShowToast(confirmar ? '✅ Saída confirmada pela supervisão' : '↩ Confirmação removida');
+    if(typeof progRenderQuadroDebounced==='function') progRenderQuadroDebounced();
+    else if(typeof progRenderQuadro==='function') progRenderQuadro();
+  }
+  if(DEMO){ okToast(); return; }
+  var dataStr=String(data||'').split('T')[0];
+  var filtro=(comp.id && typeof isUUID==='function' && isUUID(comp.id))
+    ? ('id=eq.'+comp.id)
+    : ('equipe_id=eq.'+eqId+'&data=eq.'+dataStr);
+  sbUpdate('composicao_dia', {sup_confirmada: confirmar}, filtro)
+    .then(function(ok){
+      if(ok===false){ progShowToast('Falha ao gravar a confirmação de saída.','erro'); return; }
+      okToast();
+    })
+    .catch(function(){ progShowToast('Falha ao gravar a confirmação de saída.','erro'); });
 }
 
 function progEquipeEhViabilidade(eq){
@@ -45307,8 +45441,31 @@ function progEquipeEhViabilidade(eq){
   return false;
 }
 
+/** Fiorino / leve TMA (EIN Embu, EJN Lapa, FI, EBN) — opera com 1 colaborador. */
+function progEquipeEhFiorino(eq){
+  if(!eq) return false;
+  if(typeof relTmaEqMatchTipo==='function') return relTmaEqMatchTipo(eq, 'FIORINO');
+  var cod=String(eq.codigo||'').toUpperCase();
+  var blob=String((eq.nome_equipe||eq.nome||'')+' '+(eq.tipo||'')).toUpperCase();
+  return blob.indexOf('FIORINO')>=0 || blob.indexOf('LEVE')>=0 || /^EIN|^EJN|^FI|^EBN/i.test(cod);
+}
+
 function progMinColaboradoresEquipe(eq){
-  return progEquipeEhViabilidade(eq) ? 1 : 2;
+  return (progEquipeEhViabilidade(eq) || progEquipeEhFiorino(eq)) ? 1 : 2;
+}
+
+function progGarantirMotorista(comp, idsAtivos, eq){
+  if(!comp || !idsAtivos || !idsAtivos.length) return;
+  var motOk = comp.motorista_id && idsAtivos.some(function(id){ return String(id)===String(comp.motorista_id); });
+  if(motOk) return;
+  if(idsAtivos.length===1 || progEquipeEhFiorino(eq)){
+    var mot = idsAtivos.find(function(id){
+      var col=(colaboradores||[]).find(function(x){ return String(x.id)===String(id); });
+      var cnh=col && String(col.cnh_categoria||'').trim();
+      return cnh && cnh!=='Não' && cnh!=='-';
+    }) || idsAtivos[0];
+    if(mot) comp.motorista_id = mot;
+  }
 }
 
 // Statuses permitidos para o motorista do dia ao salvar programação
@@ -45424,107 +45581,131 @@ function progSalvarEquipe(eqId){
     return;
   }
 
-  var comp = composicao_dia.find(function(c){
-    var cd=(c.data||'').split('T')[0];
-    return c.equipe_id===eqId && (cd===data||c.data===data);
-  });
-  if(!comp){
-    progShowToast('⚠ Nenhum colaborador escalado — use Auto Escalar primeiro');
-    return;
-  }
-  var idsRaw = parseColabIds(comp.colaborador_ids);
-  if(!idsRaw.length){
-    progShowToast('⚠ Equipe sem colaboradores escalados');
-    return;
-  }
-  // Validar mínimo com quem está ativo (ausentes permanecem na lista — não remover silenciosamente)
-  var idsAtivos = progColabIdsAtivos(idsRaw);
-  var minCol = progMinColaboradoresEquipe(eq);
-  if(idsAtivos.length < minCol){
-    var nAus = idsRaw.length - idsAtivos.length;
-    progShowToast(minCol===1
-      ? '⚠ A programação requer ao menos 1 colaborador ativo na escala.'
-      : (nAus
-        ? '⚠ Há colaborador(es) com falta/ausência — substitua ou remova antes de salvar (mínimo 2 ativos).'
-        : '⚠ A programação requer no mínimo 2 colaboradores. Adicione mais um colaborador antes de salvar.'));
-    return;
-  }
-  var ids = idsRaw;
-  // Validar veículo / placa (obrigatório) — aceita placa mesmo sem veiculo_id
-  var errPlaca = progValidarPlacaObrigatoria(eq, eqId, data);
-  if(errPlaca){ progShowToast(errPlaca); return; }
-  // Validar celular da equipe (obrigatório) — usa o aparelho já selecionado no quadro
-  if(!comp.celular_id){
-    progShowToast('⚠ Selecione o celular da equipe antes de salvar a programação.');
-    return;
-  }
-  var errMot = progValidarMotoristaObrigatorio(comp, ids, eqId, data);
-  if(errMot){ progShowToast(errMot); return; }
-  comp.confirmada = true;
-  // Registrar se havia folga na escala no momento do save
-  var corDiaSave = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
-  var temFolga = ids.some(function(id){
-    var c = colaboradores.find(function(x){return x.id===id;});
-    var st = _progStatus[id]||'disponivel';
-    if(!c) return false;
-    if(st==='folga'||st==='ferias'||st==='afastado') return true;
-    if(corDiaSave && c.cor_escala && c.cor_escala===corDiaSave) return true;
-    return false;
-  });
-  if(!DEMO){
-    var isLocal = comp._local || !comp.id || comp.id.startsWith('local_');
-    var payload = {
-      equipe_id:eqId, data:data,
-      colaborador_ids:ids,
-      turno:'Manha', confirmada:true,
-      tem_folga:temFolga,
-      motorista_id:comp.motorista_id||null,
-      celular_id:comp.celular_id||null
-    };
-    // Incluir veiculo no payload antes de salvar composicao_dia
-    var _veicSave = progGetVeiculo(eqId, data);
-    if(_veicSave){
-      payload.veiculo_id = _veicSave.id||null;
-      payload.placa      = _veicSave.placa||'';
-      payload.modelo     = _veicSave.modelo||'';
+  function seguirSalvar(comp){
+    if(!comp){
+      var cod = eq && eq.codigo ? eq.codigo+' ' : '';
+      progShowToast('⚠ '+cod+'sem colaborador no T1/T2. Escale a equipe (ou use Auto Escalar) e depois Salvar.');
+      return;
     }
-    if(isLocal){
-      // Buscar no banco antes de inserir — evitar duplicatas
-      sbFetch('composicao_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data],limit:1})
-        .then(function(ex){
-          if(ex&&ex.length){
-            comp.id=ex[0].id;comp._local=false;
-            sbUpdate('composicao_dia',payload,'id=eq.'+ex[0].id);
-          } else {
-            sbInsert('composicao_dia',payload)
-              .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
-          }
-        });
-    } else {
-      delete payload.equipe_id; delete payload.data; // não mudar chaves
-      sbUpdate('composicao_dia', payload, 'id=eq.'+comp.id);
+    if(comp.deleted_at || comp._deleted){
+      comp.deleted_at=null;
+      comp._deleted=false;
     }
-  }
-  var _veicSave = progGetVeiculo(eqId, data);
-  var _veicPromise = (_veicSave && !DEMO)
-    ? progSalvarVeiculoNoBanco(eqId, data, _veicSave, 1)
-    : Promise.resolve(true);
-  _veicPromise.then(function(veicOk){
-    if(!veicOk) progShowToast('⚠ Erro ao confirmar veículo no banco.','erro');
-    var _veicSaveB = progGetVeiculoB(eqId, data);
-    if(_veicSaveB && !DEMO) progSalvarVeiculoNoBanco(eqId, data, _veicSaveB, 2);
-    if(_veicSave){
-      comp.veiculo_id = _veicSave.id||null;
-      comp.placa = _veicSave.placa||'';
-      comp.modelo = _veicSave.modelo||'';
+    var idsRaw = parseColabIds(comp.colaborador_ids);
+    if(!idsRaw.length){
+      var cod2 = eq && eq.codigo ? eq.codigo+' ' : '';
+      progShowToast('⚠ '+cod2+'sem colaboradores escalados no quadro.');
+      return;
     }
-    if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
-    else progShowToast('✅ Equipe programada com sucesso');
-    _progGarantirCompId(comp, eqId, data).then(function(c){
-      if(c) almOnComposicaoConfirmada(c);
+    // Validar mínimo com quem está ativo (ausentes permanecem na lista — não remover silenciosamente)
+    var idsAtivos = progColabIdsAtivos(idsRaw);
+    var minCol = progMinColaboradoresEquipe(eq);
+    if(idsAtivos.length < minCol){
+      var nAus = idsRaw.length - idsAtivos.length;
+      progShowToast(minCol===1
+        ? '⚠ A programação requer ao menos 1 colaborador ativo na escala.'
+        : (nAus
+          ? '⚠ Há colaborador(es) com falta/ausência — substitua ou remova antes de salvar (mínimo 2 ativos).'
+          : '⚠ A programação requer no mínimo 2 colaboradores. Adicione mais um colaborador antes de salvar.'));
+      return;
+    }
+    var ids = idsRaw;
+    if(typeof progGarantirMotorista==='function') progGarantirMotorista(comp, idsAtivos, eq);
+    // Validar veículo / placa (obrigatório) — aceita placa mesmo sem veiculo_id
+    var errPlaca = progValidarPlacaObrigatoria(eq, eqId, data);
+    if(errPlaca){ progShowToast(errPlaca); return; }
+    // Validar celular da equipe (obrigatório) — usa o aparelho já selecionado no quadro
+    if(!comp.celular_id){
+      progShowToast('⚠ Selecione o celular da equipe antes de salvar a programação.');
+      return;
+    }
+    var errMot = progValidarMotoristaObrigatorio(comp, ids, eqId, data);
+    if(errMot){ progShowToast(errMot); return; }
+    comp.confirmada = true;
+    // Registrar se havia folga na escala no momento do save
+    var corDiaSave = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+    var temFolga = ids.some(function(id){
+      var c = colaboradores.find(function(x){return x.id===id;});
+      var st = _progStatus[id]||'disponivel';
+      if(!c) return false;
+      if(st==='folga'||st==='ferias'||st==='afastado') return true;
+      if(corDiaSave && c.cor_escala && c.cor_escala===corDiaSave) return true;
+      return false;
     });
-    progRenderQuadro();
-  });
+    if(!DEMO){
+      var isLocal = comp._local || !comp.id || String(comp.id).indexOf('local_')===0;
+      var payload = {
+        equipe_id:eqId, data:data,
+        colaborador_ids:ids,
+        turno:'Manha', confirmada:true,
+        tem_folga:temFolga,
+        motorista_id:comp.motorista_id||null,
+        celular_id:comp.celular_id||null,
+        deleted_at:null
+      };
+      // Incluir veiculo no payload antes de salvar composicao_dia
+      var _veicSave0 = progGetVeiculo(eqId, data);
+      if(_veicSave0){
+        payload.veiculo_id = _veicSave0.id||null;
+        payload.placa      = _veicSave0.placa||'';
+        payload.modelo     = _veicSave0.modelo||'';
+      }
+      if(isLocal){
+        sbFetch('composicao_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+data],limit:5})
+          .then(function(ex){
+            var hit=(ex||[]).find(function(r){ return !r.deleted_at; }) || (ex&&ex[0]) || null;
+            if(hit&&hit.id){
+              comp.id=hit.id;comp._local=false;
+              sbUpdate('composicao_dia',payload,'id=eq.'+hit.id);
+            } else {
+              sbInsert('composicao_dia',payload)
+                .then(function(r){if(r&&r[0]&&r[0].id){comp.id=r[0].id;comp._local=false;}});
+            }
+          });
+      } else {
+        delete payload.equipe_id; delete payload.data;
+        sbUpdate('composicao_dia', payload, 'id=eq.'+comp.id);
+      }
+    }
+    var _veicSave = progGetVeiculo(eqId, data);
+    var _veicPromise = (_veicSave && !DEMO)
+      ? progSalvarVeiculoNoBanco(eqId, data, _veicSave, 1)
+      : Promise.resolve(true);
+    _veicPromise.then(function(veicOk){
+      if(!veicOk) progShowToast('⚠ Erro ao confirmar veículo no banco.','erro');
+      var _veicSaveB = progGetVeiculoB(eqId, data);
+      if(_veicSaveB && !DEMO) progSalvarVeiculoNoBanco(eqId, data, _veicSaveB, 2);
+      if(_veicSave){
+        comp.veiculo_id = _veicSave.id||null;
+        comp.placa = _veicSave.placa||'';
+        comp.modelo = _veicSave.modelo||'';
+      }
+      if(temFolga) progShowToast('⚠ Programação salva com colaborador em situação de folga/afastamento.');
+      else progShowToast('✅ Equipe programada com sucesso');
+      _progGarantirCompId(comp, eqId, data).then(function(c){
+        if(c) almOnComposicaoConfirmada(c);
+      });
+      progRenderQuadro();
+    });
+  }
+
+  var comp0 = typeof progFindCompDia==='function'
+    ? progFindCompDia(eqId, data)
+    : composicao_dia.find(function(c){
+        var cd=(c.data||'').split('T')[0];
+        return String(c.equipe_id)===String(eqId) && (cd===data||c.data===data);
+      });
+  if(comp0){ seguirSalvar(comp0); return; }
+  if(DEMO){ seguirSalvar(null); return; }
+  var d0=(typeof _compDataStr==='function')?_compDataStr(data):String(data||'').split('T')[0];
+  var fComp=['equipe_id=eq.'+eqId,'data=gte.'+d0];
+  if(typeof progDiaSeguinte==='function') fComp.push('data=lt.'+progDiaSeguinte(d0));
+  sbFetch('composicao_dia',{filters:fComp,limit:20}).then(function(rows){
+    (rows||[]).forEach(function(r){
+      if(typeof _mergeComposicaoDia==='function') _mergeComposicaoDia(r);
+    });
+    seguirSalvar(typeof progFindCompDia==='function' ? progFindCompDia(eqId, data) : null);
+  }).catch(function(){ seguirSalvar(null); });
 }
 
 
@@ -46175,7 +46356,7 @@ function _progMobileAtualizarLista(busca, tipoFiltroLista){
       var nomeEq = (eq.codigo||'').toUpperCase();
       var matchTipo = false;
       if(tipoFiltroLista === 'CESTO AÉREO') matchTipo = tipoEq.indexOf('CESTO')>=0||tipoEq.indexOf('AEREO')>=0||tipoEq.indexOf('AÉREO')>=0||nomeEq.indexOf('LV')===0||nomeEq.indexOf('CE')===0||tipoEq.indexOf('LV')>=0;
-      else if(tipoFiltroLista === 'FIORINO') matchTipo = tipoEq.indexOf('FIORINO')>=0||tipoEq.indexOf('LEVE')>=0||nomeEq.indexOf('FI')===0||nomeEq.indexOf('EIN')===0;
+      else if(tipoFiltroLista === 'FIORINO') matchTipo = tipoEq.indexOf('FIORINO')>=0||tipoEq.indexOf('LEVE')>=0||nomeEq.indexOf('FI')===0||nomeEq.indexOf('EIN')===0||nomeEq.indexOf('EJN')===0;
       else if(tipoFiltroLista === 'MOTO DUPLA') matchTipo = tipoEq.indexOf('MOTO')>=0||tipoEq.indexOf('MK')>=0||nomeEq.indexOf('MK')>=0;
       if(!matchTipo) return;
     }
@@ -46541,9 +46722,13 @@ function progMobileRemover(eqId, colabId){
 
 function progMobileProgramar(eqId){
   var data = progGetData();
-  var comp = composicao_dia.find(function(c){
-    return c.equipe_id===eqId && (c.data||'').slice(0,10)===data && !c.deleted_at;
-  });
+  var comp = typeof progFindCompDia==='function'
+    ? progFindCompDia(eqId, data)
+    : composicao_dia.find(function(c){
+        var cd=String(c.data||'').split('T')[0];
+        return String(c.equipe_id)===String(eqId) && cd===String(data||'').split('T')[0];
+      });
+  if(comp && (comp.deleted_at || comp._deleted)){ comp.deleted_at=null; comp._deleted=false; }
   if(!comp){ progShowToast('Nenhum colaborador escalado'); return; }
 
   var idsRaw = parseColabIds(comp.colaborador_ids);
@@ -46553,6 +46738,7 @@ function progMobileProgramar(eqId){
   var idsAtivosMob = progColabIdsAtivos(idsRaw);
   if(idsAtivosMob.length < minColMobSave){ progShowToast(minColMobSave===1?'Mínimo 1 colaborador ativo para programar':'Mínimo de 2 colaboradores ativos para programar'); return; }
   if(idsRaw.length > 3){ progShowToast('Maximo de 3 colaboradores por equipe'); return; }
+  if(typeof progGarantirMotorista==='function') progGarantirMotorista(comp, idsAtivosMob, eqMob);
 
   var veicDia = progGetVeiculo(eqId, data);
   var errPlacaMob = progValidarPlacaObrigatoria(eqMob, eqId, data);
@@ -47613,9 +47799,11 @@ function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
       if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{colaborador_ids:idsC},'id=eq.'+comp.id);
     });
   }
-  var comp=composicao_dia.find(function(c){
-    return c.equipe_id===toEqId && ((c.data||'').split('T')[0]===data || c.data===data);
-  });
+  var comp=typeof progFindCompDia==='function'
+    ? progFindCompDia(toEqId, data)
+    : composicao_dia.find(function(c){
+        return String(c.equipe_id)===String(toEqId) && ((c.data||'').split('T')[0]===data || c.data===data);
+      });
   // T3 descontinuado — só T1/T2
   if(toPos > 1) toPos = 1;
   var ids=parseColabIdsSlots(comp?comp.colaborador_ids:'[]', 2);
@@ -47623,13 +47811,15 @@ function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
   ids[toPos]=colabId;
   if(comp){
     comp.colaborador_ids=JSON.stringify(ids);
+    if(comp.deleted_at){ comp.deleted_at=null; comp._deleted=false; }
     if(!DEMO){
+      var upDrop={colaborador_ids:ids, deleted_at:null};
       if(comp._local){
         comp._local=false;
         sbInsert('composicao_dia',{equipe_id:toEqId,data:data,colaborador_ids:ids,turno:'Manha',confirmada:false})
           .then(function(r){if(r&&r[0]&&r[0].id)comp.id=r[0].id;});
       } else {
-        sbUpdate('composicao_dia',{colaborador_ids:ids},'id=eq.'+comp.id);
+        sbUpdate('composicao_dia',upDrop,'id=eq.'+comp.id);
       }
     }
   } else {
@@ -49362,14 +49552,10 @@ async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDes
         justificativa:veicSrc.justificativa||'',
         alterado_por:(usuarioLogado&&usuarioLogado.nome)||'Auto Escalar'
       };
-      if(slotNum===2){
-        if(typeof progSetVeiculoB==='function') progSetVeiculoB(eqId, dest, veicObj);
-      } else {
-        progSetVeiculo(eqId, dest, veicObj);
-      }
-      if(!DEMO && typeof progSalvarVeiculoNoBanco==='function'){
-        try{ await progSalvarVeiculoNoBanco(eqId, dest, veicObj, slotNum); }catch(eSv){}
-      }
+      try{
+        if(slotNum===2 && typeof progSetVeiculoB==='function') await progSetVeiculoB(eqId, dest, veicObj);
+        else await progSetVeiculo(eqId, dest, veicObj);
+      }catch(eSv){}
     }
   }
 
@@ -49447,7 +49633,7 @@ function progAutoEscalar(eqId){
   // Garantir sem duplicatas — todos os vinculados disponíveis (viabilidade: 1+; demais: 2+)
   var ids=[];
   var usados={};
-  var maxSlots = progEquipeEhViabilidade(eq) ? vinculados.length : 2;
+  var maxSlots = (progEquipeEhViabilidade(eq) || progEquipeEhFiorino(eq)) ? Math.max(vinculados.length, 1) : 2;
   vinculados.slice(0, maxSlots).forEach(function(c){
     if(!usados[c.id]){ids.push(c.id);usados[c.id]=true;}
   });
@@ -49500,7 +49686,7 @@ function progAutoEscalarTodas(){
     if(vinc.length < progMinColaboradoresEquipe(eq)){ falha++; return; }
     var ids = [];
     var usados2={};
-    var maxV = progEquipeEhViabilidade(eq) ? vinc.length : 2;
+    var maxV = (progEquipeEhViabilidade(eq) || progEquipeEhFiorino(eq)) ? Math.max(vinc.length, 1) : 2;
     vinc.slice(0, maxV).forEach(function(c){if(!usados2[c.id]){ids.push(c.id);usados2[c.id]=true;}});
     // Marcar estes como escalados para as próximas equipes
     ids.forEach(function(id){if(id) jaEscaladoAll[id]=true;});
@@ -74627,16 +74813,37 @@ function progLimparPlacaComposicao(eqId, data){
 }
 
 function progFindCompDia(eqId, data){
-  var d=(data||'').split('T')[0];
-  return composicao_dia.find(function(c){
-    if(c.deleted_at) return false;
-    var cd=(c.data||'').split('T')[0];
-    return String(c.equipe_id)===String(eqId) && (cd===d||c.data===data);
-  }) || null;
+  var d=(typeof _compDataStr==='function')?_compDataStr(data):String(data||'').split('T')[0];
+  var matches=(composicao_dia||[]).filter(function(c){
+    if(!c) return false;
+    var cd=(typeof _compDataStr==='function')?_compDataStr(c.data):String(c.data||'').split('T')[0];
+    return String(c.equipe_id)===String(eqId) && cd===d;
+  });
+  if(!matches.length) return null;
+  function nGente(c){
+    try{ return parseColabIds(c.colaborador_ids).length; }catch(e){ return 0; }
+  }
+  function vivo(c){ return !c.deleted_at && !c._deleted; }
+  matches.sort(function(a,b){
+    var ga=nGente(a), gb=nGente(b);
+    if(ga!==gb) return gb-ga;
+    var va=vivo(a)?1:0, vb=vivo(b)?1:0;
+    if(va!==vb) return vb-va;
+    return 0;
+  });
+  return matches[0];
 }
 
 function progGetVeiculo(eqId, data){
-  return _progVeiculos[progVeiculoKey(eqId, data)] || null;
+  var d=(data||'').split('T')[0];
+  var v=_progVeiculos[progVeiculoKey(eqId, d)] || null;
+  if(v && String(v.placa||'').trim()) return v;
+  var comp=typeof progFindCompDia==='function' ? progFindCompDia(eqId, d) : null;
+  var placa=comp && String(comp.placa||comp.veiculo_placa||'').trim();
+  if(!placa) return v;
+  v={id:comp.veiculo_id||null, placa:placa, modelo:comp.modelo||''};
+  _progVeiculos[progVeiculoKey(eqId, d)]=v;
+  return v;
 }
 function progGetVeiculoB(eqId, data){
   return _progVeiculos[progVeiculoKeyB(eqId, data)] || null;
@@ -74692,16 +74899,29 @@ function isMotoDupla(eq){
 }
 
 
-// ── Salvar veículo no banco de forma confiável (PATCH + INSERT fallback) ──────
-// Retorna Promise que resolve true/false
+function progVeicRowDoSlot(r, slotNum){
+  if(!r) return false;
+  var s=r.slot;
+  if(slotNum===1 || slotNum==='1') return s==null || s==='' || Number(s)===1 || String(s)==='1';
+  return Number(s)===Number(slotNum) || String(s)===String(slotNum);
+}
+/** Busca registros da equipe no dia, inclusive soft-deleted (o UNIQUE ignora deleted_at). */
+function progFetchVeiculosDiaEquipeAll(eqId, data){
+  var d=(data||'').split('T')[0];
+  var f1=['equipe_id=eq.'+eqId,'data=gte.'+d,'data=lt.'+progDiaSeguinte(d)];
+  return sbFetch('prog_veiculos_dia',{filters:f1,limit:50}).then(function(rows){
+    if(rows&&rows.length) return rows;
+    return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+d],limit:50}).then(function(r2){ return r2||[]; });
+  }).catch(function(){ return []; });
+}
+
+// ── Salvar veículo no banco de forma confiável (UPDATE se já existe; nunca INSERT duplicado) ──
 function progSalvarVeiculoNoBanco(eqId, data, veiculoObj, slot){
   if(DEMO||!veiculoObj||!veiculoObj.placa) return Promise.resolve(true);
   var slotNum   = slot===2||slot==='2' ? 2 : 1;
-  var dataStr   = (data||'').split('T')[0]; // garantir YYYY-MM-DD
-  // Normalizar placa: remover hífen para manter padrão do cadastro (ex: TTJ9A72)
+  var dataStr   = (data||'').split('T')[0];
   var placa     = (veiculoObj.placa||'').trim().toUpperCase().replace(/[-\s]/g,'');
   var logCtx    = {eqId:eqId,data:dataStr,slot:slotNum,placa:placa};
-
   var updatePayload = {
     veiculo_id  : veiculoObj.id||null,
     placa       : placa,
@@ -74714,52 +74934,49 @@ function progSalvarVeiculoNoBanco(eqId, data, veiculoObj, slot){
     justificativa:veiculoObj.justificativa||''
   }, updatePayload);
 
-  // ── Passo 1: buscar registro existente (slot exato) ───────────
-  return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=eq.'+slotNum]})
-  .then(function(rows){
-    if(rows&&rows.length) return rows[0];
-    // Legado: slot=null também é slot 1
-    if(slotNum===1){
-      return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=is.null']})
-        .then(function(r2){ return (r2&&r2.length)?r2[0]:null; });
-    }
-    return null;
-  })
-  // ── Passo 2: UPDATE ou INSERT ─────────────────────────────────
-  .then(function(existing){
-    if(existing&&existing.id){
-      return sbUpdate('prog_veiculos_dia',updatePayload,'id=eq.'+existing.id)
-        .then(function(){ return 'updated'; })
-        .catch(function(e){ return 'update-error:'+e; });
-    }
-    return sbInsert('prog_veiculos_dia',insertPayload)
-      .then(function(r){ return (r&&r.length)?'inserted':'insert-empty'; })
-      .catch(function(e){ return 'insert-error:'+e; });
-  })
-  // ── Passo 3: read-after-write — confirmar que a placa está no banco ──
-  .then(function(op){
-    return sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dataStr,'slot=eq.'+slotNum]})
-    .then(function(verify){
-      var found = verify && verify.find(function(r){
-        return (r.placa||'').toUpperCase()===(placa||'').toUpperCase();
+  function pickExisting(rows){
+    var list=rows||[];
+    return list.find(function(r){ return progVeicRowDoSlot(r, slotNum); }) || null;
+  }
+  function doUpdate(existing){
+    if(!existing||!existing.id) return Promise.resolve(false);
+    var payload=Object.assign({}, updatePayload);
+    if(existing.deleted_at) payload.deleted_at=null;
+    return sbUpdate('prog_veiculos_dia', payload, 'id=eq.'+existing.id)
+      .then(function(ok){ return ok!==false; })
+      .catch(function(){
+        if(payload.deleted_at===null){
+          delete payload.deleted_at;
+          return sbUpdate('prog_veiculos_dia', payload, 'id=eq.'+existing.id).then(function(ok){ return ok!==false; });
+        }
+        return false;
       });
-      var result = Object.assign({},logCtx,{op:op,verifyRows:(verify&&verify.length)||0,found:!!found});
-      if(found){
-        console.log('[veic save OK]',result);
-        return true;
-      }
-      // Última tentativa: salvar sem slot se still missing
-      if(op==='insert-empty'||op.indexOf('error')>=0){
-        return sbInsert('prog_veiculos_dia',insertPayload)
-          .then(function(r2){
-            var ok2 = !!(r2&&r2.length);
-            console.warn('[veic save retry]',Object.assign({},result,{retry:ok2}));
-            return ok2;
-          });
-      }
-      console.error('[veic save FALHOU]',result);
-      return false;
-    });
+  }
+
+  function doUpsert(){
+    var payload=Object.assign({}, insertPayload, {deleted_at:null});
+    return sbUpsert('prog_veiculos_dia', payload, 'equipe_id,data,slot')
+      .then(function(u){
+        if(u&&u.length) return 'upserted';
+        delete payload.deleted_at;
+        return sbUpsert('prog_veiculos_dia', payload, 'equipe_id,data,slot')
+          .then(function(u2){ return (u2&&u2.length)?'upserted':'upsert-empty'; });
+      });
+  }
+
+  return progFetchVeiculosDiaEquipeAll(eqId, dataStr)
+  .then(function(rows){
+    var existing=pickExisting(rows);
+    if(existing&&existing.id){
+      return doUpdate(existing).then(function(ok){ return ok ? 'updated' : doUpsert(); });
+    }
+    return doUpsert();
+  })
+  .then(function(op){
+    var ok = op==='updated'||op==='upserted';
+    if(ok) console.log('[veic save OK]', Object.assign({},logCtx,{op:op}));
+    else console.warn('[veic save]', Object.assign({},logCtx,{op:op}));
+    return ok;
   })
   .catch(function(e){
     console.error('[progSalvarVeiculoNoBanco] exception:',logCtx,e);
@@ -74798,10 +75015,12 @@ function progSetVeiculo(eqId, data, veiculoObj){
 
   // Salvar também em composicao_dia imediatamente (fallback garantido)
   if(!DEMO){
-    var _compVeic = composicao_dia.find(function(c){
-      var cd=(c.data||'').split('T')[0];
-      return c.equipe_id===eqId&&(cd===data||c.data===data);
-    });
+    var _compVeic = typeof progFindCompDia==='function'
+      ? progFindCompDia(eqId, data)
+      : composicao_dia.find(function(c){
+          var cd=(c.data||'').split('T')[0];
+          return String(c.equipe_id)===String(eqId)&&(cd===data||c.data===data);
+        });
     if(_compVeic){
       _compVeic.veiculo_id = veiculoObj.id||null;
       _compVeic.placa      = veiculoObj.placa||'';
@@ -74877,17 +75096,25 @@ function progCarregarVeiculos(data){
 
   progFetchVeiculosDia(d).then(function(rows){
     _progVeiculosDateCache = d;
-    // Limpa o dia antes de aplicar o banco — evita placa fantasma do localStorage
+    var pending={};
+    Object.keys(_progVeiculos||{}).forEach(function(k){
+      if(progVeiculoKeyEhDoDia(k, d) && _progVeiculos[k] && String(_progVeiculos[k].placa||'').trim()){
+        pending[k]=_progVeiculos[k];
+      }
+    });
     progLimparVeiculosDia(d);
     var loaded = 0;
     var eqComRegistro = {};
     (rows||[]).forEach(function(r){
       if(!r.equipe_id||!r.placa||r.deleted_at) return;
       eqComRegistro[String(r.equipe_id)] = true;
-      var key = String(r.slot||'1')==='2' ? progVeiculoKeyB(r.equipe_id,r.data||d) : progVeiculoKey(r.equipe_id,r.data||d);
+      var key = String(r.slot||'1')==='2' ? progVeiculoKeyB(r.equipe_id, d) : progVeiculoKey(r.equipe_id, d);
       _progVeiculos[key] = {id:r.veiculo_id,placa:r.placa,modelo:r.modelo,
         justificativa:r.justificativa,alterado_por:r.alterado_por};
       loaded++;
+    });
+    Object.keys(pending).forEach(function(k){
+      if(!_progVeiculos[k]){ _progVeiculos[k]=pending[k]; loaded++; }
     });
     // Fallback composicao_dia só para equipes SEM registro em prog_veiculos_dia
     var compsFallback = 0;
@@ -74980,8 +75207,7 @@ function progRecuperarPlacasDia(dataOpt){
             if(fv){ veicId=fv.id; modelo=modelo||fv.modelo||''; }
           }
           var veicObj={id:veicId,placa:placa,modelo:modelo,alterado_por:(usuarioLogado&&usuarioLogado.nome)||'Recuperação'};
-          progSetVeiculo(eqId, data, veicObj);
-          return progSalvarVeiculoNoBanco(eqId, data, veicObj, 1).then(function(ok){
+          return Promise.resolve(progSetVeiculo(eqId, data, veicObj)).then(function(ok){
             if(ok){
               recuperados++;
               comp.placa=placa; comp.veiculo_id=veicId; comp.modelo=modelo;
@@ -90330,14 +90556,107 @@ function almReqTipoLabel(cod){
   return t?t.label:(cod||'—');
 }
 function almReqStLabel(s){
-  var m={rascunho:'Rascunho',solicitada:'Solicitada',aprovada:'Aprovada',recusada:'Recusada',cancelada:'Cancelada',separacao:'Separação',parcialmente_atendida:'Parcialmente atendida',atendida:'Atendida'};
+  var m={rascunho:'Rascunho',solicitada:'Solicitada',aprovada:'Aprovada',recusada:'Recusada',cancelada:'Cancelada',
+    separacao:'Separação',parcialmente_atendida:'Parcialmente separada',atendida:'Separada',separada:'Separada',recebida:'Recebida'};
   return m[s]||s||'—';
 }
 function almReqStCls(s){
-  if(s==='aprovada'||s==='atendida') return 'ok';
+  if(s==='aprovada'||s==='atendida'||s==='separada'||s==='recebida') return 'ok';
   if(s==='solicitada'||s==='separacao'||s==='parcialmente_atendida') return 'warn';
   if(s==='recusada'||s==='cancelada') return 'danger';
   return 'gray';
+}
+function almReqStEhReserva(s){
+  return s==='solicitada'||s==='aprovada'||s==='separacao'||s==='parcialmente_atendida';
+}
+function almReqReserva(itemId, codigo, depId, nome){
+  var tot=0, cid=String(itemId||''), cod=String(codigo||'').toLowerCase(), nom=String(nome||'').trim().toLowerCase();
+  (_almReq.lista||[]).forEach(function(r){
+    if(!almReqStEhReserva(r.status)) return;
+    if(depId && String(r.deposito_id||'')!==String(depId)) return;
+    (_almReq.itens[r.id]||[]).forEach(function(it){
+      var ok=(cid && String(it.item_id||'')===cid)
+        || (cod && String(it.item_codigo||'').toLowerCase()===cod)
+        || (nom && String(it.item_descricao||'').toLowerCase()===nom);
+      if(!ok) return;
+      var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+      var atd=Number(it.quantidade_atendida)||0;
+      tot+=Math.max(0, apr-atd);
+    });
+  });
+  return tot;
+}
+function almReqDisponivel(itemId, codigo, depId){
+  var est=almReqSaldo(itemId, codigo, depId);
+  var res=almReqReserva(itemId, codigo, depId);
+  return Math.max(0, est-res);
+}
+function almReqColsEstoqueHtml(it, depId){
+  var est=almReqSaldo(it.item_id, it.item_codigo, depId);
+  var res=almReqReserva(it.item_id, it.item_codigo, depId);
+  var disp=Math.max(0, est-res);
+  return '<td style="text-align:right">'+est+'</td><td style="text-align:right;color:#854F0B">'+res+'</td><td style="text-align:right;font-weight:700;color:'+(disp<=0?'#A32D2D':'#3B6D11')+'">'+disp+'</td>';
+}
+function almReqSqlC2Hint(){ return 'Aplique sql_alm_requisicao_c2.sql no SQL Editor do Supabase. O ERP não aplica SQL sozinho.'; }
+function almReqUsuarioDepositos(u){
+  u=u||usuarioLogado||{};
+  if(!u.responde_estoque && !String(u.depositos_responsavel||'').trim()) return [];
+  return String(u.depositos_responsavel||'').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+}
+function almReqUserPodeDep(depId){
+  if(!depId) return false;
+  var p=(usuarioLogado&&usuarioLogado.perfil)||'';
+  if(p==='admin'||p==='diretoria'||p==='almoxarife') return true;
+  return almReqUsuarioDepositos().indexOf(String(depId))>=0;
+}
+function almReqAlertas(){
+  var ids=almReqUsuarioDepositos();
+  var p=(usuarioLogado&&usuarioLogado.perfil)||'';
+  var verTudo=p==='admin'||p==='diretoria'||p==='almoxarife';
+  if(!ids.length && !verTudo) return [];
+  var out=[];
+  (_almReq.lista||[]).forEach(function(r){
+    var orig=String(r.deposito_id||'');
+    var dest=String(r.dest_deposito_id||r.deposito_id||'');
+    var meOrig=verTudo||ids.indexOf(orig)>=0;
+    var meDest=verTudo||ids.indexOf(dest)>=0;
+    if(r.status==='separacao' && meOrig)
+      out.push({tipo:'separar', id:r.id, msg:(r.numero||'')+' — separar no depósito '+(r.deposito_nome||'')});
+    if((r.status==='separada'||r.status==='atendida') && meDest)
+      out.push({tipo:'receber', id:r.id, msg:(r.numero||'')+' — confirmar recebimento em '+(r.dest_deposito_nome||r.deposito_nome||'')});
+    if(r.status==='recebida' && meDest && (_almReq.itens[r.id]||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); }))
+      out.push({tipo:'entregar', id:r.id, msg:(r.numero||'')+' — entregar ao colaborador (assinatura)'});
+  });
+  return out;
+}
+function almReqRenderAlertas(){
+  var box=document.getElementById('alm-est-alertas'); if(!box) return;
+  var list=almReqAlertas();
+  if(!list.length){ box.innerHTML=''; box.style.display='none'; return; }
+  box.style.display='block';
+  box.style.cssText='margin:8px 12px 0;padding:10px 12px;background:#FEF3E2;border:1px solid #E8B931;border-radius:8px;font-size:12px;color:#854F0B';
+  box.innerHTML='<div style="font-weight:700;margin-bottom:6px">Almoxarifado — movimentação no seu estoque</div>'
+    +list.slice(0,8).map(function(a){
+      var acao=a.tipo==='receber'?'Confirmar':(a.tipo==='entregar'?'Entregar':'Abrir');
+      return '<div style="display:flex;gap:8px;align-items:center;margin:3px 0;flex-wrap:wrap">'
+        +'<span style="flex:1">'+_escapeHtml(a.msg)+'</span>'
+        +'<button class="btn btn-sm" onclick="almReqAbrirAlerta(\''+String(a.id).replace(/'/g,'')+'\',\''+a.tipo+'\')">'+acao+'</button></div>';
+    }).join('')
+    +(list.length>8?'<div style="font-size:11px;margin-top:4px">+ '+(list.length-8)+' outros</div>':'');
+}
+function almReqAbrirAlerta(id, tipo){
+  if(tipo==='entregar'){
+    almReqAbrir(id);
+    setTimeout(function(){ if(typeof almReqIrEntregarColab==='function') almReqIrEntregarColab(); }, 200);
+    return;
+  }
+  almReqAbrir(id);
+}
+function almReqInitAlertas(){
+  if(!usuarioLogado) return;
+  var precisa=almReqUsuarioDepositos().length || ['admin','diretoria','almoxarife'].indexOf(usuarioLogado.perfil||'')>=0;
+  if(!precisa){ almReqRenderAlertas(); return; }
+  Promise.resolve(typeof almReqGarantirListaSilent==='function'?almReqGarantirListaSilent():null).then(function(){ almReqRenderAlertas(); });
 }
 function almReqPriLabel(p){
   var m={baixa:'Baixa',normal:'Normal',alta:'Alta',urgente:'Urgente'};
@@ -90416,6 +90735,7 @@ function almReqInit(){
     almReqRender();
     almReqCarregar();
   });
+  almReqInitAlertas();
 }
 async function almReqCarregar(){
   _almReq.carregando=true; almReqRender();
@@ -90443,6 +90763,7 @@ async function almReqCarregar(){
   _almReq.carregando=false;
   almReqSyncFiltros();
   almReqRender();
+  almReqRenderAlertas();
 }
 function almReqSyncFiltros(){
   function v(id){ var el=document.getElementById(id); return el?el.value||'':''; }
@@ -90457,7 +90778,11 @@ function almReqFiltradas(){
   var f=_almReq.filtros||{};
   return (_almReq.lista||[]).filter(function(r){
     if(f.numero && String(r.numero||'').toLowerCase().indexOf(f.numero.toLowerCase())<0) return false;
-    if(f.status && r.status!==f.status) return false;
+    if(f.status){
+      if(f.status==='separada'){
+        if(r.status!=='separada' && r.status!=='atendida') return false;
+      } else if(r.status!==f.status) return false;
+    }
     if(f.prioridade && r.prioridade!==f.prioridade) return false;
     if(f.contrato && String(r.contrato_id||'')!==f.contrato && String(r.contrato_nome||'').toLowerCase().indexOf(f.contrato.toLowerCase())<0) return false;
     if(f.base && String(r.base_id||'')!==f.base) return false;
@@ -90496,7 +90821,7 @@ function almReqRender(){
   var tipoOpts='<option value="">Tipo de item</option>'+almReqTipos().map(function(t){
     return '<option value="'+t.codigo+'"'+(f.tipo===t.codigo?' selected':'')+'>'+t.label+'</option>';
   }).join('');
-  var stOpts=['','rascunho','solicitada','aprovada','separacao','parcialmente_atendida','atendida','recusada','cancelada'].map(function(s){
+  var stOpts=['','rascunho','solicitada','aprovada','separacao','parcialmente_atendida','separada','recebida','recusada','cancelada'].map(function(s){
     return '<option value="'+s+'"'+(f.status===s?' selected':'')+'>'+(s?almReqStLabel(s):'Status')+'</option>';
   }).join('');
   var priOpts=['','baixa','normal','alta','urgente'].map(function(p){
@@ -90523,13 +90848,13 @@ function almReqRender(){
   wrap.innerHTML='<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;flex-wrap:wrap">'
     +'<button onclick="showMain(\'almoxarifado\')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ Almoxarifado CENA</button>'
     +'<span style="font-size:13px;font-weight:600">📥 Requisição — estoque CENA</span>'
-    +'<span style="font-size:11px;color:#888">Aprovada → Separação → Atender (baixa o depósito). Uniforme/EPI vai para Entregar colaborador (ficha + assinatura). SAP continua separado.</span>'
+    +'<span style="font-size:11px;color:#888">Aprovada → Separação → Separada (informa base/depósito destino) → Recebimento no destino → Entregar colaborador (assinatura). SQL: sql_alm_requisicao_c2.sql.</span>'
     +'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.6rem">'
     +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'aprovada\')">Fila: aprovadas</button>'
     +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'separacao\')">Em separação</button>'
-    +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'parcialmente_atendida\')">Parcial</button>'
-    +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'atendida\')">Atendidas</button>'
+    +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'separada\')">Separadas</button>'
+    +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'recebida\')">Recebidas</button>'
     +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'\')">Todas</button>'
     +'</div>'
     +'<div class="card"><div class="ch" style="flex-wrap:wrap;gap:6px">'
@@ -90561,6 +90886,7 @@ function almReqDraftVazio(){
     area_solicitante:'', contrato_id:'', contrato_nome:'',
     base_id:'', base_nome:'', deposito_id:'', deposito_nome:'',
     centro_custo:'', prioridade:'normal', finalidade:'', observacao:'',
+    dest_base_id:'', dest_base_nome:'', dest_deposito_id:'', dest_deposito_nome:'',
     status:'rascunho', itens:[]
   };
 }
@@ -90592,11 +90918,82 @@ function almReqLerCabecalho(){
   d.deposito_id=v('arq-dep');
   var dep=(depositos||[]).find(function(x){ return String(x.id)===d.deposito_id; });
   d.deposito_nome=dep?(dep.nome||''):'';
+  if(document.getElementById('arq-dest-base')){
+    d.dest_base_id=v('arq-dest-base');
+    var db=(filiais||[]).find(function(x){ return String(x.id)===d.dest_base_id; });
+    d.dest_base_nome=db?(db.nome||''):'';
+    d.dest_deposito_id=v('arq-dest-dep');
+    var dd=(depositos||[]).find(function(x){ return String(x.id)===d.dest_deposito_id; });
+    d.dest_deposito_nome=dd?(dd.nome||''):'';
+  }
   d.centro_custo=v('arq-cc');
   d.prioridade=v('arq-pri')||'normal';
   d.finalidade=v('arq-fin');
   d.observacao=v('arq-obs');
 }
+function almReqGuiaHtml(d){
+  d=d||{};
+  var destOk=!!(d.dest_base_id&&d.dest_deposito_id);
+  var quem=almReqUsuarioNome();
+  var precisaEnt=(d.itens||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); });
+  var msg='', cor='#185FA5', bg='#E6F1FB', bd='#85B7EB';
+  if(d.status==='aprovada'){
+    msg='Próximo passo: enviar para separação no depósito origem.';
+  } else if(d.status==='separacao'||d.status==='parcialmente_atendida'){
+    if(!destOk){ msg='Preencha a <b>base</b> e o <b>depósito destino</b> destacados e depois separe os itens.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+    else msg='Separe as quantidades. Em seguida o almoxarifado destino confirma o recebimento em '+(d.dest_deposito_nome||'')+'.';
+  } else if(d.status==='separada'||d.status==='atendida'){
+    if(!destOk){ msg='Para confirmar o recebimento, preencha a <b>base</b> e o <b>depósito destino</b>.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+    else msg='Passo atual: confirmar o recebimento neste aparelho (<b>'+_escapeHtml(quem)+'</b>) em <b>'+_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''))+'</b>.';
+  } else if(d.status==='recebida'){
+    if(precisaEnt){ msg='Recebimento ok. Próximo passo: entregar ao colaborador e coletar a assinatura.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+    else { msg='Recebimento concluído. Não há entrega com assinatura pendente.'; cor='#3B6D11'; bg='#EAF3DE'; bd='#85C440'; }
+  } else return '';
+  return '<div id="arq-guia" style="margin:0 0 .75rem;padding:10px 12px;border-radius:8px;border:1px solid '+bd+';background:'+bg+';color:'+cor+';font-size:12px;line-height:1.45">'+msg+'</div>';
+}
+function almReqFocoEl(el, msg){
+  if(!el) return;
+  el.style.outline='2px solid #C99212';
+  el.style.boxShadow='0 0 0 4px rgba(232,185,49,.5)';
+  if(el.tagName==='SELECT'||el.tagName==='INPUT'||el.tagName==='BUTTON') el.style.background='#FFFBEB';
+  if(el.scrollIntoView) el.scrollIntoView({behavior:'smooth', block:'center'});
+  try{ if(!el.disabled && el.focus) el.focus(); }catch(e){}
+  if(msg) progShowToast(msg);
+}
+function almReqDirigirPasso(opts){
+  opts=opts||{};
+  var d=_almReq.draft||{};
+  almReqLerCabecalho();
+  d=_almReq.draft||d;
+  ['arq-dest-base','arq-dest-dep','arq-btn-receber','arq-btn-entregar','arq-dest-wrap','arq-receber-box'].forEach(function(id){
+    var x=document.getElementById(id); if(!x) return;
+    if(id==='arq-dest-wrap'||id==='arq-receber-box') return;
+    x.style.outline=''; x.style.boxShadow='';
+    if(x.tagName==='SELECT'||x.tagName==='INPUT') x.style.background='';
+  });
+  var st=d.status;
+  if(st==='separada'||st==='atendida'){
+    if(!d.dest_base_id){ almReqFocoEl(document.getElementById('arq-dest-base'), opts.toast?'Selecione a base destino.':''); return; }
+    if(!d.dest_deposito_id){ almReqFocoEl(document.getElementById('arq-dest-dep'), opts.toast?'Selecione o depósito destino.':''); return; }
+    var box=document.getElementById('arq-receber-box');
+    var btn=document.getElementById('arq-btn-receber');
+    if(box && box.scrollIntoView) box.scrollIntoView({behavior:'smooth', block:'center'});
+    almReqFocoEl(btn, opts.toast?'Destino preenchido. Confirme o recebimento neste aparelho.':'');
+    return;
+  }
+  if(st==='separacao'||st==='parcialmente_atendida'){
+    if(!d.dest_base_id){ almReqFocoEl(document.getElementById('arq-dest-base'), opts.toast?'Informe a base destino da transferência.':''); return; }
+    if(!d.dest_deposito_id){ almReqFocoEl(document.getElementById('arq-dest-dep'), opts.toast?'Informe o depósito destino.':''); return; }
+    var q=document.querySelector('[id^="arq-atd-"]');
+    if(q) almReqFocoEl(q);
+    return;
+  }
+  if(st==='recebida'){
+    var b=document.getElementById('arq-btn-entregar');
+    if(b) almReqFocoEl(b, opts.toast?'Próximo passo: entregar ao colaborador e coletar a assinatura.':'');
+  }
+}
+
 function almReqModal(){
   var d=_almReq.draft; if(!d) return;
   var ro=d.status && d.status!=='rascunho';
@@ -90618,42 +91015,45 @@ function almReqModal(){
     return '<option value="'+_escapeHtml(String(e.id))+'">'+_escapeHtml(e.codigo||e.nome||e.nome_equipe||'')+'</option>';
   }).join('');
   var itensHtml;
-  var faseSep=d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='atendida';
+  var faseSep=d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='atendida'||d.status==='separada'||d.status==='recebida';
   if(!(d.itens||[]).length) itensHtml='<div style="font-size:12px;color:#888;padding:.5rem 0">Nenhum item. Adicione abaixo.</div>';
   else if(faseSep){
-    itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Solic.</th><th>Aprov.</th><th>Atend.</th><th>Saldo</th><th>Destino</th><th></th></tr></thead><tbody>'
+    itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Estoque</th><th>Reserva</th><th>Disponível</th><th>Destino</th><th></th></tr></thead><tbody>'
       +d.itens.map(function(it,idx){
         var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
         var atd=Number(it.quantidade_atendida)||0;
         var pend=Math.max(0, apr-atd);
-        var sal=almReqSaldo(it.item_id, it.item_codigo, d.deposito_id);
         var dest=it.colaborador_nome?(it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'')):(it.equipe_nome||'—');
         var tagEnt=typeof almReqEntregaTagGet==='function'?almReqEntregaTagGet(it.observacao):'';
         var aguardEnt=pend<=0 && typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it);
         var btn;
-        if(pend>0 && d.status!=='atendida'){
+        if(pend>0 && (d.status==='separacao'||d.status==='parcialmente_atendida')){
           btn='<div style="display:flex;gap:4px;align-items:center">'
             +'<input class="inp" id="arq-atd-'+idx+'" type="number" min="0.0001" step="any" value="'+pend+'" style="width:72px">'
-            +'<button class="btn btn-sm btn-pri" onclick="almReqAtenderItem('+idx+')">Atender</button></div>';
+            +'<button class="btn btn-sm btn-pri" onclick="almReqSepararItem('+idx+')">Separar</button></div>';
+        } else if(d.status==='separada'){
+          btn='<span class="bdg ok">Separado</span>';
         } else if(aguardEnt){
           btn='<span class="bdg warn">Aguardando assinatura</span>';
         } else if(tagEnt.indexOf('ASSINADA')===0){
           btn='<span class="bdg ok">Ficha assinada</span>';
+        } else if(d.status==='recebida'){
+          btn='<span class="bdg ok">Recebido</span>';
         } else {
-          btn='<span class="bdg ok">Atendido</span>';
+          btn='<span class="bdg ok">Separado</span>';
         }
         return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+_escapeHtml(it.item_descricao||'')+'</td>'
-          +'<td>'+it.quantidade_solicitada+'</td><td>'+apr+'</td><td>'+atd+'</td>'
-          +'<td style="color:#888">'+sal+'</td><td>'+_escapeHtml(dest)+'</td><td>'+btn+'</td></tr>';
+          +'<td>'+apr+(atd?(' / '+atd):'')+'</td>'
+          +almReqColsEstoqueHtml(it, d.deposito_id)
+          +'<td>'+_escapeHtml(dest)+'</td><td>'+btn+'</td></tr>';
       }).join('')+'</tbody></table>'
-      +'<div style="font-size:11px;color:#666;margin-top:.4rem">Atender baixa o depósito CENA. Uniforme e EPI individuais seguem para <b>Entregar colaborador</b> (ficha + assinatura no tablet/celular). Atendimento parcial é permitido.</div>';
-  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Saldo</th>'+(ro?'':'<th></th>')+'</tr></thead><tbody>'
+      +'<div style="font-size:11px;color:#666;margin-top:.4rem">Estoque = saldo no depósito origem. Reserva = soma das requisições Solicitada/Aprovada/em Separação. Disponível = estoque − reserva. Separar baixa o origem e informa o destino da transferência. SQL: sql_alm_requisicao_c2.sql.</div>';
+  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Estoque</th><th>Reserva</th><th>Disponível</th>'+(ro?'':'<th></th>')+'</tr></thead><tbody>'
     +d.itens.map(function(it,idx){
       var dest=it.colaborador_nome?(it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'')):(it.equipe_nome||it.observacao||'—');
-      var sal=almReqSaldo(it.item_id, it.item_codigo, d.deposito_id);
       return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+_escapeHtml(it.item_descricao||'')+'</td>'
         +'<td>'+it.quantidade_solicitada+' '+(it.unidade||'')+'</td><td>'+_escapeHtml(dest)+'</td>'
-        +'<td style="color:#888">'+sal+'</td>'
+        +almReqColsEstoqueHtml(it, d.deposito_id)
         +(ro?'':'<td><button class="btn btn-sm" style="color:#A32D2D" onclick="almReqRemItem('+idx+')">✕</button></td>')
         +'</tr>';
     }).join('')+'</tbody></table>';
@@ -90673,12 +91073,31 @@ function almReqModal(){
   if(d.status==='aprovada'){
     acoes+='<button class="btn btn-pri" onclick="almReqSeparar()">Enviar para separação</button>';
   }
-  if((d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='atendida')
+  if(d.status==='separada'||d.status==='atendida'){
+    /* botão de confirmar fica no painel destacado arq-receber-box */
+  }
+  if(d.status==='recebida'
     && (d.itens||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); })){
-    acoes+='<button class="btn btn-pri" onclick="almReqIrEntregarColab()">Ir para Entregar colaborador</button>';
+    acoes+='<button class="btn btn-pri" id="arq-btn-entregar" onclick="almReqIrEntregarColab()">Ir para Entregar colaborador</button>';
   }
   if(d.status==='rascunho'||d.status==='solicitada'){
     acoes+='<button class="btn" onclick="almReqCancelar()">Cancelar</button>';
+  }
+  var receberHtml='';
+  if(d.status==='separada'||d.status==='atendida'){
+    var destOkRec=!!(d.dest_base_id&&d.dest_deposito_id);
+    var quemRec=_escapeHtml(almReqUsuarioNome()+' · '+((usuarioLogado&&usuarioLogado.email)||''));
+    receberHtml='<div id="arq-receber-box" style="margin-top:.85rem;padding:12px;border-radius:8px;border:2px solid '+(destOkRec?'#3B6D11':'#E8B931')+';background:'+(destOkRec?'#EAF3DE':'#FEF3E2')+'">'
+      +'<div style="font-weight:700;font-size:13px;margin-bottom:6px;color:'+(destOkRec?'#3B6D11':'#854F0B')+'">'
+      +(destOkRec?'Passo atual: confirmar recebimento neste aparelho':'Ainda falta preencher o destino')+'</div>'
+      +'<div style="font-size:12px;margin-bottom:10px;line-height:1.45">'
+      +'Usuário logado: <b>'+quemRec+'</b>'
+      +(destOkRec
+        ? ('<br>Receber em: <b>'+_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''))+'</b>')
+        : '<br>Preencha a <b>base destino</b> e o <b>depósito destino</b> destacados acima — depois este botão avança.')
+      +'</div>'
+      +'<button class="btn btn-pri" id="arq-btn-receber" onclick="almReqConfirmarRecebimento()">Confirmar recebimento</button>'
+      +'</div>';
   }
   var addHtml=ro?'':'<div style="margin-top:1rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
     +'<div style="font-size:12px;font-weight:700;margin-bottom:.5rem">Adicionar item</div>'
@@ -90707,6 +91126,7 @@ function almReqModal(){
     +'<h3 style="margin:0">'+(d.id?(_escapeHtml(d.numero||'Requisição')):'Nova requisição CENA')+'</h3>'
     +'<span class="bdg '+almReqStCls(d.status)+'">'+almReqStLabel(d.status)+'</span>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button></div>'
+    +almReqGuiaHtml(d)
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
     +'<div><label style="font-size:11px;font-weight:600">Data</label><input class="inp" id="arq-data" type="date" style="width:100%" value="'+_escapeHtml(d.data||dataHoje())+'"'+dis+'></div>'
     +'<div><label style="font-size:11px;font-weight:600">Prioridade</label><select class="inp" id="arq-pri" style="width:100%"'+dis+'>'+priOpts+'</select></div>'
@@ -90714,17 +91134,36 @@ function almReqModal(){
     +'<div><label style="font-size:11px;font-weight:600">Área solicitante</label><input class="inp" id="arq-area" style="width:100%" value="'+_escapeHtml(d.area_solicitante||'')+'"'+dis+'></div>'
     +'<div><label style="font-size:11px;font-weight:600">Centro de custo</label><input class="inp" id="arq-cc" style="width:100%" value="'+_escapeHtml(d.centro_custo||'')+'"'+dis+'></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="arq-cont" style="width:100%"'+dis+'>'+contOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Base / filial</label><select class="inp" id="arq-base" style="width:100%" onchange="almReqOnBaseFilial()"'+dis+'>'+baseOpts+'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600">Base / filial origem</label><select class="inp" id="arq-base" style="width:100%" onchange="almReqOnBaseFilial()"'+dis+'>'+baseOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqLerCabecalho();almReqAtualizaSaldo()"'+dis+'>'+depOpts+'</select></div>'
+    +(d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida'
+      ? (function(){
+          var destFaltando=!d.dest_base_id||!d.dest_deposito_id;
+          var destRo=(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando))?' disabled':'';
+          var destHl=destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
+          var destBaseOpts='<option value="">Selecione…</option>'+almReqListaFiliais().map(function(b){
+            return '<option value="'+_escapeHtml(String(b.id))+'"'+(String(d.dest_base_id)===String(b.id)?' selected':'')+'>'+_escapeHtml(b.nome||'')+'</option>';
+          }).join('');
+          var destDepOpts='<option value="">Selecione…</option>'+almReqListaDepositos(d.dest_base_id||d.base_id).map(function(x){
+            return '<option value="'+_escapeHtml(String(x.id))+'"'+(String(d.dest_deposito_id)===String(x.id)?' selected':'')+'>'+_escapeHtml(x.nome||'')+'</option>';
+          }).join('');
+          return '<div id="arq-dest-wrap" style="grid-column:span 2;display:grid;grid-template-columns:1fr 1fr;gap:.6rem;padding:10px;border-radius:8px;border:2px solid '+(destHl?'#E8B931':'#d8d6ce')+';background:'+(destHl?'#FEF3E2':'#fafaf8')+'">'
+            +'<div style="grid-column:span 2;font-size:12px;font-weight:700;color:'+(destHl?'#854F0B':'#555')+'">'+(destHl?'Preencha para confirmar o recebimento — base e depósito destino *':'Destino da transferência')+'</div>'
+            +'<div><label style="font-size:11px;font-weight:600">Base destino *</label><select class="inp" id="arq-dest-base" style="width:100%" onchange="almReqOnDestBase()"'+destRo+'>'+destBaseOpts+'</select></div>'
+            +'<div><label style="font-size:11px;font-weight:600">Depósito destino *</label><select class="inp" id="arq-dest-dep" style="width:100%" onchange="almReqOnDestDep()"'+destRo+'>'+destDepOpts+'</select></div></div>';
+        })()
+      : '')
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Finalidade</label><input class="inp" id="arq-fin" style="width:100%" value="'+_escapeHtml(d.finalidade||'')+'"'+dis+'></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Observação</label><textarea class="inp" id="arq-obs" style="width:100%;min-height:52px"'+dis+'>'+_escapeHtml(d.observacao||'')+'</textarea></div>'
     +(d.motivo_recusa?'<div style="grid-column:span 2;font-size:12px;color:#A32D2D">Motivo da recusa: '+_escapeHtml(d.motivo_recusa)+'</div>':'')
     +'</div>'
     +'<div style="font-size:12px;font-weight:700;margin:.4rem 0">Itens</div>'+itensHtml+addHtml+hist
+    +receberHtml
     +'<div class="ma" style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">'+acoes
     +'<button class="btn" onclick="closeModal()">Fechar</button></div>'
     +'</div></div>');
   almReqOnTipoItem();
+  setTimeout(function(){ almReqDirigirPasso(); }, 80);
 }
 function almReqOnBaseFilial(){
   almReqLerCabecalho();
@@ -90740,6 +91179,25 @@ function almReqOnBaseFilial(){
     if(_almReq.draft){ _almReq.draft.deposito_id=''; _almReq.draft.deposito_nome=''; }
   }
   almReqAtualizaSaldo();
+}
+function almReqOnDestBase(){
+  almReqLerCabecalho();
+  var d=_almReq.draft||{};
+  var sel=document.getElementById('arq-dest-dep'); if(!sel) return;
+  var atual=d.dest_deposito_id||'';
+  var opts=almReqListaDepositos(d.dest_base_id);
+  sel.innerHTML='<option value="">Selecione…</option>'+opts.map(function(x){
+    return '<option value="'+_escapeHtml(String(x.id))+'"'+(String(atual)===String(x.id)?' selected':'')+'>'+_escapeHtml(x.nome||'')+'</option>';
+  }).join('');
+  if(atual && !opts.some(function(x){ return String(x.id)===String(atual); })){
+    sel.value='';
+    if(_almReq.draft){ _almReq.draft.dest_deposito_id=''; _almReq.draft.dest_deposito_nome=''; }
+  }
+  setTimeout(function(){ almReqDirigirPasso(); }, 30);
+}
+function almReqOnDestDep(){
+  almReqLerCabecalho();
+  almReqModal();
 }
 function almReqOnTipoItem(){
   var tipo=(document.getElementById('arq-tipo')||{}).value||'';
@@ -90784,7 +91242,9 @@ function almReqAtualizaSaldo(){
   var it=_almReq.pickItem; var d=_almReq.draft||{};
   if(!it){ el.textContent=''; return; }
   var n=almReqSaldo(it.id, it.codigo, d.deposito_id||((document.getElementById('arq-dep')||{}).value));
-  el.textContent='Saldo disponível (consulta, sem reserva): '+n+' '+(it.unidade_medida||it.unidade||'');
+  var res=almReqReserva(it.id, it.codigo, d.deposito_id||((document.getElementById('arq-dep')||{}).value));
+  var disp=Math.max(0, n-res);
+  el.textContent='Estoque: '+n+' · Reserva: '+res+' · Disponível: '+disp+' '+(it.unidade_medida||it.unidade||'');
 }
 function almReqBuscaColab(){
   var q=(document.getElementById('arq-colab-q')||{}).value||'';
@@ -90851,6 +91311,8 @@ function almReqPayloadCab(d){
     contrato_id:d.contrato_id||null, contrato_nome:d.contrato_nome||null,
     base_id:d.base_id||null, base_nome:d.base_nome||null,
     deposito_id:d.deposito_id||null, deposito_nome:d.deposito_nome||null,
+    dest_base_id:d.dest_base_id||null, dest_base_nome:d.dest_base_nome||null,
+    dest_deposito_id:d.dest_deposito_id||null, dest_deposito_nome:d.dest_deposito_nome||null,
     centro_custo:d.centro_custo||null, prioridade:d.prioridade||'normal',
     finalidade:d.finalidade||null, observacao:d.observacao||null,
     status:d.status||'rascunho', criado_por:almReqUsuarioNome()
@@ -91076,7 +91538,7 @@ function almReqHeaderStatusPorItens(itens){
     var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
     return (Number(it.quantidade_atendida)||0)+1e-9>=apr;
   });
-  if(all) return 'atendida';
+  if(all) return 'separada';
   var some=list.some(function(it){ return (Number(it.quantidade_atendida)||0)>0; });
   return some?'parcialmente_atendida':'separacao';
 }
@@ -91084,25 +91546,38 @@ function almReqHeaderStatusPorItens(itens){
 async function almReqSeparar(){
   var d=_almReq.draft; if(!d||!d.id) return;
   if(d.status!=='aprovada'){ progShowToast('Só requisição Aprovada vai para separação.','erro'); return; }
+  almReqLerCabecalho();
   if(!d.deposito_id){ progShowToast('Defina o depósito origem antes de separar.','erro'); return; }
   if(!confirm('Enviar '+d.numero+' para separação no depósito '+((d.deposito_nome)||'')+'? Ainda sem baixa.')) return;
   d.status='separacao';
   (d.itens||[]).forEach(function(it){ if(it.status==='aprovado'||it.status==='solicitado') it.status='separacao'; });
   almReqSyncListaDraft();
   if(!DEMO){
-    var ok=await sbUpdate('alm_requisicoes',{status:'separacao'},'id=eq.'+d.id);
+    var payloadSep={status:'separacao'};
+    if(d.dest_deposito_id){
+      payloadSep.dest_base_id=d.dest_base_id||null;
+      payloadSep.dest_base_nome=d.dest_base_nome||null;
+      payloadSep.dest_deposito_id=d.dest_deposito_id;
+      payloadSep.dest_deposito_nome=d.dest_deposito_nome||null;
+    }
+    var ok=await sbUpdate('alm_requisicoes',payloadSep,'id=eq.'+d.id);
     if(!ok){ progShowToast('Falha ao enviar para separação.','erro'); return; }
     for(var i=0;i<(d.itens||[]).length;i++) await almReqPersistItem(d.itens[i]);
   }
   await almReqLogEvento(d.id,'status','Enviada para separação no depósito '+(d.deposito_nome||''));
-  progShowToast('Em separação: '+d.numero+' — atenda os itens neste modal');
+  progShowToast('Em separação: '+d.numero+' — informe o destino e separe os itens');
   almReqModal();
 }
 
+async function almReqSepararItem(idx){ return almReqAtenderItem(idx); }
 async function almReqAtenderItem(idx){
   var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]) return;
   if(d.status!=='separacao' && d.status!=='parcialmente_atendida'){
-    progShowToast('Envie para separação antes de atender.','erro'); return;
+    progShowToast('Envie para separação antes de separar o item.','erro'); return;
+  }
+  almReqLerCabecalho();
+  if(!d.dest_base_id || !d.dest_deposito_id){
+    almReqDirigirPasso({toast:true}); return;
   }
   if(_almReq.atendendo) return;
   var it=d.itens[idx];
@@ -91110,7 +91585,7 @@ async function almReqAtenderItem(idx){
   var atd=Number(it.quantidade_atendida)||0;
   var pend=Math.max(0, apr-atd);
   var qtd=parseFloat((document.getElementById('arq-atd-'+idx)||{}).value);
-  if(!(qtd>0)){ progShowToast('Informe a quantidade a atender.','erro'); return; }
+  if(!(qtd>0)){ progShowToast('Informe a quantidade a separar.','erro'); return; }
   if(qtd>pend+1e-9){ progShowToast('Quantidade maior que o pendente ('+pend+').','erro'); return; }
   if(!it.item_id){ progShowToast('Item sem vínculo ao catálogo. Não é possível baixar estoque.','erro'); return; }
   if(!d.deposito_id){ progShowToast('Requisição sem depósito origem.','erro'); return; }
@@ -91125,7 +91600,7 @@ async function almReqAtenderItem(idx){
   var filId=dep?dep.filial_id:null;
   _almReq.atendendo=true;
   try{
-  var obs='Requisição CENA '+(d.numero||'')+' · item '+(it.item_descricao||'');
+  var obs='Requisição CENA '+(d.numero||'')+' · separado para '+(d.dest_deposito_nome||'')+' · '+(it.item_descricao||'');
   var r=await almRegistrarEntregaPatrimonio({
     item_id:it.item_id,
     quantidade:qtd,
@@ -91136,58 +91611,120 @@ async function almReqAtenderItem(idx){
     equipe_id:it.equipe_id||null,
     data_mov:dataHoje(),
     obs:obs,
-    motivo:'Atendimento requisição CENA'
+    motivo:'Separação requisição CENA'
   });
   if(!r||!r.ok){
-    progShowToast((r&&r.msg)||'Falha ao baixar estoque.','erro');
+    progShowToast((r&&r.msg)||'Falha ao baixar estoque origem.','erro');
     return;
   }
-  var vaiEntrega=almReqExigeColab(it);
   it.quantidade_atendida=atd+qtd;
-  it.status=(it.quantidade_atendida+1e-9>=apr)?'atendido':'parcial';
-  if(vaiEntrega){
-    it.observacao=almReqEntregaTagSet(it.observacao,'PENDENTE');
-  }
+  it.status=(it.quantidade_atendida+1e-9>=apr)?'separado':'parcial';
   d.status=almReqHeaderStatusPorItens(d.itens);
   d.atendido_por=almReqUsuarioNome();
   d.atendido_em=new Date().toISOString();
   _almReq.filaStale=true;
   almReqSyncListaDraft();
   if(!DEMO){
-    await almReqPersistItem(it);
-    await sbUpdate('alm_requisicoes',{
+    var okIt=await almReqPersistItem(it);
+    if(!okIt){
+      it.status='atendido';
+      await almReqPersistItem(it);
+    }
+    var okCab=await sbUpdate('alm_requisicoes',{
       status:d.status,
-      atendido_por:d.atendido_por,
-      atendido_em:d.atendido_em
+      dest_base_id:d.dest_base_id, dest_base_nome:d.dest_base_nome,
+      dest_deposito_id:d.dest_deposito_id, dest_deposito_nome:d.dest_deposito_nome,
+      atendido_por:d.atendido_por, atendido_em:d.atendido_em
     },'id=eq.'+d.id);
-  }
-  var descEv=vaiEntrega
-    ? ('Atendido '+qtd+' × '+(it.item_descricao||'')+' · estoque baixado · encaminhado para Entregar colaborador')
-    : ('Atendido '+qtd+' × '+(it.item_descricao||'')+' · estoque baixado');
-  await almReqLogEvento(d.id,'status',descEv,{
-    item_id:it.item_id, qtd:qtd, estoque_id:r.estoque_id||null, fila_entrega:!!vaiEntrega
-  });
-  if(vaiEntrega){
-    progShowToast('Encaminhado para entrega: '+qtd+' × '+(it.item_descricao||'')+' — gere a ficha em Entregar colaborador');
-  } else {
-    progShowToast('Atendido: '+qtd+' × '+(it.item_descricao||'')+' · saldo baixado');
-  }
-  almReqModal();
-  if(vaiEntrega){
-    var aindaPend=(d.itens||[]).some(function(x){
-      var a=Number(x.quantidade_aprovada!=null?x.quantidade_aprovada:x.quantidade_solicitada)||0;
-      return Math.max(0, a-(Number(x.quantidade_atendida)||0))>0;
-    });
-    if(!aindaPend && confirm('Uniforme/EPI baixado no depósito. Abrir Entregar colaborador para gerar a ficha e coletar a assinatura?')){
-      almReqIrEntregarColab();
+    if(!okCab){
+      if(d.status==='separada'){
+        d.status='atendida';
+        await sbUpdate('alm_requisicoes',{status:'atendida', atendido_por:d.atendido_por, atendido_em:d.atendido_em},'id=eq.'+d.id);
+      }
+      progShowToast(almReqSqlC2Hint(),'erro');
     }
   }
+  await almReqLogEvento(d.id,'status','Separado '+qtd+' × '+(it.item_descricao||'')+' · origem '+(d.deposito_nome||'')+' → destino '+(d.dest_deposito_nome||''),{
+    item_id:it.item_id, qtd:qtd, dest_deposito_id:d.dest_deposito_id, estoque_id:r.estoque_id||null
+  });
+  progShowToast('Separado: '+qtd+' × '+(it.item_descricao||'')+' · destino '+(d.dest_deposito_nome||''));
+  almReqModal();
+  almReqRenderAlertas();
   }catch(e){
     console.error('almReqAtenderItem', e);
-    progShowToast('Erro ao atender item.','erro');
+    progShowToast('Erro ao separar item.','erro');
   }finally{
     _almReq.atendendo=false;
   }
+}
+
+async function almReqConfirmarRecebimento(){
+  var d=_almReq.draft; if(!d||!d.id) return;
+  if(d.status!=='separada' && d.status!=='atendida'){
+    progShowToast('Só requisição Separada pode confirmar recebimento.','erro'); return;
+  }
+  almReqLerCabecalho();
+  if(!d.dest_base_id || !d.dest_deposito_id){
+    almReqDirigirPasso({toast:true}); return;
+  }
+  if(!almReqUserPodeDep(d.dest_deposito_id)){
+    progShowToast('Confirme no aparelho de um responsável pelo depósito destino.','erro'); return;
+  }
+  var mesmo=String(d.dest_deposito_id)===String(d.deposito_id);
+  var quem=almReqUsuarioNome()+' · '+(usuarioLogado&&usuarioLogado.email||'');
+  if(!mesmo && typeof almRegistrarEntradaPatrimonio==='function'){
+    var destDep=(depositos||[]).find(function(x){ return String(x.id)===String(d.dest_deposito_id); });
+    var filDest=destDep?destDep.filial_id:null;
+    for(var i=0;i<(d.itens||[]).length;i++){
+      var it=d.itens[i];
+      var qtd=Number(it.quantidade_atendida)||0;
+      if(!(qtd>0) || !it.item_id) continue;
+      var ent=await almRegistrarEntradaPatrimonio({
+        item_id:it.item_id, quantidade:qtd, deposito_id:d.dest_deposito_id, filial_id:filDest,
+        data_mov:dataHoje(), motivo:'Transferência requisição CENA',
+        obs:'Recebimento '+d.numero+' · origem '+(d.deposito_nome||'')
+      });
+      if(!ent||!ent.ok){
+        progShowToast((ent&&ent.msg)||'Falha na entrada no depósito destino.','erro'); return;
+      }
+    }
+  }
+  (d.itens||[]).forEach(function(it){
+    if((Number(it.quantidade_atendida)||0)>0) it.status='recebido';
+    if(almReqExigeColab(it) && (Number(it.quantidade_atendida)||0)>0){
+      var tag=almReqEntregaTagGet(it.observacao);
+      if(tag.indexOf('ASSINADA')!==0) it.observacao=almReqEntregaTagSet(it.observacao,'PENDENTE');
+    }
+  });
+  d.status='recebida';
+  d.recebido_por=quem;
+  d.recebido_em=new Date().toISOString();
+  almReqSyncListaDraft();
+  if(!DEMO){
+    for(var j=0;j<(d.itens||[]).length;j++){
+      var okIt=await almReqPersistItem(d.itens[j]);
+      if(!okIt && d.itens[j].status==='recebido'){
+        d.itens[j].status='atendido';
+        await almReqPersistItem(d.itens[j]);
+      }
+    }
+    var okR=await sbUpdate('alm_requisicoes',{
+      status:'recebida', recebido_por:d.recebido_por, recebido_em:d.recebido_em
+    },'id=eq.'+d.id);
+    if(!okR) progShowToast(almReqSqlC2Hint(),'erro');
+  }
+  await almReqLogEvento(d.id,'status','Recebimento confirmado por '+quem+' em '+(d.dest_deposito_nome||''),{
+    dest_deposito_id:d.dest_deposito_id, usuario_id:usuarioLogado&&usuarioLogado.id
+  });
+  progShowToast('Recebido em '+(d.dest_deposito_nome||'')+'. Próximo passo: entregar ao colaborador.');
+  almReqRenderAlertas();
+  var precisaEnt=(d.itens||[]).some(function(it){ return almReqItemAguardaEntrega(it); });
+  if(precisaEnt){
+    almReqIrEntregarColab();
+    return;
+  }
+  almReqModal();
+  setTimeout(function(){ almReqDirigirPasso({toast:true}); }, 80);
 }
 
 function almReqEntregaTagGet(obs){
@@ -101587,6 +102124,17 @@ function _estoqueCodigoSku(e){
 
 function renderEstoque(){
   var tbody = document.getElementById('tbody-est'); if(!tbody) return;
+  if(!DEMO && typeof _almReq!=='undefined' && typeof almReqGarantirListaSilent==='function' && !_almReq._estRendering){
+    var precisaReq = !_almReq._estoqueReqOk || _almReq.filaStale;
+    if(precisaReq){
+      _almReq._estRendering = true;
+      Promise.resolve(almReqGarantirListaSilent()).then(function(){
+        _almReq._estoqueReqOk = true;
+        _almReq._estRendering = false;
+        renderEstoque();
+      });
+    }
+  }
 
   // Popular filtro de filiais (só uma vez; preserva seleção)
   var selFil = document.getElementById('est-fil-filial');
@@ -101693,7 +102241,7 @@ function renderEstoque(){
   }
 
   if(!lista.length){
-    tbody.innerHTML = '<tr><td colspan="14" style="padding:2rem;text-align:center;color:#aaa">'
+    tbody.innerHTML = '<tr><td colspan="16" style="padding:2rem;text-align:center;color:#aaa">'
       +(typeof estoque!=='undefined'&&estoque.length?'Nenhum item para os filtros selecionados.':'Nenhum item no estoque. Use 📥 Nova entrada para cadastrar.')
       +'</td></tr>';
     return;
@@ -101712,6 +102260,10 @@ function renderEstoque(){
     var stCor   = saldo<=0?'#A32D2D':saldo<=sMin?'#854F0B':'#3B6D11';
     var sCA = e.ca_validade?(e.ca_validade<hoje?'<span style="color:#A32D2D">'+fmtD(e.ca_validade)+' ⚠</span>':fmtD(e.ca_validade)):'—';
     var cs = _estoqueCodigoSku(e);
+    var reserva = (typeof almReqReserva==='function') ? almReqReserva(e.item_id, cs.codigoRaw||e.codigo, e.deposito_id, e.nome) : 0;
+    var saldoReserva = Math.max(0, saldo - reserva);
+    var corReserva = reserva>0?'#854F0B':'#888';
+    var corDisp = saldoReserva<=0?'#A32D2D':(saldoReserva<=sMin?'#854F0B':'#3B6D11');
     return '<tr>'
       +'<td style="font-weight:600">'+e.nome+'</td>'
       +'<td style="font-size:11px;color:#666;font-family:monospace">'+cs.codigo+'</td>'
@@ -101723,6 +102275,8 @@ function renderEstoque(){
       +'<td style="font-size:11px;color:#888">'+(e.fornecedor||'—')+'</td>'
       +'<td style="font-size:11px;color:#888">'+(e.lote||'—')+'</td>'
       +'<td style="text-align:right;font-weight:700;color:'+stCor+'">'+saldo+'</td>'
+      +'<td style="text-align:right;font-weight:600;color:'+corReserva+'">'+reserva+'</td>'
+      +'<td style="text-align:right;font-weight:700;color:'+corDisp+'">'+saldoReserva+'</td>'
       +'<td style="text-align:right;color:#888">'+sMin+'</td>'
       +'<td style="text-align:right;color:#888">'+(e.custo_unitario>0?'R$ '+Number(e.custo_unitario).toLocaleString('pt-BR',{minimumFractionDigits:2}):'—')+'</td>'
       +'<td><span style="color:'+stCor+';font-size:11px;font-weight:600">'+stLabel+'</span></td>'
@@ -112110,7 +112664,10 @@ async function lcAnalisarContrato(){
         <thead><tr>
           <th>Item / Produto</th><th>Código</th><th>SKU</th><th>Tipo</th><th>CA</th><th>Val. CA</th>
           <th>Filial / Depósito</th><th>Fornecedor</th><th>Lote / NF</th>
-          <th style="text-align:right">Saldo</th><th style="text-align:right">Mín.</th>
+          <th style="text-align:right">Saldo</th>
+          <th style="text-align:right" title="Quantidade em requisições Solicitada, Aprovada ou em Separação">Reserva</th>
+          <th style="text-align:right" title="Saldo menos reserva">Saldo por reserva</th>
+          <th style="text-align:right">Mín.</th>
           <th style="text-align:right">Custo unit.</th><th>Status</th><th></th>
         </tr></thead>
         <tbody id="tbody-est"></tbody>
@@ -113904,6 +114461,7 @@ document.addEventListener('cena:logged-in', function(){
   _carregarFila();
   _initBottomNav();
   if(typeof cenaApplyDeviceLayout==='function') cenaApplyDeviceLayout();
+  if(typeof almReqInitAlertas==='function') setTimeout(almReqInitAlertas, 400);
 });
 
 // ── Emitir evento após login ─────────────────────────────
