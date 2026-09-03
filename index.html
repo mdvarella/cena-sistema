@@ -90610,6 +90610,43 @@ function almReqStCls(s){
   if(s==='recusada'||s==='cancelada') return 'danger';
   return 'gray';
 }
+/** Status em que cabeçalho/itens ainda podem ser editados. */
+function almReqStatusEditavel(st){
+  return !st || st==='rascunho' || st==='solicitada';
+}
+/** Quem pode retroagir status (com justificativa). */
+function almReqPodeRetroagir(){
+  var p=(usuarioLogado&&usuarioLogado.perfil)||'';
+  return p==='admin'||p==='diretoria'||p==='almoxarife'||p==='gestor'||p==='coordenador';
+}
+/** Opções de status anterior permitidas a partir do status atual. */
+function almReqOpcoesRetroagir(d){
+  var st=d&&d.status;
+  var opts=[];
+  if(st==='solicitada') opts=['rascunho'];
+  else if(st==='aprovada') opts=['solicitada','rascunho'];
+  else if(st==='separacao') opts=['aprovada','solicitada','rascunho'];
+  else if(st==='parcialmente_atendida'||st==='separada'||st==='atendida'){
+    // estorno automático do estoque baixado na separação
+    opts=['aprovada','solicitada','rascunho'];
+  }
+  else if(st==='recebida') opts=['separada','aprovada','solicitada','rascunho'];
+  else if(st==='recusada') opts=['solicitada','rascunho'];
+  return opts;
+}
+function almReqTemBaixaSeparacao(d){
+  return (d&&d.itens||[]).some(function(it){ return (Number(it.quantidade_atendida)||0)>0; });
+}
+/** Novo status zera baixas de separação (repor origem). */
+function almReqRetroZeraBaixa(stNovo){
+  return stNovo==='rascunho'||stNovo==='solicitada'||stNovo==='aprovada'||stNovo==='separacao';
+}
+function almReqItemStatusParaCab(stCab){
+  var m={rascunho:'rascunho',solicitada:'solicitado',aprovada:'aprovado',separacao:'separacao',
+    parcialmente_atendida:'separacao',separada:'separado',atendida:'separado',recebida:'recebido',
+    recusada:'recusado',cancelada:'cancelado'};
+  return m[stCab]||'rascunho';
+}
 function almReqStEhReserva(s){
   return s==='solicitada'||s==='aprovada'||s==='separacao'||s==='parcialmente_atendida';
 }
@@ -91050,7 +91087,7 @@ function almReqDirigirPasso(opts){
 
 function almReqModal(){
   var d=_almReq.draft; if(!d) return;
-  var ro=d.status && d.status!=='rascunho';
+  var ro=!almReqStatusEditavel(d.status);
   var dis=ro?' disabled':'';
   var contOpts='<option value="">Selecione…</option>'+(contratos||[]).map(function(c){
     return '<option value="'+_escapeHtml(String(c.id))+'"'+(String(d.contrato_id)===String(c.id)?' selected':'')+'>'+_escapeHtml(c.nome||c.codigo||'')+'</option>';
@@ -91108,7 +91145,9 @@ function almReqModal(){
       return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+_escapeHtml(it.item_descricao||'')+'</td>'
         +'<td>'+it.quantidade_solicitada+' '+(it.unidade||'')+'</td><td>'+_escapeHtml(dest)+'</td>'
         +almReqColsEstoqueHtml(it, d.deposito_id)
-        +(ro?'':'<td><button class="btn btn-sm" style="color:#A32D2D" onclick="almReqRemItem('+idx+')">✕</button></td>')
+        +(ro?'':'<td style="white-space:nowrap">'
+          +'<button class="btn btn-sm" onclick="almReqEditarColabItem('+idx+')" title="Alterar colaborador">👤</button> '
+          +'<button class="btn btn-sm" style="color:#A32D2D" onclick="almReqRemItem('+idx+')">✕</button></td>')
         +'</tr>';
     }).join('')+'</tbody></table>';
   var evs=d.id?(_almReq.eventos[d.id]||[]):[];
@@ -91121,6 +91160,7 @@ function almReqModal(){
     acoes+='<button class="btn btn-pri" onclick="almReqEnviar()">Enviar</button>';
   }
   if(d.status==='solicitada'){
+    acoes+='<button class="btn" onclick="almReqSalvar()">Salvar alterações</button>';
     acoes+='<button class="btn btn-pri" onclick="almReqAprovar()">Aprovar</button>';
     acoes+='<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="almReqRecusar()">Recusar</button>';
   }
@@ -91136,6 +91176,9 @@ function almReqModal(){
   }
   if(d.status==='rascunho'||d.status==='solicitada'){
     acoes+='<button class="btn" onclick="almReqCancelar()">Cancelar</button>';
+  }
+  if(d.id && almReqPodeRetroagir() && almReqOpcoesRetroagir(d).length){
+    acoes+='<button class="btn" style="border-color:#854F0B;color:#854F0B" onclick="almReqAbrirRetroagir()">↩ Retroagir status</button>';
   }
   var receberHtml='';
   if(d.status==='separada'||d.status==='atendida'){
@@ -91190,10 +91233,14 @@ function almReqModal(){
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="arq-cont" style="width:100%"'+dis+'>'+contOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600">Base / filial origem</label><select class="inp" id="arq-base" style="width:100%" onchange="almReqOnBaseFilial()"'+dis+'>'+baseOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqLerCabecalho();almReqAtualizaSaldo()"'+dis+'>'+depOpts+'</select></div>'
-    +(d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida'
-      ? (function(){
+    +(function(){
+          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
+          var showDest=stAvancado || !!d.dest_deposito_id || !!d.dest_base_id || almReqStatusEditavel(d.status);
+          if(!showDest) return '';
           var destFaltando=!d.dest_base_id||!d.dest_deposito_id;
-          var destRo=(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando))?' disabled':'';
+          var destRo='';
+          if(almReqStatusEditavel(d.status)) destRo='';
+          else if(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando)) destRo=' disabled';
           var destHl=destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
           var destBaseOpts='<option value="">Selecione…</option>'+almReqListaFiliais().map(function(b){
             return '<option value="'+_escapeHtml(String(b.id))+'"'+(String(d.dest_base_id)===String(b.id)?' selected':'')+'>'+_escapeHtml(b.nome||'')+'</option>';
@@ -91206,7 +91253,6 @@ function almReqModal(){
             +'<div><label style="font-size:11px;font-weight:600">Base destino *</label><select class="inp" id="arq-dest-base" style="width:100%" onchange="almReqOnDestBase()"'+destRo+'>'+destBaseOpts+'</select></div>'
             +'<div><label style="font-size:11px;font-weight:600">Depósito destino *</label><select class="inp" id="arq-dest-dep" style="width:100%" onchange="almReqOnDestDep()"'+destRo+'>'+destDepOpts+'</select></div></div>';
         })()
-      : '')
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Finalidade</label><input class="inp" id="arq-fin" style="width:100%" value="'+_escapeHtml(d.finalidade||'')+'"'+dis+'></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Observação</label><textarea class="inp" id="arq-obs" style="width:100%;min-height:52px"'+dis+'>'+_escapeHtml(d.observacao||'')+'</textarea></div>'
     +(d.motivo_recusa?'<div style="grid-column:span 2;font-size:12px;color:#A32D2D">Motivo da recusa: '+_escapeHtml(d.motivo_recusa)+'</div>':'')
@@ -91322,8 +91368,8 @@ function almReqPickColab(id){
 }
 function almReqAddItem(){
   almReqLerCabecalho();
-  var d=_almReq.draft; if(!d||d.status!=='rascunho'&&d.id){ /* rascunho novo id null ok */ }
-  if(d.status && d.status!=='rascunho'){ progShowToast('Só rascunho aceita itens.','erro'); return; }
+  var d=_almReq.draft; if(!d) return;
+  if(d.status && !almReqStatusEditavel(d.status)){ progShowToast('Retroaja o status para incluir itens.','erro'); return; }
   var tipo=(document.getElementById('arq-tipo')||{}).value||'';
   var cat=_almReq.pickItem;
   var qtd=parseFloat((document.getElementById('arq-qtd')||{}).value);
@@ -91344,15 +91390,55 @@ function almReqAddItem(){
     colaborador_id:col?col.id:'', colaborador_re:col?col.re:'', colaborador_nome:col?col.nome:'',
     colaborador_cpf:col?(col.cpf||col.cpf_cnpj||''):'',
     equipe_id:eq?eq.id:'', equipe_nome:eq?(eq.codigo||eq.nome||eq.nome_equipe||''):'',
-    deposito_id:d.deposito_id||'', status:'rascunho', observacao:obs
+    deposito_id:d.deposito_id||'', status:d.status==='solicitada'?'solicitado':'rascunho', observacao:obs
   });
   _almReq.pickItem=null; _almReq.pickColab=null;
   almReqModal();
 }
 function almReqRemItem(idx){
   var d=_almReq.draft; if(!d||!d.itens) return;
-  if(d.status && d.status!=='rascunho') return;
+  if(d.status && !almReqStatusEditavel(d.status)) return;
   d.itens.splice(idx,1);
+  almReqModal();
+}
+function almReqEditarColabItem(idx){
+  var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]) return;
+  if(!almReqStatusEditavel(d.status)){ progShowToast('Retroaja o status para alterar o colaborador.','erro'); return; }
+  var it=d.itens[idx];
+  var q=prompt('Buscar colaborador (nome ou RE). Deixe vazio para remover o vínculo:', it.colaborador_nome||it.colaborador_re||'');
+  if(q===null) return;
+  q=String(q).trim();
+  if(!q){
+    it.colaborador_id=''; it.colaborador_re=''; it.colaborador_nome=''; it.colaborador_cpf='';
+    almReqModal(); return;
+  }
+  var lista=typeof extratoBuscarColaborador==='function'?extratoBuscarColaborador(q):[];
+  if(!lista.length){ progShowToast('Colaborador não encontrado.','erro'); return; }
+  if(lista.length===1){
+    var c0=lista[0];
+    it.colaborador_id=c0.id; it.colaborador_re=c0.re||''; it.colaborador_nome=c0.nome||'';
+    it.colaborador_cpf=c0.cpf||c0.cpf_cnpj||'';
+    almReqModal(); return;
+  }
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
+    +'<h3 style="margin:0 0 .75rem">Escolher colaborador</h3>'
+    +'<div style="max-height:280px;overflow:auto">'
+    +lista.slice(0,20).map(function(c){
+      var id=String(c.id).replace(/'/g,'');
+      return '<div style="padding:8px;border-bottom:.5px solid #eee;cursor:pointer;font-size:13px" onclick="almReqAplicarColabItem('+idx+',\''+id+'\')">'
+        +'<b>'+_escapeHtml(c.nome||'')+'</b> <span style="color:#888">RE '+(c.re||'—')+'</span></div>';
+    }).join('')
+    +'</div>'
+    +'<div class="ma" style="margin-top:1rem"><button class="btn" onclick="almReqModal()">Voltar</button></div>'
+    +'</div></div>');
+}
+function almReqAplicarColabItem(idx, colId){
+  var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]){ almReqModal(); return; }
+  var c=(colaboradores||[]).find(function(x){ return String(x.id)===String(colId); });
+  if(!c){ progShowToast('Colaborador não encontrado.','erro'); almReqModal(); return; }
+  var it=d.itens[idx];
+  it.colaborador_id=c.id; it.colaborador_re=c.re||''; it.colaborador_nome=c.nome||'';
+  it.colaborador_cpf=c.cpf||c.cpf_cnpj||'';
   almReqModal();
 }
 
@@ -91409,8 +91495,10 @@ async function almReqGravarItens(reqId, itens, stItem){
 async function almReqSalvar(){
   almReqLerCabecalho();
   var d=_almReq.draft; if(!d) return;
-  if(d.status && d.status!=='rascunho'){ progShowToast('Só rascunho pode ser salvo.','erro'); return; }
-  d.status='rascunho';
+  if(d.status && !almReqStatusEditavel(d.status)){ progShowToast('Retroaja o status para salvar alterações.','erro'); return; }
+  var stManter=d.status==='solicitada'?'solicitada':'rascunho';
+  var stItem=stManter==='solicitada'?'solicitado':'rascunho';
+  d.status=stManter;
   if(DEMO){
     if(!d.id){ d.id='req'+Date.now(); d.numero='REQ-CENA-D'+String((_almReq.lista.length)+1).padStart(6,'0'); d.criado_em=new Date().toISOString(); _almReq.lista.unshift(d); }
     else {
@@ -91418,11 +91506,12 @@ async function almReqSalvar(){
       if(i>=0) _almReq.lista[i]=Object.assign({},d);
     }
     _almReq.itens[d.id]=(d.itens||[]).slice();
-    await almReqLogEvento(d.id, d.numero?'salva':'criada', d.numero?'Rascunho atualizado':'Rascunho criado');
-    progShowToast('Rascunho salvo ('+d.numero+').');
+    await almReqLogEvento(d.id, d.numero?'salva':'criada', stManter==='solicitada'?'Alterações salvas (solicitada)':(d.numero?'Rascunho atualizado':'Rascunho criado'));
+    progShowToast((stManter==='solicitada'?'Alterações salvas':'Rascunho salvo')+' ('+d.numero+').');
     closeModal(); almReqRender(); return;
   }
   var cab=almReqPayloadCab(d);
+  cab.status=stManter;
   var row;
   if(!d.id){
     row=await sbInsert('alm_requisicoes', cab);
@@ -91434,11 +91523,11 @@ async function almReqSalvar(){
   } else {
     var ok=await sbUpdate('alm_requisicoes', cab, 'id=eq.'+d.id);
     if(!ok){ progShowToast('Não foi possível salvar.','erro'); return; }
-    await almReqLogEvento(d.id,'salva','Rascunho atualizado');
+    await almReqLogEvento(d.id,'salva', stManter==='solicitada'?'Alterações salvas (solicitada)':'Rascunho atualizado');
   }
-  var okIt=await almReqGravarItens(d.id, d.itens, 'rascunho');
+  var okIt=await almReqGravarItens(d.id, d.itens, stItem);
   if(!okIt){ progShowToast('Cabeçalho salvo, mas itens falharam. Tente de novo.','erro'); return; }
-  progShowToast('Rascunho salvo: '+(d.numero||''));
+  progShowToast((stManter==='solicitada'?'Alterações salvas: ':'Rascunho salvo: ')+(d.numero||''));
   closeModal(); await almReqCarregar();
 }
 
@@ -91561,6 +91650,189 @@ async function almReqCancelar(){
   await almReqLogEvento(d.id,'cancelada','Cancelada');
   progShowToast('Cancelada: '+d.numero);
   closeModal(); await almReqCarregar();
+}
+
+function almReqAbrirRetroagir(){
+  var d=_almReq.draft; if(!d||!d.id) return;
+  if(!almReqPodeRetroagir()){ progShowToast('Sem permissão para retroagir status.','erro'); return; }
+  var opts=almReqOpcoesRetroagir(d);
+  if(!opts.length){ progShowToast('Não há status anterior disponível para esta requisição.','erro'); return; }
+  var temBaixa=almReqTemBaixaSeparacao(d);
+  var avisoEstoque=temBaixa
+    ? '<div style="background:#FEF3E2;border:.5px solid #E8B931;border-radius:8px;padding:10px 12px;font-size:12px;margin-bottom:.75rem;color:#854F0B">'
+      +'Há itens já separados (baixa no depósito origem'
+      +(d.status==='recebida'?' e entrada no destino':'')
+      +'). Ao retroagir para Rascunho/Solicitada/Aprovada, o sistema <b>estorna o estoque</b> automaticamente.</div>'
+    : '';
+  var selOpts=opts.map(function(s,i){
+    return '<option value="'+s+'"'+(i===0?' selected':'')+'>'+almReqStLabel(s)+'</option>';
+  }).join('');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px">'
+    +'<h3 style="margin:0 0 .35rem">↩ Retroagir status</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'
+    +'Requisição <b>'+_escapeHtml(d.numero||'')+'</b> · status atual: <b>'+almReqStLabel(d.status)+'</b>. '
+    +'Use para corrigir colaborador, depósito origem/destino ou outros dados. Justificativa obrigatória.</div>'
+    +avisoEstoque
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Voltar para *</label>'
+    +'<select class="inp" id="arq-retro-st" style="width:100%;margin-bottom:.75rem">'+selOpts+'</select>'
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Justificativa *</label>'
+    +'<textarea class="inp" id="arq-retro-just" style="width:100%;height:88px" placeholder="Ex.: colaborador informado errado; depósito origem/destino incorretos..."></textarea>'
+    +'<div id="arq-retro-err" style="font-size:12px;color:#A32D2D;margin-top:6px;min-height:16px"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:1rem">'
+    +'<button class="btn" style="flex:1" onclick="almReqModal()">Voltar</button>'
+    +'<button class="btn btn-pri" id="arq-retro-ok" style="flex:1.4;border-color:#854F0B;background:#854F0B;color:#fff" onclick="almReqConfirmarRetroagir()">Confirmar retroação</button>'
+    +'</div></div></div>');
+}
+
+async function almReqEstornarRecebimentoDestino(d){
+  if(!d||d.status!=='recebida') return {ok:true};
+  if(!d.dest_deposito_id || String(d.dest_deposito_id)===String(d.deposito_id)) return {ok:true};
+  if(typeof almRegistrarAjustePatrimonio!=='function'){
+    return {ok:false, msg:'Função de ajuste de estoque indisponível para estornar o destino.'};
+  }
+  var destDep=(depositos||[]).find(function(x){ return String(x.id)===String(d.dest_deposito_id); });
+  var filDest=destDep?destDep.filial_id:null;
+  for(var i=0;i<(d.itens||[]).length;i++){
+    var it=d.itens[i];
+    var qtd=Number(it.quantidade_atendida)||0;
+    if(!(qtd>0) || !it.item_id) continue;
+    var r=await almRegistrarAjustePatrimonio({
+      item_id:it.item_id,
+      quantidade:qtd,
+      deposito_id:d.dest_deposito_id,
+      filial_id:filDest,
+      contrato_id:d.contrato_id||null,
+      tipo_ajuste:'Inventário negativo',
+      motivo:'Estorno recebimento — retroagir '+ (d.numero||''),
+      data_mov:dataHoje()
+    });
+    if(!r||!r.ok) return {ok:false, msg:(r&&r.msg)||('Falha ao estornar destino: '+(it.item_descricao||''))};
+  }
+  return {ok:true};
+}
+
+async function almReqEstornarSeparacoesOrigem(d){
+  if(!d || !almReqTemBaixaSeparacao(d)) return {ok:true};
+  if(typeof almRegistrarEntradaPatrimonio!=='function'){
+    return {ok:false, msg:'Função de entrada de estoque indisponível para estornar a separação.'};
+  }
+  if(!d.deposito_id) return {ok:false, msg:'Requisição sem depósito origem para estornar.'};
+  var dep=(depositos||[]).find(function(x){ return String(x.id)===String(d.deposito_id); });
+  var filId=dep?dep.filial_id:null;
+  for(var i=0;i<(d.itens||[]).length;i++){
+    var it=d.itens[i];
+    var qtd=Number(it.quantidade_atendida)||0;
+    if(!(qtd>0) || !it.item_id) continue;
+    var ent=await almRegistrarEntradaPatrimonio({
+      item_id:it.item_id,
+      quantidade:qtd,
+      deposito_id:d.deposito_id,
+      filial_id:filId,
+      data_mov:dataHoje(),
+      motivo:'Estorno separação — retroagir '+(d.numero||''),
+      obs:'Estorno requisição CENA '+(d.numero||'')+' · item '+(it.item_descricao||'')
+    });
+    if(!ent||!ent.ok) return {ok:false, msg:(ent&&ent.msg)||('Falha ao repor origem: '+(it.item_descricao||''))};
+    it.quantidade_atendida=0;
+    if(typeof almReqEntregaTagSet==='function'){
+      it.observacao=String(it.observacao||'').replace(/\s*\[ENTREGA:[^\]]*\]/g,'').trim();
+    }
+  }
+  return {ok:true};
+}
+
+async function almReqConfirmarRetroagir(){
+  var d=_almReq.draft; if(!d||!d.id) return;
+  if(!almReqPodeRetroagir()){ progShowToast('Sem permissão.','erro'); return; }
+  var stNovo=((document.getElementById('arq-retro-st')||{}).value||'').trim();
+  var just=((document.getElementById('arq-retro-just')||{}).value||'').trim();
+  var errEl=document.getElementById('arq-retro-err');
+  var opts=almReqOpcoesRetroagir(d);
+  if(opts.indexOf(stNovo)<0){
+    if(errEl) errEl.textContent='Status de destino inválido.';
+    return;
+  }
+  if(!just || just.length<5){
+    if(errEl) errEl.textContent='Informe a justificativa (mín. 5 caracteres).';
+    progShowToast('Justificativa obrigatória.','erro');
+    return;
+  }
+  var btn=document.getElementById('arq-retro-ok');
+  if(btn){ btn.disabled=true; btn.textContent='Processando…'; }
+  var stAnt=d.status;
+  try{
+    if(stAnt==='recebida' && stNovo!=='recebida'){
+      var er=await almReqEstornarRecebimentoDestino(d);
+      if(!er.ok){ progShowToast(er.msg||'Falha no estorno do destino.','erro'); if(btn){btn.disabled=false;btn.textContent='Confirmar retroação';} return; }
+    }
+    if(almReqTemBaixaSeparacao(d) && almReqRetroZeraBaixa(stNovo) && stNovo!=='separacao'){
+      var es=await almReqEstornarSeparacoesOrigem(d);
+      if(!es.ok){ progShowToast(es.msg||'Falha no estorno da origem.','erro'); if(btn){btn.disabled=false;btn.textContent='Confirmar retroação';} return; }
+    }
+    d.status=stNovo;
+    if(stNovo==='rascunho'||stNovo==='solicitada'){
+      d.aprovado_por=null; d.aprovado_em=null;
+      d.atendido_por=null; d.atendido_em=null;
+      d.recebido_por=null; d.recebido_em=null;
+      d.motivo_recusa=null;
+    }
+    if(stNovo==='aprovada'){
+      d.atendido_por=null; d.atendido_em=null;
+      d.recebido_por=null; d.recebido_em=null;
+    }
+    if(stNovo==='separada'){
+      d.recebido_por=null; d.recebido_em=null;
+    }
+    var stItem=almReqItemStatusParaCab(stNovo);
+    (d.itens||[]).forEach(function(it){
+      if(almReqRetroZeraBaixa(stNovo) && stNovo!=='separacao'){
+        it.quantidade_atendida=0;
+      }
+      if(stNovo==='aprovada'||stNovo==='solicitada'||stNovo==='rascunho'){
+        it.quantidade_aprovada=stNovo==='aprovada'
+          ?(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)
+          :null;
+      }
+      it.status=stItem;
+      if(stNovo==='separada'||stNovo==='atendida'){
+        var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+        it.status=(Number(it.quantidade_atendida)||0)+1e-9>=apr?'separado':(Number(it.quantidade_atendida)>0?'parcial':'separacao');
+      }
+    });
+    almReqSyncListaDraft();
+    if(!DEMO){
+      var patch={status:stNovo};
+      if(stNovo==='rascunho'||stNovo==='solicitada'){
+        patch.aprovado_por=null; patch.aprovado_em=null;
+        patch.atendido_por=null; patch.atendido_em=null;
+        patch.recebido_por=null; patch.recebido_em=null;
+        patch.motivo_recusa=null;
+      }
+      if(stNovo==='aprovada'){
+        patch.atendido_por=null; patch.atendido_em=null;
+        patch.recebido_por=null; patch.recebido_em=null;
+      }
+      if(stNovo==='separada'){
+        patch.recebido_por=null; patch.recebido_em=null;
+      }
+      var okCab=await sbUpdate('alm_requisicoes', patch, 'id=eq.'+d.id);
+      if(!okCab){ progShowToast('Falha ao atualizar status.','erro'); if(btn){btn.disabled=false;btn.textContent='Confirmar retroação';} return; }
+      var okIt=await almReqGravarItens(d.id, d.itens, null);
+      if(!okIt){
+        for(var j=0;j<(d.itens||[]).length;j++) await almReqPersistItem(d.itens[j]);
+      }
+    }
+    await almReqLogEvento(d.id,'retroagida',
+      'Status '+almReqStLabel(stAnt)+' → '+almReqStLabel(stNovo)+'. Justificativa: '+just,
+      {de:stAnt, para:stNovo, justificativa:just, usuario_id:usuarioLogado&&usuarioLogado.id});
+    progShowToast('Status retroagido para '+almReqStLabel(stNovo)+'. Agora você pode editar e salvar.');
+    _almReq.filaStale=true;
+    almReqModal();
+  }catch(e){
+    console.error('almReqConfirmarRetroagir', e);
+    progShowToast('Erro ao retroagir status.','erro');
+    if(btn){ btn.disabled=false; btn.textContent='Confirmar retroação'; }
+  }
 }
 
 function almReqSetFiltroStatus(st){
