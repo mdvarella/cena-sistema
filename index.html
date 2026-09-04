@@ -39882,10 +39882,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.898',
+  numero: '7.9.899',
   data:   '04/09/2026',
-  build:  '20260904-0750',
+  build:  '20260904-0918',
   log: [
+    {v:'7.9.899', d:'04/09/2026', itens:[
+      'Requisição CENA: colaborador volta na inclusão de item (qualquer tipo), na edição da linha e na listagem/histórico. A busca usa o cadastro completo (não só EPI/uniforme).',
+    ]},
     {v:'7.9.898', d:'04/09/2026', itens:[
       'Requisição CENA: Corrigir informações abre a mesma modal completa (data, solicitante, área, contrato, origem, destino, itens) com todos os campos editáveis. Não usa mais o formulário resumido. Continua sem alterar estoque.',
     ]},
@@ -90944,6 +90947,39 @@ function almReqExigeColab(it){
   if(!it) return false;
   return (it.tipo_item==='EPI'||it.tipo_item==='VESTIMENTA') && it.entrega_individual!==false;
 }
+function almReqPodeEditarColab(){
+  var d=_almReq.draft||{};
+  return !!_almReq.corrigindoInfo || almReqStatusEditavel(d.status);
+}
+function almReqColabLabel(it){
+  if(!it) return '—';
+  if(it.colaborador_nome) return it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'');
+  if(it.equipe_nome) return it.equipe_nome;
+  return '—';
+}
+function almReqDestCellHtml(it, idx){
+  var label=_escapeHtml(almReqColabLabel(it));
+  if(!almReqPodeEditarColab()) return label;
+  return '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
+    +'<span>'+label+'</span>'
+    +'<button type="button" class="btn btn-sm" onclick="almReqEditarColabItem('+idx+')" title="Alterar colaborador">👤</button></div>';
+}
+function almReqResolverColab(id){
+  if(id==null||id==='') return null;
+  var sid=String(id);
+  var c=(colaboradores||[]).find(function(x){ return String(x.id)===sid; });
+  if(c) return c;
+  if(typeof _colabHistorico!=='undefined' && _colabHistorico[sid]) return _colabHistorico[sid];
+  var f=(funcs||[]).find(function(x){ return String(x.id)===sid; });
+  if(f) return {id:f.id, nome:f.nome, re:f.re||f.matricula||'', cpf:f.cpf||f.cpf_cnpj||''};
+  var lista=typeof almListaColaboradoresEntrega==='function'?almListaColaboradoresEntrega():[];
+  return lista.find(function(x){ return String(x.id)===sid; })||null;
+}
+function almReqBuscarColabs(q){
+  if(typeof almFiltrarColaboradoresEntrega==='function') return almFiltrarColaboradoresEntrega(q, 25);
+  if(typeof extratoBuscarColaborador==='function') return extratoBuscarColaborador(q);
+  return [];
+}
 function almReqUsuarioNome(){
   return (usuarioLogado&&(usuarioLogado.nome||usuarioLogado.email))||'sistema';
 }
@@ -91165,8 +91201,8 @@ function almReqRender(){
   }).join('');
   var rows=almReqFiltradas();
   var corpo;
-  if(_almReq.carregando) corpo='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#888">Carregando…</td></tr>';
-  else if(!rows.length) corpo='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma requisição CENA. Use + Nova requisição.</td></tr>';
+  if(_almReq.carregando) corpo='<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:#888">Carregando…</td></tr>';
+  else if(!rows.length) corpo='<tr><td colspan="10" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma requisição CENA. Use + Nova requisição.</td></tr>';
   else corpo=rows.map(function(r){
     return '<tr>'
       +'<td style="font-size:11px;font-weight:600">'+_escapeHtml(r.numero||'—')+'</td>'
@@ -91175,6 +91211,7 @@ function almReqRender(){
       +'<td style="font-size:11px">'+_escapeHtml(r.contrato_nome||'—')+'</td>'
       +'<td style="font-size:11px">'+_escapeHtml(r.deposito_nome||'—')+'</td>'
       +'<td>'+almReqResumoItensHtml(r)+'</td>'
+      +'<td>'+almReqResumoColabsHtml(r)+'</td>'
       +'<td><span class="bdg '+almReqStCls(r.status)+'">'+almReqStLabel(r.status)+'</span></td>'
       +'<td style="font-size:11px">'+almReqPriLabel(r.prioridade)+'</td>'
       +'<td><button class="btn btn-sm" onclick="almReqAbrir(\''+r.id+'\')">Abrir</button></td>'
@@ -91215,7 +91252,7 @@ function almReqRender(){
     +'<button class="btn btn-pri" onclick="almReqNova()">+ Nova requisição</button>'
     +'</div></div>'
     +'<div style="overflow-x:auto"><table class="tbl"><thead><tr>'
-    +'<th>Número</th><th>Data</th><th>Solicitante</th><th>Contrato</th><th>Depósito</th><th>Itens</th><th>Status</th><th>Prioridade</th><th></th>'
+    +'<th>Número</th><th>Data</th><th>Solicitante</th><th>Contrato</th><th>Depósito</th><th>Itens</th><th>Colaborador</th><th>Status</th><th>Prioridade</th><th></th>'
     +'</tr></thead><tbody>'+corpo+'</tbody></table></div></div>';
   if(stPanelOpen){
     setTimeout(function(){ document.addEventListener('click', almReqFecharStPanelOutside, {once:true}); }, 0);
@@ -91235,6 +91272,7 @@ function almReqDraftVazio(){
   };
 }
 function almReqNova(){
+  _almReq.corrigindoInfo=false; _almReq.corrSnapshot=null;
   _almReq.draft=almReqDraftVazio();
   _almReq.cabAberto=almReqSnapshotCab(_almReq.draft);
   _almReq.pickItem=null; _almReq.pickColab=null;
@@ -91244,6 +91282,7 @@ function almReqAbrir(id){
   var r=(_almReq.lista||[]).find(function(x){ return String(x.id)===String(id); });
   if(!r){ progShowToast('Requisição não encontrada.','erro'); return; }
   var itens=(_almReq.itens[r.id]||[]).map(function(it){ return Object.assign({},it); });
+  _almReq.corrigindoInfo=false; _almReq.corrSnapshot=null;
   _almReq.draft=Object.assign({}, r, {itens:itens});
   _almReq.cabAberto=almReqSnapshotCab(_almReq.draft);
   _almReq.pickItem=null; _almReq.pickColab=null;
@@ -91374,7 +91413,6 @@ function almReqModal(){
         var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
         var atd=Number(it.quantidade_atendida)||0;
         var pend=Math.max(0, apr-atd);
-        var dest=it.colaborador_nome?(it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'')):(it.equipe_nome||'—');
         var tagEnt=typeof almReqEntregaTagGet==='function'?almReqEntregaTagGet(it.observacao):'';
         var aguardEnt=pend<=0 && typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it);
         var btn;
@@ -91398,19 +91436,17 @@ function almReqModal(){
           : _escapeHtml(it.item_descricao||''))+'</td>'
           +'<td>'+apr+(atd?(' / '+atd):'')+'</td>'
           +almReqColsEstoqueHtml(it, d.deposito_id)
-          +'<td>'+_escapeHtml(dest)+'</td><td>'+btn+'</td></tr>';
+          +'<td>'+almReqDestCellHtml(it, idx)+'</td><td>'+btn+'</td></tr>';
       }).join('')+'</tbody></table>'
       +'<div style="font-size:11px;color:#666;margin-top:.4rem">Estoque = saldo no depósito origem. Reserva = soma das requisições Solicitada/Aprovada/em Separação. Disponível = estoque − reserva. Separar baixa o origem e informa o destino da transferência. SQL: sql_alm_requisicao_c2.sql.</div>';
   } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Estoque</th><th>Reserva</th><th>Disponível</th>'+(roItens?'':'<th></th>')+'</tr></thead><tbody>'
     +d.itens.map(function(it,idx){
-      var dest=it.colaborador_nome?(it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'')):(it.equipe_nome||it.observacao||'—');
       return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+(corrigindo
         ? '<input class="inp arq-corr-desc" data-idx="'+idx+'" style="width:100%;min-width:160px" value="'+_escapeHtml(it.item_descricao||'')+'">'
         : _escapeHtml(it.item_descricao||''))+'</td>'
-        +'<td>'+it.quantidade_solicitada+' '+(it.unidade||'')+'</td><td>'+_escapeHtml(dest)+'</td>'
+        +'<td>'+it.quantidade_solicitada+' '+(it.unidade||'')+'</td><td>'+almReqDestCellHtml(it, idx)+'</td>'
         +almReqColsEstoqueHtml(it, d.deposito_id)
         +(roItens?'':'<td style="white-space:nowrap">'
-          +'<button class="btn btn-sm" onclick="almReqEditarColabItem('+idx+')" title="Alterar colaborador">👤</button> '
           +'<button class="btn btn-sm" style="color:#A32D2D" onclick="almReqRemItem('+idx+')">✕</button></td>')
         +'</tr>';
     }).join('')+'</tbody></table>';
@@ -91483,9 +91519,9 @@ function almReqModal(){
     +'<div id="arq-item-sel" style="font-size:11px;color:#185FA5;margin-top:3px"></div></div>'
     +'<div><label style="font-size:11px;font-weight:600">Quantidade *</label><input class="inp" id="arq-qtd" type="number" min="0.0001" step="any" style="width:100%" value="1"></div>'
     +'<div><label style="font-size:11px;font-weight:600">Unidade</label><input class="inp" id="arq-un" style="width:100%" placeholder="UN"></div>'
-    +'<div id="arq-colab-wrap" style="grid-column:span 2;display:none">'
-    +'<label style="font-size:11px;font-weight:600">Colaborador (EPI/Uniforme individual)</label>'
-    +'<label style="font-size:11px;display:block;margin:4px 0"><input type="checkbox" id="arq-ind" checked> Entrega individual</label>'
+    +'<div id="arq-colab-wrap" style="grid-column:span 2">'
+    +'<label style="font-size:11px;font-weight:600">Colaborador</label>'
+    +'<label id="arq-ind-wrap" style="font-size:11px;display:none;margin:4px 0"><input type="checkbox" id="arq-ind" checked> Entrega individual (EPI/Uniforme)</label>'
     +'<input class="inp" id="arq-colab-q" style="width:100%" placeholder="Nome, RE ou CPF" oninput="almReqBuscaColab()">'
     +'<div id="arq-colab-sug" style="display:none"></div>'
     +'<div id="arq-colab-sel" style="font-size:11px;color:#185FA5;margin-top:3px"></div></div>'
@@ -91588,9 +91624,11 @@ function almReqOnTipoItem(){
   var colab=document.getElementById('arq-colab-wrap');
   var eq=document.getElementById('arq-eq-wrap');
   var ind=document.getElementById('arq-ind');
+  var indWrap=document.getElementById('arq-ind-wrap');
   var epiUni=tipo==='EPI'||tipo==='VESTIMENTA';
-  if(colab) colab.style.display=epiUni?'':'none';
+  if(colab) colab.style.display='';
   if(eq) eq.style.display=tipo==='FERRAMENTA'?'':'none';
+  if(indWrap) indWrap.style.display=epiUni?'block':'none';
   if(ind && epiUni) ind.checked=true;
   _almReq.pickItem=null;
   var sel=document.getElementById('arq-item-sel'); if(sel) sel.textContent='';
@@ -91634,7 +91672,7 @@ function almReqAtualizaSaldo(){
 function almReqBuscaColab(){
   var q=(document.getElementById('arq-colab-q')||{}).value||'';
   var box=document.getElementById('arq-colab-sug'); if(!box) return;
-  var lista=typeof extratoBuscarColaborador==='function'?extratoBuscarColaborador(q):[];
+  var lista=almReqBuscarColabs(q);
   if(!q||!lista.length){ box.style.display=q?'block':'none'; box.innerHTML=q?'<div style="padding:6px;font-size:12px;color:#888">Nenhum colaborador</div>':''; return; }
   box.style.display='block';
   box.style.cssText='border:.5px solid #e0dfd8;border-radius:8px;margin-top:4px;max-height:160px;overflow:auto;background:#fff';
@@ -91644,7 +91682,7 @@ function almReqBuscaColab(){
   }).join('');
 }
 function almReqPickColab(id){
-  var c=(colaboradores||[]).find(function(x){ return String(x.id)===String(id); });
+  var c=almReqResolverColab(id);
   if(!c) return;
   _almReq.pickColab=c;
   var inp=document.getElementById('arq-colab-q'); if(inp) inp.value=(c.nome||'')+(c.re?(' — RE '+c.re):'');
@@ -91688,7 +91726,7 @@ function almReqRemItem(idx){
 }
 function almReqEditarColabItem(idx){
   var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]) return;
-  if(!almReqStatusEditavel(d.status)){ progShowToast('Retroaja o status para alterar o colaborador.','erro'); return; }
+  if(!almReqPodeEditarColab()){ progShowToast('Use Corrigir informações para alterar o colaborador.','erro'); return; }
   var it=d.itens[idx];
   var q=prompt('Buscar colaborador (nome ou RE). Deixe vazio para remover o vínculo:', it.colaborador_nome||it.colaborador_re||'');
   if(q===null) return;
@@ -91697,7 +91735,7 @@ function almReqEditarColabItem(idx){
     it.colaborador_id=''; it.colaborador_re=''; it.colaborador_nome=''; it.colaborador_cpf='';
     almReqModal(); return;
   }
-  var lista=typeof extratoBuscarColaborador==='function'?extratoBuscarColaborador(q):[];
+  var lista=almReqBuscarColabs(q);
   if(!lista.length){ progShowToast('Colaborador não encontrado.','erro'); return; }
   if(lista.length===1){
     var c0=lista[0];
@@ -91719,7 +91757,7 @@ function almReqEditarColabItem(idx){
 }
 function almReqAplicarColabItem(idx, colId){
   var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]){ almReqModal(); return; }
-  var c=(colaboradores||[]).find(function(x){ return String(x.id)===String(colId); });
+  var c=almReqResolverColab(colId);
   if(!c){ progShowToast('Colaborador não encontrado.','erro'); almReqModal(); return; }
   var it=d.itens[idx];
   it.colaborador_id=c.id; it.colaborador_re=c.re||''; it.colaborador_nome=c.nome||'';
@@ -92142,7 +92180,7 @@ function almReqNomeCampoInfo(k){
   var m={data:'Data',solicitante_nome:'Solicitante',area_solicitante:'Área solicitante',
     observacao:'Observação',centro_custo:'Centro de custo',prioridade:'Prioridade',finalidade:'Finalidade',
     contrato_id:'Contrato',base_id:'Base / filial origem',deposito_id:'Depósito origem',
-    dest_base_id:'Base destino',dest_deposito_id:'Depósito destino'};
+    dest_base_id:'Base destino',dest_deposito_id:'Depósito destino',colaborador_nome:'Colaborador'};
   return m[k]||k;
 }
 function almReqSnapshotCorrigir(d){
@@ -92154,7 +92192,10 @@ function almReqSnapshotCorrigir(d){
     deposito_id:d.deposito_id||'', deposito_nome:d.deposito_nome||'',
     dest_base_id:d.dest_base_id||'', dest_base_nome:d.dest_base_nome||'',
     dest_deposito_id:d.dest_deposito_id||'', dest_deposito_nome:d.dest_deposito_nome||'',
-    itens:(d.itens||[]).map(function(it){ return {id:it.id, item_descricao:it.item_descricao||''}; })
+    itens:(d.itens||[]).map(function(it){
+      return {id:it.id, item_descricao:it.item_descricao||'',
+        colaborador_id:it.colaborador_id||'', colaborador_nome:it.colaborador_nome||'', colaborador_re:it.colaborador_re||''};
+    })
   };
 }
 function almReqAbrirCorrigirInfo(){
@@ -92214,6 +92255,14 @@ async function almReqConfirmarCorrigirInfo(){
       it.item_descricao=nvDesc;
     }
   }
+  (d.itens||[]).forEach(function(it, ix){
+    var ant=(snap.itens&&snap.itens[ix])||{};
+    var antNome=String(ant.colaborador_nome||'');
+    var nvNome=String(it.colaborador_nome||'');
+    if(String(ant.colaborador_id||'')!==String(it.colaborador_id||'') || antNome!==nvNome){
+      mudancas.push({campo:'colaborador['+ix+']', label:'Colaborador item '+(ix+1), valor_anterior:antNome, valor_novo:nvNome});
+    }
+  });
   if(!mudancas.length){
     if(errEl) errEl.textContent='Nenhuma informação foi alterada.';
     return;
@@ -92260,7 +92309,8 @@ function almReqResumoItensHtml(r){
   var max=3;
   var all=itens.map(function(it){
     var q=Number(it.quantidade_solicitada)||0;
-    return (it.item_descricao||it.item_codigo||'Item')+' × '+q;
+    var dest=it.colaborador_nome?( ' → '+it.colaborador_nome):'';
+    return (it.item_descricao||it.item_codigo||'Item')+' × '+q+dest;
   }).join('\n');
   var vis=itens.slice(0,max).map(function(it){
     var q=Number(it.quantidade_solicitada)||0;
@@ -92270,6 +92320,19 @@ function almReqResumoItensHtml(r){
   });
   if(itens.length>max) vis.push('<span style="color:#888">+'+ (itens.length-max)+'</span>');
   return '<div title="'+_escapeHtml(all).replace(/"/g,'&quot;')+'" style="font-size:11px;line-height:1.35;max-width:280px">'+vis.join('<br>')+'</div>';
+}
+function almReqResumoColabsHtml(r){
+  var itens=(_almReq.itens[(r&&r.id)]||[]);
+  var nomes=[], seen={};
+  itens.forEach(function(it){
+    var n=String(it.colaborador_nome||'').trim();
+    if(!n || seen[n]) return;
+    seen[n]=1;
+    nomes.push(n+(it.colaborador_re?' · RE '+it.colaborador_re:''));
+  });
+  if(!nomes.length) return '<span style="color:#aaa">—</span>';
+  return '<div style="font-size:11px;line-height:1.35;max-width:220px">'+nomes.slice(0,3).map(function(n){ return _escapeHtml(n); }).join('<br>')
+    +(nomes.length>3?'<br><span style="color:#888">+'+(nomes.length-3)+'</span>':'')+'</div>';
 }
 function almReqToggleStPanel(ev){
   if(ev){ ev.preventDefault(); ev.stopPropagation(); }
