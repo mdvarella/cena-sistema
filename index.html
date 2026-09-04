@@ -6736,6 +6736,10 @@ function closeModal(){
   ma.style.pointerEvents='none';
   ma.innerHTML='';
   ma.style.pointerEvents='none';
+  if(typeof _almReq!=='undefined'){
+    _almReq.corrigindoInfo=false;
+    _almReq.corrSnapshot=null;
+  }
   if(typeof _autoRefresh !== 'undefined' && _autoRefresh._modalAberto){
     _autoRefresh._modalAberto = false;
     if(!_autoRefresh._pausadoAntesModal) _autoRefresh.retomar();
@@ -39878,10 +39882,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.897',
+  numero: '7.9.898',
   data:   '04/09/2026',
-  build:  '20260904-0728',
+  build:  '20260904-0750',
   log: [
+    {v:'7.9.898', d:'04/09/2026', itens:[
+      'Requisição CENA: Corrigir informações abre a mesma modal completa (data, solicitante, área, contrato, origem, destino, itens) com todos os campos editáveis. Não usa mais o formulário resumido. Continua sem alterar estoque.',
+    ]},
     {v:'7.9.897', d:'04/09/2026', itens:[
       'Correção: SyntaxError no modal Retroagir (parêntese faltando) impedia o segundo script de carregar. Telas SESMT/Almox ficavam em branco e o dashboard quebrava com calcularAptidao is not defined.',
     ]},
@@ -90680,7 +90687,7 @@ async function desmobProcessar(){
 var _almReq = {
   lista:[], itens:{}, eventos:{},
   filtros:{numero:'',status:[],solicitante:'',contrato:'',base:'',deposito:'',tipo:'',colaborador:'',prioridade:'',data:''},
-  draft:null, carregando:false
+  draft:null, carregando:false, corrigindoInfo:false, corrSnapshot:null
 };
 function almReqTipos(){
   return [
@@ -91344,7 +91351,9 @@ function almReqDirigirPasso(opts){
 
 function almReqModal(){
   var d=_almReq.draft; if(!d) return;
-  var ro=!almReqStatusEditavel(d.status);
+  var corrigindo=!!_almReq.corrigindoInfo;
+  var ro=!almReqStatusEditavel(d.status) && !corrigindo;
+  var roItens=!almReqStatusEditavel(d.status);
   var dis=ro?' disabled':'';
   var contOpts=almReqSelectOpts(contratos||[], d.contrato_id, d.contrato_nome, function(c){ return c.nome||c.codigo||''; });
   var baseOpts=almReqSelectOpts(almReqListaFiliais(), d.base_id, d.base_nome, function(b){ return b.nome||''; });
@@ -91384,19 +91393,23 @@ function almReqModal(){
         } else {
           btn='<span class="bdg ok">Separado</span>';
         }
-        return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+_escapeHtml(it.item_descricao||'')+'</td>'
+        return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+(corrigindo
+          ? '<input class="inp arq-corr-desc" data-idx="'+idx+'" style="width:100%;min-width:160px" value="'+_escapeHtml(it.item_descricao||'')+'">'
+          : _escapeHtml(it.item_descricao||''))+'</td>'
           +'<td>'+apr+(atd?(' / '+atd):'')+'</td>'
           +almReqColsEstoqueHtml(it, d.deposito_id)
           +'<td>'+_escapeHtml(dest)+'</td><td>'+btn+'</td></tr>';
       }).join('')+'</tbody></table>'
       +'<div style="font-size:11px;color:#666;margin-top:.4rem">Estoque = saldo no depósito origem. Reserva = soma das requisições Solicitada/Aprovada/em Separação. Disponível = estoque − reserva. Separar baixa o origem e informa o destino da transferência. SQL: sql_alm_requisicao_c2.sql.</div>';
-  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Estoque</th><th>Reserva</th><th>Disponível</th>'+(ro?'':'<th></th>')+'</tr></thead><tbody>'
+  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Estoque</th><th>Reserva</th><th>Disponível</th>'+(roItens?'':'<th></th>')+'</tr></thead><tbody>'
     +d.itens.map(function(it,idx){
       var dest=it.colaborador_nome?(it.colaborador_nome+(it.colaborador_re?' · RE '+it.colaborador_re:'')):(it.equipe_nome||it.observacao||'—');
-      return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+_escapeHtml(it.item_descricao||'')+'</td>'
+      return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+(corrigindo
+        ? '<input class="inp arq-corr-desc" data-idx="'+idx+'" style="width:100%;min-width:160px" value="'+_escapeHtml(it.item_descricao||'')+'">'
+        : _escapeHtml(it.item_descricao||''))+'</td>'
         +'<td>'+it.quantidade_solicitada+' '+(it.unidade||'')+'</td><td>'+_escapeHtml(dest)+'</td>'
         +almReqColsEstoqueHtml(it, d.deposito_id)
-        +(ro?'':'<td style="white-space:nowrap">'
+        +(roItens?'':'<td style="white-space:nowrap">'
           +'<button class="btn btn-sm" onclick="almReqEditarColabItem('+idx+')" title="Alterar colaborador">👤</button> '
           +'<button class="btn btn-sm" style="color:#A32D2D" onclick="almReqRemItem('+idx+')">✕</button></td>')
         +'</tr>';
@@ -91406,36 +91419,46 @@ function almReqModal(){
     return '<div style="padding:3px 0;border-bottom:.5px solid #f0efe8">'+fmtD(e.criado_em)+' · '+_escapeHtml(e.evento)+' — '+_escapeHtml(e.descricao||'')+' · '+_escapeHtml(e.usuario||'')+'</div>';
   }).join('')+'</div>'):'';
   var acoes='';
-  if(!d.id || d.status==='rascunho'){
+  var corrRodape='';
+  if(corrigindo){
+    corrRodape='<div style="margin-top:1rem;padding:12px;border-radius:8px;border:1px solid #85B7EB;background:#E6F1FB">'
+      +'<div style="font-size:12px;color:#185FA5;margin-bottom:.55rem;line-height:1.4">Correção administrativa: edite qualquer campo da requisição e salve com justificativa. <b>Não altera estoque, reserva nem saída.</b></div>'
+      +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Justificativa *</label>'
+      +'<textarea class="inp" id="arq-corr-just" style="width:100%;height:64px" placeholder="Por que a correção administrativa..."></textarea>'
+      +'<div id="arq-corr-err" style="font-size:12px;color:#A32D2D;margin-top:6px;min-height:16px"></div></div>';
+    acoes+='<button class="btn" onclick="almReqCancelarCorrigirInfo()">Cancelar</button>';
+    acoes+='<button class="btn btn-pri" id="arq-corr-ok" onclick="almReqConfirmarCorrigirInfo()">Salvar correção</button>';
+  }
+  if(!corrigindo && (!d.id || d.status==='rascunho')){
     acoes+='<button class="btn" onclick="almReqSalvar()">Salvar rascunho</button>';
     acoes+='<button class="btn btn-pri" onclick="almReqEnviar()">Enviar</button>';
   }
-  if(d.status==='solicitada'){
+  if(!corrigindo && d.status==='solicitada'){
     acoes+='<button class="btn" onclick="almReqSalvar()">Salvar alterações</button>';
     acoes+='<button class="btn btn-pri" onclick="almReqAprovar()">Aprovar</button>';
     acoes+='<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="almReqRecusar()">Recusar</button>';
   }
-  if(d.status==='aprovada'){
+  if(!corrigindo && d.status==='aprovada'){
     acoes+='<button class="btn btn-pri" onclick="almReqSeparar()">Enviar para separação</button>';
   }
   if(d.status==='separada'||d.status==='atendida'){
     /* botão de confirmar fica no painel destacado arq-receber-box */
   }
-  if(d.status==='recebida'
+  if(!corrigindo && d.status==='recebida'
     && (d.itens||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); })){
     acoes+='<button class="btn btn-pri" id="arq-btn-entregar" onclick="almReqIrEntregarColab()">Ir para Entregar colaborador</button>';
   }
-  if(d.status==='rascunho'||d.status==='solicitada'){
+  if(!corrigindo && (d.status==='rascunho'||d.status==='solicitada')){
     acoes+='<button class="btn" onclick="almReqCancelar()">Cancelar</button>';
   }
-  if(almReqExibeBotaoRetroagir(d)){
+  if(!corrigindo && almReqExibeBotaoRetroagir(d)){
     acoes+='<button class="btn" style="border-color:#854F0B;color:#854F0B" onclick="almReqAbrirRetroagir()">↩ Retroagir status</button>';
   }
-  if(almReqExibeCorrigirInfo(d)){
+  if(!corrigindo && almReqExibeCorrigirInfo(d)){
     acoes+='<button class="btn" style="border-color:#185FA5;color:#185FA5" onclick="almReqAbrirCorrigirInfo()">✎ Corrigir informações</button>';
   }
   var receberHtml='';
-  if(d.status==='separada'||d.status==='atendida'){
+  if(!corrigindo && (d.status==='separada'||d.status==='atendida')){
     var destOkRec=!!(d.dest_base_id&&d.dest_deposito_id);
     var quemRec=_escapeHtml(almReqUsuarioNome()+' · '+((usuarioLogado&&usuarioLogado.email)||''));
     receberHtml='<div id="arq-receber-box" style="margin-top:.85rem;padding:12px;border-radius:8px;border:2px solid '+(destOkRec?'#3B6D11':'#E8B931')+';background:'+(destOkRec?'#EAF3DE':'#FEF3E2')+'">'
@@ -91450,7 +91473,7 @@ function almReqModal(){
       +'<button class="btn btn-pri" id="arq-btn-receber" onclick="almReqConfirmarRecebimento()" style="background:#1a1a18;color:#fff;border-color:#1a1a18;font-weight:700">Confirmar recebimento</button>'
       +'</div>';
   }
-  var addHtml=ro?'':'<div style="margin-top:1rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
+  var addHtml=roItens?'':'<div style="margin-top:1rem;padding-top:.75rem;border-top:.5px solid #e0dfd8">'
     +'<div style="font-size:12px;font-weight:700;margin-bottom:.5rem">Adicionar item</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">'
     +'<div><label style="font-size:11px;font-weight:600">Tipo *</label><select class="inp" id="arq-tipo" style="width:100%" onchange="almReqOnTipoItem()">'+tipoOpts+'</select></div>'
@@ -91478,6 +91501,7 @@ function almReqModal(){
     +'<span class="bdg '+almReqStCls(d.status)+'">'+almReqStLabel(d.status)+'</span>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button></div>'
     +almReqGuiaHtml(d)
+    +(corrigindo?'<div style="margin:0 0 .75rem;padding:10px 12px;border-radius:8px;border:1px solid #85B7EB;background:#E6F1FB;color:#185FA5;font-size:12px;line-height:1.45">Editando informações da requisição. Todos os campos abaixo estão liberados. Salve com justificativa — <b>o estoque não muda</b>.</div>':'')
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
     +'<div><label style="font-size:11px;font-weight:600">Data</label><input class="inp" id="arq-data" type="date" style="width:100%" value="'+_escapeHtml(d.data||dataHoje())+'"'+dis+'></div>'
     +'<div><label style="font-size:11px;font-weight:600">Prioridade</label><select class="inp" id="arq-pri" style="width:100%"'+dis+'>'+priOpts+'</select></div>'
@@ -91490,13 +91514,13 @@ function almReqModal(){
     +(function(){
           var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
           var destJaEscolhido=!!(d.dest_deposito_id||d.dest_base_id);
-          var showDest=stAvancado || destJaEscolhido;
+          var showDest=stAvancado || destJaEscolhido || corrigindo;
           if(!showDest) return '';
           var destFaltando=!d.dest_base_id||!d.dest_deposito_id;
           var destRo='';
-          if(almReqStatusEditavel(d.status)) destRo='';
+          if(corrigindo || almReqStatusEditavel(d.status)) destRo='';
           else if(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando)) destRo=' disabled';
-          var destHl=destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
+          var destHl=!corrigindo && destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
           var destBaseOpts=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; });
           var destDepOpts=almReqSelectOpts(d.dest_base_id?almReqListaDepositos(d.dest_base_id):[], d.dest_deposito_id, d.dest_deposito_nome, function(x){ return x.nome||''; });
           return '<div id="arq-dest-wrap" style="grid-column:span 2;display:grid;grid-template-columns:1fr 1fr;gap:.6rem;padding:10px;border-radius:8px;border:2px solid '+(destHl?'#E8B931':'#d8d6ce')+';background:'+(destHl?'#FEF3E2':'#fafaf8')+'">'
@@ -91509,12 +91533,12 @@ function almReqModal(){
     +(d.motivo_recusa?'<div style="grid-column:span 2;font-size:12px;color:#A32D2D">Motivo da recusa: '+_escapeHtml(d.motivo_recusa)+'</div>':'')
     +'</div>'
     +'<div style="font-size:12px;font-weight:700;margin:.4rem 0">Itens</div>'+itensHtml+addHtml+hist
-    +receberHtml
+    +receberHtml+corrRodape
     +'<div class="ma" style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">'+acoes
-    +'<button class="btn" onclick="closeModal()">Fechar</button></div>'
+    +(corrigindo?'':'<button class="btn" onclick="closeModal()">Fechar</button>')+'</div>'
     +'</div></div>');
   almReqOnTipoItem();
-  setTimeout(function(){ almReqDirigirPasso(); }, 80);
+  if(!corrigindo) setTimeout(function(){ almReqDirigirPasso(); }, 80);
 }
 function almReqPersistCabLocais(){
   var d=_almReq.draft; if(!d||!d.id||DEMO) return;
@@ -91551,13 +91575,13 @@ function almReqOnDestBase(){
     sel.value='';
     if(_almReq.draft){ _almReq.draft.dest_deposito_id=''; _almReq.draft.dest_deposito_nome=''; }
   }
-  if(d.id) almReqPersistCabLocais();
-  setTimeout(function(){ almReqDirigirPasso(); }, 30);
+  if(d.id && !_almReq.corrigindoInfo) almReqPersistCabLocais();
+  if(!_almReq.corrigindoInfo) setTimeout(function(){ almReqDirigirPasso(); }, 30);
 }
 function almReqOnDestDep(){
   almReqLerCabecalho();
-  if(_almReq.draft&&_almReq.draft.id) almReqPersistCabLocais();
-  setTimeout(function(){ almReqDirigirPasso(); }, 30);
+  if(_almReq.draft&&_almReq.draft.id && !_almReq.corrigindoInfo) almReqPersistCabLocais();
+  if(!_almReq.corrigindoInfo) setTimeout(function(){ almReqDirigirPasso(); }, 30);
 }
 function almReqOnTipoItem(){
   var tipo=(document.getElementById('arq-tipo')||{}).value||'';
@@ -92115,64 +92139,53 @@ async function almReqConfirmarRetroagir(){
 }
 
 function almReqNomeCampoInfo(k){
-  var m={observacao:'Observação',centro_custo:'Centro de custo',prioridade:'Prioridade',finalidade:'Finalidade',
-    contrato_id:'Contrato',base_id:'Base / filial origem',dest_base_id:'Base destino',dest_deposito_id:'Depósito destino'};
+  var m={data:'Data',solicitante_nome:'Solicitante',area_solicitante:'Área solicitante',
+    observacao:'Observação',centro_custo:'Centro de custo',prioridade:'Prioridade',finalidade:'Finalidade',
+    contrato_id:'Contrato',base_id:'Base / filial origem',deposito_id:'Depósito origem',
+    dest_base_id:'Base destino',dest_deposito_id:'Depósito destino'};
   return m[k]||k;
+}
+function almReqSnapshotCorrigir(d){
+  return {
+    data:d.data||'', solicitante_nome:d.solicitante_nome||'', area_solicitante:d.area_solicitante||'',
+    centro_custo:d.centro_custo||'', prioridade:d.prioridade||'', finalidade:d.finalidade||'', observacao:d.observacao||'',
+    contrato_id:d.contrato_id||'', contrato_nome:d.contrato_nome||'',
+    base_id:d.base_id||'', base_nome:d.base_nome||'',
+    deposito_id:d.deposito_id||'', deposito_nome:d.deposito_nome||'',
+    dest_base_id:d.dest_base_id||'', dest_base_nome:d.dest_base_nome||'',
+    dest_deposito_id:d.dest_deposito_id||'', dest_deposito_nome:d.dest_deposito_nome||'',
+    itens:(d.itens||[]).map(function(it){ return {id:it.id, item_descricao:it.item_descricao||''}; })
+  };
 }
 function almReqAbrirCorrigirInfo(){
   var d=_almReq.draft; if(!d||!d.id) return;
   if(!almReqExibeCorrigirInfo(d)){ progShowToast('Sem permissão para corrigir informações.','erro'); return; }
-  var temBaixa=almReqTemBaixaReal(d).temBaixa;
-  var destRo=temBaixa?' disabled':'';
-  var priOpts=['baixa','normal','alta','urgente'].map(function(p){
-    return '<option value="'+p+'"'+(d.prioridade===p?' selected':'')+'>'+almReqPriLabel(p)+'</option>';
-  }).join('');
-  var contOpts=almReqSelectOpts(typeof _contratosVisiveis==='function'?_contratosVisiveis():(contratos||[]), d.contrato_id, d.contrato_nome, function(c){ return c.nome||c.codigo||''; });
-  var baseOpts=almReqSelectOpts(almReqListaFiliais(), d.base_id, d.base_nome, function(b){ return b.nome||''; });
-  var destBaseOpts=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; });
-  var destDepOpts=almReqSelectOpts(d.dest_base_id?almReqListaDepositos(d.dest_base_id):[], d.dest_deposito_id, d.dest_deposito_nome, function(x){ return x.nome||''; });
-  var itensDesc=(d.itens||[]).map(function(it,i){
-    return '<div style="display:grid;grid-template-columns:90px 1fr;gap:6px;margin-bottom:4px;align-items:center">'
-      +'<span style="font-size:11px;color:#888">Item '+(i+1)+'</span>'
-      +'<input class="inp arq-corr-desc" data-idx="'+i+'" style="width:100%" value="'+_escapeHtml(it.item_descricao||'')+'"></div>';
-  }).join('');
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">'
-    +'<h3 style="margin:0 0 .35rem">✎ Corrigir informações</h3>'
-    +'<div style="font-size:12px;color:#555;margin-bottom:.65rem">Requisição <b>'+_escapeHtml(d.numero||'')+'</b>. Esta ação <b>não altera estoque</b>.</div>'
-    +'<div style="background:#E6F1FB;border:.5px solid #85B7EB;border-radius:8px;padding:8px 10px;font-size:11px;color:#185FA5;margin-bottom:.75rem;line-height:1.4">'
-    +'Use para filial, descrição, contrato, destino, observação, centro de custo, prioridade e finalidade. '
-    +(temBaixa?'Depósito destino bloqueado: já houve baixa/recebimento.':'Depósito destino pode ser ajustado enquanto não houver baixa.')
-    +'</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.55rem">'
-    +'<div><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="arq-corr-cont" style="width:100%">'+contOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Base / filial origem</label><select class="inp" id="arq-corr-base" style="width:100%">'+baseOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Base destino</label><select class="inp" id="arq-corr-dest-base" style="width:100%" onchange="almReqCorrInfoOnDestBase()"'+destRo+'>'+destBaseOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Depósito destino</label><select class="inp" id="arq-corr-dest-dep" style="width:100%"'+destRo+'>'+destDepOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Centro de custo</label><input class="inp" id="arq-corr-cc" style="width:100%" value="'+_escapeHtml(d.centro_custo||'')+'"></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Prioridade</label><select class="inp" id="arq-corr-pri" style="width:100%">'+priOpts+'</select></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Finalidade</label><input class="inp" id="arq-corr-fin" style="width:100%" value="'+_escapeHtml(d.finalidade||'')+'"></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Observação</label><textarea class="inp" id="arq-corr-obs" style="width:100%;min-height:52px">'+_escapeHtml(d.observacao||'')+'</textarea></div>'
-    +'</div>'
-    +(itensDesc?'<div style="font-size:12px;font-weight:700;margin:.75rem 0 .35rem">Descrição dos itens</div>'+itensDesc:'')
-    +'<label style="font-size:11px;font-weight:600;display:block;margin:.75rem 0 3px">Justificativa *</label>'
-    +'<textarea class="inp" id="arq-corr-just" style="width:100%;height:64px" placeholder="Por que a correção administrativa..."></textarea>'
-    +'<div id="arq-corr-err" style="font-size:12px;color:#A32D2D;margin-top:6px;min-height:16px"></div>'
-    +'<div style="display:flex;gap:8px;margin-top:1rem">'
-    +'<button class="btn" style="flex:1" onclick="almReqModal()">Cancelar</button>'
-    +'<button class="btn btn-pri" id="arq-corr-ok" style="flex:1.4" onclick="almReqConfirmarCorrigirInfo()">Salvar correção</button>'
-    +'</div></div></div>');
+  _almReq.corrigindoInfo=true;
+  _almReq.corrSnapshot=almReqSnapshotCorrigir(d);
+  almReqModal();
 }
-function almReqCorrInfoOnDestBase(){
-  var d=_almReq.draft||{};
-  var baseId=((document.getElementById('arq-corr-dest-base')||{}).value)||'';
-  var sel=document.getElementById('arq-corr-dest-dep'); if(!sel) return;
-  var atual=sel.value||'';
-  var opts=baseId?almReqListaDepositos(baseId):[];
-  sel.innerHTML=almReqSelectOpts(opts, atual, d.dest_deposito_nome, function(x){ return x.nome||''; });
+function almReqCancelarCorrigirInfo(){
+  var d=_almReq.draft, snap=_almReq.corrSnapshot;
+  if(d && snap){
+    Object.keys(snap).forEach(function(k){
+      if(k==='itens') return;
+      d[k]=snap[k];
+    });
+    if(snap.itens && d.itens){
+      snap.itens.forEach(function(s){
+        var it=d.itens.find(function(x){ return String(x.id||'')===String(s.id||''); });
+        if(it) it.item_descricao=s.item_descricao;
+      });
+    }
+  }
+  _almReq.corrigindoInfo=false;
+  _almReq.corrSnapshot=null;
+  almReqModal();
 }
 async function almReqConfirmarCorrigirInfo(){
   var d=_almReq.draft; if(!d||!d.id) return;
   if(!almReqExibeCorrigirInfo(d)){ progShowToast('Sem permissão.','erro'); return; }
+  almReqLerCabecalho();
   var just=((document.getElementById('arq-corr-just')||{}).value||'').trim();
   var errEl=document.getElementById('arq-corr-err');
   if(!just || just.length<5){
@@ -92180,33 +92193,13 @@ async function almReqConfirmarCorrigirInfo(){
     progShowToast('Justificativa obrigatória.','erro');
     return;
   }
-  var temBaixa=almReqTemBaixaReal(d).temBaixa;
-  function v(id){ var el=document.getElementById(id); return el?el.value||'':''; }
-  var novo={
-    contrato_id:v('arq-corr-cont'),
-    base_id:v('arq-corr-base'),
-    dest_base_id:v('arq-corr-dest-base'),
-    dest_deposito_id:v('arq-corr-dest-dep'),
-    centro_custo:v('arq-corr-cc'),
-    prioridade:v('arq-corr-pri')||d.prioridade||'normal',
-    finalidade:v('arq-corr-fin'),
-    observacao:v('arq-corr-obs')
-  };
-  novo.contrato_nome=almReqNomePorId(contratos, novo.contrato_id, d.contrato_nome);
-  novo.base_nome=almReqNomePorId(filiais, novo.base_id, d.base_nome);
-  novo.dest_base_nome=almReqNomePorId(filiais, novo.dest_base_id, d.dest_base_nome);
-  novo.dest_deposito_nome=almReqNomePorId(depositos, novo.dest_deposito_id, d.dest_deposito_nome);
-  if(temBaixa){
-    novo.dest_base_id=d.dest_base_id||'';
-    novo.dest_base_nome=d.dest_base_nome||'';
-    novo.dest_deposito_id=d.dest_deposito_id||'';
-    novo.dest_deposito_nome=d.dest_deposito_nome||'';
-  }
-  var campos=['contrato_id','base_id','dest_base_id','dest_deposito_id','centro_custo','prioridade','finalidade','observacao'];
+  var snap=_almReq.corrSnapshot||{};
+  var campos=['data','solicitante_nome','area_solicitante','centro_custo','prioridade','finalidade','observacao',
+    'contrato_id','base_id','deposito_id','dest_base_id','dest_deposito_id'];
   var mudancas=[];
   campos.forEach(function(k){
-    var ant=d[k]==null?'':String(d[k]);
-    var nv=novo[k]==null?'':String(novo[k]);
+    var ant=snap[k]==null?'':String(snap[k]);
+    var nv=d[k]==null?'':String(d[k]);
     if(ant!==nv) mudancas.push({campo:k, label:almReqNomeCampoInfo(k), valor_anterior:ant, valor_novo:nv});
   });
   var descEls=document.querySelectorAll('.arq-corr-desc');
@@ -92215,9 +92208,9 @@ async function almReqConfirmarCorrigirInfo(){
     var it=d.itens&&d.itens[idx];
     if(!it) continue;
     var nvDesc=(descEls[i].value||'').trim();
-    var antDesc=String(it.item_descricao||'');
-    if(nvDesc && nvDesc!==antDesc){
-      mudancas.push({campo:'item_descricao['+idx+']', label:'Descrição item '+(idx+1), valor_anterior:antDesc, valor_novo:nvDesc});
+    var antSnap=(snap.itens&&snap.itens[idx]&&snap.itens[idx].item_descricao)||it.item_descricao||'';
+    if(nvDesc && nvDesc!==String(antSnap)){
+      mudancas.push({campo:'item_descricao['+idx+']', label:'Descrição item '+(idx+1), valor_anterior:String(antSnap), valor_novo:nvDesc});
       it.item_descricao=nvDesc;
     }
   }
@@ -92227,18 +92220,17 @@ async function almReqConfirmarCorrigirInfo(){
   }
   var btn=document.getElementById('arq-corr-ok');
   if(btn){ btn.disabled=true; btn.textContent='Salvando…'; }
-  campos.forEach(function(k){ d[k]=novo[k]; });
-  d.contrato_nome=novo.contrato_nome;
-  d.base_nome=novo.base_nome;
-  d.dest_base_nome=novo.dest_base_nome;
-  d.dest_deposito_nome=novo.dest_deposito_nome;
   almReqSyncListaDraft();
   var agora=new Date().toISOString();
   try{
     if(!DEMO){
       var patch={
+        data:d.data||null,
+        solicitante_nome:d.solicitante_nome||null,
+        area_solicitante:d.area_solicitante||null,
         contrato_id:d.contrato_id||null, contrato_nome:d.contrato_nome||null,
         base_id:d.base_id||null, base_nome:d.base_nome||null,
+        deposito_id:d.deposito_id||null, deposito_nome:d.deposito_nome||null,
         dest_base_id:d.dest_base_id||null, dest_base_nome:d.dest_base_nome||null,
         dest_deposito_id:d.dest_deposito_id||null, dest_deposito_nome:d.dest_deposito_nome||null,
         centro_custo:d.centro_custo||null, prioridade:d.prioridade||null,
@@ -92252,6 +92244,8 @@ async function almReqConfirmarCorrigirInfo(){
       'Correção administrativa ('+mudancas.length+' campo(s)). Justificativa: '+just,
       {usuario:almReqUsuarioNome(), data_hora:agora, justificativa:just, estoque_alterado:false, campos:mudancas});
     progShowToast('Informações corrigidas. Estoque não foi alterado.');
+    _almReq.corrigindoInfo=false;
+    _almReq.corrSnapshot=null;
     almReqModal();
   }catch(e){
     console.error('almReqConfirmarCorrigirInfo', e);
