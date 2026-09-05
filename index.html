@@ -3691,7 +3691,7 @@ body.insp-campo-ativo #app-content-area {
       <div style="width:.5px;height:24px;background:#e0dfd8;flex-shrink:0"></div>
       <!-- Ações -->
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <button class="btn btn-pri" onclick="progAbrirModalAutoEscalarRef()" style="background:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px" title="Copiar escala de um dia de referência para a data selecionada">⚡ Auto Escalar</button>
+        <button class="btn btn-pri" onclick="progAbrirModalAutoEscalarRef()" style="background:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px" title="Copiar escala por turno e tipo de equipe (não altera programadas)">⚡ Auto Escalar</button>
         <button class="btn btn-pri" onclick="progSalvarTodas()" style="background:#3B6D11;border-color:#3B6D11;font-size:11px;padding:4px 8px">💾 Salvar</button>
         <button class="btn" onclick="progVerificarSemJustificativa()" style="display:none;color:#854F0B;border-color:#854F0B;font-size:11px;padding:4px 8px">⚠ Sem escala</button>
         <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
@@ -13101,11 +13101,21 @@ function relTmaPontoEntradaSaida(p){
   var marcs=p.todas_marcacoes||[];
   if(typeof marcs==='string'){ try{marcs=JSON.parse(marcs);}catch(e){marcs=[];} }
   if(!Array.isArray(marcs)) marcs=[];
-  var entrada=norm(p.entrada||'');
+  var intSaida=norm((p.intervalo&&p.intervalo.saida)||p.intervalo_saida||'');
+  var intRetorno=norm((p.intervalo&&p.intervalo.retorno)||p.intervalo_retorno||'');
+  var entrada=norm(p.entrada_ajustada||p.entrada||'');
+  if(entrada && intRetorno && entrada===intRetorno) entrada='';
+  if(entrada && intSaida && entrada===intSaida) entrada='';
   if(!entrada){
     for(var i=0;i<marcs.length;i++){
       var mt=String(marcs[i]&&marcs[i].tipo||'').toLowerCase();
-      if(mt==='entrada'||mt.indexOf('entrada')>=0){ entrada=norm(marcs[i].hora||marcs[i].horario||''); break; }
+      var h=norm(marcs[i].hora||marcs[i].horario||'');
+      if(!h) continue;
+      if(!(mt==='entrada'||mt.indexOf('entrada')>=0)) continue;
+      if(mt.indexOf('retorno')>=0||mt.indexOf('intervalo')>=0||mt.indexOf('almoco')>=0||mt.indexOf('almoço')>=0) continue;
+      if(intRetorno && h===intRetorno) continue;
+      if(intSaida && h===intSaida) continue;
+      entrada=h; break;
     }
   }
   var saidas=[];
@@ -13116,24 +13126,25 @@ function relTmaPontoEntradaSaida(p){
     if(!h) return;
     if(t==='saída'||t==='saida'||t.indexOf('saída')>=0||t.indexOf('saida')>=0) saidas.push(h);
   });
-  var saida=norm(p.saida||'');
-  var em=relTmaHoraParaMin(entrada);
+  saidas.sort(function(a,b){ return (relTmaHoraParaMin(a)||0)-(relTmaHoraParaMin(b)||0); });
+  var saida=norm(p.saida_ajustada||p.saida||'');
+  var smSaida=relTmaHoraParaMin(saida);
+  if(saida && saidas.length>=2 && smSaida!=null){
+    var ultima=saidas[saidas.length-1];
+    var smU=relTmaHoraParaMin(ultima);
+    if(smU!=null && smU>smSaida) saida=ultima;
+  }
   if(!saida && saidas.length){
-    var intSaida=norm((p.intervalo&&p.intervalo.saida)||p.intervalo_saida||'');
-    // Preferir última saída; se só existe a do almoço e não há retorno, ainda assim não usar como fim
     if(saidas.length>=2) saida=saidas[saidas.length-1];
     else if(!intSaida || saidas[0]!==intSaida) saida=saidas[0];
-    else if((p.intervalo&&p.intervalo.retorno)||p.intervalo_retorno){
-      saida='';
-    } else {
-      saida=saidas[0];
-    }
+    else if(intRetorno) saida='';
+    else saida=saidas[0];
   }
-  // Turno que cruza meia-noite no mesmo registro: manter saída mesmo se hora < entrada
+  var em=relTmaHoraParaMin(entrada);
   if(!saida && saidas.length && em!=null){
-    var ultima=saidas[saidas.length-1];
-    var um=relTmaHoraParaMin(ultima);
-    if(um!=null && um<=em) saida=ultima;
+    var ultimaN=saidas[saidas.length-1];
+    var um=relTmaHoraParaMin(ultimaN);
+    if(um!=null && um<=em) saida=ultimaN;
   }
   return {entrada:entrada, saida:saida};
 }
@@ -13188,8 +13199,13 @@ function relTmaResolverIntervaloPonto(reN, data, entradaHhmm, saidaMesmoDia, pon
     return {ok:true, saida:saidaMesmoDia, saida_data:data, overnight:false, minutos:sm-em};
   }
 
-  // 2) Saída no mesmo registro com hora menor/igual à entrada → cruza meia-noite no campo do dia
-  if(sm!=null && sm<=em && (noite || sm<em)){
+  // Batida diurna inconsistente (saída ≤ entrada) — não tratar como virada de dia
+  if(sm!=null && sm<=em && !noite){
+    return {ok:false, motivo:'Saída anterior ou igual à entrada (verifique batidas do dia)'};
+  }
+
+  // 2) Saída no mesmo registro com hora menor/igual à entrada → turno noturno (entrada após 18h)
+  if(sm!=null && sm<=em && noite){
     return {
       ok:true, saida:saidaMesmoDia, saida_data:relTmaAddDiasISO(data,1),
       overnight:true, minutos:(sm+1440)-em,
@@ -13251,6 +13267,7 @@ async function relTmaFetchPontoPeriodo(ini,fim){
       var rec={
         re:r.re, data:d, status:r.status,
         entrada:r.entrada, saida:r.saida,
+        entrada_ajustada:r.entrada_ajustada, saida_ajustada:r.saida_ajustada,
         intervalo:{saida:r.intervalo_saida, retorno:r.intervalo_retorno},
         intervalo_saida:r.intervalo_saida, intervalo_retorno:r.intervalo_retorno,
         todas_marcacoes:marcacoes, _ce:r.consultado_em||''
@@ -39882,10 +39899,25 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.899',
-  data:   '04/09/2026',
-  build:  '20260904-0918',
+  numero: '7.9.904',
+  data:   '05/09/2026',
+  build:  '20260905-1155',
   log: [
+    {v:'7.9.904', d:'05/09/2026', itens:[
+      'Programação TMA — Auto Escalar: equipes programadas são só preservadas (não bloqueiam mais a auto-escala das demais da turma).',
+    ]},
+    {v:'7.9.903', d:'05/09/2026', itens:[
+      'Programação TMA — Auto Escalar: exige turno + tipo de equipe; avisa ao repetir no mesmo dia; não escala todas as equipes de uma vez; programadas não são alteradas.',
+    ]},
+    {v:'7.9.902', d:'04/09/2026', itens:[
+      'Gestão de Ponto: corrige saída (última batida, não menor horário), complementa ajustes manuais do relógio Nexus no sync, exibe horários efetivos nos registros.',
+    ]},
+    {v:'7.9.901', d:'04/09/2026', itens:[
+      'RH Benefícios VT/VR: período de apuração flexível (mês anterior, ciclo dia X ao dia X-1 ou personalizado). VR padrão R$ 31,80 nos pisos e nos cálculos. Ordenação por coluna na lista.',
+    ]},
+    {v:'7.9.900', d:'04/09/2026', itens:[
+      'RH Benefícios VT/VR: elegibilidade prioriza batida ≥2h — folguista que trabalhou passa a Elegível. Detalhe diário exibe dia da semana ao lado da data.',
+    ]},
     {v:'7.9.899', d:'04/09/2026', itens:[
       'Requisição CENA: colaborador volta na inclusão de item (qualquer tipo), na edição da linha e na listagem/histórico. A busca usa o cadastro completo (não só EPI/uniforme).',
     ]},
@@ -42411,6 +42443,21 @@ function _pontoExtrairHorarios(p, data){
   }
 
   return {entrada:entrada, saida:saidaFinal};
+}
+/** Horários efetivos para exibição (ajustes RH + filtro de pré-marcação + última saída). */
+function pontoEntradaSaidaEfetiva(p, data){
+  if(!p) return {entrada:'',saida:'',intervalo_saida:'',intervalo_retorno:''};
+  var ext=typeof _pontoExtrairHorarios==='function'?_pontoExtrairHorarios(p, data):{entrada:'',saida:''};
+  var es=typeof relTmaPontoEntradaSaida==='function'?relTmaPontoEntradaSaida(p):ext;
+  var entrada=p.entrada_ajustada||es.entrada||ext.entrada||p.entrada||'';
+  var saida=p.saida_ajustada||es.saida||ext.saida||p.saida||'';
+  function mn(h){ return typeof pontoHhmmToMin==='function'?pontoHhmmToMin(h):null; }
+  if(p.saida && saida && mn(p.saida)>mn(saida)) saida=p.saida_ajustada||p.saida;
+  return {
+    entrada:entrada, saida:saida,
+    intervalo_saida:p.intervalo_saida||'',
+    intervalo_retorno:p.intervalo_retorno||''
+  };
 }
 function _progColabCnhBadge(col){
   if(!col||!col.cnh_categoria||col.cnh_categoria==='Não') return '';
@@ -49288,12 +49335,55 @@ function progShowToast(msg, tipo){
 // AUTO ESCALAR TMA — cópia por data de referência (NÃO usa vínculo fixo)
 // Botão principal apenas. Não reativa auto-escalar por linha de equipe.
 // ══════════════════════════════════════════════════════════════
-var _progAutoEscalaCtx = null; // {ref, dest, modo}
+var _progAutoEscalaCtx = null; // {ref, dest, turno, tipoId, modo}
 
 function progFmtDataBR(ym){
   var s=String(ym||'').slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s||'—';
   return s.slice(5,7)+'/'+s.slice(8,10)+'/'+s.slice(0,4);
+}
+
+function progAeFindEq(eqId){
+  return (equipes_disp||[]).find(function(e){return String(e.id)===String(eqId);})
+    || (equipes||[]).find(function(e){return String(e.id)===String(eqId);})
+    || null;
+}
+
+/** Turno canônico Manhã|Tarde|Noite para filtro da auto-escala. */
+function progAeTurnoEq(eq){
+  if(!eq) return '';
+  if(typeof progTurnoTipoParaTabelaEquipes==='function')
+    return progTurnoTipoParaTabelaEquipes(eq.turno_tipo||'', eq.hora_inicio||'');
+  return String(eq.turno_tipo||'Manhã');
+}
+
+function progAeEqMatchFiltro(eq, turno, tipoId){
+  if(!eq) return false;
+  if(eq.status && eq.status!=='Ativo') return false;
+  if(tipoId && String(eq.tipo_id||'')!==String(tipoId)) return false;
+  if(turno && progAeTurnoEq(eq)!==turno) return false;
+  return true;
+}
+
+function progAeChaveLocal(cid, dest, turno, tipoId){
+  return 'prog_ae_'+String(cid||'x')+'_'+String(dest||'')+'_'+String(turno||'')+'_'+String(tipoId||'');
+}
+
+function progAeFiltrarCompsPorTurma(comps, turno, tipoId, cid){
+  return (comps||[]).filter(function(c){
+    if(!c || c.deleted_at) return false;
+    if(!progCompTemEscalaUtil(c)) return false;
+    var eq=progAeFindEq(c.equipe_id);
+    if(!eq) return false;
+    if(cid && eq.contrato_id && String(eq.contrato_id)!==String(cid)) return false;
+    return progAeEqMatchFiltro(eq, turno, tipoId);
+  });
+}
+
+function progAeProgramadasNaTurma(comps, turno, tipoId, cid){
+  return progAeFiltrarCompsPorTurma(comps, turno, tipoId, cid).filter(function(c){
+    return !!c.confirmada;
+  });
 }
 
 function progCompTemEscalaUtil(c){
@@ -49346,20 +49436,48 @@ function progAbrirModalAutoEscalarRef(){
     return;
   }
   var refSug=typeof dataAddDias==='function'?dataAddDias(dest,-1):dest;
+  var tiposOpts=(tipos_equipe||[]).slice().sort(function(a,b){
+    return String(a.nome||'').localeCompare(String(b.nome||''),'pt-BR');
+  }).map(function(t){
+    return '<option value="'+escHtml(String(t.id))+'">'+escHtml(t.nome||'Tipo')+'</option>';
+  }).join('');
+  if(!tiposOpts){
+    progShowToast('Cadastre tipos de equipe antes de usar Auto Escalar.','erro');
+    return;
+  }
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:440px">'
+    +'<div class="modal" style="max-width:480px">'
     +'<h3 style="margin:0 0 .75rem">⚡ Auto Escalar</h3>'
-    +'<p style="font-size:12px;color:#555;margin:0 0 1rem;line-height:1.45">'
-    +'Copia a <b>escala completa</b> de um dia de referência para a data destino '
-    +'(equipes, integrantes, veículo e motorista). Não usa vínculo fixo do cadastro.'
+    +'<p style="font-size:12px;color:#555;margin:0 0 .85rem;line-height:1.45">'
+    +'Copia a escala de um <b>dia de referência</b> para a data destino, '
+    +'somente para o <b>turno</b> e <b>tipo de equipe</b> selecionados. '
+    +'Não escala todas as equipes de uma vez.'
     +'</p>'
-    +'<div class="fg" style="margin-bottom:.75rem">'
+    +'<div style="background:#FEF3E2;border:.5px solid #854F0B55;border-radius:8px;padding:10px 12px;font-size:11px;color:#854F0B;line-height:1.45;margin-bottom:1rem">'
+    +'<b>⚠ Equipes já programadas</b> não serão alteradas — a auto-escala segue só nas demais da turma. '
+    +'Se precisar mudar uma programada, <b>desprograme</b> antes.'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.65rem">'
     +'<label style="font-size:11px;font-weight:600">Data destino (atual na tela)</label>'
     +'<input class="inp" type="date" id="ae-dest-data" value="'+escHtml(dest)+'" disabled style="width:100%;background:#f5f5f3"/>'
     +'</div>'
-    +'<div class="fg" style="margin-bottom:1rem">'
-    +'<label style="font-size:11px;font-weight:600">Qual dia deseja usar como referência para copiar a escala?</label>'
+    +'<div class="fg" style="margin-bottom:.65rem">'
+    +'<label style="font-size:11px;font-weight:600">Dia de referência (copiar de)</label>'
     +'<input class="inp" type="date" id="ae-ref-data" value="'+escHtml(refSug)+'" style="width:100%"/>'
+    +'</div>'
+    +'<div class="g2" style="margin-bottom:.65rem;gap:10px">'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Turno *</label>'
+    +'<select class="inp" id="ae-turno" style="width:100%">'
+    +'<option value="">Selecione o turno...</option>'
+    +'<option value="Manhã">Manhã</option>'
+    +'<option value="Tarde">Tarde</option>'
+    +'<option value="Noite">Noite</option>'
+    +'</select></div>'
+    +'<div class="fg"><label style="font-size:11px;font-weight:600">Tipo de equipe *</label>'
+    +'<select class="inp" id="ae-tipo" style="width:100%">'
+    +'<option value="">Selecione o tipo...</option>'
+    +tiposOpts
+    +'</select></div>'
     +'</div>'
     +'<div id="ae-ref-err" style="display:none;color:#A32D2D;font-size:12px;margin-bottom:.75rem"></div>'
     +'<div style="display:flex;gap:8px">'
@@ -49372,44 +49490,26 @@ function progAbrirModalAutoEscalarRef(){
     btn.onclick=function(){
       var ref=(document.getElementById('ae-ref-data')||{}).value||'';
       var destEl=(document.getElementById('ae-dest-data')||{}).value||dest;
+      var turno=(document.getElementById('ae-turno')||{}).value||'';
+      var tipoId=(document.getElementById('ae-tipo')||{}).value||'';
       var err=document.getElementById('ae-ref-err');
-      if(!ref){
-        if(err){ err.style.display='block'; err.textContent='Informe a data de referência.'; }
-        return;
+      function showErr(msg){
+        if(err){ err.style.display='block'; err.textContent=msg; }
+        else progShowToast(msg,'erro');
       }
-      if(ref===destEl){
-        if(err){ err.style.display='block'; err.textContent='A data de referência deve ser diferente da data destino.'; }
-        return;
-      }
-      progIniciarAutoEscalaRef(ref, destEl, null);
+      if(!turno){ showErr('Selecione o turno.'); return; }
+      if(!tipoId){ showErr('Selecione o tipo de equipe.'); return; }
+      if(!ref){ showErr('Informe a data de referência.'); return; }
+      if(ref===destEl){ showErr('A data de referência deve ser diferente da data destino.'); return; }
+      progIniciarAutoEscalaRef(ref, destEl, {turno:turno, tipoId:tipoId});
     };
   }, 40);
 }
 
 function progAbrirModalModoAutoEscala(ref, dest, qtdDest){
-  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
-    +'<div class="modal" style="max-width:460px">'
-    +'<h3 style="margin:0 0 .75rem">⚠ Data destino já possui escala</h3>'
-    +'<p style="font-size:13px;color:#555;margin:0 0 1rem;line-height:1.45">'
-    +'A data destino <b>'+escHtml(progFmtDataBR(dest))+'</b> já possui escala cadastrada'
-    +(qtdDest?' ('+qtdDest+' equipe'+(qtdDest>1?'s':'')+')':'')+'.<br><br>'
-    +'Deseja <b>complementar</b> a escala existente ou <b>substituir</b> a escala do dia?'
-    +'</p>'
-    +'<div style="font-size:11px;color:#888;margin-bottom:1rem;line-height:1.4">'
-    +'<b>Complementar:</b> cria só equipes que ainda não existem no destino.<br>'
-    +'<b>Substituir:</b> inativa a escala do destino e recria a partir de '+escHtml(progFmtDataBR(ref))+'.'
-    +'</div>'
-    +'<div style="display:flex;flex-direction:column;gap:8px">'
-    +'<button class="btn btn-pri" id="ae-modo-comp">Complementar</button>'
-    +'<button class="btn" id="ae-modo-sub" style="color:#A32D2D;border-color:#A32D2D">Substituir</button>'
-    +'<button class="btn" onclick="closeModal()">Cancelar</button>'
-    +'</div></div></div>');
-  setTimeout(function(){
-    var b1=document.getElementById('ae-modo-comp');
-    var b2=document.getElementById('ae-modo-sub');
-    if(b1) b1.onclick=function(){ progIniciarAutoEscalaRef(ref, dest, 'complementar'); };
-    if(b2) b2.onclick=function(){ progIniciarAutoEscalaRef(ref, dest, 'substituir'); };
-  }, 40);
+  // Legado: fluxo antigo complementar/substituir — auto-escala atual exige turno+tipo e bloqueia programadas.
+  progShowToast('Use Auto Escalar com turno e tipo de equipe selecionados.','erro');
+  closeModal();
 }
 
 async function progBuscarEscalaTMAData(dataYm){
@@ -49485,9 +49585,16 @@ async function progInativarEscalaDestino(compsDest, veicsDest){
   }
 }
 
-async function progIniciarAutoEscalaRef(ref, dest, modo){
+async function progIniciarAutoEscalaRef(ref, dest, opts){
   ref=String(ref||'').slice(0,10);
   dest=String(dest||progGetData()||'').slice(0,10);
+  // Compat: 3º arg antigo era string modo ('complementar'|'substituir')
+  if(typeof opts==='string') opts={modo:opts};
+  opts=opts||{};
+  var turno=opts.turno||'';
+  var tipoId=opts.tipoId||'';
+  var modo=opts.modo||'turma';
+
   if(!dest){
     progShowToast('Selecione a data destino na programação.','erro');
     return;
@@ -49500,9 +49607,15 @@ async function progIniciarAutoEscalaRef(ref, dest, modo){
     progShowToast('A data de referência deve ser diferente da data destino.','erro');
     return;
   }
+  if(!turno || !tipoId){
+    progShowToast('Selecione turno e tipo de equipe para Auto Escalar.','erro');
+    return;
+  }
+
+  var tipoNome=((tipos_equipe||[]).find(function(t){return String(t.id)===String(tipoId);})||{}).nome||'tipo';
+  var cid=progGetCont();
 
   progShowToast('⏳ Buscando escala de '+progFmtDataBR(ref)+'...');
-  var cid=progGetCont();
   var packRef, packDest;
   try{
     packRef = await progBuscarEscalaTMAData(ref);
@@ -49513,51 +49626,107 @@ async function progIniciarAutoEscalaRef(ref, dest, modo){
     return;
   }
 
-  var compsRef = progFiltrarCompsContrato(packRef.comps, cid);
+  var compsRefAll = progFiltrarCompsContrato(packRef.comps, cid);
+  var compsRef = progAeFiltrarCompsPorTurma(compsRefAll, turno, tipoId, cid);
   if(!compsRef.length){
     closeModal();
-    progShowToast('Não existe escala TMA cadastrada para a data de referência selecionada.','erro');
+    progShowToast('Não há escala na referência para turno '+turno+' / '+tipoNome+'.','erro');
     return;
   }
 
-  var compsDestUtil = progFiltrarCompsContrato(packDest.comps, cid);
-  if(compsDestUtil.length && !modo){
-    progAbrirModalModoAutoEscala(ref, dest, compsDestUtil.length);
-    return;
+  var compsDestAll = packDest.comps||[];
+  var programadas = progAeProgramadasNaTurma(compsDestAll, turno, tipoId, cid);
+  // Programadas são preservadas — não bloqueiam a auto-escala das demais
+
+  var rascunhos = progAeFiltrarCompsPorTurma(compsDestAll, turno, tipoId, cid)
+    .filter(function(c){ return !c.confirmada; });
+  var chave=progAeChaveLocal(cid, dest, turno, tipoId);
+  var jaFez=false;
+  try{ jaFez=!!localStorage.getItem(chave); }catch(eLs){}
+
+  if(jaFez || rascunhos.length){
+    var msgRep='⚠ Auto Escala já foi feita (ou há montagem) nesta turma neste dia.\n\n'
+      +'Turma: '+turno+' · '+tipoNome+'\n'
+      +'Dia: '+progFmtDataBR(dest)+'\n\n'
+      +'Deseja continuar?\n'
+      +'As alterações anteriores desta turma (não programadas) poderão ser perdidas.\n\n'
+      +(programadas.length
+        ? ('✓ '+programadas.length+' equipe(s) programada(s) serão preservadas e não serão alteradas.\n')
+        : 'Equipes programadas (se houver) não serão alteradas.\n');
+    if(!confirm(msgRep)) return;
+  } else if(programadas.length){
+    if(!confirm('ℹ Nesta turma há '+programadas.length+' equipe(s) já PROGRAMADA(S).\n\n'
+      +'Elas serão preservadas.\n'
+      +'A auto-escala será aplicada apenas nas demais equipes da turma ('+turno+' · '+tipoNome+').\n\n'
+      +'Continuar?')) return;
   }
 
   closeModal();
-  _progAutoEscalaCtx = {ref:ref, dest:dest, modo:modo||'complementar'};
-  await progExecutarAutoEscalaRef(compsRef, packRef.veics||[], packDest.comps||[], packDest.veics||[], modo||'complementar');
+  _progAutoEscalaCtx = {ref:ref, dest:dest, turno:turno, tipoId:tipoId, tipoNome:tipoNome, modo:modo};
+  await progExecutarAutoEscalaRef(compsRef, packRef.veics||[], packDest.comps||[], packDest.veics||[], 'turma');
 }
 
 async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDest, modo){
   var ref=_progAutoEscalaCtx&&_progAutoEscalaCtx.ref;
   var dest=_progAutoEscalaCtx&&_progAutoEscalaCtx.dest;
+  var turno=_progAutoEscalaCtx&&_progAutoEscalaCtx.turno;
+  var tipoId=_progAutoEscalaCtx&&_progAutoEscalaCtx.tipoId;
+  var tipoNome=(_progAutoEscalaCtx&&_progAutoEscalaCtx.tipoNome)||'';
   if(!ref||!dest) return;
+  modo = modo || (_progAutoEscalaCtx&&_progAutoEscalaCtx.modo) || 'turma';
 
-  if(modo==='substituir'){
-    progShowToast('⏳ Substituindo escala de '+progFmtDataBR(dest)+'...');
-    await progInativarEscalaDestino(compsDest, veicsDest);
-    // limpar veículos em memória do destino
-    Object.keys(_progVeiculos||{}).forEach(function(k){
-      if(k.indexOf('_'+dest)>=0) delete _progVeiculos[k];
-    });
-    compsDest = [];
+  // Filtra referência pela turma (turno + tipo) quando informado
+  if(turno && tipoId){
+    var cidFilt=progGetCont();
+    compsRef = progAeFiltrarCompsPorTurma(compsRef, turno, tipoId, cidFilt);
+  }
+
+  // Programadas: apenas preservadas (puladas no loop) — não bloqueiam a operação
+
+  // Em modo turma: limpa apenas rascunhos (não confirmados) da mesma turma no destino
+  if(modo==='turma' && turno && tipoId){
+    var rascunhosDest = progAeFiltrarCompsPorTurma(compsDest||[], turno, tipoId, progGetCont())
+      .filter(function(c){ return !c.confirmada; });
+    if(rascunhosDest.length){
+      progShowToast('⏳ Atualizando montagens anteriores da turma...');
+      await progInativarEscalaDestino(rascunhosDest, (veicsDest||[]).filter(function(v){
+        return rascunhosDest.some(function(c){ return String(c.equipe_id)===String(v.equipe_id); });
+      }));
+      Object.keys(_progVeiculos||{}).forEach(function(k){
+        if(k.indexOf('_'+dest)<0) return;
+        var eqIdK=k.split('_')[0];
+        if(rascunhosDest.some(function(c){return String(c.equipe_id)===String(eqIdK);}))
+          delete _progVeiculos[k];
+      });
+      compsDest = (compsDest||[]).filter(function(c){
+        return !rascunhosDest.some(function(r){return String(r.id)===String(c.id);});
+      });
+    }
+  } else if(modo==='substituir'){
+    // Legado: não usar no fluxo novo (poderia afetar programadas)
+    progShowToast('Modo substituir desativado. Use Auto Escalar por turno/tipo.','erro');
+    return;
   }
 
   var destEqMap = {};
   (compsDest||[]).forEach(function(c){
+    if(c.confirmada) return; // nunca sobrescrever programada
     if(progCompTemEscalaUtil(c)) destEqMap[c.equipe_id]=c;
   });
 
-  var criadas=0, ignoradas=0, avisosInativos=0;
+  var criadas=0, ignoradas=0, avisosInativos=0, puladasProg=0;
   var i, src, eqId, idsOrig, idsNovos, motoristaId, payload, inserted, veicSrc, veicOk;
 
   for(i=0;i<compsRef.length;i++){
     src=compsRef[i];
     eqId=src.equipe_id;
     if(!eqId) continue;
+
+    // Nunca tocar equipe já programada no destino
+    var destProg=(compsDest||[]).find(function(c){
+      return String(c.equipe_id)===String(eqId) && !c.deleted_at && c.confirmada;
+    });
+    if(destProg){ puladasProg++; continue; }
 
     if(modo==='complementar' && destEqMap[eqId]){
       ignoradas++;
@@ -49605,7 +49774,8 @@ async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDes
     composicao_dia=composicao_dia.filter(function(x){
       if(_compDataStr(x.data)!==dest || String(x.equipe_id)!==String(eqId)) return true;
       if(x.deleted_at) return false;
-      if(modo==='substituir') return false;
+      if(x.confirmada) return true; // preservar programada
+      if(modo==='turma' || modo==='substituir') return false;
       if(!progCompTemEscalaUtil(x)) return false;
       return true;
     });
@@ -49613,15 +49783,21 @@ async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDes
     inserted=null;
     if(!DEMO){
       try{
-        // Se já existe linha (vazia/inativa) no destino, atualizar em vez de duplicar
         var existentes = await sbFetch('composicao_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+dest],limit:5})||[];
-        var alvo = (existentes||[]).find(function(x){return !x.deleted_at;}) || existentes[0] || null;
+        var alvo = (existentes||[]).find(function(x){return !x.deleted_at && !x.confirmada;})
+          || (existentes||[]).find(function(x){return !x.deleted_at;})
+          || existentes[0] || null;
+        if(alvo && alvo.confirmada){
+          puladasProg++;
+          continue;
+        }
         if(alvo && alvo.id){
           var upd=Object.assign({},payload);
           delete upd.equipe_id; delete upd.data;
           upd.deleted_at=null;
+          upd.confirmada=false;
           await sbUpdate('composicao_dia',upd,'id=eq.'+alvo.id);
-          inserted=Object.assign({},alvo,payload,{id:alvo.id,deleted_at:null});
+          inserted=Object.assign({},alvo,payload,{id:alvo.id,deleted_at:null,confirmada:false});
         } else {
           var rIns=await sbInsert('composicao_dia',payload);
           inserted=(rIns&&rIns[0])?rIns[0]:Object.assign({id:'local_'+eqId+'_'+dest,_local:true},payload);
@@ -49665,6 +49841,15 @@ async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDes
     }
   }
 
+  // Marca auto-escala desta turma/dia
+  if(criadas>0 && turno && tipoId){
+    try{
+      localStorage.setItem(progAeChaveLocal(progGetCont(), dest, turno, tipoId), JSON.stringify({
+        ts:Date.now(), ref:ref, dest:dest, turno:turno, tipoId:tipoId, criadas:criadas
+      }));
+    }catch(eMk){}
+  }
+
   // Recarregar tela do destino
   _progStatusDateCache=null;
   _progVeiculosDateCache=null;
@@ -49676,17 +49861,21 @@ async function progExecutarAutoEscalaRef(compsRef, veicsRef, compsDest, veicsDes
     progRenderQuadro();
   }
 
-  var msg='Auto escala concluída';
+  var turmaTxt=(turno||'')+(tipoNome?' · '+tipoNome:'');
+  var msg='Auto escala concluída'+(turmaTxt?' ('+turmaTxt+')':'');
   if(criadas>0 && ignoradas===0){
-    msg='Auto escala concluída com sucesso.\nEscala de '+progFmtDataBR(ref)+' copiada para '+progFmtDataBR(dest)+'.';
+    msg='Auto escala concluída com sucesso.\nTurma '+turmaTxt+'\nEscala de '+progFmtDataBR(ref)+' → '+progFmtDataBR(dest)+'.';
   } else if(ignoradas>0){
     msg='Auto escala concluída.\nAlgumas equipes não foram copiadas porque já existiam na data destino.';
+  }
+  if(puladasProg>0){
+    msg+='\n\n'+puladasProg+' equipe(s) programada(s) foram preservadas (não alteradas).';
   }
   if(avisosInativos>0){
     msg+='\n\nAlguns colaboradores ou veículos copiados da escala de referência estão inativos ou indisponíveis.\nRevise a programação criada.';
   }
   progShowToast(msg.replace(/\n/g,' · ')+(criadas?' · '+criadas+' equipe(s)':'') );
-  if(avisosInativos>0 || ignoradas>0){
+  if(avisosInativos>0 || ignoradas>0 || puladasProg>0){
     try{ alert(msg); }catch(eAl){}
   }
 }
@@ -87056,6 +87245,11 @@ function gpDiasPeriodo(){
   return dias;
 }
 function _gpEntAtual(r){ return r.entrada_ajustada || r.entrada || ''; }
+function _gpSaidaAtual(r, data){
+  var ef=typeof pontoEntradaSaidaEfetiva==='function'?pontoEntradaSaidaEfetiva(r, data):{};
+  return ef.saida||r.saida_ajustada||r.saida||'';
+}
+function gpSincronizarPeriodo(){ gpSyncMes(); }
 function _gpEntOrig(r){ return r.entrada_original || r.entrada || ''; }
 function gpRenderAjuste(){
   var el=document.getElementById('gp-tab-ajuste'); if(!el) return;
@@ -87463,9 +87657,16 @@ function gpRenderRegistros(){
   var regsD=regs.slice().sort(function(a,b){ var c=gpColabByRe(a.re)||{}, d=gpColabByRe(b.re)||{}; var n=(c.nome||'').localeCompare(d.nome||''); return n!==0?n:(a.data||'').localeCompare(b.data||''); });
   var head='<tr><th>Colaborador</th><th>RE</th><th>Cargo</th><th>Data</th><th>Entrada</th><th>Int.S</th><th>Int.R</th><th>Saída</th><th>HE dia</th><th>Tipo</th><th>Motivo</th><th>⚠️</th></tr>';
   var linhas=regsD.map(function(r){ var c=gpColabByRe(r.re)||{}; var antec=(r.minutos_antecipacao||0)>5;
+    var d=(r.data||'').slice(0,10);
+    var ef=typeof pontoEntradaSaidaEfetiva==='function'?pontoEntradaSaidaEfetiva(r,d):{entrada:r.entrada,saida:r.saida,intervalo_saida:r.intervalo_saida,intervalo_retorno:r.intervalo_retorno};
+    var entEx=_gpEntAtual(r)||ef.entrada||'';
+    var entTit=r.entrada_ajustada?('Ajustado · original '+(r.entrada_original||r.entrada||'—')):'';
     var tipoCor={ferias:'#185FA5',suspensao:'#A32D2D',ausencia:'#854F0B',falta:'#A32D2D',folga:'#888',normal:'#3B6D11'}[r.tipo_dia]||'#555';
     return '<tr><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td><td style="font-family:monospace">'+escHtml(String(r.re))+'</td><td style="font-size:11px">'+escHtml(c.cargo||'')+'</td>'
-      +'<td>'+fmtD((r.data||'').slice(0,10))+'</td><td>'+(r.entrada||'—')+'</td><td>'+(r.intervalo_saida||'—')+'</td><td>'+(r.intervalo_retorno||'—')+'</td><td>'+(r.saida||'—')+'</td>'
+      +'<td>'+fmtD(d)+'</td>'
+      +'<td'+(entTit?' title="'+escHtml(entTit)+'" style="font-weight:'+(r.entrada_ajustada?'700':'400')+'"':'')+'>'+(entEx||'—')+'</td>'
+      +'<td>'+(ef.intervalo_saida||'—')+'</td><td>'+(ef.intervalo_retorno||'—')+'</td>'
+      +'<td style="font-weight:600">'+(ef.saida||'—')+'</td>'
       +'<td style="text-align:right;color:#534AB7;font-weight:'+(parseFloat(r.horas_extras)?'700':'400')+'">'+(parseFloat(r.horas_extras)?gpHHMM(r.horas_extras):'—')+'</td>'
       +'<td><span style="color:'+tipoCor+';font-weight:600;font-size:11px">'+(r.tipo_dia||'—')+'</span></td>'
       +'<td style="font-size:11px;color:#888">'+escHtml(r.ausencia_motivo||'')+'</td>'
@@ -87478,7 +87679,9 @@ function gpRenderRegistros(){
 function gpExportCsv(){
   var regs=gpRegFiltrados();
   var csv='Colaborador,RE,Cargo,Data,Entrada,IntSaida,IntRetorno,Saida,HE_dia,Tipo,Motivo,MinAntecipacao\n'
-    +regs.map(function(r){ var c=gpColabByRe(r.re)||{}; return ['"'+(c.nome||'').replace(/"/g,'""')+'"',r.re,'"'+(c.cargo||'')+'"',(r.data||'').slice(0,10),r.entrada||'',r.intervalo_saida||'',r.intervalo_retorno||'',r.saida||'',r.horas_extras||0,r.tipo_dia||'','"'+(r.ausencia_motivo||'')+'"',r.minutos_antecipacao||0].join(','); }).join('\n');
+    +regs.map(function(r){ var c=gpColabByRe(r.re)||{}; var d=(r.data||'').slice(0,10);
+      var ef=typeof pontoEntradaSaidaEfetiva==='function'?pontoEntradaSaidaEfetiva(r,d):{entrada:r.entrada,saida:r.saida,intervalo_saida:r.intervalo_saida,intervalo_retorno:r.intervalo_retorno};
+      return ['"'+(c.nome||'').replace(/"/g,'""')+'"',r.re,'"'+(c.cargo||'')+'"',d,_gpEntAtual(r)||ef.entrada||'',ef.intervalo_saida||'',ef.intervalo_retorno||'',ef.saida||'',r.horas_extras||0,r.tipo_dia||'','"'+(r.ausencia_motivo||'')+'"',r.minutos_antecipacao||0].join(','); }).join('\n');
   var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='gestao_ponto_'+_gp.ini+'_a_'+_gp.fim+'.csv'; a.click();
 }
 
@@ -93114,8 +93317,11 @@ function rhInit(pageId){
 var RH_BEN_MIN_MINUTOS=120;
 var RH_BEN_VT_POR_DIA=2;
 var RH_BEN_VR_POR_DIA=1;
+var RH_BEN_VR_VALOR_PADRAO=31.80;
 var _rhBen={
   pagAno:0, pagMes:0, contratoId:'', busca:'',
+  periodoModo:'mes_anterior', diaCorte:16, apurIni:'', apurFim:'',
+  sortCol:'nome', sortDir:'asc',
   competencia:null, lista:[],
   carregando:false, salvando:false, sujo:false, erro:'',
   pontoOk:true
@@ -93129,15 +93335,43 @@ function rhBeneficioCompetenciaPadrao(){
   var h=typeof rhHoje==='function'?rhHoje():new Date().toISOString().slice(0,10);
   return {pagAno:parseInt(h.slice(0,4),10), pagMes:parseInt(h.slice(5,7),10)};
 }
-function rhBeneficioPeriodoApuracao(pagAno, pagMes){
+function rhBeneficioUltimoDiaMes(ano, mes){
+  return new Date(Number(ano), Number(mes), 0).getDate();
+}
+function rhBeneficioPeriodoMesAnterior(pagAno, pagMes){
+  pagAno=Number(pagAno); pagMes=Number(pagMes);
   var am=pagMes-1, ay=pagAno;
   if(am<1){ am=12; ay--; }
-  var last=new Date(ay, am, 0).getDate();
+  var last=rhBeneficioUltimoDiaMes(ay, am);
   return {
     ini:ay+'-'+rhBeneficioPad2(am)+'-01',
     fim:ay+'-'+rhBeneficioPad2(am)+'-'+rhBeneficioPad2(last),
-    apurAno:ay, apurMes:am
+    apurAno:ay, apurMes:am, modo:'mes_anterior'
   };
+}
+function rhBeneficioPeriodoApuracao(pagAno, pagMes){
+  pagAno=Number(pagAno); pagMes=Number(pagMes);
+  var modo=_rhBen.periodoModo||'mes_anterior';
+  if(modo==='personalizado'){
+    var ini=String(_rhBen.apurIni||'').slice(0,10);
+    var fim=String(_rhBen.apurFim||'').slice(0,10);
+    if(ini && fim && ini<=fim) return {ini:ini, fim:fim, apurAno:null, apurMes:null, modo:modo};
+  }
+  if(modo==='dia_corte'){
+    var dia=Math.min(31, Math.max(1, Number(_rhBen.diaCorte)||16));
+    var fimAno=pagAno, fimMes=pagMes, fimDia=dia-1;
+    if(fimDia<1) return rhBeneficioPeriodoMesAnterior(pagAno, pagMes);
+    var iniMes=pagMes-1, iniAno=pagAno;
+    if(iniMes<1){ iniMes=12; iniAno--; }
+    var iniDia=Math.min(dia, rhBeneficioUltimoDiaMes(iniAno, iniMes));
+    fimDia=Math.min(fimDia, rhBeneficioUltimoDiaMes(fimAno, fimMes));
+    return {
+      ini:iniAno+'-'+rhBeneficioPad2(iniMes)+'-'+rhBeneficioPad2(iniDia),
+      fim:fimAno+'-'+rhBeneficioPad2(fimMes)+'-'+rhBeneficioPad2(fimDia),
+      apurAno:iniAno, apurMes:iniMes, modo:modo, diaCorte:dia
+    };
+  }
+  return rhBeneficioPeriodoMesAnterior(pagAno, pagMes);
 }
 function rhBeneficioMesValor(){
   return _rhBen.pagAno+'-'+rhBeneficioPad2(_rhBen.pagMes);
@@ -93232,18 +93466,22 @@ function rhBeneficioUnitarioDoBenef(b){
 function rhBeneficioEstimarValores(a){
   if(!a) return a;
   a.valor_vt_est=null; a.valor_vr_est=null; a.valor_total_est=null;
-  a.vt_unitario=null; a.vr_unitario=null; a.piso_label='';
-  var c=rhBeneficioColabDaApuracao(a);
-  if(!c || typeof rhRemMatchPiso!=='function') return a;
-  var piso=rhRemMatchPiso(c.cargo, c.funcao||'', c.contrato_id);
-  if(!piso) return a;
-  a.piso_label=(piso.cargo||'')+(piso.funcao?' · '+piso.funcao:'');
-  var bens=typeof rhRemBenefsDoPiso==='function'?rhRemBenefsDoPiso(piso.id):[];
-  var vtB=bens.filter(function(b){ return b.tipo==='vale_transporte'; })[0];
-  var vrB=bens.filter(function(b){ return b.tipo==='vale_refeicao'; })[0];
-  var vtU=rhBeneficioUnitarioDoBenef(vtB);
-  var vrU=rhBeneficioUnitarioDoBenef(vrB);
+  a.vt_unitario=null; a.vr_unitario=null; a.piso_label=''; a.vr_padrao=false;
   var round=typeof rhRemRound==='function'?rhRemRound:function(n){ return Math.round((Number(n)||0)*100)/100; };
+  var c=rhBeneficioColabDaApuracao(a);
+  var piso=(c && typeof rhRemMatchPiso==='function')?rhRemMatchPiso(c.cargo, c.funcao||'', c.contrato_id):null;
+  var vtU=null, vrU=null;
+  if(piso){
+    a.piso_label=(piso.cargo||'')+(piso.funcao?' · '+piso.funcao:'');
+    var bens=typeof rhRemBenefsDoPiso==='function'?rhRemBenefsDoPiso(piso.id):[];
+    vtU=rhBeneficioUnitarioDoBenef(bens.filter(function(b){ return b.tipo==='vale_transporte'; })[0]);
+    vrU=rhBeneficioUnitarioDoBenef(bens.filter(function(b){ return b.tipo==='vale_refeicao'; })[0]);
+  }
+  if(!vrU && RH_BEN_VR_VALOR_PADRAO){
+    vrU={unitario:round(RH_BEN_VR_VALOR_PADRAO), modo:'quantidade'};
+    a.vr_padrao=true;
+    if(!a.piso_label) a.piso_label='VR padrão (sem piso cadastrado)';
+  }
   var qVt=Number(a.qtd_vt)||0, qVr=Number(a.qtd_vr)||0, dEleg=Number(a.dias_elegiveis)||0;
   if(vtU){
     a.vt_unitario=vtU.unitario;
@@ -93300,6 +93538,8 @@ function rhBeneficioClassificarDia(p, prog, perm){
   var st=((p&&p.status)||'').toLowerCase();
   var progSt=((prog&&prog.status)||'').toLowerCase();
   var ausTipo=String((p&&p.ausencia_tipo)||'').toLowerCase();
+  var treinamento=(progSt==='treinamento' || td==='treinamento');
+  var folgaDia=(td==='folga' || progSt==='folga');
   if(!p){
     return {status:'Sem marcação', vt:0, vr:0, divergencia:true, motivo:'Ausência de batidas válidas'};
   }
@@ -93309,15 +93549,13 @@ function rhBeneficioClassificarDia(p, prog, perm){
     return {status:'Afastado', vt:0, vr:0, divergencia:false, motivo:'Colaborador afastado'};
   if(td==='suspensao' || p.suspensao)
     return {status:'Suspensão', vt:0, vr:0, divergencia:false, motivo:'Suspensão registrada'};
-  if(td==='folga' || progSt==='folga')
-    return {status:'Folga', vt:0, vr:0, divergencia:false, motivo:'Dia de folga'};
   if(p.ausencia_motivada || td==='ausencia' || ausTipo.indexOf('atestado')>=0)
     return {status:'Atestado / Ausência motivada', vt:0, vr:0, divergencia:false, motivo:'Ausência justificada sem presença física'};
-  if(td==='falta' || st==='falta' || st==='faltou')
-    return {status:'Falta', vt:0, vr:0, divergencia:false, motivo:'Falta registrada no ponto'};
-  var treinamento=(progSt==='treinamento' || td==='treinamento');
   if(!perm || (!perm.entrada && !perm.saida && !perm.ok)){
     if(treinamento) return {status:'Treinamento', vt:0, vr:0, divergencia:true, motivo:'Treinamento sem batida válida'};
+    if(folgaDia) return {status:'Folga', vt:0, vr:0, divergencia:false, motivo:'Dia de folga sem batida'};
+    if(td==='falta' || st==='falta' || st==='faltou')
+      return {status:'Falta', vt:0, vr:0, divergencia:false, motivo:'Falta registrada no ponto'};
     return {status:'Sem marcação', vt:0, vr:0, divergencia:true, motivo:'Ausência de batidas válidas'};
   }
   if(!perm.ok){
@@ -93325,17 +93563,26 @@ function rhBeneficioClassificarDia(p, prog, perm){
     return {status:'Batida incompleta', vt:0, vr:0, divergencia:true, motivo:'Não foi possível calcular permanência'};
   }
   if((perm.minutos||0)<RH_BEN_MIN_MINUTOS){
+    if(folgaDia) return {status:'Folga', vt:0, vr:0, divergencia:false, motivo:'Folga com permanência abaixo de 2 horas'};
     return {status:'Menos de 2 horas', vt:0, vr:0, divergencia:true, motivo:'Permanência inferior ao mínimo'};
   }
-  if(treinamento)
-    return {status:'Elegível', vt:RH_BEN_VT_POR_DIA, vr:RH_BEN_VR_POR_DIA, divergencia:false, motivo:'Treinamento com permanência mínima'};
-  return {status:'Elegível', vt:RH_BEN_VT_POR_DIA, vr:RH_BEN_VR_POR_DIA, divergencia:false, motivo:'Dia trabalhado com permanência mínima'};
+  var motivoElig='Dia trabalhado com permanência mínima';
+  if(folgaDia) motivoElig='Trabalhou na folga com permanência mínima (≥2h)';
+  else if(td==='falta' || st==='falta' || st==='faltou') motivoElig='Presença no ponto ≥2h (status falta no cadastro)';
+  else if(treinamento) motivoElig='Treinamento com permanência mínima';
+  return {status:'Elegível', vt:RH_BEN_VT_POR_DIA, vr:RH_BEN_VR_POR_DIA, divergencia:false, motivo:motivoElig};
 }
 
 function rhBeneficioInit(){
   if(!_rhBen.pagAno){
     var pad=rhBeneficioCompetenciaPadrao();
     _rhBen.pagAno=pad.pagAno; _rhBen.pagMes=pad.pagMes;
+  }
+  if(typeof rhRemCarregar==='function'){
+    rhRemCarregar().then(function(){
+      rhBeneficioAplicarEstimativas(_rhBen.lista);
+      rhBeneficioRender();
+    });
   }
   rhBeneficioRender();
   rhBeneficioCarregar();
@@ -93345,12 +93592,34 @@ function rhBeneficioSyncFiltros(){
   var mesEl=document.getElementById('rh-ben-pag');
   var contEl=document.getElementById('rh-ben-cont');
   var busEl=document.getElementById('rh-ben-busca');
+  var modoEl=document.getElementById('rh-ben-per-modo');
+  var diaEl=document.getElementById('rh-ben-dia-corte');
+  var iniEl=document.getElementById('rh-ben-apur-ini');
+  var fimEl=document.getElementById('rh-ben-apur-fim');
   if(mesEl && mesEl.value && /^\d{4}-\d{2}$/.test(mesEl.value)){
     _rhBen.pagAno=parseInt(mesEl.value.slice(0,4),10);
     _rhBen.pagMes=parseInt(mesEl.value.slice(5,7),10);
   }
   if(contEl) _rhBen.contratoId=contEl.value||'';
   if(busEl) _rhBen.busca=busEl.value||'';
+  if(modoEl) _rhBen.periodoModo=modoEl.value||'mes_anterior';
+  if(diaEl && diaEl.value!=='') _rhBen.diaCorte=Math.min(31, Math.max(1, parseInt(diaEl.value,10)||16));
+  if(iniEl && iniEl.value) _rhBen.apurIni=iniEl.value;
+  if(fimEl && fimEl.value) _rhBen.apurFim=fimEl.value;
+}
+
+function rhBeneficioOnPeriodoModo(){
+  rhBeneficioSyncFiltros();
+  if(_rhBen.periodoModo==='personalizado' && (!_rhBen.apurIni || !_rhBen.apurFim)){
+    var per=rhBeneficioPeriodoMesAnterior(_rhBen.pagAno, _rhBen.pagMes);
+    _rhBen.apurIni=per.ini; _rhBen.apurFim=per.fim;
+  }
+  rhBeneficioRender();
+}
+
+function rhBeneficioOnPeriodoChange(){
+  rhBeneficioSyncFiltros();
+  rhBeneficioRender();
 }
 
 function rhBeneficioOnFiltro(){
@@ -93393,6 +93662,11 @@ async function rhBeneficioCarregar(){
     }
     var comp=(comps&&comps[0])||null;
     _rhBen.competencia=comp;
+    if(comp && comp.apuracao_ini && comp.apuracao_fim){
+      _rhBen.periodoModo='personalizado';
+      _rhBen.apurIni=String(comp.apuracao_ini).slice(0,10);
+      _rhBen.apurFim=String(comp.apuracao_fim).slice(0,10);
+    }
     _rhBen.lista=[];
     if(comp && comp.id){
       var apurs=await (typeof sbFetchAll==='function'?sbFetchAll:sbFetch)('rh_beneficio_apuracoes',{
@@ -93594,6 +93868,17 @@ async function rhBeneficioSalvar(){
   await rhBeneficioCarregar();
 }
 
+function rhBeneficioFmtDataComDia(dataIso){
+  if(!dataIso) return '—';
+  var s=String(dataIso).slice(0,10);
+  var ds=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+  var dt=new Date(s+'T12:00:00');
+  if(isNaN(dt.getTime())) return typeof fmtD==='function'?fmtD(s):s;
+  var fmt=typeof fmtD==='function'?fmtD(s):s;
+  var dia=ds[dt.getDay()]||'';
+  return dia?(fmt+' · '+dia):fmt;
+}
+
 function rhBeneficioAbrirDetalhe(re){
   var a=(_rhBen.lista||[]).find(function(x){ return pontoReNorm(x.re)===pontoReNorm(re); });
   if(!a) return;
@@ -93601,7 +93886,7 @@ function rhBeneficioAbrirDetalhe(re){
     var key=pontoReNorm(a.re)+'|'+d.data;
     var aj=d.ajuste_em?'<div style="font-size:10px;color:#185FA5">Ajuste: '+rhEsc(d.ajuste_por||'')+' · '+rhEsc(d.ajuste_justificativa||'')+'</div>':'';
     return '<tr>'
-      +'<td>'+rhFmtD(d.data)+'</td>'
+      +'<td>'+rhBeneficioFmtDataComDia(d.data)+'</td>'
       +'<td>'+rhEsc(d.tipo_dia_fonte||'—')+'</td>'
       +'<td>'+rhEsc(d.entrada||'—')+'</td>'
       +'<td>'+rhEsc(d.saida||'—')+'</td>'
@@ -93617,6 +93902,7 @@ function rhBeneficioAbrirDetalhe(re){
     +'<h3>Detalhe diário — '+rhEsc(a.nome)+' · RE '+rhEsc(a.re)+'</h3>'
     +'<div style="font-size:12px;color:#666;margin-bottom:10px">O ajuste muda só VT/VR desta apuração. Não altera o ponto. Justificativa obrigatória.'
     +(a.piso_label?' Piso: '+rhEsc(a.piso_label)+'.':' Sem piso de VT/VR cadastrado.')
+    +(a.vr_unitario!=null?' VR unit.: '+rhBeneficioFmtR(a.vr_unitario)+(a.vr_padrao?' (padrão)':'')+'.':'')
     +' Estimado: VT '+rhBeneficioFmtR(a.valor_vt_est)+' · VR '+rhBeneficioFmtR(a.valor_vr_est)+'.</div>'
     +(a.obs_periodo?'<div style="background:#FEF3E2;color:#854F0B;padding:8px 10px;border-radius:8px;font-size:12px;margin-bottom:10px">'+rhEsc(a.obs_periodo)+'</div>':'')
     +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
@@ -93635,7 +93921,7 @@ function rhBeneficioAjustarDia(re, data){
   _rhBen._aj={re:a.re, data:d.data};
   setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
     +'<h3>Ajuste de benefício</h3>'
-    +'<div style="font-size:12px;color:#666;margin-bottom:10px">'+rhFmtD(d.data)+' · '+rhEsc(d.status_beneficio)+'. Altera somente VT/VR. O ponto permanece '+rhEsc(d.entrada||'—')+' / '+rhEsc(d.saida||'—')+'.</div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:10px">'+rhBeneficioFmtDataComDia(d.data)+' · '+rhEsc(d.status_beneficio)+'. Altera somente VT/VR. O ponto permanece '+rhEsc(d.entrada||'—')+' / '+rhEsc(d.saida||'—')+'.</div>'
     +'<div class="g2">'
     +'<div class="fg"><label>VT (atual '+d.vt_final+')</label><input class="inp" type="number" min="0" id="rh-ben-aj-vt" value="'+d.vt_final+'"/></div>'
     +'<div class="fg"><label>VR (atual '+d.vr_final+')</label><input class="inp" type="number" min="0" id="rh-ben-aj-vr" value="'+d.vr_final+'"/></div>'
@@ -93688,7 +93974,7 @@ async function rhBeneficioConfirmarAjuste(){
 }
 
 function rhBeneficioExportCsv(){
-  var lista=rhBeneficioListaFiltrada();
+  var lista=rhBeneficioListaOrdenada(rhBeneficioListaFiltrada());
   if(!lista.length){ if(typeof progShowToast==='function') progShowToast('Nada para exportar.','erro'); return; }
   var per=rhBeneficioPeriodoApuracao(_rhBen.pagAno, _rhBen.pagMes);
   var head=['RE','Nome','Contrato','Base','Piso','Dias elegíveis','Dias sem direito','Faltas','Férias','Afastamentos','Menos de 2h','Sem marcação','Batida incompleta','Qtd VT','Valor VT','Qtd VR','Valor VR','Total estimado','Status'];
@@ -93716,6 +94002,43 @@ function rhBeneficioListaFiltrada(){
   });
 }
 
+function rhBeneficioSortIcon(col){
+  if(_rhBen.sortCol!==col) return ' <span style="opacity:.35;font-size:10px">↕</span>';
+  return _rhBen.sortDir==='asc'?' <span style="font-size:10px">▲</span>':' <span style="font-size:10px">▼</span>';
+}
+
+function rhBeneficioTh(col, label, align){
+  var st='cursor:pointer;user-select:none;white-space:nowrap';
+  if(align) st+=';text-align:'+align;
+  return '<th style="'+st+'" onclick="event.stopPropagation();rhBeneficioOnSort(\''+col+'\')">'+label+rhBeneficioSortIcon(col)+'</th>';
+}
+
+function rhBeneficioOnSort(col){
+  if(_rhBen.sortCol===col) _rhBen.sortDir=_rhBen.sortDir==='asc'?'desc':'asc';
+  else { _rhBen.sortCol=col; _rhBen.sortDir='asc'; }
+  rhBeneficioRender();
+}
+
+function rhBeneficioListaOrdenada(lista){
+  lista=(lista||[]).slice();
+  var col=_rhBen.sortCol;
+  if(!col) return lista;
+  var dir=_rhBen.sortDir==='desc'?-1:1;
+  lista.sort(function(a,b){
+    rhBeneficioEstimarValores(a);
+    rhBeneficioEstimarValores(b);
+    var va, vb;
+    if(col==='status'){ va=rhBeneficioStatusLabel(a); vb=rhBeneficioStatusLabel(b); }
+    else { va=a[col]; vb=b[col]; }
+    if(va==null || va==='') va=col.indexOf('valor')>=0||col.indexOf('qtd')>=0||col.indexOf('dias')>=0||col.indexOf('faltas')>=0||col.indexOf('ferias')>=0||col.indexOf('afast')>=0||col.indexOf('menos')>=0||col.indexOf('sem')>=0||col.indexOf('batida')>=0?0:'';
+    if(vb==null || vb==='') vb=col.indexOf('valor')>=0||col.indexOf('qtd')>=0||col.indexOf('dias')>=0||col.indexOf('faltas')>=0||col.indexOf('ferias')>=0||col.indexOf('afast')>=0||col.indexOf('menos')>=0||col.indexOf('sem')>=0||col.indexOf('batida')>=0?0:'';
+    if(typeof va==='number' || typeof vb==='number' || (col.indexOf('valor')>=0||col.indexOf('qtd')>=0||col.indexOf('dias')>=0||col.indexOf('faltas')>=0||col.indexOf('ferias')>=0||col.indexOf('afast')>=0||col.indexOf('menos')>=0||col.indexOf('sem')>=0||col.indexOf('batida')>=0))
+      return (Number(va||0)-Number(vb||0))*dir;
+    return String(va).localeCompare(String(vb),'pt-BR',{numeric:true,sensitivity:'base'})*dir;
+  });
+  return lista;
+}
+
 function rhBeneficioKpis(lista){
   var k={colabs:lista.length, eleg:0, div:0, vt:0, vr:0, semReg:0, vtR:0, vrR:0, totR:0, semPiso:0};
   lista.forEach(function(a){
@@ -93740,13 +94063,24 @@ function rhBeneficioRender(){
   var wrap=document.getElementById('rh-beneficios-wrap'); if(!wrap) return;
   var per=rhBeneficioPeriodoApuracao(_rhBen.pagAno||rhBeneficioCompetenciaPadrao().pagAno, _rhBen.pagMes||rhBeneficioCompetenciaPadrao().pagMes);
   if(!_rhBen.pagAno){ var pad=rhBeneficioCompetenciaPadrao(); _rhBen.pagAno=pad.pagAno; _rhBen.pagMes=pad.pagMes; }
-  var lista=rhBeneficioListaFiltrada();
+  if(_rhBen.periodoModo==='personalizado' && (!_rhBen.apurIni || !_rhBen.apurFim)){
+    _rhBen.apurIni=per.ini; _rhBen.apurFim=per.fim;
+  }
+  var lista=rhBeneficioListaOrdenada(rhBeneficioListaFiltrada());
   var k=rhBeneficioKpis(lista);
   var stComp=_rhBen.competencia?(_rhBen.competencia.status||'rascunho'):'rascunho';
   var contOpts='<option value="">Todos os contratos (geral)</option>'
     +((typeof _contratosVisiveis==='function'?_contratosVisiveis():contratos)||[]).map(function(c){
       return '<option value="'+c.id+'"'+(_rhBen.contratoId===String(c.id)?' selected':'')+'>'+rhEsc(c.nome||c.codigo)+'</option>';
     }).join('');
+  var perModo=_rhBen.periodoModo||'mes_anterior';
+  var perDiaWrap=perModo==='dia_corte'?'':' style="display:none"';
+  var perCustomWrap=perModo==='personalizado'?'':' style="display:none"';
+  var perResumo=perModo==='mes_anterior'
+    ?('Mês anterior: '+rhFmtD(per.ini)+' a '+rhFmtD(per.fim))
+    :(perModo==='dia_corte'
+      ?('Ciclo dia '+(_rhBen.diaCorte||16)+': '+rhFmtD(per.ini)+' a '+rhFmtD(per.fim))
+      :('Personalizado: '+rhFmtD(per.ini)+' a '+rhFmtD(per.fim)));
   var rows=lista.map(function(a){
     var st=rhBeneficioStatusLabel(a);
     var cor=st==='Ok'?'#3B6D11':(st==='Ajustado'?'#185FA5':'#854F0B');
@@ -93775,7 +94109,8 @@ function rhBeneficioRender(){
     +'C1 usa regra padrão porque ainda não existe cadastro individual de quantidade de VT, rota ou transporte: <b>'
     +RH_BEN_VT_POR_DIA+' VT</b> e <b>'+RH_BEN_VR_POR_DIA+' VR</b> por dia elegível. Mínimo de permanência: <b>'
     +RH_BEN_MIN_MINUTOS+' minutos</b> (primeira entrada → última saída, sem descontar intervalo). Atestado/ausência motivada não gera vale automático — exceção só com ajuste e justificativa.'
-    +' Valor VT/VR é <b>estimado</b> pelo piso em RH → Pisos e Benefícios (cargo/função/contrato): PAT valor/dia × quantidade; valor mensal ÷ dias do piso × dias elegíveis. Sem piso ou sem valor cadastrado, a coluna fica em branco. Não é holerite.'
+    +' Valor VT/VR é <b>estimado</b> pelo piso em RH → Pisos e Benefícios (cargo/função/contrato): PAT valor/dia × quantidade; valor mensal ÷ dias do piso × dias elegíveis. VR padrão <b>R$ '
+    +RH_BEN_VR_VALOR_PADRAO.toFixed(2).replace('.',',')+'</b> quando o piso não tiver vale-refeição cadastrado. Não é holerite.'
     +'</div>'
     +(_rhBen.erro?'<div class="card" style="padding:.75rem 1rem;background:#FDECEC;color:#A32D2D;font-size:12px;margin-bottom:1rem">'+rhEsc(_rhBen.erro)+'</div>':'')
     +'<div class="card" style="padding:1rem;margin-bottom:1rem">'
@@ -93783,7 +94118,22 @@ function rhBeneficioRender(){
     +'<div class="fg"><label>Competência de pagamento</label><input class="inp" type="month" id="rh-ben-pag" value="'+rhBeneficioMesValor()+'" onchange="rhBeneficioOnFiltro()"/></div>'
     +'<div class="fg"><label>Contrato</label><select class="inp" id="rh-ben-cont" data-nosort="1" onchange="rhBeneficioOnFiltro()">'+contOpts+'</select></div>'
     +'<div class="fg"><label>Busca</label><input class="inp" id="rh-ben-busca" placeholder="RE ou nome" value="'+rhEsc(_rhBen.busca)+'" oninput="_rhBen.busca=this.value;rhBeneficioRender()"/></div>'
-    +'<div class="fg"><label>Apuração (mês anterior)</label><div style="padding:.45rem 0;font-size:13px;font-weight:600">'+rhFmtD(per.ini)+' a '+rhFmtD(per.fim)+'</div></div>'
+    +'</div>'
+    +'<div class="g2" style="align-items:end;margin-top:.6rem">'
+    +'<div class="fg"><label>Modo de apuração</label><select class="inp" id="rh-ben-per-modo" data-nosort="1" onchange="rhBeneficioOnPeriodoModo()">'
+    +'<option value="mes_anterior"'+(perModo==='mes_anterior'?' selected':'')+'>Mês anterior (calendário)</option>'
+    +'<option value="dia_corte"'+(perModo==='dia_corte'?' selected':'')+'>Do dia X ao dia X−1</option>'
+    +'<option value="personalizado"'+(perModo==='personalizado'?' selected':'')+'>Personalizado (de/até)</option>'
+    +'</select></div>'
+    +'<div class="fg" id="rh-ben-per-dia-wrap"'+perDiaWrap+'><label>Dia inicial do ciclo</label>'
+    +'<input class="inp" type="number" min="1" max="31" id="rh-ben-dia-corte" value="'+(_rhBen.diaCorte||16)+'" onchange="rhBeneficioOnPeriodoChange()"/>'
+    +'<div style="font-size:10px;color:#888;margin-top:2px">Ex.: dia 16 → 16 do mês anterior até 15 do mês de pagamento</div></div>'
+    +'<div class="fg" id="rh-ben-per-custom-wrap"'+perCustomWrap+'><label>Período personalizado</label>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<input class="inp" type="date" id="rh-ben-apur-ini" value="'+(_rhBen.apurIni||per.ini)+'" onchange="rhBeneficioOnPeriodoChange()" style="flex:1;min-width:130px"/>'
+    +'<input class="inp" type="date" id="rh-ben-apur-fim" value="'+(_rhBen.apurFim||per.fim)+'" onchange="rhBeneficioOnPeriodoChange()" style="flex:1;min-width:130px"/>'
+    +'</div></div>'
+    +'<div class="fg"><label>Período calculado</label><div style="padding:.45rem 0;font-size:13px;font-weight:600">'+perResumo+'</div></div>'
     +'</div>'
     +'<div style="font-size:12px;color:#666;margin:.4rem 0 .8rem">Status da competência: <b>'+rhEsc(stComp)+'</b>'
     +(_rhBen.sujo?' · cálculo ainda não salvo':'')
@@ -93792,6 +94142,7 @@ function rhBeneficioRender(){
     +'<button class="btn btn-pri" onclick="rhBeneficioCalcular()" '+(_rhBen.carregando||_rhBen.salvando?'disabled':'')+'>Calcular apuração</button>'
     +'<button class="btn" onclick="rhBeneficioSalvar()" '+(_rhBen.carregando||_rhBen.salvando||!_rhBen.lista.length?'disabled':'')+'>Salvar</button>'
     +'<button class="btn" onclick="rhBeneficioExportCsv()" '+(!lista.length?'disabled':'')+'>Exportar CSV</button>'
+    +'<button class="btn btn-sm" onclick="rhRemAplicarVrPadraoTodos()" title="Cadastra vale-refeição PAT R$ '+RH_BEN_VR_VALOR_PADRAO.toFixed(2)+' em todos os pisos ativos">Aplicar VR R$ '+RH_BEN_VR_VALOR_PADRAO.toFixed(2).replace('.',',')+' em todos os pisos</button>'
     +'<button class="btn btn-sm" onclick="showMain(\'operacional\');setTimeout(function(){showSub(\'gestao-ponto\');},80)">Abrir Gestão de Ponto</button>'
     +'</div></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:1rem">'
@@ -93805,11 +94156,15 @@ function rhBeneficioRender(){
     +rhCard('Valor VR',rhBeneficioFmtR(k.vrR),'#185FA5')
     +rhCard('Total estimado',rhBeneficioFmtR(k.totR),'#1a1a18')
     +'</div>'
-    +'<div class="card"><div class="ch"><span class="ct">Lista por colaborador</span><span style="font-size:11px;color:#888">Clique na linha para o detalhe diário · valores pelo piso</span></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Lista por colaborador</span><span style="font-size:11px;color:#888">Clique no cabeçalho para ordenar · linha abre detalhe diário · VR unit. R$ '+RH_BEN_VR_VALOR_PADRAO.toFixed(2).replace('.',',')+'</span></div>'
     +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
-    +'<th>RE</th><th>Nome</th><th>Contrato</th><th>Base</th>'
-    +'<th>Elegíveis</th><th>Sem direito</th><th>Faltas</th><th>Férias</th><th>Afast.</th>'
-    +'<th>&lt;2h</th><th>Sem marc.</th><th>Incompl.</th><th>VT</th><th>Valor VT</th><th>VR</th><th>Valor VR</th><th>Total</th><th>Status</th>'
+    +rhBeneficioTh('re','RE')+rhBeneficioTh('nome','Nome')+rhBeneficioTh('contrato_nome','Contrato')+rhBeneficioTh('base_nome','Base')
+    +rhBeneficioTh('dias_elegiveis','Elegíveis','right')+rhBeneficioTh('dias_sem_direito','Sem direito','right')+rhBeneficioTh('faltas','Faltas','right')
+    +rhBeneficioTh('ferias','Férias','right')+rhBeneficioTh('afastamentos','Afast.','right')
+    +rhBeneficioTh('menos_2h','&lt;2h','right')+rhBeneficioTh('sem_marcacao','Sem marc.','right')+rhBeneficioTh('batida_incompleta','Incompl.','right')
+    +rhBeneficioTh('qtd_vt','VT','right')+rhBeneficioTh('valor_vt_est','Valor VT','right')
+    +rhBeneficioTh('qtd_vr','VR','right')+rhBeneficioTh('valor_vr_est','Valor VR','right')
+    +rhBeneficioTh('valor_total_est','Total','right')+rhBeneficioTh('status','Status')
     +'</tr></thead><tbody>'
     +(_rhBen.carregando?'<tr><td colspan="18" style="padding:1.5rem;text-align:center;color:#aaa">Carregando…</td></tr>'
       :(rows||'<tr><td colspan="18" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma apuração nesta competência. Clique em Calcular apuração.</td></tr>'))
@@ -93869,6 +94224,42 @@ function rhRemCarregar(){
 function rhRemReset(){ _rhRemCarregado=false; return rhRemCarregar(); }
 function rhRemBenefsDoPiso(pisoId){
   return (_rhRemBenefs||[]).filter(function(b){return String(b.piso_id)===String(pisoId) && b.ativo!==false;});
+}
+async function rhRemAplicarVrPadraoTodos(){
+  var valor=RH_BEN_VR_VALOR_PADRAO;
+  if(typeof rhRemCarregar==='function') await rhRemCarregar();
+  var pisos=(_rhRemPisos||[]).filter(function(p){ return p.ativo!==false; });
+  if(!pisos.length){
+    if(typeof progShowToast==='function') progShowToast('Nenhum piso cadastrado em RH → Pisos e Benefícios.','erro');
+    return;
+  }
+  var ok=0, falha=0;
+  for(var i=0;i<pisos.length;i++){
+    var p=pisos[i];
+    var exist=(_rhRemBenefs||[]).find(function(b){ return String(b.piso_id)===String(p.id) && b.tipo==='vale_refeicao'; });
+    var payload={piso_id:p.id, tipo:'vale_refeicao', regra:'pat_valor_dia', valor:valor, percentual:null, dias_mes:22, ativo:true};
+    if(DEMO){
+      if(exist) Object.assign(exist, payload);
+      else _rhRemBenefs.push(Object.assign({id:'bvr'+Date.now()+i}, payload));
+      ok++;
+      continue;
+    }
+    if(exist && exist.id){
+      var up=await sbUpdate('rh_remuneracao_piso_beneficios', payload, 'id=eq.'+exist.id);
+      if(up) ok++; else falha++;
+    } else {
+      var ins=await sbInsert('rh_remuneracao_piso_beneficios', payload);
+      if(ins && ins[0]) ok++; else falha++;
+    }
+  }
+  if(!DEMO && typeof rhRemReset==='function') await rhRemReset();
+  rhBeneficioAplicarEstimativas(_rhBen.lista||[]);
+  rhBeneficioRender();
+  if(typeof progShowToast==='function'){
+    progShowToast(falha
+      ?('VR aplicado em '+ok+' piso(s); '+falha+' falha(s).')
+      :('VR R$ '+valor.toFixed(2).replace('.',',')+' cadastrado em '+ok+' piso(s). Recalcule a apuração se necessário.'));
+  }
 }
 function rhRemMatchPiso(cargo, funcao, contratoId){
   cargo=String(cargo||'').trim(); funcao=String(funcao||'').trim();
