@@ -6950,23 +6950,26 @@ async function carregarModuloObras(){
 // ── Módulo DIÁRIO: últimos 60 dias — carregado ao acessar programação/diário ─
 async function carregarModuloDiario(){
   if(_modDiario)return;
-  _modDiario=true;
-  if(DEMO)return;
+  if(window._modDiarioPromise) return window._modDiarioPromise;
+  if(DEMO){ _modDiario=true; return; }
+  window._modDiarioPromise=(async function(){
+  try{
   var d60=_diasAtras(60),d7=_diasAtras(7);
+  var soft=function(p){ return Promise.resolve(p).catch(function(){return[];}); };
   var res=await Promise.all([
-    sbFetch('composicao_dia',{order:'data.desc',filters:['data=gte.'+d60]}),
-    sbFetch('sessoes_disponibilidade',{order:'data.desc',filters:['data=gte.'+d60]}),
-    sbFetch('plpt_sessoes',{order:'data.desc',filters:['data=gte.'+d60]}),
-    sbFetch('ordens_diario',{order:'data.desc',filters:['data=gte.'+d60]}),
-    sbFetch('sol_composicao',{filters:['status=eq.Pendente']}),
-    sbFetch('turnos_abertos',{order:'data.desc',filters:['data=gte.'+d7]}),
-    sbFetch('aprs_registradas',{order:'data.desc',filters:['data=gte.'+d7]}),
-    sbFetch('campo_baixas_materiais',{order:'criado_em.desc',filters:['data=gte.'+d7],limit:2000}),
-    sbFetch('frotas_veiculos',{filters:['status=neq.Inativo'],order:'placa',limit:3000}).catch(function(){return[];}),
-    sbFetch('alm_veiculo_kit_materiais',{order:'tipo_operacional.asc,descricao_material.asc',limit:5000}).catch(function(){return[];}),
-    sbFetch('campo_veiculo_checklists',{order:'data.desc,criado_em.desc',filters:['data=gte.'+d7],limit:300}).catch(function(){return[];}),
-    sbFetch('campo_alertas_operacionais',{order:'criado_em.desc',filters:['data=gte.'+d7,'status=eq.aberto'],limit:100}).catch(function(){return[];}),
-    sbFetch('campo_solicitacoes_materiais',{order:'criado_em.desc',filters:['data=gte.'+d7],limit:300}).catch(function(){return[];}),
+    soft(sbFetch('composicao_dia',{order:'data.desc',filters:['data=gte.'+d60]})),
+    soft(sbFetch('sessoes_disponibilidade',{order:'data.desc',filters:['data=gte.'+d60]})),
+    soft(sbFetch('plpt_sessoes',{order:'data.desc',filters:['data=gte.'+d60]})),
+    soft(sbFetch('ordens_diario',{order:'data.desc',filters:['data=gte.'+d60]})),
+    soft(sbFetch('sol_composicao',{filters:['status=eq.Pendente']})),
+    soft(sbFetch('turnos_abertos',{order:'data.desc',filters:['data=gte.'+d7]})),
+    soft(sbFetch('aprs_registradas',{order:'data.desc',filters:['data=gte.'+d7]})),
+    soft(sbFetch('campo_baixas_materiais',{order:'criado_em.desc',filters:['data=gte.'+d7],limit:2000})),
+    soft(sbFetch('frotas_veiculos',{filters:['status=neq.Inativo'],order:'placa',limit:3000})),
+    soft(sbFetch('alm_veiculo_kit_materiais',{order:'tipo_operacional.asc,descricao_material.asc',limit:5000})),
+    soft(sbFetch('campo_veiculo_checklists',{order:'data.desc,criado_em.desc',filters:['data=gte.'+d7],limit:300})),
+    soft(sbFetch('campo_alertas_operacionais',{order:'criado_em.desc',filters:['data=gte.'+d7,'status=eq.aberto'],limit:100})),
+    soft(sbFetch('campo_solicitacoes_materiais',{order:'criado_em.desc',filters:['data=gte.'+d7],limit:300})),
   ]);
   if(res[0]&&res[0].length){
     var _portFlags={};
@@ -7002,6 +7005,11 @@ async function carregarModuloDiario(){
   if(res[10]) _dbChecklistsCampo=res[10]||[];
   if(res[11]) _dbAlertasCampo=res[11]||[];
   if(res[12]) _dbSolicitacoesCampo=res[12]||[];
+  }catch(eDiario){ console.error('[diario] carga parcial/erro', eDiario); }
+  finally{ _modDiario=true; }
+  })();
+  try{ await window._modDiarioPromise; }
+  finally{ window._modDiarioPromise=null; }
 }
 
 function almMergeMovimentacoes(arrays){
@@ -7043,7 +7051,24 @@ function _precisaModulo(modName,cb){
   var spinEl=document.createElement('div');
   spinEl.id=spinId;spinEl.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a18;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;opacity:.9';
   spinEl.textContent='Carregando...';document.body.appendChild(spinEl);
-  loader[modName]().then(function(){var el=document.getElementById(spinId);if(el)el.remove();cb();}).catch(function(e){console.error('Erro módulo',modName,e);var el=document.getElementById(spinId);if(el)el.remove();cb();});
+  var done=false;
+  function finish(){
+    if(done) return;
+    done=true;
+    var el=document.getElementById(spinId);if(el)el.remove();
+    try{ cb(); }catch(eCb){ console.error('Erro callback módulo',modName,eCb); }
+  }
+  // Evita spinner eterno se a rede travar
+  var to=setTimeout(function(){
+    console.warn('[módulo]',modName,'timeout — seguindo sem aguardar');
+    finish();
+  },25000);
+  Promise.resolve(loader[modName]()).then(function(){
+    clearTimeout(to); finish();
+  }).catch(function(e){
+    console.error('Erro módulo',modName,e);
+    clearTimeout(to); finish();
+  });
 }
 
 // ── carregarDados: mantido por compatibilidade — chama base + diário (TMA) ──
@@ -40748,10 +40773,19 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.972',
-  data:   '08/09/2026',
-  build:  '20260908-2235',
+  numero: '7.9.975',
+  data:   '09/09/2026',
+  build:  '20260909-0820',
   log: [
+    {v:'7.9.975', d:'09/09/2026', itens:[
+      'Frotas: deixa de consultar frotas_motorista_condutas ao abrir Portaria/Frotas (evita 404 em loop). Carga só na tela Conduta; se a tabela não existir, avisa uma vez e para de tentar.',
+    ]},
+    {v:'7.9.974', d:'09/09/2026', itens:[
+      'Portaria: corrige ReferenceError dataComp is not defined em chipEquipe (quebrava a lista de equipes/veículos).',
+    ]},
+    {v:'7.9.973', d:'09/09/2026', itens:[
+      'Portaria: corrige tela travada em “Carregando…” — remove HTML duplicado de Frotas/Portaria no index.html; timeout no spinner de módulo; busca de veículos programados com fallback e sem loop infinito.',
+    ]},
     {v:'7.9.972', d:'08/09/2026', itens:[
       'RH-SEL-1A completo: vaga com cargo_id, filial, contrato, gestores, tipo, datas, qtd planejada/preenchida, matriz RH-1B só leitura, bloqueio de ABERTA sem matriz aprovada. SQL sql_rh_selecao_vagas_fase_sel1a.sql. Sem portal/QR/ficha/testes/admissão.',
     ]},
@@ -78537,7 +78571,7 @@ function frtInit(subpage){
     else if(subpage==='frotas-auditoria') frtAuditoriaRender();
     else if(subpage==='frotas-integracoes') frtIntegracoesRender();
 
-    // Carregar demais tabelas em background
+    // Carregar demais tabelas em background (condutas: só sob demanda em fcdEnsureLoaded)
     Promise.all([
       p('frotas_portaria_saidas',{order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
       frtFetchManutencoesCompleto(),
@@ -78547,7 +78581,6 @@ function frtInit(subpage){
       p('frotas_documentos',{order:'validade'}),
       p('frotas_riscos_auditoria',{filters:['status=neq.Resolvido'],order:'criado_em.desc'}),
       p('frotas_motorista_documentos',{order:'atualizado_em.desc',limit:3000}),
-      p('frotas_motorista_condutas',{order:'data_ocorrencia.desc',limit:2000}),
       p('frotas_veiculo_implementos',{order:'criado_em.asc',limit:5000}),
       p('frotas_implemento_tipos',{order:'nome.asc',limit:500}),
     ]).then(function(res){
@@ -78559,13 +78592,13 @@ function frtInit(subpage){
       if(res[5]&&res[5].length) frt_documentos  = (typeof fdocNormRows==='function'?fdocNormRows(res[5]):res[5]);
       if(res[6]&&res[6].length) frt_riscos      = res[6];
       if(res[7]){ frt_motorista_docs = res[7]||[]; _fmdLoaded=true; }
-      if(res[8]){ frt_condutas = res[8]||[]; _fcdLoaded=true; if(subpage==='frotas-conduta') fcdRender(); }
-      if(res[9]){ frt_implementos = res[9]||[]; _fviLoaded=true; }
-      if(res[10]){ frt_impl_tipos_extra = (res[10]||[]).filter(function(t){return t.ativo!==false;}).map(function(t){return t.nome;}); }
+      if(res[8]){ frt_implementos = res[8]||[]; _fviLoaded=true; }
+      if(res[9]){ frt_impl_tipos_extra = (res[9]||[]).filter(function(t){return t.ativo!==false;}).map(function(t){return t.nome;}); }
       // Re-renderizar dashboard se estiver nele (agora com dados completos)
       if(subpage==='frotas-dashboard') frtDashRender();
       if(subpage==='frotas-veiculos') frtVeiculosRender();
       if(subpage==='frotas-manutencoes') frtManutRender();
+      if(subpage==='frotas-conduta') fcdEnsureLoaded().then(function(){ fcdRender(); });
       // Re-renderizar aba Retorno se estiver visível
       var _retEl = document.getElementById('port-aba-retorno');
       if(_retEl && _retEl.style.display !== 'none') portRenderRetorno();
@@ -79730,21 +79763,33 @@ function portRenderEquipesDia(){
 
   // Carregar veículos programados se não estiver em memória
   if(!DEMO && typeof _progVeiculos !== 'undefined'){
+    if(!portRenderEquipesDia._veicBuscado) portRenderEquipesDia._veicBuscado={};
     var temVeicData = Object.keys(_progVeiculos).some(function(k){return k.endsWith('_'+data);});
-    if(!temVeicData){
-      sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data]}).then(function(rows){
-        if(rows&&rows.length){
-          rows.forEach(function(r){
-            if(r.equipe_id && r.placa){
-              _progVeiculos[r.equipe_id+'_'+data] = {
-                placa: r.placa, modelo: r.modelo||'',
-                veiculo_id: r.veiculo_id||null
-              };
-            }
-          });
-          portRenderEquipesDia(); // re-render with vehicles
-        }
-      }).catch(function(){});
+    var jaBuscouVeic = !!portRenderEquipesDia._veicBuscado[data];
+    if(!temVeicData && !jaBuscouVeic && !portRenderEquipesDia._veicLoading){
+      portRenderEquipesDia._veicLoading=true;
+      var _veicKey=data;
+      function _aplicarVeic(rows){
+        (rows||[]).forEach(function(r){
+          if(r && r.equipe_id && r.placa && !r.deleted_at){
+            _progVeiculos[r.equipe_id+'_'+_veicKey] = {
+              placa: r.placa, modelo: r.modelo||'',
+              veiculo_id: r.veiculo_id||null
+            };
+          }
+        });
+        portRenderEquipesDia._veicBuscado[_veicKey]=true;
+      }
+      sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data,'deleted_at=is.null'],limit:3000}).then(function(rows){
+        _aplicarVeic(rows); portRenderEquipesDia._veicLoading=false; portRenderEquipesDia();
+      }).catch(function(){
+        sbFetch('prog_veiculos_dia',{filters:['data=eq.'+data],limit:3000}).then(function(rows){
+          _aplicarVeic(rows); portRenderEquipesDia._veicLoading=false; portRenderEquipesDia();
+        }).catch(function(){
+          portRenderEquipesDia._veicBuscado[_veicKey]=true;
+          portRenderEquipesDia._veicLoading=false; portRenderEquipesDia();
+        });
+      });
     }
   }
 
@@ -79790,10 +79835,20 @@ function portRenderEquipesDia(){
     if(precisa){
       portRenderEquipesDia._loading=true;
       wrap.innerHTML='<div style="padding:1.5rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando programação de '+(typeof fmtD==='function'?fmtD(data):data)+'...</div>';
+      var _loadTo=setTimeout(function(){
+        if(portRenderEquipesDia._loading){
+          console.warn('[portaria] timeout ao buscar programação do dia', data);
+          portRenderEquipesDia._loading=false;
+          if(window._portEqDiaBuscado) window._portEqDiaBuscado['p:'+data]=true;
+          portRenderEquipesDia();
+        }
+      },20000);
       portEnsureDadosPortariaDia(data).then(function(){
+        clearTimeout(_loadTo);
         portRenderEquipesDia._loading=false;
         portRenderEquipesDia();
       }).catch(function(){
+        clearTimeout(_loadTo);
         portRenderEquipesDia._loading=false;
         portRenderEquipesDia();
       });
@@ -79883,14 +79938,15 @@ function portRenderEquipesDia(){
 
   function chipEquipe(item, cor, icon){
     var eq=item.eq, comp=item.comp, saida=item.saida;
+    var dataComp=(comp && portDiaISO(comp.data)) || data;
     var ids=comp?parseColabIds(comp.colaborador_ids).filter(Boolean):[];
     var nomes=ids.map(function(id){
       var col=colaboradores.find(function(x){return x.id===id;}); return col?col.nome:'?';
     });
     var mot=portResolverMotoristaComp(comp);
-    var _pvKey=eq.id+'_'+data;
-    var _pv=typeof _progVeiculos!=='undefined'?(_progVeiculos[_pvKey]||null):null;
-    var placaProg=portPlacaProgramada(eq.id, dataComp||data) || (comp&&comp.placa) || (_pv&&_pv.placa) || '';
+    var _pvKey=eq.id+'_'+dataComp;
+    var _pv=typeof _progVeiculos!=='undefined'?(_progVeiculos[_pvKey]||_progVeiculos[eq.id+'_'+data]||null):null;
+    var placaProg=portPlacaProgramada(eq.id, dataComp) || (comp&&comp.placa) || (_pv&&_pv.placa) || '';
     var placaSaida=saida?saida.placa:'';
     var placaDivergiu=!!(placaProg && placaSaida && portNormPlaca(placaProg)!==portNormPlaca(placaSaida));
     var placa=placaSaida||placaProg;
@@ -79914,7 +79970,7 @@ function portRenderEquipesDia(){
       +'</div>'
       +(placa?'<span style="font-family:monospace;font-size:11px;background:'+(placaDivergiu?'#FEF3E2':'#f5f5f3')+';border-radius:4px;padding:2px 7px;font-weight:600;color:'+(placaDivergiu?'#854F0B':'inherit')+'">'+escHtml(placa)+'</span>'+(modelo?' <span style="font-size:10px;color:#888">'+escHtml(modelo)+'</span>':'')+(placaDivergiu?'<span title="Placa liberada diferente da programada" style="font-size:9px;color:#854F0B;font-weight:700;margin-left:4px">⚠ prog. '+escHtml(placaProg)+'</span>':''):'') 
       +(saida&&saida.data_saida?'<span style="font-size:10px;color:#555;white-space:nowrap;margin-left:4px">⏰ '+new Date(saida.data_saida).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'</span>':'')
-      +(item.comp&&!item.saida&&!item.comp._portaria_liberado?(function(){var _hasM=typeof window._portReqMateriais!=='undefined'&&window._portReqMateriais.some(function(r){return r.equipe_id===eq.id&&(r.status==='Aprovada'||r.status==='Separação');});return (_hasM?'<span style="background:#FEF3E2;color:#854F0B;font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;margin-left:3px">📦 MAT</span>':'')+'<button class="btn btn-sm" onclick="portAbrirLiberacaoEquipe(this.dataset.eq,this.dataset.dt)" data-eq="'+eq.id+'" data-dt="'+data+'" style="font-size:10px;color:#3B6D11;border-color:#3B6D11;white-space:nowrap;margin-left:4px">Liberar ✅</button>';})():'')
+      +(item.comp&&!item.saida&&!item.comp._portaria_liberado?(function(){var _hasM=typeof window._portReqMateriais!=='undefined'&&window._portReqMateriais.some(function(r){return r.equipe_id===eq.id&&(r.status==='Aprovada'||r.status==='Separação');});return (_hasM?'<span style="background:#FEF3E2;color:#854F0B;font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;margin-left:3px">📦 MAT</span>':'')+'<button class="btn btn-sm" onclick="portAbrirLiberacaoEquipe(this.dataset.eq,this.dataset.dt)" data-eq="'+eq.id+'" data-dt="'+escHtml(dataComp||data)+'" style="font-size:10px;color:#3B6D11;border-color:#3B6D11;white-space:nowrap;margin-left:4px">Liberar ✅</button>';})():'')
       +'</div>'
       +(mot?'<div style="font-size:10px;color:#185FA5;padding-left:23px">🚗 '+escHtml(mot.nome||'')+(typeof fmdAvaliarCnh==='function'?fmdBadgeHtml(fmdAvaliarCnh(mot)):'')+'</div>':'')
       +(nomes.length?'<div style="font-size:11px;color:#555;padding-left:23px;line-height:1.7">'+nomes.map(function(n){return escHtml(n);}).join(' &nbsp;·&nbsp; ')+'</div>':'')
@@ -84276,9 +84332,23 @@ var FCD_TIPO_COR = {Elogio:'#3B6D11',Atenção:'#854F0B',Negativo:'#A32D2D'};
 
 function fcdEnsureLoaded(){
   if(DEMO){_fcdLoaded=true;return Promise.resolve(frt_condutas||[]);}
+  if(_fcdLoaded) return Promise.resolve(frt_condutas||[]);
+  if(window._fcdTabelaAusente){
+    _fcdLoaded=true; frt_condutas=frt_condutas||[];
+    return Promise.resolve(frt_condutas);
+  }
   return sbFetch('frotas_motorista_condutas',{order:'data_ocorrencia.desc',limit:2000}).then(function(rows){
+    // sbFetch retorna null em 404/erro — não ficar reconsultando a cada abertura
+    if(rows==null){
+      window._fcdTabelaAusente=true;
+      console.warn('[Frotas Conduta] Tabela ausente. Rode SQLS/sql_frotas_motorista_condutas.sql no Supabase.');
+      frt_condutas=[]; _fcdLoaded=true; return frt_condutas;
+    }
     frt_condutas=rows||[]; _fcdLoaded=true; return frt_condutas;
-  }).catch(function(){ frt_condutas=frt_condutas||[]; _fcdLoaded=true; return frt_condutas; });
+  }).catch(function(){
+    window._fcdTabelaAusente=true;
+    frt_condutas=frt_condutas||[]; _fcdLoaded=true; return frt_condutas;
+  });
 }
 
 function fcdRender(){
@@ -131575,6 +131645,12 @@ async function lcAnalisarContrato(){
 <!-- Bottom Navigation Mobile/Tablet -->
 <nav id="bottom-nav" role="navigation" aria-label="Navegação principal"></nav>
 
+  <!-- Auto-refresh indicator -->
+  <div id="auto-refresh-indicator" style="display:none;position:fixed;bottom:70px;right:12px;z-index:9999;background:#1a1a18ee;color:#fff;font-size:10px;padding:4px 10px;border-radius:20px;align-items:center;gap:5px;pointer-events:none;box-shadow:0 2px 8px #0004">
+    <span id="ar-dot" style="width:6px;height:6px;background:#4CAF50;border-radius:50%;display:inline-block"></span>
+    <span>Auto-refresh ativo</span>
+  </div>
+
 <script>
 // ══════════════════════════════════════════════════════════
 // PWA — CENA ERP — Inicialização e Mobile
@@ -135451,1534 +135527,5 @@ function comgasRemoverFoto(ncId, idx) {
 
 </script>
 
-
-<!-- ASSISTENTE CENA IA -->
-<div id="cena-ajuda-panel" style="position:fixed;bottom:20px;right:20px;width:380px;max-height:600px;background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.18);z-index:9999;display:none;flex-direction:column;overflow:hidden;border:.5px solid #e0dfd8">
-  <!-- Header do chat -->
-  <div style="background:#1a1a18;padding:14px 16px;display:flex;align-items:center;gap:10px">
-    <div style="width:34px;height:34px;background:linear-gradient(135deg,#fff2,#fff1);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px">🤖</div>
-    <div>
-      <div style="color:#fff;font-weight:600;font-size:14px">Assistente CENA</div>
-      <div style="color:#ffffff66;font-size:11px" id="cena-ajuda-status">Pronto para ajudar</div>
-    </div>
-    <button onclick="cenaAjudaFechar()" style="margin-left:auto;background:transparent;border:none;color:#ffffff88;font-size:18px;cursor:pointer;line-height:1">×</button>
-  </div>
-  <!-- Mensagens -->
-  <div id="cena-ajuda-msgs" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;max-height:420px;min-height:280px">
-    <!-- Mensagem inicial -->
-    <div style="display:flex;gap:8px;align-items:flex-start">
-      <div style="width:28px;height:28px;background:#1a1a18;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">🤖</div>
-      <div style="background:#f5f5f3;border-radius:12px 12px 12px 2px;padding:10px 14px;font-size:13px;color:#1a1a18;max-width:280px;line-height:1.5">
-        Olá! Sou o assistente do CENA. Posso te ajudar com dúvidas sobre qualquer módulo do sistema. O que você precisa?
-        <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:5px">
-          <button onclick="cenaAjudaPerguntar('Como programar equipes?')" style="background:#fff;border:.5px solid #e0dfd8;border-radius:20px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555">Programar equipes</button>
-          <button onclick="cenaAjudaPerguntar('Como cadastrar um projeto?')" style="background:#fff;border:.5px solid #e0dfd8;border-radius:20px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555">Criar projeto</button>
-          <button onclick="cenaAjudaPerguntar('Como registrar entrada de material?')" style="background:#fff;border:.5px solid #e0dfd8;border-radius:20px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555">Entrada de material</button>
-          <button onclick="cenaAjudaPerguntar('Como enviar projeto para programação?')" style="background:#fff;border:.5px solid #e0dfd8;border-radius:20px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555">Programar projeto</button>
-        </div>
-      </div>
-    </div>
-  </div>
-  <!-- Input -->
-  <div style="padding:12px 14px;border-top:.5px solid #f0efe8;display:flex;gap:8px">
-    <input id="cena-ajuda-input" class="inp" placeholder="Digite sua dúvida..." style="flex:1;font-size:13px" 
-      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();cenaAjudaEnviar();}"/>
-    <button onclick="cenaAjudaEnviar()" id="cena-ajuda-send" style="background:#1a1a18;color:#fff;border:none;border-radius:8px;padding:0 14px;cursor:pointer;font-size:16px">➤</button>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════
-     MÓDULO FROTAS — HTML
-═══════════════════════════════════════════════════════════ -->
-
-<!-- DASHBOARD FROTAS -->
-<div id="pg-frotas-dashboard" class="hidden">
-  <div style="background:#1a1a18;color:#fff;padding:1rem 1.5rem;border-radius:10px;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-    <div>
-      <div style="font-weight:700;font-size:18px">🚗 Dashboard de Frotas</div>
-      <div style="font-size:12px;opacity:.6" id="frt-dash-sub">Visão geral da frota</div>
-    </div>
-    <div style="display:flex;gap:8px">
-      <select class="inp" id="frt-dash-cont" style="background:#fff;color:#1a1a18;border-color:#e0dfd8;width:180px" onchange="frtDashRender()">
-        <option value="">Todos contratos</option>
-      </select>
-      <button class="btn" style="background:transparent;color:#fff;border-color:#ffffff44" onclick="frtDashRender()">🔄 Atualizar</button>
-    </div>
-  </div>
-  <div id="frt-dash-metricas" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:1rem"></div>
-  <div style="display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:1rem;margin-bottom:1rem">
-    <div class="card"><div class="ch"><span class="ct">Status da Frota</span></div><div id="frt-dash-status" style="padding:1rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">Alertas Ativos</span></div><div id="frt-dash-alertas" style="padding:.75rem;max-height:300px;overflow-y:auto"></div></div>
-  </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem">
-    <div class="card"><div class="ch"><span class="ct">⛽ Combustível (mês)</span></div><div id="frt-dash-comb" style="padding:1rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">🔧 Manutenções</span></div><div id="frt-dash-manut" style="padding:1rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">📋 Documentos</span></div><div id="frt-dash-docs" style="padding:1rem"></div></div>
-  </div>
-</div>
-
-<!-- VEÍCULOS -->
-<div id="pg-frotas-veiculos" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🚗 Veículos</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <input class="inp" id="frt-v-busca" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="frtVeiculosRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtVeiculosRender)"/>
-        <select class="inp" id="frt-v-modelo" style="width:160px" onchange="frtVeiculosRender()">
-          <option value="">Todos os modelos</option>
-        </select>
-        <select class="inp" id="frt-v-contrato" style="width:180px" onchange="frtVeiculosRender()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <select class="inp" id="frt-v-status" style="width:160px" onchange="frtVeiculosRender()">
-          <option value="">Todos os status</option>
-          <option>Disponível</option><option>Em uso</option><option>Reservado</option><option>Solicitação de manutenção</option><option>Em análise pela frota</option><option>Bloqueado</option><option>Em manutenção</option><option>Aguardando peça</option><option>Aguardando oficina</option><option>Liberado provisoriamente</option><option>Em quarentena</option><option>Disponível após manutenção</option><option>Baixado</option>
-        </select>
-        <select class="inp" id="frt-v-tipo" style="width:140px" onchange="frtVeiculosRender()">
-          <option value="">Todos os tipos</option>
-          <option>Carro leve</option><option>Utilitário</option><option>Caminhonete</option><option>Caminhão</option>
-          <option>Caminhão cesto</option><option>Caminhão munck</option><option>Van</option>
-          <option>Motocicleta</option><option>Outro</option>
-        </select>
-        <select class="inp" id="frt-v-posse" style="width:140px" onchange="frtVeiculosRender()">
-          <option value="">Todas as posses</option>
-          <option>Próprio</option><option>Alugado</option><option>Comodato</option><option>Terceiro</option><option>Outro</option>
-        </select>
-        <button class="btn port-btn-editar-veic" onclick="frtAbrirVeicAprovacoesPendentes()" title="Aprovações de placa/status">🔐 Aprovações <span class="frt-aprov-badge" style="display:none;min-width:16px;height:16px;border-radius:8px;background:#A32D2D;color:#fff;font-size:10px;align-items:center;justify-content:center;padding:0 4px;margin-left:4px"></span></button>
-        <button class="btn btn-pri port-btn-editar-veic" onclick="frtAbrirNovoVeiculo()">+ Novo veículo</button>
-      </div>
-    </div>
-    <div id="frt-v-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Tipo oper.</th><th>Posse</th>
-      <th>Contrato</th><th>KM atual</th><th>Score</th><th>Status</th><th>Alertas</th><th>Pneus</th><th></th>
-    </tr></thead>
-    <tbody id="frt-v-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- PORTARIA -->
-<div id="pg-frotas-portaria" class="hidden">
-
-  <!-- Seletor de Portaria Ativa -->
-  <div style="display:flex;align-items:center;gap:10px;background:#1a1a18;border-radius:10px;padding:10px 16px;margin-bottom:1rem;flex-wrap:wrap">
-    <span style="font-size:12px;font-weight:600;color:#aaa;white-space:nowrap">🏠 Operando em:</span>
-    <div id="port-seletor-ativa" style="flex:1;min-width:200px"></div>
-    <span id="port-ativa-label" style="font-size:11px;color:#3B6D11;background:#EAF3DE;border-radius:6px;padding:3px 10px;display:none"></span>
-  </div>
-
-  <!-- Abas da Portaria -->
-  <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
-    <button class="port-tab-btn" id="port-tab-equipes"   onclick="portMostrarAba('equipes')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">🚦 Saída</button>
-    <!-- port-tab-saida hidden: merged into equipes tab -->
-    <button class="port-tab-btn" id="port-tab-retorno"   onclick="portMostrarAba('retorno')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🔄 Retorno</button>
-    <button class="port-tab-btn" id="port-tab-liberacao" onclick="portMostrarAba('liberacao')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🆔 Visitantes</button>
-    <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
-    <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
-    <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
-  </div>
-
-  <!-- ABA: LIBERAÇÃO -->
-  <div id="port-aba-liberacao" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">🆔 Controle de Acesso — Visitantes</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input type="date" class="inp" id="lib-data" style="width:145px" onchange="portRenderLiberacao()"/>
-          <input type="text" class="inp" id="lib-busca" placeholder="🔍 Nome ou documento..." style="width:180px" oninput="portRenderLiberacao()"/>
-          <select class="inp" id="lib-status-fil" style="width:140px" onchange="portRenderLiberacao()">
-            <option value="">Todos</option>
-            <option value="Aguardando">Aguardando</option>
-            <option value="Em visita">Em visita</option>
-            <option value="Saiu">Saiu</option>
-          </select>
-          <button class="btn btn-pri" onclick="portNovaVisita()">+ Registrar Visitante</button>
-        </div>
-      </div>
-      <!-- Resumo do dia -->
-      <div id="lib-resumo" style="display:flex;gap:8px;flex-wrap:wrap;padding:.5rem 0;border-bottom:.5px solid #f0efe8;margin-bottom:.75rem"></div>
-    </div>
-    <!-- Tabela de visitantes -->
-    <div style="overflow-x:auto">
-      <table class="tbl" style="font-size:12px">
-        <thead><tr>
-          <th style="width:50px">Foto</th>
-          <th>Visitante</th>
-          <th>Documento</th>
-          <th>Destino</th>
-          <th>Motivo</th>
-          <th>Entrada</th>
-          <th>Saída</th>
-          <th>Status</th>
-          <th></th>
-        </tr></thead>
-        <tbody id="lib-tbody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ABA: EQUIPES DO DIA -->
-  <div id="port-aba-equipes">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📋 Programação do Dia</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input type="date" class="inp" id="port-eq-data" style="width:145px" onchange="portRenderEquipesDia()"/>
-          <select class="inp" id="port-eq-filial" style="width:180px" onchange="portRenderEquipesDia()">
-            <option value="">Todas as filiais</option>
-          </select>
-          <select class="inp" id="port-eq-contrato" style="width:180px" onchange="portRenderEquipesDia()">
-            <option value="">Todos os contratos</option>
-          </select>
-          <input class="inp" id="port-eq-busca" placeholder="🔍 Equipe, placa, motorista, contrato..." style="width:220px" oninput="portRenderEquipesDia()"/>
-          <button class="btn btn-pri" onclick="portMostrarAba('saida')">🚦 Controle de Saída</button>
-        </div>
-      </div>
-    </div>
-    <div id="port-eq-lista"></div>
-  </div>
-
-  <!-- ABA: CONTROLE DE SAÍDA -->
-  <div id="port-aba-saida" style="display:none">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-
-      <!-- Painel de verificação -->
-      <div class="card">
-        <div class="ch"><span class="ct">🔍 Verificação de saída</span></div>
-        <div style="padding:.75rem 1rem">
-          <div class="fg" style="margin-bottom:.75rem">
-            <label style="font-size:11px;font-weight:500">Placa do veículo</label>
-            <div style="display:flex;gap:6px">
-              <input class="inp" id="port-chk-placa" style="font-family:monospace;font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:2px;flex:1" placeholder="EX: AAA-0A00" oninput="portVerificarPlaca()"/>
-              <button class="btn" onclick="portLimparVerificacao()" title="Limpar">✕</button>
-            </div>
-          </div>
-          <div id="port-chk-resultado" style="display:none"></div>
-        </div>
-      </div>
-
-      <!-- Saída rápida / autorização extra -->
-      <div class="card">
-        <div class="ch"><span class="ct">⚡ Saída rápida — Supervisores / Gestores</span></div>
-        <div style="padding:.75rem 1rem">
-          <div class="fg" style="margin-bottom:.75rem">
-            <label style="font-size:11px">Placa</label>
-            <input class="inp" id="port-rap-placa" style="font-family:monospace;font-size:14px;text-transform:uppercase;width:100%" placeholder="Placa do veículo"/>
-          </div>
-          <div class="fg" style="margin-bottom:.75rem">
-            <label style="font-size:11px">Usuário / Motorista</label>
-            <input class="inp" id="port-rap-usuario" style="width:100%" placeholder="Nome ou matrícula"/>
-          </div>
-          <div class="fg" style="margin-bottom:.75rem">
-            <label style="font-size:11px">Destino / O que vai fazer <span style="color:#A32D2D">*</span></label>
-            <textarea class="inp" id="port-rap-destino" style="width:100%;height:60px;resize:vertical" placeholder="Descreva o destino e a atividade a realizar..."></textarea>
-          </div>
-          <div class="fg" style="margin-bottom:.75rem">
-            <label style="font-size:11px">KM atual do veículo</label>
-            <input class="inp" type="number" id="port-rap-km" style="width:100%" placeholder="0"/>
-          </div>
-          <button class="btn btn-pri" onclick="portLiberar('rapido')" style="width:100%">✅ Liberar saída</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Aguardando liberação -->
-    <div class="card">
-      <div class="ch"><span class="ct" style="color:#854F0B">⏳ Aguardando liberação agora</span></div>
-      <div id="port-aguardando" style="padding:.75rem 1rem">
-        <div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">Nenhuma equipe aguardando saída.</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ABA: REGISTROS -->
-  <div id="port-aba-registros" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📋 Registros de Saída/Retorno</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <label style="font-size:11px;color:#888;white-space:nowrap">De:</label>
-          <input type="date" class="inp" id="frt-port-data-ini" style="width:140px" onchange="frtPortariaRender()"/>
-          <label style="font-size:11px;color:#888;white-space:nowrap">Até:</label>
-          <input type="date" class="inp" id="frt-port-data-fim" style="width:140px" onchange="frtPortariaRender()"/>
-          <input type="text" class="inp" id="frt-port-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px;text-transform:uppercase" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="frtPortariaRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtPortariaRender)"/>
-          <select class="inp" id="frt-port-status" style="width:140px" onchange="frtPortariaRender()">
-            <option value="">Todos status</option>
-            <option>Aguardando saída</option><option>Em campo</option><option>Retornado</option><option>Atrasado</option>
-          </select>
-          <select class="inp" id="frt-port-base" style="width:150px" onchange="frtPortariaRender()">
-            <option value="">Todas as bases</option>
-          </select>
-          <input type="text" class="inp" id="frt-port-equipe" placeholder="🔍 Equipe..." style="width:100px" oninput="frtPortariaRender()"/>
-          <select class="inp" id="frt-port-contrato" style="width:150px" onchange="frtPortariaRender()">
-            <option value="">Todos contratos</option>
-            <script>/* opts injected */</script>
-          </select>
-          <button class="btn" onclick="frtPortariaRenderLimpar()" style="font-size:11px;color:#888">✕ Limpar</button>
-          <button class="btn" onclick="frtPortariaAbrirRetorno()" style="color:#3B6D11;border-color:#3B6D11">↩ Registrar retorno</button>
-        </div>
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem" id="frt-port-metricas"></div>
-    <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-      <thead><tr>
-        <th>Placa</th><th>Modelo</th><th>Motorista</th><th>Equipe</th><th>Contrato</th>
-        <th>Base saída</th><th>Saída</th><th>Retorno</th><th>Prev. retorno</th><th>KM saída</th>
-        <th>Status</th><th>Alertas</th><th></th>
-      </tr></thead>
-      <tbody id="frt-port-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ABA: RESERVAS -->
-  <div id="port-aba-reservas" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📅 Reservas de Veículos</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input type="date" class="inp" id="rsv-fil-data" style="width:145px" onchange="portRenderReservas()"/>
-          <select class="inp" id="rsv-fil-status" style="width:145px" onchange="portRenderReservas()">
-            <option value="">Todos os status</option>
-            <option>Ativa</option><option>Em uso</option><option>Concluída</option><option>Cancelada</option>
-          </select>
-          <button class="btn btn-pri port-btn-nova-reserva" onclick="portNovaReserva()">+ Nova reserva</button>
-        </div>
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:1rem" id="rsv-metricas"></div>
-    <div style="overflow-x:auto"><table class="tbl">
-      <thead><tr>
-        <th>Placa</th><th>Veículo</th><th>Colaborador autorizado</th><th>Início</th><th>Fim</th><th>Justificativa</th><th>Status</th><th>Criado por</th><th></th>
-      </tr></thead>
-      <tbody id="rsv-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ABA: CONFIGURAÇÃO -->
-  <div id="port-aba-config" style="display:none">
-  </div>
-
-  <!-- ABA: RETORNO -->
-  <div id="port-aba-retorno" style="display:none"></div>
-
-</div>
-
-<!-- PROGRAMAÇÃO FROTAS -->
-<div id="pg-frotas-programacao" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">📅 Programação / Disponibilidade</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <input type="date" class="inp" id="frt-prog-data" style="width:145px" onchange="frtProgRender()"/>
-        <select class="inp" id="frt-prog-cont" style="width:180px" onchange="frtProgRender()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtAbrirNovaProgramacao()">+ Nova programação</button>
-      </div>
-    </div>
-  </div>
-  <div id="frt-prog-quadro" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1rem"></div>
-</div>
-
-
-<!-- CONTROLE DE PNEUS -->
-<div id="pg-frotas-pneus" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">⚫ Controle de Pneus</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-sm" id="pneu-tab-estoque" onclick="pneusAba('estoque')" style="background:#1a1a18;color:#fff">🗄 Estoque</button>
-        <button class="btn btn-sm" id="pneu-tab-veiculos" onclick="pneusAba('veiculos')">🚗 Por Veículo</button>
-        <button class="btn btn-sm" id="pneu-tab-movimentos" onclick="pneusAba('movimentos')">🔄 Movimentações</button>
-        <button class="btn btn-sm" id="pneu-tab-alertas" onclick="pneusAba('alertas')">⚠️ Alertas</button>
-        <button class="btn btn-sm" id="pneu-tab-relatorios" onclick="pneusAba('relatorios')">📈 Relatórios</button>
-        <button class="btn btn-pri" onclick="pneusNovoPneu()">+ Cadastrar Pneu</button>
-      </div>
-    </div>
-    <!-- Métricas rápidas -->
-    <div id="pneu-fogo-card" style="padding:.75rem .75rem 0"></div>
-    <div id="pneu-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <!-- Alertas rápidos -->
-  <div id="pneu-alertas-banner" style="margin-bottom:1rem"></div>
-  <!-- Conteúdo da aba -->
-  <div id="pneu-conteudo"></div>
-</div>
-
-<!-- MANUTENÇÕES -->
-<div id="pg-frotas-manutencoes" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🔧 Manutenções</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <input class="inp" id="frt-man-busca" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="frtManutRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtManutRender)"/>
-        <select class="inp" id="frt-man-tipo" style="width:150px" onchange="frtManutRender()">
-          <option value="">Todos os tipos</option>
-          <option>Preventiva</option><option>Corretiva</option><option>Pneus</option>
-          <option>Elétrica</option><option>Freios</option><option>Motor</option><option>Outros</option>
-        </select>
-        <select class="inp" id="frt-man-status" style="width:150px" onchange="frtManutRender()">
-          <option value="">Todos</option>
-          <option>Solicitada</option><option>Em Análise</option><option>Aprovada</option>
-          <option>Requisição</option><option>Aguardando Peça</option><option>Em Execução</option>
-          <option>Concluída</option><option>Disponível</option><option>Negada</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtAbrirNovaManutencao()">+ Nova solicitação</button>
-      </div>
-    </div>
-    <div id="frt-man-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Descrição / Sintoma</th>
-      <th>Abertura</th><th>Prev. Retorno</th><th>Status</th><th style="text-align:right">Ação</th>
-    </tr></thead>
-    <tbody id="frt-man-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- COMBUSTÍVEL -->
-<div id="pg-frotas-combustivel" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">⛽ Combustível</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <input type="month" class="inp" id="frt-comb-mes" style="width:145px" onchange="frtCombRender()"/>
-        <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="frt-comb-todos" onchange="frtCombRender()"/> Todos os meses</label>
-        <select class="inp" id="frt-comb-cont" style="width:180px" onchange="frtCombRender()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <input class="inp" id="frt-comb-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" oninput="frtCombRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtCombRender)" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha"/>
-        <input class="inp" id="frt-comb-motorista" placeholder="Motorista..." style="width:150px" oninput="frtCombRender()" title="Filtrar por motorista"/>
-        <button class="btn btn-pri" onclick="frtAbrirNovoAbastecimento()">+ Abastecimento</button>
-        <button class="btn" onclick="frtImportarCombustivel()" style="color:#3B6D11;border-color:#3B6D11">📊 Importar Excel</button>
-        <button class="btn" onclick="frtImportarTicketLog()" style="color:#185FA5;border-color:#185FA5">📥 Importar Ticket Log</button>
-      </div>
-    </div>
-    <div id="frt-comb-metricas" style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Data</th><th>Placa</th><th>Modelo</th><th>Motorista</th><th>Contrato</th>
-      <th>Combustível</th><th style="text-align:right">Litros</th>
-      <th style="text-align:right">R$/L</th><th style="text-align:right">Total</th>
-      <th style="text-align:right" title="Odômetro no abastecimento">KM</th>
-      <th style="text-align:right" title="Odômetro do abastecimento anterior">KM ant.</th>
-      <th style="text-align:right" title="KM atual − KM anterior">KM rod.</th>
-      <th style="text-align:right" title="(KM atual − KM anterior) ÷ litros">Média km/L</th>
-      <th>Posto</th><th>Origem</th>
-    </tr></thead>
-    <tbody id="frt-comb-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- MULTAS -->
-<div id="pg-frotas-multas" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">📋 Multas</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <select class="inp" id="frt-mul-status" style="width:150px" onchange="frtMultasRender()">
-          <option value="">Todos</option>
-          <option>Recebida</option><option>Em análise</option><option>Indicada</option>
-          <option>Paga</option><option>Descontada</option><option>Cancelada</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtAbrirNovaMulta()">+ Registrar multa</button>
-      </div>
-    </div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Motorista</th><th>Data infração</th><th>Descrição</th>
-      <th style="text-align:right">Valor</th><th>Vencimento</th><th>Contrato</th><th>Status</th><th></th>
-    </tr></thead>
-    <tbody id="frt-mul-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- AVARIAS -->
-<div id="pg-frotas-avarias" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🔨 Avarias / Sinistros</span>
-      <div style="display:flex;gap:6px">
-        <select class="inp" id="frt-avar-tipo" style="width:160px" onchange="frtAvarRender()">
-          <option value="">Todos os tipos</option>
-          <option>Avaria leve</option><option>Avaria grave</option><option>Colisão</option>
-          <option>Roubo/Furto</option><option>Mau uso</option><option>Desgaste natural</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtAbrirNovaAvaria()">+ Registrar</button>
-      </div>
-    </div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Data</th><th>Placa</th><th>Tipo</th><th>Motorista</th><th>Contrato</th>
-      <th>Descrição</th><th style="text-align:right">Custo</th><th>Status</th><th></th>
-    </tr></thead>
-    <tbody id="frt-avar-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- DOCUMENTOS -->
-<div id="pg-frotas-documentos" class="hidden">
-
-  <!-- Abas -->
-  <div style="display:flex;border-bottom:.5px solid #e0dfd8;background:#fff;position:sticky;top:0;z-index:10;margin-bottom:1rem">
-    <button class="fdoc-tab" id="fdoc-tab-dashboard" onclick="fdocAba('dashboard')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid #185FA5;color:#185FA5;font-weight:600;background:none;cursor:pointer;font-size:12px">📊 Dashboard</button>
-    <button class="fdoc-tab" id="fdoc-tab-docs"      onclick="fdocAba('docs')"      style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📄 Documentos</button>
-    <button class="fdoc-tab" id="fdoc-tab-motoristas" onclick="fdocAba('motoristas')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🪪 Motoristas</button>
-    <button class="fdoc-tab" id="fdoc-tab-multas"    onclick="fdocAba('multas')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🚦 Multas</button>
-    <button class="fdoc-tab" id="fdoc-tab-alertas"   onclick="fdocAba('alertas')"   style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚠ Alertas</button>
-  </div>
-
-  <!-- ── ABA DASHBOARD ─────────────────────────────────── -->
-  <div id="fdoc-aba-dashboard">
-    <div id="fdoc-dash-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-bottom:1.25rem"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-      <div class="card">
-        <div class="ch"><span class="ct" style="color:#A32D2D">🚨 Vencidos — ação imediata</span></div>
-        <div id="fdoc-dash-vencidos" style="padding:.75rem;max-height:200px;overflow-y:auto"></div>
-      </div>
-      <div class="card">
-        <div class="ch"><span class="ct" style="color:#854F0B">⚠ Vencendo em 30 dias</span></div>
-        <div id="fdoc-dash-avencer" style="padding:.75rem;max-height:200px;overflow-y:auto"></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="ch"><span class="ct">📋 Situação por veículo</span>
-        <input class="inp" id="fdoc-dash-busca" placeholder="Buscar placa..." style="width:160px" oninput="fdocRenderDashboard()"/>
-      </div>
-      <div id="fdoc-dash-veiculos" style="padding:.75rem;overflow-x:auto"></div>
-    </div>
-  </div>
-
-  <!-- ── ABA DOCUMENTOS ────────────────────────────────── -->
-  <div id="fdoc-aba-docs" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">📄 Documentos de Manutenção</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input class="inp" id="fdoc-fil-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="fdocRenderDocs();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, fdocRenderDocs)"/>
-          <select class="inp" id="fdoc-fil-tipo" style="width:160px" onchange="fdocRenderDocs()">
-            <option value="">Todos os tipos</option>
-            <option>Preventiva</option><option>Corretiva</option><option>Pneus</option>
-            <option>Elétrica</option><option>Freios</option><option>Motor</option><option>Outros</option>
-          </select>
-          <select class="inp" id="fdoc-fil-status" style="width:150px" onchange="fdocRenderDocs()">
-            <option value="">Todos os status</option>
-            <option>Solicitada</option><option>Em Análise</option><option>Aprovada</option>
-            <option>Requisição</option><option>Aguardando Peça</option><option>Em Execução</option>
-            <option>Concluída</option><option>Disponível</option><option>Negada</option>
-          </select>
-          <select class="inp" id="fdoc-fil-anexo" style="width:150px" onchange="fdocRenderDocs()">
-            <option value="">Anexos: todos</option>
-            <option value="com">Só com anexo</option>
-            <option value="sem">Sem anexo</option>
-          </select>
-          <select class="inp" id="fdoc-fil-cont" style="width:175px" onchange="fdocRenderDocs()">
-            <option value="">Todos os contratos</option>
-          </select>
-          <span style="font-size:11px;color:#888">Consulta — cadastro em Manutenções</span>
-        </div>
-      </div>
-      <div id="frt-doc-alerta-banner" style="display:none;background:#EBF4FD;border-radius:8px;padding:.6rem 1rem;margin:.5rem .75rem;font-size:12px;color:#185FA5;font-weight:500"></div>
-    </div>
-    <div id="fdoc-docs-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(115px,1fr));gap:8px;margin-bottom:1rem"></div>
-    <div style="overflow-x:auto"><table class="tbl">
-      <thead><tr>
-        <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Data</th>
-        <th>Descrição</th><th>Validade</th><th>Status</th><th>Laudo / Doc / Garantia</th><th></th>
-      </tr></thead>
-      <tbody id="frt-doc-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ── ABA MOTORISTAS (Fase 1 — CNH) ───────────────────── -->
-  <div id="fdoc-aba-motoristas" style="display:none">
-    <div class="card" style="margin-bottom:1rem" id="fmd-lista-wrap">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">🪪 Documentos de Motoristas</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input class="inp" id="fmd-fil-busca" placeholder="Nome, RE, CPF, nº doc..." style="width:180px" oninput="fmdRender()"/>
-          <select class="inp" id="fmd-fil-tipo" style="width:160px" onchange="fmdRender()">
-            <option value="">Todos os tipos</option>
-            <option>CNH</option>
-            <option>Termo de Direção</option>
-            <option>Política de Frotas</option>
-            <option>Treinamento de Direção</option>
-            <option>Autorização de Condução</option>
-            <option>Outros</option>
-          </select>
-          <select class="inp" id="fmd-fil-status" style="width:140px" onchange="fmdRender()">
-            <option value="">Todos os status</option>
-            <option>Válida</option><option>A vencer</option><option>Vencida</option>
-            <option>Pendente</option><option>Cancelada</option>
-          </select>
-          <select class="inp" id="fmd-fil-atalho" style="width:150px" onchange="fmdRender()">
-            <option value="">Atalho</option>
-            <option value="vencida">CNH vencidas</option>
-            <option value="avencer">CNH a vencer</option>
-          </select>
-          <button class="btn btn-pri" onclick="fmdAbrirModal(null)">+ Documento</button>
-        </div>
-      </div>
-    </div>
-    <div id="fmd-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:1rem"></div>
-    <div style="overflow-x:auto"><table class="tbl">
-      <thead><tr>
-        <th>Motorista</th><th>RE</th><th>Tipo</th><th>Nº Doc</th>
-        <th>Cat.</th><th>Emissão</th><th>Vencimento</th><th>Status</th><th>Anexo</th><th></th>
-      </tr></thead>
-      <tbody id="fmd-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ── ABA MULTAS ─────────────────────────────────────── -->
-  <div id="fdoc-aba-multas" style="display:none">
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">🚦 Controle de Multas</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <input class="inp" id="mul-fil-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="fdocRenderMultas();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, fdocRenderMultas)"/>
-          <select class="inp" id="mul-fil-status" style="width:145px" onchange="fdocRenderMultas()">
-            <option value="">Todos os status</option>
-            <option>Pendente</option><option>Pago</option><option>Em recurso</option><option>Cancelado</option>
-          </select>
-          <input class="inp" type="month" id="mul-fil-mes" style="width:140px" onchange="fdocRenderMultas()"/>
-          <button class="btn btn-pri" onclick="fdocNovaMulta()">+ Nova multa</button>
-          <button class="btn" onclick="fdocRelatorioMultas()">📊 Relatório</button>
-        </div>
-      </div>
-    </div>
-    <div id="fdoc-multas-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:1rem"></div>
-    <div style="overflow-x:auto"><table class="tbl">
-      <thead><tr>
-        <th>Placa</th><th>Nº Auto</th><th>Órgão</th><th>Data Infração</th>
-        <th>Local</th><th>Condutor</th><th>Pontos</th><th>Valor</th>
-        <th>Vencimento</th><th>Desconto?</th><th>Status</th><th>Recurso</th><th></th>
-      </tr></thead>
-      <tbody id="fdoc-mul-tbody"></tbody>
-    </table></div>
-  </div>
-
-  <!-- ── ABA ALERTAS ────────────────────────────────────── -->
-  <div id="fdoc-aba-alertas" style="display:none">
-    <div style="display:grid;gap:.75rem" id="fdoc-alertas-lista"></div>
-  </div>
-
-</div>
-
-<!-- OCIOSIDADE -->
-<div id="pg-frotas-ociosidade" class="hidden">
-
-  <!-- TOPO: filtros + métricas (fixos, não rolam) -->
-  <div class="ocio-topo">
-    <div class="card" style="margin-bottom:.75rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">💤 Ociosidade &amp; Frequência de Uso</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <select class="inp" id="ocio-fil-periodo" style="width:145px" onchange="frtOcioRender()">
-            <option value="30">Últimos 30 dias</option>
-            <option value="60">Últimos 60 dias</option>
-            <option value="90" selected>Últimos 90 dias</option>
-            <option value="180">Últimos 180 dias</option>
-            <option value="365">Último ano</option>
-          </select>
-          <select class="inp" id="ocio-fil-cont" style="width:185px" onchange="frtOcioRender()">
-            <option value="">Todos os contratos</option>
-          </select>
-          <select class="inp" id="ocio-fil-tipo" style="width:145px" onchange="frtOcioRender()">
-            <option value="">Todos os tipos</option>
-            <option>Carro leve</option><option>Caminhonete</option><option>Caminhão</option>
-            <option>Motocicleta</option><option>Van</option>
-          </select>
-          <button class="btn" onclick="frtOcioExportar()">⬇ Exportar relatório</button>
-          <button class="btn" onclick="ocioAbrirModalReset(null)" style="color:#185FA5;border-color:#185FA5">🔄 Resetar todos</button>
-          <button class="btn btn-pri" onclick="frtAbrirQuarentena()">+ Quarentena</button>
-        </div>
-      </div>
-    </div>
-    <!-- Indicadores -->
-    <div id="frt-ocio-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:.75rem"></div>
-  </div>
-
-  <!-- TABS BAR: fixa, não rola -->
-  <div class="ocio-tabs-bar">
-    <div style="display:flex;border-bottom:.5px solid #e0dfd8;margin-bottom:0;">
-      <button class="ocio-tab" id="ocio-tab-ociosos"    onclick="ocioMostrarAba('ociosos')"   style="padding:.45rem .8rem;border:none;border-bottom:2px solid #854F0B;color:#854F0B;font-weight:600;background:none;cursor:pointer;font-size:12px">💤 Ociosos</button>
-      <button class="ocio-tab" id="ocio-tab-ranking"    onclick="ocioMostrarAba('ranking')"   style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">🏆 Ranking de uso</button>
-      <button class="ocio-tab" id="ocio-tab-frequencia" onclick="ocioMostrarAba('frequencia')" style="padding:.45rem .8rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📊 Frequência</button>
-    </div>
-  </div>
-
-  <!-- CONTEÚDO DAS ABAS: esta área rola -->
-  <div class="ocio-conteudo">
-
-    <!-- ABA: OCIOSOS -->
-    <div id="ocio-aba-ociosos">
-      <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-        <thead><tr>
-          <th>Placa</th><th>Modelo</th><th>Tipo</th><th>Contrato</th><th>Último uso</th>
-          <th>Dias sem uso</th><th>Usos no período</th><th>Situação</th><th>Motivo</th><th></th>
-        </tr></thead>
-        <tbody id="frt-ocio-tbody"></tbody>
-      </table></div>
-    </div>
-
-    <!-- ABA: RANKING DE USO -->
-    <div id="ocio-aba-ranking" style="display:none">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-        <!-- Mais usados -->
-        <div class="card">
-          <div class="ch"><span class="ct" style="color:#3B6D11">🏆 Mais utilizados</span><span id="ocio-rank-n-mais" style="font-size:11px;color:#aaa"></span></div>
-          <div id="ocio-rank-mais" style="padding:.5rem"></div>
-        </div>
-        <!-- Menos usados (ociosos) -->
-        <div class="card">
-          <div class="ch"><span class="ct" style="color:#A32D2D">💤 Menos utilizados</span><span id="ocio-rank-n-menos" style="font-size:11px;color:#aaa"></span></div>
-          <div id="ocio-rank-menos" style="padding:.5rem"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ABA: FREQUÊNCIA -->
-    <div id="ocio-aba-frequencia" style="display:none">
-      <div class="card" style="margin-bottom:1rem">
-        <div class="ch"><span class="ct">📊 Frequência de uso — todos os veículos</span></div>
-        <div style="overflow-x:auto"><table class="tbl">
-          <thead><tr>
-            <th>Placa</th><th>Modelo</th><th>Contrato</th>
-            <th>Total saídas</th><th>Dias com uso</th><th>Taxa uso</th><th>Média km/saída</th>
-          </tr></thead>
-          <tbody id="ocio-freq-tbody"></tbody>
-        </table></div>
-      </div>
-    </div>
-
-  </div><!-- .ocio-conteudo -->
-
-
-</div><!-- /pg-frotas-ociosidade -->
-  </div>
-
-</div>
-
-<!-- CONDUTA DE MOTORISTAS (Fase 7) -->
-<div id="pg-frotas-conduta" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🧭 Conduta de Motoristas</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <input class="inp" id="fcd-fil-busca" placeholder="Motorista, placa, RE..." style="width:180px" oninput="fcdRender()"/>
-        <select class="inp" id="fcd-fil-tipo" style="width:130px" onchange="fcdRender()">
-          <option value="">Todos os tipos</option>
-          <option>Elogio</option><option>Atenção</option><option>Negativo</option>
-        </select>
-        <select class="inp" id="fcd-fil-status" style="width:130px" onchange="fcdRender()">
-          <option value="">Todos status</option>
-          <option>Registrado</option><option>Em análise</option><option>Encerrado</option><option>Cancelado</option>
-        </select>
-        <input type="month" class="inp" id="fcd-fil-mes" style="width:140px" onchange="fcdRender()"/>
-        <button class="btn btn-pri" onclick="fcdAbrirModal()">+ Apontamento</button>
-      </div>
-    </div>
-    <div id="fcd-metricas" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Data</th><th>Hora</th><th>Placa</th><th>Motorista</th><th>Tipo</th><th>Peso</th>
-      <th>Descrição</th><th>Registrado por</th><th>Status</th><th></th>
-    </tr></thead>
-    <tbody id="fcd-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- CUSTOS MENSAIS -->
-<div id="pg-frotas-custos" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">💰 Custos Mensais</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <input type="month" class="inp" id="frt-cust-mes" style="width:145px" onchange="frtCustosRender()"/>
-        <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="frt-cust-todos" onchange="frtCustosRender()"/> Todos os meses</label>
-        <input type="date" class="inp" id="frt-cust-dini" style="width:140px" title="Data inicial" onchange="frtCustosRender()"/>
-        <input type="date" class="inp" id="frt-cust-dfim" style="width:140px" title="Data final" onchange="frtCustosRender()"/>
-        <input class="inp" id="frt-cust-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="frtCustosRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtCustosRender)"/>
-        <select class="inp" id="frt-cust-cat" style="width:140px" onchange="frtCustosRender()">
-          <option value="">Todas categorias</option>
-          <option value="combustivel">Combustível</option>
-          <option value="manutencao">Manutenção</option>
-          <option value="multas">Multas</option>
-          <option value="avarias">Avarias</option>
-          <option value="locacao">Locação</option>
-        </select>
-        <input class="inp" id="frt-cust-forn" placeholder="Fornecedor..." style="width:140px" oninput="frtCustosRender()"/>
-        <select class="inp" id="frt-cust-cont" style="width:170px" onchange="frtCustosRender()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <button class="btn" onclick="frtCustosLimparFiltros()" title="Limpar filtros">✕ Limpar</button>
-        <button class="btn" onclick="frtFecharMes()" style="color:#3B6D11;border-color:#3B6D11">✓ Fechar mês</button>
-      </div>
-    </div>
-  </div>
-  <div id="frt-cust-resumo" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:1rem"></div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Placa</th><th>Modelo</th><th>KM rodado</th>
-      <th style="text-align:right">Combustível</th><th style="text-align:right">Manutenção</th>
-      <th style="text-align:right">Multas</th><th style="text-align:right">Avarias</th>
-      <th style="text-align:right">Locação</th><th style="text-align:right">Outros</th>
-      <th style="text-align:right">Total</th><th style="text-align:right">R$/KM</th>
-      <th>Score</th>
-    </tr></thead>
-    <tbody id="frt-cust-tbody"></tbody>
-    <tfoot id="frt-cust-tfoot"></tfoot>
-  </table></div>
-</div>
-
-<!-- AUDITORIA / RISCOS -->
-<div id="pg-frotas-auditoria" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🔍 Auditoria / Riscos</span>
-      <div style="display:flex;gap:6px">
-        <select class="inp" id="frt-aud-grav" style="width:140px" onchange="frtAuditoriaRender()">
-          <option value="">Todas gravidades</option>
-          <option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option>
-        </select>
-        <select class="inp" id="frt-aud-status" style="width:140px" onchange="frtAuditoriaRender()">
-          <option value="">Todos</option><option>Aberto</option><option>Em análise</option><option>Resolvido</option>
-        </select>
-      </div>
-    </div>
-    <div id="frt-aud-metricas" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div style="overflow-x:auto"><table class="tbl tbl-responsive">
-    <thead><tr>
-      <th>Tipo</th><th>Gravidade</th><th>Placa</th><th>Motorista/Equipe</th>
-      <th>Contrato</th><th>Data/Hora</th><th>Descrição</th><th>Status</th><th></th>
-    </tr></thead>
-    <tbody id="frt-aud-tbody"></tbody>
-  </table></div>
-</div>
-
-<!-- INTEGRAÇÕES -->
-<div id="pg-frotas-integracoes" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">🔗 Integrações Externas</span></div>
-    <div style="padding:.75rem 1rem;font-size:12px;color:#888">
-      Conectores com plataformas externas de abastecimento, rastreamento e pedágio.
-      As chamadas de API ficam preparadas aguardando credenciais e endpoints oficiais.
-    </div>
-  </div>
-  <div id="frt-int-lista" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1rem"></div>
-</div>
-
-<!-- RELATÓRIOS FROTAS -->
-<div id="pg-frotas-relatorios" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">📈 Relatórios de Frota</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <input type="month" class="inp" id="frt-rel-mes" style="width:145px"/>
-        <select class="inp" id="frt-rel-tipo" style="width:200px">
-          <option>Custo por veículo</option><option>Custo por contrato</option>
-          <option>Ranking de equipes</option><option>Score da frota</option>
-          <option>Ociosidade</option><option>Combustível</option>
-          <option>Multas</option><option>Manutenções</option>
-        </select>
-        <button class="btn btn-pri" onclick="frtGerarRelatorio()">📊 Gerar</button>
-      </div>
-    </div>
-  </div>
-  <div id="frt-rel-resultado"></div>
-</div>
-
-<!-- SUGESTÕES DE MELHORIA -->
-<div id="pg-sugestoes" class="hidden">
-
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch">
-      <span class="ct">💡 Sugestões de Melhoria</span>
-      <button class="btn btn-pri" onclick="sug_abrirNova()">+ Nova Sugestão</button>
-    </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;padding:.5rem 1rem;border-top:.5px solid #f0efe8">
-      <select class="inp" id="sug-fil-status" style="width:160px" onchange="sug_render()">
-        <option value="">Todos os status</option>
-        <option value="analise">🔍 Em análise</option>
-        <option value="aprovada">✅ Aprovada</option>
-        <option value="aplicada">🚀 Aplicada</option>
-        <option value="recusada">❌ Recusada</option>
-      </select>
-      <input class="inp" id="sug-busca" placeholder="Buscar sugestão..." style="width:200px" oninput="sug_render()"/>
-      <button class="btn" onclick="sug_limparAplicadas()" style="font-size:11px;color:#3B6D11;border-color:#3B6D11" title="Arquivar todas as aplicadas">🗑 Limpar aplicadas</button>
-    </div>
-  </div>
-
-  <div id="sug-lista"></div>
-
-</div>
-
-
-<!-- ══ PROGRAMAÇÃO EQUIPES PLPT ══════════════════════════════ -->
-<div 
-<div id="pg-plpt-programacao" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:nowrap;gap:6px;align-items:center;overflow-x:auto">
-      <span class="ct" style="white-space:nowrap;flex-shrink:0">⚡ Programação de Projetos</span>
-      <!-- Contrato -->
-      <select class="inp" id="plpt-prog-contrato" style="width:170px;font-size:12px;flex-shrink:0" onchange="plptProgMudarContrato()">
-        <option value="">Selecione o contrato...</option>
-      </select>
-      <!-- Navegação de data -->
-      <div style="display:flex;align-items:center;gap:2px;flex-shrink:0">
-        <button class="btn" onclick="plptNavData(-7)" title="Semana anterior" style="padding:3px 6px;font-size:12px">◀◀</button>
-        <button class="btn" onclick="plptNavData(-1)" title="Dia anterior" style="padding:3px 6px;font-size:12px">◀</button>
-        <input type="date" class="inp" id="plpt-prog-data" style="width:130px;font-size:12px" onchange="plptProgInit()"/>
-        <button class="btn" onclick="plptNavData(1)" title="Próximo dia" style="padding:3px 6px;font-size:12px">▶</button>
-        <button class="btn" onclick="plptNavData(7)" title="Próxima semana" style="padding:3px 6px;font-size:12px">▶▶</button>
-        <button class="btn" onclick="plptNavHoje()" style="padding:3px 6px;font-size:11px;color:#185FA5;border-color:#185FA5">Hoje</button>
-      </div>
-      <!-- Separador -->
-      <div style="width:.5px;height:24px;background:#e0dfd8;flex-shrink:0"></div>
-      <!-- Ações -->
-      <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-        <select class="inp" id="plpt-prog-tipo" style="width:140px;font-size:11px" onchange="plptProgRender()">
-          <option value="">Todos os tipos</option>
-          <option value="LM">Linha Morta</option>
-          <option value="LV">Linha Viva</option>
-          <option value="VIA">Viabilidade</option>
-        </select>
-        <button class="btn btn-pri" onclick="plptProgSalvarTudo()" style="font-size:11px;padding:4px 8px">💾 Salvar</button>
-        <button class="btn" id="plpt-btn-sync-ponto" onclick="plptSyncPonto()" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px;white-space:nowrap">🔄 Sync Ponto</button>
-        <button class="btn" onclick="plptAtualizarQuadro()" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px" title="Recarregar dados do banco">🔄 Atualizar</button>
-        <button class="btn" onclick="plptNavScroll('topo')" style="color:#185FA5;border-color:#185FA5;font-size:11px;padding:4px 8px" title="Topo">🏠 Topo</button>
-        <button class="btn" onclick="plptNavScroll('indisp')" style="color:#A32D2D;border-color:#A32D2D;font-size:11px;padding:4px 8px" title="Indisponíveis">🚫 Indisp.</button>
-        <button class="btn" onclick="showSub('programacao-equipes')" style="font-size:11px;padding:4px 8px">◀ Voltar</button>
-      </div>
-    </div>
-    <div id="plpt-prog-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:.6rem 1rem;border-top:.5px solid #f0efe8"></div>
-    <!-- Filtros de busca -->
-    <div style="padding:.5rem 1rem;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-top:.5px solid #f0efe8">
-      <select id="plpt-busca-scope" class="inp" style="width:130px;font-size:12px" onchange="plptProgRender()">
-        <option value="todos">🔍 Todos</option>
-        <option value="equipe">🚛 Equipe</option>
-        <option value="colaborador">👤 Colaborador</option>
-        <option value="projeto">📋 Projeto</option>
-        <option value="status">📊 Status</option>
-      </select>
-      <input id="plpt-busca-texto" type="text" class="inp" placeholder="Buscar..." style="width:200px;font-size:12px" oninput="plptProgRender()"/>
-      <select id="plpt-filtro-status" class="inp" style="width:150px;font-size:12px" onchange="plptProgRender()">
-        <option value="">Todos os status</option>
-        <option value="programada">✅ Programada</option>
-        <option value="sem_prog">⬜ Sem programação</option>
-        <option value="sem_enc">👤 Sem encarregado</option>
-        <option value="com_proj">📋 Com projetos</option>
-        <option value="sem_proj">📭 Sem projetos</option>
-      </select>
-      <button class="btn" onclick="plptLimparFiltros()" style="font-size:11px;color:#888">✕ Limpar</button>
-    </div>
-  </div>
-  <div id="plpt-prog-lista"><div style="text-align:center;padding:3rem;color:#aaa">Carregando equipes...</div></div>
-</div>
-
-
-
-</div>
-
-<!-- ═══════════ MOBILIZAÇÃO / EVOLUÇÃO / APTIDÃO ═══════════ -->
-
-<!-- MOBILIZAÇÃO NOS CONTRATOS -->
-<div id="pg-sesmt-mobilizacao" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">🚀 Mobilização</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🚀 Mobilização nos Contratos</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <select class="inp" id="mob-fil-contrato" style="width:200px" onchange="renderMobilizacao()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <select class="inp" id="mob-fil-status" style="width:150px" onchange="renderMobilizacao()">
-          <option value="">Todos os status</option>
-          <option>Em mobilização</option>
-          <option>Aguardando documentos</option>
-          <option>Aguardando ASO</option>
-          <option>Aguardando treinamento</option>
-          <option>Aguardando EPI</option>
-          <option>Apto</option>
-          <option>Bloqueado</option>
-        </select>
-        <input class="inp" id="mob-fil-busca" placeholder="Buscar colaborador..." style="width:180px" oninput="renderMobilizacao()"/>
-        <button class="btn btn-pri" onclick="openNovaMobilizacao()">+ Nova mobilização</button>
-      </div>
-    </div>
-    <div id="mob-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div id="mob-lista"></div>
-</div>
-
-<!-- EVOLUÇÃO DO COLABORADOR -->
-<div id="pg-sesmt-evolucao" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">📈 Evolução do Colaborador</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">📈 Evolução do Colaborador</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <select class="inp" id="evol-fil-contrato" style="width:200px" onchange="renderEvolucao()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <input class="inp" id="evol-fil-busca" placeholder="Buscar colaborador..." style="width:180px" oninput="renderEvolucao()"/>
-      </div>
-    </div>
-  </div>
-  <div id="evol-lista"></div>
-</div>
-
-<!-- APTIDÃO AO TRABALHO -->
-<div id="pg-sesmt-aptidao" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">✅ Aptidão ao Trabalho</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">✅ Aptidão ao Trabalho</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <select class="inp" id="apt-fil-contrato" style="width:200px" onchange="renderAptidao()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <select class="inp" id="apt-fil-status" style="width:150px" onchange="renderAptidao()">
-          <option value="">Todos</option>
-          <option value="Apto">✅ Aptos</option>
-          <option value="Bloqueado">🚫 Bloqueados</option>
-          <option value="Pendente">⏳ Pendentes</option>
-        </select>
-        <input class="inp" id="apt-fil-busca" placeholder="Buscar..." style="width:160px" oninput="renderAptidao()"/>
-      </div>
-    </div>
-    <div id="apt-metricas" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
-  </div>
-  <div id="apt-lista"></div>
-</div>
-
-<!-- ═══════════ FIM MOBILIZAÇÃO / EVOLUÇÃO / APTIDÃO ═══════════ -->
-
-
-<div id="pg-sesmt-dashboard" class="hidden">
-  <!-- Menu rápido SESMT — visível especialmente no mobile/tablet -->
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1rem">
-    <button onclick="showSub('sesmt-mobilizacao')"  class="btn btn-sm" style="font-size:11px">🚀 Mobilização</button>
-    <button onclick="showSub('sesmt-evolucao')"     class="btn btn-sm" style="font-size:11px">📈 Evolução</button>
-    <button onclick="showSub('sesmt-extrato-colaborador')" class="btn btn-sm" style="font-size:11px">📋 Extrato</button>
-    <button onclick="showSub('sesmt-aptidao')"      class="btn btn-sm" style="font-size:11px">✅ Aptidão</button>
-    <button onclick="showSub('sesmt-treinamentos')" class="btn btn-sm" style="font-size:11px">🎓 Treinamentos</button>
-    <button onclick="showSub('sesmt-nr6')"          class="btn btn-sm" style="font-size:11px">📋 Ficha NR-6</button>
-    <button onclick="showSub('sesmt-ocorrencias')"  class="btn btn-sm" style="font-size:11px">⚠️ Ocorrências</button>
-    <button onclick="showSub('sesmt-aprovacoes')"   class="btn btn-sm" style="font-size:11px">✅ Aprovações</button>
-    <button onclick="showSub('sesmt-inspecoes')"    class="btn btn-sm" style="font-size:11px;position:relative">🔍 Inspeções ENEL <span id="badge-desvios-criticos-top" style="display:none;background:#A32D2D;color:#fff;border-radius:10px;padding:0 5px;font-size:9px;font-weight:700;margin-left:3px">0</span></button>
-  </div>
-  <!-- Filtros -->
-  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem">
-    <select class="inp" id="sdb-fil-cont" style="width:200px" onchange="renderSesmtDashboard()">
-      <option value="">Todos os contratos</option>
-    </select>
-    <select class="inp" id="sdb-fil-periodo" style="width:150px" onchange="renderSesmtDashboard()">
-      <option value="30">Últimos 30 dias</option>
-      <option value="90" selected>Últimos 90 dias</option>
-      <option value="365">Último ano</option>
-    </select>
-    <div style="display:flex;gap:6px;margin-left:auto">
-      <button class="btn" onclick="renderSesmtDashboard()" style="color:#185FA5;border-color:#185FA5">🔄 Atualizar</button>
-    </div>
-  </div>
-  <!-- Alertas críticos -->
-  <div id="sdb-alertas" style="margin-bottom:1rem"></div>
-  <!-- Score compliance -->
-  <div id="sdb-score" style="margin-bottom:1rem"></div>
-  <!-- Indicadores gerais -->
-  <div id="sdb-gerais" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.25rem"></div>
-  <!-- Painéis detalhados -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-    <div class="card"><div class="ch"><span class="ct">🎓 Treinamentos</span></div><div id="sdb-trein" style="padding:.75rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">📄 Documentação &amp; ASO</span></div><div id="sdb-docs" style="padding:.75rem"></div></div>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-    <div class="card"><div class="ch"><span class="ct">🦺 EPI / EPC</span></div><div id="sdb-epi" style="padding:.75rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">🚗 Veículos &amp; Documentos</span></div><div id="sdb-veic" style="padding:.75rem"></div></div>
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-    <div class="card"><div class="ch"><span class="ct">📋 Segurança Operacional</span></div><div id="sdb-seg" style="padding:.75rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">⚠ Ocorrências</span></div><div id="sdb-ocorr" style="padding:.75rem"></div></div>
-  </div>
-  <!-- Visão por NR -->
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">📊 Visão por Treinamento / NR</span></div>
-    <div id="sdb-por-nr" style="padding:.75rem;overflow-x:auto"></div>
-  </div>
-  <!-- Rankings -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-    <div class="card"><div class="ch"><span class="ct">🏆 Equipes mais conformes</span></div><div id="sdb-rank-top" style="padding:.75rem"></div></div>
-    <div class="card"><div class="ch"><span class="ct">🚨 Contratos com mais pendências</span></div><div id="sdb-rank-pend" style="padding:.75rem"></div></div>
-  </div>
-</div>
-
-<div id="pg-sesmt-nr6" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">📋 Ficha NR-6</span>
-  </div>
-  <div class="card">
-    <div class="ch">
-      <span class="ct">📋 Ficha NR-6 — Controle de EPI</span>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select class="inp" id="nr6-func" style="width:260px" onchange="renderNR6()">
-          <option value="">Selecione um colaborador...</option>
-        </select>
-        <button class="btn btn-pri" onclick="imprimirNR6()">🖨 Imprimir</button>
-      </div>
-    </div>
-    <div id="nr6-content" style="padding:.5rem">
-      <div style="border:.5px solid #e0dfd8;border-radius:12px;display:flex;align-items:center;justify-content:center;height:160px;color:#bbb;font-size:13px">
-        Selecione um funcionário para visualizar a Ficha NR-6
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- pg-sesmt-epis movido para pg-alm-dashboard -->
-<!-- pg-sesmt-ferramentas movido para pg-alm-dashboard -->
-<!-- pg-sesmt-locacoes movido para pg-alm-dashboard -->
-<!-- pg-sesmt-estoque movido para pg-alm-dashboard -->
-<div id="pg-sesmt-treinamentos" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">🎓 Treinamentos / NRs</span>
-  </div>
-  <div class="card">
-    <div class="ch"><span class="ct">Treinamentos</span><button class="btn btn-pri" onclick="openNovoTrein()">+ Registrar</button></div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Colaborador</th><th>NR</th><th>Treinamento</th><th>Abertura</th><th>Validade</th><th>Status</th><th>EPIs liberados</th><th>Ações</th>
-    </tr></thead><tbody id="tbody-trein"></tbody></table></div>
-  </div>
-</div>
-<div id="pg-sesmt-ocorrencias" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">⚠️ Ocorrências</span>
-  </div>
-  <div class="card">
-    <div class="ch"><span class="ct">Ocorrências</span><button class="btn btn-pri" onclick="openOcorrencia()">+ Registrar</button></div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Data</th><th>Colaborador</th><th>Item</th><th>Tipo</th><th>Motivo</th><th>Status</th><th>Ação</th>
-    </tr></thead><tbody id="tbody-oc"></tbody></table></div>
-  </div>
-</div>
-<div id="pg-sesmt-aprovacoes" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">✅ Aprovações</span>
-  </div>
-  <div id="aprovacoes-list"></div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════
-     INSPEÇÕES ENEL — Padrão CENA/ENEL
-     ══════════════════════════════════════════════════════ -->
-<div id="pg-sesmt-inspecoes" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="showMain('sesmt')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ SESMT</button>
-    <span style="font-size:13px;font-weight:600;color:#1a1a18">🔍 Inspeções ENEL</span>
-  </div>
-
-  <!-- Métricas topo -->
-  <div class="metrics" id="insp-metrics" style="margin-bottom:1rem"></div>
-
-  <!-- Barra de ações -->
-  <div class="card" style="margin-bottom:.75rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">🔍 Inspeções em Campo — Padrão ENEL</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="insp-fil-contrato" style="width:200px" onchange="renderInspecoesEnel()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <select class="inp" id="insp-fil-status" style="width:150px" onchange="renderInspecoesEnel()">
-          <option value="">Todos os status</option>
-          <option value="Conforme">✅ Conforme</option>
-          <option value="Paralisado">🛑 Paralisado</option>
-          <option value="Em andamento">🔄 Em andamento</option>
-          <option value="Pendente">⏳ Pendente</option>
-        </select>
-        <input type="date" class="inp" id="insp-fil-data" style="width:145px" onchange="renderInspecoesEnel()"/>
-        <button class="btn btn-pri" onclick="abrirNovaInspecao()">+ Nova Inspeção</button>
-        <button class="btn" onclick="importarJsonTST()" title="Importar JSON do TST" style="font-size:12px">📥 Importar JSON</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Lista de inspeções -->
-  <div id="insp-lista"></div>
-
-</div>
-<!-- pg-sesmt-vales movido para pg-alm-dashboard -->
-<div id="pg-sesmt-funcionarios" class="hidden">
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">Colaboradores</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="fil-func-contrato" style="width:190px" onchange="renderFunc()">
-          <option value="">Todos os contratos</option>
-        </select>
-        <input class="inp" id="fil-func-cargo" placeholder="Filtrar cargo..." style="width:140px" oninput="renderFunc()"/>
-        <input class="inp" id="fil-func-busca" placeholder="Buscar nome/RE..." style="width:160px" oninput="renderFunc()"/>
-        <button class="btn btn-pri" onclick="openNovoFunc()">+ Colaborador</button>
-      </div>
-    </div>
-    <div class="scroll-x" style="overflow-x:auto"><table class="tbl tbl-r"><thead><tr>
-      <th>Nome</th><th>Matrícula/RE</th><th>Contrato</th><th>Cargo/Função</th><th>Equipe</th><th>Admissão</th><th>EPIs</th><th>Ferramentas</th><th>Uniformes</th><th>Aptidão</th><th></th>
-    </tr></thead><tbody id="tbody-func"></tbody></table></div>
-  </div>
-</div>
-<!-- pg-sesmt-filiais movido para pg-alm-dashboard -->
-<!-- modal-area dentro do pg-app mas fora do app-content-area —
-     usa position:fixed então não afeta o fluxo -->
-
-
-
-<!-- MÓDULO COMGÁS SSM (sub-páginas diretas) -->
-
-  <!-- Dashboard principal -->
-  <div id="pg-comgas-dashboard" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1.25rem">
-      <div style="width:32px;height:32px;background:#E8521A;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">🔥</div>
-      <div>
-        <div style="font-size:16px;font-weight:700;color:#1a1a18">COMGÁS — Gestão SSM</div>
-        <div style="font-size:11px;color:#888">Sistema de Segurança, Saúde e Meio Ambiente</div>
-      </div>
-    </div>
-    <div id="comgas-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.25rem"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-      <div class="card">
-        <div class="ch"><span class="ct">⚠️ Não Conformidades Abertas</span><button class="btn btn-sm" onclick="comgasShowTab('nc')">Ver todas</button></div>
-        <div id="comgas-nc-resumo" style="padding:.5rem 0"></div>
-      </div>
-      <div class="card">
-        <div class="ch"><span class="ct">📋 Planos de Ação Pendentes</span><button class="btn btn-sm" onclick="comgasShowTab('pa')">Ver todos</button></div>
-        <div id="comgas-pa-resumo" style="padding:.5rem 0"></div>
-      </div>
-    </div>
-    <div style="margin-top:1rem" class="card">
-      <div class="ch"><span class="ct">📅 Inspeções Recentes</span><button class="btn btn-pri btn-sm" onclick="comgasNovaInspecao()">+ Nova Inspeção</button></div>
-      <div id="comgas-insp-resumo" style="padding:.5rem 0"></div>
-    </div>
-  </div>
-
-  <!-- Inspeções -->
-  <div id="pg-comgas-inspecoes" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ COMGÁS SSM</button>
-      <span style="font-size:13px;font-weight:600">🔍 Inspeções de Campo</span>
-    </div>
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">Inspeções SSM</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <select class="inp" id="cg-insp-fil-status" style="width:140px" onchange="comgasRenderInspecoes()">
-            <option value="">Todos os status</option>
-            <option value="aberta">Aberta</option>
-            <option value="concluida">Concluída</option>
-            <option value="nc">Com NC</option>
-          </select>
-          <select class="inp" id="cg-insp-fil-tipo" style="width:160px" onchange="comgasRenderInspecoes()">
-            <option value="">Todos os tipos</option>
-            <option value="rotina">Rotina de Campo</option>
-            <option value="salva-vidas">Salva-Vidas</option>
-            <option value="epi">EPIs e EPCs</option>
-            <option value="veiculo">Veículos</option>
-            <option value="canteiro">Canteiro/Base</option>
-            <option value="ferramentas">Ferramentas</option>
-            <option value="emergencia">Plano de Emergência</option>
-          </select>
-          <input class="inp" type="date" id="cg-insp-fil-data" style="width:140px" onchange="comgasRenderInspecoes()"/>
-          <button class="btn btn-pri" onclick="comgasNovaInspecao()">+ Nova Inspeção</button>
-        </div>
-      </div>
-    </div>
-    <div id="comgas-insp-lista"></div>
-  </div>
-
-  <!-- Checklist -->
-  <div id="pg-comgas-checklist" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('inspecoes')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ Inspeções</button>
-      <span id="cg-ck-titulo" style="font-size:13px;font-weight:600">📋 Checklist</span>
-    </div>
-    <div id="comgas-checklist-form"></div>
-  </div>
-
-  <!-- Não Conformidades -->
-  <div id="pg-comgas-nc" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ COMGÁS SSM</button>
-      <span style="font-size:13px;font-weight:600">⚠️ Não Conformidades</span>
-    </div>
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">Registro de NCs</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <select class="inp" id="cg-nc-fil-grav" style="width:140px" onchange="comgasRenderNCs()">
-            <option value="">Todas as gravidades</option>
-            <option value="leve">Leve</option>
-            <option value="media">Média</option>
-            <option value="grave">Grave</option>
-          </select>
-          <select class="inp" id="cg-nc-fil-status" style="width:140px" onchange="comgasRenderNCs()">
-            <option value="">Todos os status</option>
-            <option value="aberta">Aberta</option>
-            <option value="em_andamento">Em andamento</option>
-            <option value="encerrada">Encerrada</option>
-          </select>
-          <button class="btn btn-pri" onclick="comgasNovaNC()">+ Registrar NC</button>
-        </div>
-      </div>
-    </div>
-    <div id="comgas-nc-lista"></div>
-  </div>
-
-  <!-- Plano de Ação -->
-  <div id="pg-comgas-pa" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ COMGÁS SSM</button>
-      <span style="font-size:13px;font-weight:600">✅ Planos de Ação</span>
-    </div>
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch" style="flex-wrap:wrap;gap:8px">
-        <span class="ct">Planos de Ação Corretiva</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <select class="inp" id="cg-pa-fil-status" style="width:140px" onchange="comgasRenderPA()">
-            <option value="">Todos</option>
-            <option value="pendente">Pendente</option>
-            <option value="andamento">Em andamento</option>
-            <option value="concluido">Concluído</option>
-            <option value="vencido">Vencido</option>
-          </select>
-          <button class="btn btn-pri" onclick="comgasNovoPA()">+ Novo Plano</button>
-        </div>
-      </div>
-    </div>
-    <div id="comgas-pa-lista"></div>
-  </div>
-
-  <!-- CDI — Conversa Diária Integrada -->
-  <div id="pg-comgas-cdi" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ COMGÁS SSM</button>
-      <span style="font-size:13px;font-weight:600">💬 CDI — Conversas Diárias Integradas</span>
-    </div>
-    <div class="card" style="margin-bottom:1rem">
-      <div class="ch">
-        <span class="ct">Registro de CDIs</span>
-        <button class="btn btn-pri" onclick="comgasNovoCDI()">+ Nova CDI</button>
-      </div>
-    </div>
-    <div id="comgas-cdi-lista"></div>
-  </div>
-
-  <!-- REM -->
-  <div id="pg-comgas-rem" class="hidden">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-      <button onclick="comgasShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ COMGÁS SSM</button>
-      <span style="font-size:13px;font-weight:600">📊 REM — Relatório Estatístico Mensal</span>
-    </div>
-    <div id="comgas-rem-form"></div>
-  </div>
-
-
-
-
-<!-- ═══════════════════════════════════════════════════
-     MÓDULO ENEL — Inspeções, NCs, PA, CDI, REM
-     ═══════════════════════════════════════════════════ -->
-
-<div id="pg-enel-dashboard" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1.25rem">
-    <div style="width:32px;height:32px;background:#185FA5;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">⚡</div>
-    <div>
-      <div style="font-size:16px;font-weight:700;color:#1a1a18">ENEL — Gestão SSM</div>
-      <div style="font-size:11px;color:#888">Inspeções, Não Conformidades e Planos de Ação</div>
-    </div>
-  </div>
-  <div id="enel-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:1.25rem"></div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-    <div class="card">
-      <div class="ch"><span class="ct">⚠️ NCs Abertas</span><button class="btn btn-sm" onclick="enelShowTab('nc')">Ver todas</button></div>
-      <div id="enel-nc-resumo" style="padding:.5rem 0"></div>
-    </div>
-    <div class="card">
-      <div class="ch"><span class="ct">✅ Planos Pendentes</span><button class="btn btn-sm" onclick="enelShowTab('pa')">Ver todos</button></div>
-      <div id="enel-pa-resumo" style="padding:.5rem 0"></div>
-    </div>
-  </div>
-  <div style="margin-top:1rem" class="card">
-    <div class="ch"><span class="ct">📅 Inspeções Recentes</span><button class="btn btn-pri btn-sm" onclick="enelNovaInspecao()">+ Nova Inspeção</button></div>
-    <div id="enel-insp-resumo" style="padding:.5rem 0"></div>
-  </div>
-</div>
-
-<div id="pg-enel-inspecoes" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ ENEL SSM</button>
-    <span style="font-size:13px;font-weight:600">🔍 Inspeções de Campo — ENEL</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">Inspeções ENEL</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="en-insp-fil-status" style="width:140px" onchange="enelRenderInspecoes()">
-          <option value="">Todos os status</option>
-          <option value="aberta">Aberta</option>
-          <option value="concluida">Concluída</option>
-          <option value="nc">Com NC</option>
-        </select>
-        <select class="inp" id="en-insp-fil-tipo" style="width:160px" onchange="enelRenderInspecoes()">
-          <option value="">Todos os tipos</option>
-          <option value="rotina">Rotina de Campo</option>
-          <option value="salva-vidas">Salva-Vidas</option>
-          <option value="epi">EPIs e EPCs</option>
-          <option value="veiculo">Veículos</option>
-          <option value="canteiro">Canteiro/Base</option>
-          <option value="ferramentas">Ferramentas</option>
-          <option value="emergencia">Plano de Emergência</option>
-        </select>
-        <input class="inp" type="date" id="en-insp-fil-data" style="width:140px" onchange="enelRenderInspecoes()"/>
-        <button class="btn btn-pri" onclick="enelNovaInspecao()">+ Nova Inspeção</button>
-      </div>
-    </div>
-  </div>
-  <div id="enel-insp-lista"></div>
-</div>
-
-<div id="pg-enel-checklist" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('inspecoes')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ Inspeções ENEL</button>
-    <span id="en-ck-titulo" style="font-size:13px;font-weight:600">📋 Checklist ENEL</span>
-  </div>
-  <div id="enel-checklist-form"></div>
-</div>
-
-<div id="pg-enel-nc" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ ENEL SSM</button>
-    <span style="font-size:13px;font-weight:600">⚠️ Não Conformidades — ENEL</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">Registro de NCs ENEL</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="en-nc-fil-grav" style="width:140px" onchange="enelRenderNCs()">
-          <option value="">Todas as gravidades</option>
-          <option value="leve">Leve</option>
-          <option value="media">Média</option>
-          <option value="grave">Grave</option>
-        </select>
-        <select class="inp" id="en-nc-fil-status" style="width:140px" onchange="enelRenderNCs()">
-          <option value="">Todos os status</option>
-          <option value="aberta">Aberta</option>
-          <option value="em_andamento">Em andamento</option>
-          <option value="encerrada">Encerrada</option>
-        </select>
-        <button class="btn btn-pri" onclick="enelNovaNC()">+ Registrar NC</button>
-      </div>
-    </div>
-  </div>
-  <div id="enel-nc-lista"></div>
-</div>
-
-<div id="pg-enel-pa" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ ENEL SSM</button>
-    <span style="font-size:13px;font-weight:600">✅ Planos de Ação — ENEL</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch" style="flex-wrap:wrap;gap:8px">
-      <span class="ct">Planos de Ação ENEL</span>
-      <div style="display:flex;gap:6px">
-        <select class="inp" id="en-pa-fil-status" style="width:140px" onchange="enelRenderPA()">
-          <option value="">Todos</option>
-          <option value="pendente">Pendente</option>
-          <option value="andamento">Em andamento</option>
-          <option value="concluido">Concluído</option>
-          <option value="vencido">Vencido</option>
-        </select>
-        <button class="btn btn-pri" onclick="enelNovoPA()">+ Novo Plano</button>
-      </div>
-    </div>
-  </div>
-  <div id="enel-pa-lista"></div>
-</div>
-
-<div id="pg-enel-cdi" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ ENEL SSM</button>
-    <span style="font-size:13px;font-weight:600">💬 CDI — ENEL</span>
-  </div>
-  <div class="card" style="margin-bottom:1rem">
-    <div class="ch"><span class="ct">Conversas Diárias Integradas — ENEL</span><button class="btn btn-pri" onclick="enelNovoCDI()">+ Nova CDI</button></div>
-  </div>
-  <div id="enel-cdi-lista"></div>
-</div>
-
-<div id="pg-enel-rem" class="hidden">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">
-    <button onclick="enelShowTab('dashboard')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ ENEL SSM</button>
-    <span style="font-size:13px;font-weight:600">📊 REM — ENEL</span>
-  </div>
-  <div id="enel-rem-form"></div>
-</div>
-
-</div><!-- #app-content-area -->
-  </div><!-- #content-wrapper -->
-<div id="modal-area" style="position:fixed;inset:0;z-index:5000;display:contents"></div>
-</div><!-- #app-body -->
-</div><!-- #pg-app -->
-<!-- ══════════════════════════════════════════════════════
-     PWA — ELEMENTOS MOBILE
-     ══════════════════════════════════════════════════════ -->
-
-<!-- Banner offline -->
-<div id="offline-banner">⚠️ Sem conexão — trabalhando offline</div>
-
-<!-- Banner nova versão -->
-<div id="nova-versao-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#185FA5;color:#fff;padding:10px 16px;z-index:9999;display:none;align-items:center;gap:10px;font-size:13px">
-  <span style="flex:1">🔄 Nova versão disponível</span>
-  <button onclick="window.location.reload(true)" style="background:#fff;color:#185FA5;border:none;border-radius:6px;padding:5px 14px;font-weight:700;cursor:pointer">Atualizar agora</button>
-  <button onclick="document.getElementById('nova-versao-banner').style.display='none'" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer">✕</button>
-</div>
-
-<!-- Banner instalar PWA -->
-<div id="pwa-install-banner">
-  <span style="flex:1">📱 Instale o <b>CENA ERP</b> na tela inicial</span>
-  <button id="pwa-btn-instalar" onclick="pwaInstalar()">Instalar</button>
-  <button id="pwa-btn-fechar" onclick="pwaFecharBanner()">✕</button>
-</div>
-
-<!-- Bottom Navigation Mobile/Tablet -->
-<nav id="bottom-nav" role="navigation" aria-label="Navegação principal"></nav>
-
-
-
-  <!-- Auto-refresh indicator -->
-  <div id="auto-refresh-indicator" style="display:none;position:fixed;bottom:70px;right:12px;z-index:9999;background:#1a1a18ee;color:#fff;font-size:10px;padding:4px 10px;border-radius:20px;align-items:center;gap:5px;pointer-events:none;box-shadow:0 2px 8px #0004">
-    <span id="ar-dot" style="width:6px;height:6px;background:#4CAF50;border-radius:50%;display:inline-block"></span>
-    <span>Auto-refresh ativo</span>
-  </div>
 </body>
 </html>
