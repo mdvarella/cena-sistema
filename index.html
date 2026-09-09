@@ -729,6 +729,7 @@ body.perfil-portaria #pg-rh-regras,
 body.perfil-portaria #pg-rh-pendencias,
 body.perfil-portaria #pg-rh-conformidade,
 body.perfil-portaria #pg-rh-prontidao,
+body.perfil-portaria #pg-rh-vagas,
 body.perfil-portaria #pg-rh-contratacao,
 body.perfil-portaria #pg-rh-pisos,
 body.perfil-portaria #pg-rh-beneficios,
@@ -812,6 +813,7 @@ body.perfil-equipe #pg-rh-regras,
 body.perfil-equipe #pg-rh-pendencias,
 body.perfil-equipe #pg-rh-conformidade,
 body.perfil-equipe #pg-rh-prontidao,
+body.perfil-equipe #pg-rh-vagas,
 body.perfil-equipe #pg-rh-contratacao,
 body.perfil-equipe #pg-rh-pisos,
 body.perfil-equipe #pg-rh-beneficios,
@@ -3907,6 +3909,9 @@ body.insp-campo-ativo #app-content-area {
 <div id="pg-rh-prontidao" class="hidden">
   <div id="rh-prontidao-wrap"></div>
 </div>
+<div id="pg-rh-vagas" class="hidden">
+  <div id="rh-vagas-wrap"></div>
+</div>
 <div id="pg-rh-contratacao" class="hidden">
   <div id="rh-contratacao-wrap"></div>
 </div>
@@ -6451,7 +6456,11 @@ async function sbInsert(table,data,opts){
     'rh_synergy_importacao_itens':['importacao_id','linha_numero','colaborador_id','synergy_matricula','re','cpf','nome',
       'situacao_synergy','admissao_synergy','desligamento_synergy','cargo_synergy','status_conciliacao','divergencias',
       'snapshot_synergy','snapshot_cena','match_method','critico','acao_aplicada','aplicado_em','aplicado_por',
-      'revisado_em','revisado_por','justificativa','payload_aplicacao']};
+      'revisado_em','revisado_por','justificativa','payload_aplicacao'],
+    'rh_vagas':['codigo','cargo_id','cargo_nome','empresa','filial_id','filial_nome','local_trabalho','contrato_id','contrato_nome','projeto',
+      'centro_custo','gestor_id','gestor_nome','responsavel_rh_id','responsavel_rh_nome','quantidade','quantidade_planejada','quantidade_preenchida',
+      'tipo_vaga','motivo','data_abertura','data_desejada','status','matriz_status','observacoes','ativo','criado_por','updated_at'],
+    'rh_vaga_candidatos':['vaga_id','nome','cpf','telefone','email','status','observacao','ativo','criado_por','updated_at']};
   if(_schemaCols[table]){
     var _cols=_schemaCols[table];
     var _san=function(obj){var r={};_cols.forEach(function(k){if(obj[k]!==undefined&&obj[k]!==null&&obj[k]!=='')r[k]=obj[k];});return r;};
@@ -6959,7 +6968,19 @@ async function carregarModuloDiario(){
     sbFetch('campo_alertas_operacionais',{order:'criado_em.desc',filters:['data=gte.'+d7,'status=eq.aberto'],limit:100}).catch(function(){return[];}),
     sbFetch('campo_solicitacoes_materiais',{order:'criado_em.desc',filters:['data=gte.'+d7],limit:300}).catch(function(){return[];}),
   ]);
-  if(res[0]&&res[0].length)composicao_dia=res[0].map(function(c){c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);return c;});
+  if(res[0]&&res[0].length){
+    var _portFlags={};
+    (composicao_dia||[]).forEach(function(c){
+      if(c&&c.id&&(c._portaria_liberado||c._portaria_bloqueado))
+        _portFlags[c.id]={lib:!!c._portaria_liberado,bloq:!!c._portaria_bloqueado,mot:c._motivo_bloqueio};
+    });
+    composicao_dia=res[0].map(function(c){
+      c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
+      var f=_portFlags[c.id];
+      if(f){ if(f.lib)c._portaria_liberado=true; if(f.bloq){c._portaria_bloqueado=true;c._motivo_bloqueio=f.mot;} }
+      return c;
+    });
+  }
   var _sessTMA=(res[1]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s.placa=s.placa||'';s.km_inicial=s.km_inicial||0;s.km_final=s.km_final||0;s._tipo='TMA';return s;});
   var _sessPLPT=(res[2]||[]).map(function(s){s.eventos=parseJsonField(s.eventos,[]);s.placa=s.placa||'';s.km_inicial=s.km_inicial||0;s.km_final=s.km_final||0;s._tipo='PLPT';return s;});
   sessoes_disp=_sessTMA.concat(_sessPLPT);
@@ -16975,6 +16996,7 @@ var PERM_MODULOS = [
   {id:'rh-pendencias',    label:'Pendências Documentais RH', icon:'⚠️', grupo:'RH'},
   {id:'rh-conformidade',  label:'Conformidade Documental RH', icon:'📊', grupo:'RH'},
   {id:'rh-prontidao',     label:'Prontidão para Mobilizar', icon:'🚀', grupo:'RH'},
+  {id:'rh-vagas',         label:'RH / Vagas e Seleção', icon:'📣', grupo:'RH'},
   {id:'rh-contratacao',   label:'RH / Contratação / Promoção', icon:'📋', grupo:'RH'},
   {id:'rh-pisos',         label:'RH / Pisos e Benefícios',    icon:'💰', grupo:'RH'},
   {id:'rh-beneficios',    label:'RH / Benefícios VT/VR',      icon:'🚌', grupo:'RH'},
@@ -40726,10 +40748,37 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '7.9.963',
+  numero: '7.9.972',
   data:   '08/09/2026',
-  build:  '20260908-0110',
+  build:  '20260908-2235',
   log: [
+    {v:'7.9.972', d:'08/09/2026', itens:[
+      'RH-SEL-1A completo: vaga com cargo_id, filial, contrato, gestores, tipo, datas, qtd planejada/preenchida, matriz RH-1B só leitura, bloqueio de ABERTA sem matriz aprovada. SQL sql_rh_selecao_vagas_fase_sel1a.sql. Sem portal/QR/ficha/testes/admissão.',
+    ]},
+    {v:'7.9.971', d:'08/09/2026', itens:[
+      'RH-1B homologada. RH-SEL-1A: Vagas/Processos Seletivos (cargo oficial, filial, contrato, gestor, quantidade, requisitos da matriz e candidatos). SQL sql_rh_selecao_vagas_fase1a.sql. Sem portal, QR, ficha, testes ou admissão.',
+    ]},
+    {v:'7.9.970', d:'08/09/2026', itens:[
+      'RH-1B: RLS dual (anon/authenticated) nas tabelas da matriz — corrige 401/42501 ao salvar requisitos. SQL manual sql_rh_matriz_requisitos_cargo_fase1b_rls.sql.',
+    ]},
+    {v:'7.9.969', d:'08/09/2026', itens:[
+      'Gestão de Ponto e VT/VR: Abono Curso (relógio / aba afastamentos) deixa de contar como falta ou atestado e não gera vale automático. Recalcular VT/VR após re-sincronizar o Nexus.',
+    ]},
+    {v:'7.9.968', d:'08/09/2026', itens:[
+      'Portaria: botão Ajustar KM só para Frotas/admin, com justificativa obrigatória e histórico (SQL opcional sql_frotas_portaria_km_ajuste.sql).',
+    ]},
+    {v:'7.9.967', d:'08/09/2026', itens:[
+      'Portaria: bloqueia KM de saída menor que o último da placa e KM de retorno menor que o da saída (ex.: 4003 após 39929).',
+    ]},
+    {v:'7.9.966', d:'08/09/2026', itens:[
+      'Portaria: Registros acham equipe pelo código (EON324) mesmo se o campo equipe veio vazio. Aviso quando a placa liberada diverge da programada (ex.: TJC9A62 × DZH7G12).',
+    ]},
+    {v:'7.9.965', d:'08/09/2026', itens:[
+      'Portaria: rascunho some da Saída (só completa+programada). Liberação EJN/EIN não volta à fila. EON324 e demais saídas do dia reaparecem em Retorno/Registros (meia-noite UTC + recarga da aba).',
+    ]},
+    {v:'7.9.964', d:'08/09/2026', itens:[
+      'Portaria: tablet lista só equipe completa e programada (salva). Liberação casa por equipe/placa e deixa de voltar para Saída. Retorno e Registros usam o dia local (BRT) e recarregam as saídas do dia.',
+    ]},
     {v:'7.9.963', d:'08/09/2026', itens:[
       'RH-1B Matriz de Requisitos por Cargo: aba Requisitos no cadastro mestre (CNH, NR, treinamentos, ASO, documentos, jornada, cargo de confiança, testes preparatórios). Status NÃO CONFIGURADA / EM CONFIGURAÇÃO / APROVADA. SQL manual sql_rh_matriz_requisitos_cargo_fase1b.sql. Sem prontidão, seleção, contrato ou IA.',
     ]},
@@ -43250,6 +43299,19 @@ function pontoReNorm(re){
   var s=String(re).trim();
   if(/^\d+$/.test(s)) return String(parseInt(s,10));
   return s;
+}
+/** Abono Curso no relógio (Nexus: aba afastamentos / EVENTOS). */
+function pontoNormTxtPonto(s){
+  var t=String(s||'').toLowerCase();
+  try{ t=t.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }catch(e){}
+  return t;
+}
+function pontoEhAbonoCurso(p){
+  if(!p) return false;
+  if(String(p.tipo_dia||'').toLowerCase()==='abono_curso') return true;
+  var blob=pontoNormTxtPonto([p.ausencia_tipo,p.ausencia_motivo,p.tipo_dia,p.status].join(' '));
+  if(blob.indexOf('abono_curso')>=0 || blob.indexOf('abono-curso')>=0 || blob.indexOf('abono de curso')>=0) return true;
+  return blob.indexOf('abono')>=0 && blob.indexOf('curso')>=0;
 }
 /** HH:MM → minutos desde 00:00 */
 function pontoHhmmToMin(s){
@@ -58901,10 +58963,10 @@ async function avColCalcularScoresLocal(col, ini, fim){
   var faltas=0, atest=0, atrasos=0, diasPresentesPont=0;
   ponto.forEach(function(p){
     var td=(p.tipo_dia||'').toLowerCase();
-    if(td==='falta'&&!p.ausencia_motivada) faltas++;
-    if(p.ausencia_motivada||(p.ausencia_tipo||'').toLowerCase().indexOf('atestado')>=0) atest++;
+    if(td==='falta'&&!p.ausencia_motivada&&!pontoEhAbonoCurso(p)) faltas++;
+    if(!pontoEhAbonoCurso(p)&&(p.ausencia_motivada||(p.ausencia_tipo||'').toLowerCase().indexOf('atestado')>=0)) atest++;
     var ent=p.entrada_ajustada||p.entrada;
-    var ehPresente=(p.status==='presente'||ent)&&['falta','ferias','afastado','suspensao'].indexOf(td)<0&&!p.ausencia_motivada;
+    var ehPresente=(p.status==='presente'||ent)&&['falta','ferias','afastado','suspensao','abono_curso'].indexOf(td)<0&&!p.ausencia_motivada&&!pontoEhAbonoCurso(p);
     if(ehPresente&&p.horario_entrada&&ent){
       diasPresentesPont++;
       var entT=String(ent).slice(0,8), prevT=String(p.horario_entrada).slice(0,8);
@@ -70701,6 +70763,7 @@ var MAIN_CONFIG = {
   ]},
   rh: {label:'RH', subs:[
     {id:'rh-dashboard',   label:'📊 Dashboard RH'},
+    {id:'rh-vagas',       label:'📣 Recrutamento e Seleção'},
     {id:'rh-contratacao', label:'📋 Contratação / Promoção'},
     {id:'rh-pisos',       label:'💰 Pisos e Benefícios'},
     {id:'rh-beneficios',  label:'🚌 Benefícios VT/VR'},
@@ -70801,7 +70864,7 @@ var ALL_PAGES = ['dashboard','show-room-cena','contratos-lista','adiantamentos',
   'alm-extrato-colaborador','alm-desmobilizacao','alm-requisicao',
   'sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','campo-solicitacoes','obras-requisicao','obras-medicao','plr','av-colaborador',
-  'rh-dashboard','rh-contratacao','rh-pisos','rh-beneficios','rh-conciliacao-synergy','rh-central-divergencias','rh-dossie','rh-documentos','rh-entrada-ia','rh-regras','rh-pendencias','rh-conformidade','rh-prontidao','rh-cargos','rh-atalhos',
+  'rh-dashboard','rh-vagas','rh-contratacao','rh-pisos','rh-beneficios','rh-conciliacao-synergy','rh-central-divergencias','rh-dossie','rh-documentos','rh-entrada-ia','rh-regras','rh-pendencias','rh-conformidade','rh-prontidao','rh-cargos','rh-atalhos',
   'viabilidade-contratos','ativos-dashboard','ativos-lista','ativos-movimentacoes','ativos-manutencoes','ativos-documentos','ativos-inventario-fisico','ativos-relatorios','ativos-etiquetas','ativos-depreciacao','ativos-vinculos','ativos-categorias','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-conduta','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
 
 // ── SIDEBAR RENDER ─────────────────────────────────────────
@@ -70872,7 +70935,8 @@ var SIDEBAR_GROUPS = {
     {id:'av-metas', icon:'🎯', label:'Metas de Promoção'},
   ]}],
   rh: [
-    {label:'Contratação / Promoção', items:[
+    {label:'Seleção e Contratação', items:[
+      {id:'rh-vagas', icon:'📣', label:'Recrutamento e Seleção'},
       {id:'rh-contratacao', icon:'📋', label:'Contratação / Promoção'},
       {id:'rh-pisos', icon:'💰', label:'Pisos e Benefícios'},
       {id:'rh-beneficios', icon:'🚌', label:'Benefícios VT/VR'},
@@ -71074,6 +71138,7 @@ var _AUDIT_MODULO_TABELA = {
   equipes_disp:'cadastros', equipes:'cadastros', escalas_cad:'cadastros', sesmt_cursos:'cadastros', cargos:'cadastros',
   rh_cargo_requisitos:'rh', rh_cargo_requisitos_cnh:'rh', rh_cargo_requisitos_nrs:'rh',
   rh_cargo_requisitos_treinamentos:'rh', rh_cargo_requisitos_documentos:'rh', rh_cargo_requisitos_testes:'rh',
+  rh_vagas:'rh', rh_vaga_candidatos:'rh',
   frotas_veiculos:'frotas', frt_manutencoes:'frotas', frt_combustivel:'frotas', frt_documentos:'frotas', frt_multas:'frotas',
   fornecedores:'cadastros', contratos:'cadastros', categorias_despesa:'cadastros', usuarios_sistema:'sistema'
 };
@@ -79034,8 +79099,7 @@ function portRenderRetorno(){
 
   // Verificar se precisa buscar do banco
   if(!window._portRetornoBuscado) window._portRetornoBuscado = {};
-  var _temDia = (frt_portaria||[]).some(function(r){return portDiaISO(r.data_saida)===data;});
-  if(!DEMO && !_temDia && !window._portRetornoBuscado[data]){
+  if(!DEMO && !window._portRetornoBuscado[data]){
     window._portRetornoBuscado[data] = true;
     el.innerHTML = '<div style="padding:.5rem">'
       +'<div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.75rem">'
@@ -79056,7 +79120,7 @@ function portRenderRetorno(){
 
   // Filtrar
   var todos = frt_portaria.filter(function(r){
-    if(portDiaISO(r.data_saida)!==data) return false;
+    if(portDiaLocal(r.data_saida)!==data) return false;
     if(!portContratoMatch(r.contrato_id, cid, r.equipe_id||r.equipe)) return false;
     if(filId){
       var eq=equipes_disp.find(function(e){return e.id===r.equipe_id||e.id===r.equipe||e.codigo===r.equipe;})||equipes.find(function(e){return e.id===r.equipe_id||e.id===r.equipe;});
@@ -79170,8 +79234,9 @@ function portAbrirVistoriaRetorno(saidaId){
     +'</div>'
     + sobraHtml
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
-    +'<div class="fg"><label style="font-size:11px">KM retorno</label>'
-    +'<input class="inp" id="ret-km" type="number" style="width:100%" placeholder="0"/></div>'
+    +'<div class="fg"><label style="font-size:11px">KM retorno <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="ret-km" type="number" min="'+(saida.km_saida||0)+'" style="width:100%" placeholder="Mín. '+(saida.km_saida||0)+'"/>'
+    +'<div style="font-size:10px;color:#888;margin-top:3px">KM saída: <b>'+Number(saida.km_saida||0).toLocaleString('pt-BR')+'</b> — o retorno não pode ser menor.</div></div>'
     +'<div class="fg"><label style="font-size:11px">Porteiro (retorno)</label>'
     +'<div class="inp" style="width:100%;background:#f5f5f3;display:flex;align-items:center">'+escHtml(portNomePorteiroAtual())+'</div></div>'
     +'</div>'
@@ -79210,6 +79275,11 @@ function portAbrirVistoriaRetorno(saidaId){
 
       if(temMat && !fotoB64){
         progShowToast('⚠ Obrigatório: tire a foto da carga antes de confirmar o retorno.','erro');
+        return;
+      }
+      var _kmRet=portKmValidarRetorno(saida, km);
+      if(_kmRet.bloqueia){
+        progShowToast('🚫 '+(_kmRet.msgs[0]||'KM de retorno inválido.'),'erro');
         return;
       }
 
@@ -79274,13 +79344,25 @@ function portMostrarAba(aba){
     if(el) el.style.display = a===aba?'':'none';
     if(btn){ btn.style.color=a===aba?'#185FA5':'#888'; btn.style.borderBottomColor=a===aba?'#185FA5':'transparent'; btn.style.fontWeight=a===aba?'600':'500'; }
   });
-  if(aba==='equipes'){  portCarregarReqMateriais(); portEnsureReservas().then(function(){ portRenderEquipesDia(); }); }
-  if(aba==='saida'){    portEnsureReservas().then(function(){ portRenderAguardando(); }); }
+  if(aba==='equipes'){
+    portInvalidarCacheSaidas(dataHojeLocal());
+    portCarregarReqMateriais();
+    portEnsureReservas().then(function(){ portRenderEquipesDia(); });
+  }
+  if(aba==='saida'){
+    portInvalidarCacheSaidas(dataHojeLocal());
+    portEnsureReservas().then(function(){
+      return portEnsureDadosPortariaDia(dataHojeLocal());
+    }).then(function(){ portRenderAguardando(); });
+  }
   if(aba==='liberacao') portRenderLiberacao();
-  if(aba==='registros') frtPortariaRender();
+  if(aba==='registros'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
   if(aba==='reservas')  portRenderReservas();
   if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
-  if(aba==='retorno')  portRenderRetorno();
+  if(aba==='retorno'){
+    portInvalidarCacheSaidas((document.getElementById('ret-data')||{}).value||dataHojeLocal());
+    portRenderRetorno();
+  }
 }
 
 /** Normaliza placa para comparação (sem hífen/espaço). */
@@ -79308,7 +79390,7 @@ function portReservasAtivasDia(data){
 function portReservaJaSaiu(r, data){
   var pl=portNormPlaca(r.placa);
   return (frt_portaria||[]).some(function(p){
-    return p.status==='Em campo' && portNormPlaca(p.placa)===pl && String(p.data_saida||'').slice(0,10)===(data||dataHojeLocal());
+    return p.status==='Em campo' && portNormPlaca(p.placa)===pl && portDiaLocal(p.data_saida)===(data||dataHojeLocal());
   });
 }
 /** Texto de busca unificado (equipe/placa/motorista/contrato). */
@@ -79344,6 +79426,32 @@ function portDiaISO(v){
   }catch(e){}
   return '';
 }
+/** Dia civil no fuso local (BRT). Evita saída após 21h sumir do dia (ISO em UTC).
+ *  Date-only / meia-noite UTC (coluna date ou timestamptz sem hora) usa o prefixo YYYY-MM-DD,
+ *  senão 2026-09-08T00:00:00Z vira dia 07 no BRT e some de Retorno/Registros. */
+function portDiaLocal(v){
+  var s=String(v||'').trim();
+  if(!s) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  var mid=s.match(/^(\d{4}-\d{2}-\d{2})[T ]00:00:00(\.\d+)?(Z|[+-]00:00)?$/i);
+  if(mid) return mid[1];
+  try{
+    var d=new Date(s);
+    if(!isNaN(d.getTime())){
+      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    }
+  }catch(e){}
+  return portDiaISO(s);
+}
+function portInvalidarCacheSaidas(dataIso){
+  var d=portDiaLocal(dataIso)||portDiaISO(dataIso);
+  if(window._portRetornoBuscado && d) delete window._portRetornoBuscado[d];
+  if(window._portEqDiaBuscado && d){
+    delete window._portEqDiaBuscado['p:'+d];
+    delete window._portEqDiaBuscado['c:'+d];
+  }
+  if(typeof frtPortariaRender!=='undefined' && frtPortariaRender) frtPortariaRender._lastKey='';
+}
 function portIsoMais1(iso){
   if(typeof relTmaAddDiasISO==='function') return relTmaAddDiasISO(iso,1);
   var p=String(iso||'').slice(0,10).split('-');
@@ -79355,7 +79463,66 @@ function portIsoMais1(iso){
 function portFiltrosDataSaida(ini, fim){
   var a=portDiaISO(ini), b=portDiaISO(fim)||a;
   if(!a) return [];
-  return ['data_saida=gte.'+a, 'data_saida=lt.'+portIsoMais1(b)];
+  // Janela larga: date-only (meia-noite UTC) + saída após 21h BRT. O recorte fino é no cliente (portDiaLocal).
+  return ['data_saida=gte.'+a, 'data_saida=lt.'+portIsoMais1(portIsoMais1(b))+'T00:00:00-03:00'];
+}
+function portMatchSaidaEquipe(p, eq){
+  if(!p || !eq) return false;
+  if(p.equipe_id && String(p.equipe_id)===String(eq.id)) return true;
+  var pe=String(p.equipe||'').toUpperCase();
+  if(!pe) return false;
+  var nome=String(portNomeEquipe(eq,'')||'').toUpperCase();
+  return pe===String(eq.codigo||'').toUpperCase()
+    || pe===String(eq.nome_equipe||'').toUpperCase()
+    || pe===String(eq.nome||'').toUpperCase()
+    || (nome && pe===nome)
+    || pe===String(eq.id||'').toUpperCase();
+}
+function portSaidaDaEquipe(eq, data, placaHint){
+  var dia=portDiaISO(data)||dataHojeLocal();
+  var hoje=dataHojeLocal();
+  var placa=portNormPlaca(placaHint);
+  if(!placa){
+    var comp=typeof portFindCompProgramada==='function'?portFindCompProgramada(eq&&eq.id, dia):null;
+    if(comp && comp.placa) placa=portNormPlaca(comp.placa);
+    if(!placa && eq && typeof _progVeiculos!=='undefined'){
+      var pv=_progVeiculos[eq.id+'_'+dia];
+      if(pv && pv.placa) placa=portNormPlaca(pv.placa);
+    }
+  }
+  return (frt_portaria||[]).find(function(p){
+    if(!p || (p.status!=='Em campo' && p.status!=='Retornado')) return false;
+    var ds=portDiaLocal(p.data_saida);
+    if(ds!==dia && !(ds===hoje && dia!==hoje)) return false;
+    if(portMatchSaidaEquipe(p, eq)) return true;
+    return !!(placa && portNormPlaca(p.placa)===placa);
+  })||null;
+}
+function portEnsureDadosPortariaDia(data){
+  var dia=portDiaISO(data)||dataHojeLocal();
+  var hoje=dataHojeLocal();
+  var ontem=(typeof _diasAtras==='function')?_diasAtras(1):hoje;
+  if(DEMO) return Promise.resolve();
+  if(!window._portEqDiaBuscado) window._portEqDiaBuscado={};
+  var jobs=[];
+  function precisaComp(d){
+    if(!d || window._portEqDiaBuscado['c:'+d]) return false;
+    return !(composicao_dia||[]).some(function(c){ return portDiaISO(c.data)===d; });
+  }
+  if(precisaComp(dia)){
+    window._portEqDiaBuscado['c:'+dia]=true;
+    jobs.push(sbFetch('composicao_dia',{filters:['data=eq.'+dia],limit:2000}).then(function(rows){ portMesclarComposicao(rows); }));
+  } else window._portEqDiaBuscado['c:'+dia]=true;
+  if(dia===hoje && ontem && ontem!==dia && precisaComp(ontem)){
+    window._portEqDiaBuscado['c:'+ontem]=true;
+    jobs.push(sbFetch('composicao_dia',{filters:['data=eq.'+ontem],limit:2000}).then(function(rows){ portMesclarComposicao(rows); }));
+  }
+  if(!window._portEqDiaBuscado['p:'+dia]){
+    window._portEqDiaBuscado['p:'+dia]=true;
+    jobs.push(sbFetch('frotas_portaria_saidas',{filters:portFiltrosDataSaida(dia,dia),order:'data_saida.desc',limit:2000}).then(function(rows){ portMesclarSaidas(rows); }));
+  }
+  if(!jobs.length) return Promise.resolve();
+  return Promise.all(jobs).catch(function(){});
 }
 /** JPEG em coluna *_b64, ou pacote {v:1,carga,km,extras} gravado em foto_carga_saida_b64 quando km/extras falham. */
 function portAplicarFotosPacote(p){
@@ -79417,7 +79584,7 @@ function portMesclarSaidas(rows){
         var local=!p.id || (typeof isUUID==='function' && !isUUID(String(p.id)));
         if(!local) return false;
         return portNormPlaca(p.placa)===portNormPlaca(r.placa)
-          && portDiaISO(p.data_saida)===portDiaISO(r.data_saida)
+          && portDiaLocal(p.data_saida)===portDiaLocal(r.data_saida)
           && String(p.equipe_id||p.equipe||'')===String(r.equipe_id||r.equipe||'');
       });
     }
@@ -79440,8 +79607,13 @@ function portMesclarComposicao(rows){
   rows.forEach(function(c){
     if(!c||!c.id) return;
     if(c.colaborador_ids && typeof parseJsonField==='function') c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
-    var ix=composicao_dia.findIndex(function(x){return x.id===c.id;});
-    if(ix>=0) composicao_dia[ix]=c; else composicao_dia.push(c);
+    var ix=composicao_dia.findIndex(function(x){return String(x.id)===String(c.id);});
+    if(ix>=0){
+      var prev=composicao_dia[ix];
+      if(prev && prev._portaria_liberado) c._portaria_liberado=true;
+      if(prev && prev._portaria_bloqueado){ c._portaria_bloqueado=true; c._motivo_bloqueio=prev._motivo_bloqueio; }
+      composicao_dia[ix]=c;
+    } else composicao_dia.push(c);
   });
 }
 function portContratoMatch(rowCid, filtroCid, equipeLike){
@@ -79481,16 +79653,67 @@ function portCompEstaProgramada(c){
   if(!c) return false;
   return c.confirmada===true || c.confirmada==='true' || c.confirmada===1 || c.confirmada==='t';
 }
+function portCompEstaCompleta(c){
+  if(!c) return false;
+  var ids=typeof parseColabIds==='function'?parseColabIds(c.colaborador_ids).filter(Boolean):[];
+  if(!ids.length) return false;
+  var eq=typeof portBuscarEquipe==='function'?portBuscarEquipe(c.equipe_id):null;
+  var min=typeof progMinColaboradoresEquipe==='function'?progMinColaboradoresEquipe(eq):2;
+  return ids.length>=min;
+}
+function portCompVisivelPortaria(c){
+  return portCompEstaProgramada(c) && portCompEstaCompleta(c);
+}
 function portCompsProgramadasDia(data){
   var d=portDiaISO(data);
   return (composicao_dia||[]).filter(function(c){
     if(!c || c.deleted_at || c._deleted) return false;
-    return portDiaISO(c.data)===d && portCompEstaProgramada(c);
+    return portDiaISO(c.data)===d && portCompVisivelPortaria(c);
   });
 }
 function portFindCompProgramada(eqId, data){
   if(!eqId||!data) return null;
   return portCompsProgramadasDia(data).find(function(c){ return String(c.equipe_id)===String(eqId); })||null;
+}
+/** Placa oficial da programação (mesma fonte do quadro TMA). */
+function portPlacaProgramada(eqId, data){
+  var d=portDiaISO(data);
+  if(!eqId||!d) return '';
+  if(typeof progGetVeiculo==='function'){
+    var v=progGetVeiculo(eqId, d);
+    if(v && String(v.placa||'').trim()) return String(v.placa).trim();
+  }
+  var key=eqId+'_'+d;
+  var pv=(typeof _progVeiculos!=='undefined' && _progVeiculos[key])||null;
+  if(pv && String(pv.placa||'').trim()) return String(pv.placa).trim();
+  var comp=portFindCompProgramada(eqId, d) || (composicao_dia||[]).find(function(c){
+    return String(c.equipe_id)===String(eqId) && portDiaISO(c.data)===d;
+  });
+  return String((comp&&(comp.placa||comp.veiculo_placa))||'').trim();
+}
+function portNomeEquipeSaida(p){
+  if(!p) return '—';
+  if(p.equipe && p.equipe!=='null' && !/^[0-9a-f]{8}-/i.test(String(p.equipe))) return p.equipe;
+  return portNomeEquipe(portBuscarEquipe(p.equipe_id||p.equipe), p.equipe||'—');
+}
+function portSaidaCasaFiltroEquipe(p, q){
+  q=String(q||'').trim().toLowerCase();
+  if(!q) return true;
+  if((p.equipe||'').toLowerCase().indexOf(q)>=0) return true;
+  if(String(p.equipe_id||'').toLowerCase().indexOf(q)>=0) return true;
+  var eq=portBuscarEquipe(p.equipe_id||p.equipe);
+  if(eq){
+    var blob=[eq.codigo,eq.nome_equipe,eq.nome,portNomeEquipe(eq,'')].join(' ').toLowerCase();
+    if(blob.indexOf(q)>=0) return true;
+  }
+  var todas=(equipes_disp||[]).concat(equipes||[]);
+  for(var i=0;i<todas.length;i++){
+    var e=todas[i]; if(!e) continue;
+    var nome=String(e.codigo||e.nome_equipe||e.nome||'').toLowerCase();
+    if(nome.indexOf(q)<0) continue;
+    if(portMatchSaidaEquipe(p, e)) return true;
+  }
+  return false;
 }
 
 function portRenderEquipesDia(){
@@ -79560,32 +79783,20 @@ function portRenderEquipesDia(){
     }
   }
 
-  // Buscar composição e saídas do dia (e de ontem, se for hoje — turno noturno / atraso)
-  if(!window._portEqDiaBuscado) window._portEqDiaBuscado = {};
   var hojePort = dataHojeLocal();
   var ontemPort = (typeof _diasAtras==='function') ? _diasAtras(1) : hojePort;
-  if(!DEMO){
-    var jobsEq=[];
-    function portPrecisaCompDia(d){
-      if(!d || window._portEqDiaBuscado['c:'+d]) return false;
-      return !(composicao_dia||[]).some(function(c){ return portDiaISO(c.data)===d; });
-    }
-    if(portPrecisaCompDia(data)){
-      window._portEqDiaBuscado['c:'+data]=true;
-      jobsEq.push(sbFetch('composicao_dia',{filters:['data=eq.'+data],limit:2000}).then(function(rows){ portMesclarComposicao(rows); }));
-    } else window._portEqDiaBuscado['c:'+data]=true;
-    if(data===hojePort && ontemPort && ontemPort!==data && portPrecisaCompDia(ontemPort)){
-      window._portEqDiaBuscado['c:'+ontemPort]=true;
-      jobsEq.push(sbFetch('composicao_dia',{filters:['data=eq.'+ontemPort],limit:2000}).then(function(rows){ portMesclarComposicao(rows); }));
-    }
-    var temPort = (frt_portaria||[]).some(function(p){ return portDiaISO(p.data_saida)===data; });
-    if(!window._portEqDiaBuscado['p:'+data] && !temPort){
-      window._portEqDiaBuscado['p:'+data]=true;
-      jobsEq.push(sbFetch('frotas_portaria_saidas',{filters:portFiltrosDataSaida(data,data),order:'data_saida.desc',limit:2000}).then(function(rows){ portMesclarSaidas(rows); }));
-    } else window._portEqDiaBuscado['p:'+data]=true;
-    if(jobsEq.length){
+  if(!DEMO && !portRenderEquipesDia._loading){
+    var precisa=!(window._portEqDiaBuscado && window._portEqDiaBuscado['p:'+data]);
+    if(precisa){
+      portRenderEquipesDia._loading=true;
       wrap.innerHTML='<div style="padding:1.5rem;text-align:center;color:#aaa;font-size:12px">⏳ Buscando programação de '+(typeof fmtD==='function'?fmtD(data):data)+'...</div>';
-      Promise.all(jobsEq).then(function(){ portRenderEquipesDia(); }).catch(function(){ portRenderEquipesDia(); });
+      portEnsureDadosPortariaDia(data).then(function(){
+        portRenderEquipesDia._loading=false;
+        portRenderEquipesDia();
+      }).catch(function(){
+        portRenderEquipesDia._loading=false;
+        portRenderEquipesDia();
+      });
       return;
     }
   }
@@ -79625,12 +79836,7 @@ function portRenderEquipesDia(){
     compsOntemProg.forEach(function(c){
       var e=portEqPorId(c.equipe_id);
       if(!e || !portEqPassaFiltro(e) || eqsFilIds[e.id]) return;
-      var saidaAtraso=(frt_portaria||[]).find(function(p){
-        if(p.status!=='Em campo') return false;
-        var nomeEq=portNomeEquipe(e,'');
-        var match=p.equipe_id===e.id || p.equipe===e.codigo || p.equipe===e.nome_equipe || (nomeEq&&p.equipe===nomeEq) || p.equipe===e.id;
-        return match && (portDiaISO(p.data_saida)===hojePort || portDiaISO(p.data_saida)>=ontemPort);
-      });
+      var saidaAtraso=portSaidaDaEquipe(e, ontemPort) || portSaidaDaEquipe(e, hojePort);
       if(!saidaAtraso) return;
       eqsFilIds[e.id]=true;
       eqsFil.push(e);
@@ -79639,35 +79845,28 @@ function portRenderEquipesDia(){
 
   // Saídas do dia selecionado + liberação atrasada (prog. ontem, saída hoje)
   var saidasHoje = frt_portaria.filter(function(p){
-    return portDiaISO(p.data_saida)===data;
+    return portDiaLocal(p.data_saida)===data;
   });
   var placasEmCampo = saidasHoje.filter(function(p){return p.status==='Em campo';}).map(function(p){return p.placa;});
   var placasRetornadas = saidasHoje.filter(function(p){return p.status==='Retornado';}).map(function(p){return p.placa;});
 
-  function portMatchSaidaEquipe(p, eq){
-    var nomeEq=portNomeEquipe(eq,'');
-    return p.equipe_id===eq.id
-        || p.equipe===eq.codigo
-        || p.equipe===eq.nome_equipe
-        || (nomeEq && p.equipe===nomeEq)
-        || p.equipe===eq.id; // compatibilidade com registros antigos que gravaram UUID em equipe
-  }
   function portSaidaEquipeDia(eq, dataProg){
-    var sameDay = saidasHoje.find(function(p){ return portMatchSaidaEquipe(p, eq); });
-    if(sameDay) return sameDay;
-    // Liberação atrasada: programação do dia anterior, saída registrada hoje
-    if(dataProg===ontemPort){
-      return frt_portaria.find(function(p){
-        if(!portMatchSaidaEquipe(p, eq)) return false;
-        var ds=portDiaISO(p.data_saida);
-        return ds===hojePort || p.status==='Em campo';
-      })||null;
-    }
-    // Ainda em campo com saída após a data da programação
-    return frt_portaria.find(function(p){
-      if(p.status!=='Em campo' || !portMatchSaidaEquipe(p, eq)) return false;
-      var ds=portDiaISO(p.data_saida);
-      return ds>=dataProg;
+    var found=portSaidaDaEquipe(eq, dataProg||data);
+    if(found) return found;
+    if((dataProg||data)===ontemPort) return portSaidaDaEquipe(eq, hojePort);
+    return (frt_portaria||[]).find(function(p){
+      if(p.status!=='Em campo') return false;
+      if(!portMatchSaidaEquipe(p, eq)){
+        var placaProg='';
+        var compDia=portFindCompProgramada(eq.id, dataProg||data);
+        if(compDia && compDia.placa) placaProg=compDia.placa;
+        if(!placaProg && typeof _progVeiculos!=='undefined'){
+          var pv=_progVeiculos[eq.id+'_'+(dataProg||data)];
+          if(pv && pv.placa) placaProg=pv.placa;
+        }
+        if(!(placaProg && portNormPlaca(p.placa)===portNormPlaca(placaProg))) return false;
+      }
+      return portDiaLocal(p.data_saida)>=(dataProg||data);
     })||null;
   }
 
@@ -79691,8 +79890,11 @@ function portRenderEquipesDia(){
     var mot=portResolverMotoristaComp(comp);
     var _pvKey=eq.id+'_'+data;
     var _pv=typeof _progVeiculos!=='undefined'?(_progVeiculos[_pvKey]||null):null;
-    var placa=comp&&comp.placa?comp.placa:(_pv?_pv.placa:(saida?saida.placa:''));
-    var modelo=_pv?(_pv.modelo||''):(frt_veiculos&&placa?((frt_veiculos.find(function(v){return v.placa===placa;})||{}).modelo||''):'');
+    var placaProg=portPlacaProgramada(eq.id, dataComp||data) || (comp&&comp.placa) || (_pv&&_pv.placa) || '';
+    var placaSaida=saida?saida.placa:'';
+    var placaDivergiu=!!(placaProg && placaSaida && portNormPlaca(placaProg)!==portNormPlaca(placaSaida));
+    var placa=placaSaida||placaProg;
+    var modelo=_pv?(_pv.modelo||''):(frt_veiculos&&placa?((frt_veiculos.find(function(v){return portNormPlaca(v.placa)===portNormPlaca(placa);})||{}).modelo||''):'');
     var tipoEq=tipos_equipe&&eq.tipo_id?tipos_equipe.find(function(t){return t.id===eq.tipo_id;}):null;
     var tipoNome=tipoEq?tipoEq.nome:(eq.tipo||'');
     var contEq=(contratos||[]).find(function(c){return c.id===eq.contrato_id;})||{};
@@ -79710,7 +79912,7 @@ function portRenderEquipesDia(){
       +(tipoNome?'<span style="font-size:10px;color:#888;margin-left:6px">'+escHtml(tipoNome)+'</span>':'')
       +(contNome?'<span style="font-size:10px;color:#888;margin-left:6px">· '+escHtml(contNome)+'</span>':'')
       +'</div>'
-      +(placa?'<span style="font-family:monospace;font-size:11px;background:#f5f5f3;border-radius:4px;padding:2px 7px;font-weight:600">'+escHtml(placa)+'</span>'+(modelo?' <span style="font-size:10px;color:#888">'+escHtml(modelo)+'</span>':''):'') 
+      +(placa?'<span style="font-family:monospace;font-size:11px;background:'+(placaDivergiu?'#FEF3E2':'#f5f5f3')+';border-radius:4px;padding:2px 7px;font-weight:600;color:'+(placaDivergiu?'#854F0B':'inherit')+'">'+escHtml(placa)+'</span>'+(modelo?' <span style="font-size:10px;color:#888">'+escHtml(modelo)+'</span>':'')+(placaDivergiu?'<span title="Placa liberada diferente da programada" style="font-size:9px;color:#854F0B;font-weight:700;margin-left:4px">⚠ prog. '+escHtml(placaProg)+'</span>':''):'') 
       +(saida&&saida.data_saida?'<span style="font-size:10px;color:#555;white-space:nowrap;margin-left:4px">⏰ '+new Date(saida.data_saida).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})+'</span>':'')
       +(item.comp&&!item.saida&&!item.comp._portaria_liberado?(function(){var _hasM=typeof window._portReqMateriais!=='undefined'&&window._portReqMateriais.some(function(r){return r.equipe_id===eq.id&&(r.status==='Aprovada'||r.status==='Separação');});return (_hasM?'<span style="background:#FEF3E2;color:#854F0B;font-size:9px;font-weight:700;border-radius:4px;padding:1px 5px;margin-left:3px">📦 MAT</span>':'')+'<button class="btn btn-sm" onclick="portAbrirLiberacaoEquipe(this.dataset.eq,this.dataset.dt)" data-eq="'+eq.id+'" data-dt="'+data+'" style="font-size:10px;color:#3B6D11;border-color:#3B6D11;white-space:nowrap;margin-left:4px">Liberar ✅</button>';})():'')
       +'</div>'
@@ -79976,7 +80178,7 @@ function portLiberar(tipo, id, placa, dataProg){
   var _jaEmCampo = frt_portaria.some(function(p){
     return p.status==='Em campo' &&
            portNormPlaca(p.placa)===portNormPlaca(placa) &&
-           (p.data_saida||'').split('T')[0]===dataHojeLocal();
+           portDiaLocal(p.data_saida)===dataHojeLocal();
   });
   if(_jaEmCampo){
     progShowToast('⚠️ O veículo '+placa+' já está Em Campo hoje. Registre o retorno antes de liberar novamente.','erro');
@@ -80005,9 +80207,9 @@ function portLiberar(tipo, id, placa, dataProg){
     _contId   = _eq.contrato_id||'';
     var _cont = _contId ? (contratos||[]).find(function(ct){return ct.id===_contId;})||{} : {};
     _contNome = _cont.nome||_cont.numero||'—';
-    var _comp = (composicao_dia||[]).find(function(cx){return cx.equipe_id===_eq.id&&(cx.data||'').split('T')[0]===_dataProg;});
+    var _comp = (composicao_dia||[]).find(function(cx){return String(cx.equipe_id)===String(_eq.id)&&(cx.data||'').split('T')[0]===_dataProg;});
     if(!_comp){
-      _comp = (composicao_dia||[]).find(function(cx){return cx.equipe_id===_eq.id&&(cx.data||'').split('T')[0]===dataHojeLocal();});
+      _comp = (composicao_dia||[]).find(function(cx){return String(cx.equipe_id)===String(_eq.id)&&(cx.data||'').split('T')[0]===dataHojeLocal();});
     }
     _motObj   = portResolverMotoristaComp(_comp);
     if(_motObj) _motorista = _motObj.nome||'—';
@@ -80064,7 +80266,7 @@ function portLiberar(tipo, id, placa, dataProg){
     data_saida:    new Date().toISOString(),
     status:        'Em campo',
     equipe:        _eqCodigo,
-    equipe_id:     _eq.id||null,
+    equipe_id:     _eq.id||(tipo==='equipe'?id:null),
     motorista:     _motorista,
     contrato_id:   _contId||null,
     contrato_nome: _contNome,
@@ -80080,10 +80282,11 @@ function portLiberar(tipo, id, placa, dataProg){
   if(!DEMO){
     portInsertSaidaDB(saida).catch(function(e){ console.warn('[Portaria] saida',e); });
   }
+  portInvalidarCacheSaidas(saida.data_saida);
 
   if(tipo==='equipe' && _eq.id){
     (composicao_dia||[]).forEach(function(cx){
-      if(cx.equipe_id===_eq.id && (cx.data||'').split('T')[0]===_dataProg) cx._portaria_liberado=true;
+      if(String(cx.equipe_id)===String(_eq.id) && (cx.data||'').split('T')[0]===_dataProg) cx._portaria_liberado=true;
     });
   }
   if(tipo==='reserva' && _reserva){
@@ -80188,6 +80391,7 @@ function portLiberarReservaDireto(r, placa, destino, km, quem, obs, kmMeta){
   if(!DEMO){
     portInsertSaidaDB(saida).catch(function(e){ console.warn('[Portaria] reserva saida',e); });
   }
+  portInvalidarCacheSaidas(saida.data_saida);
   r.status='Em uso';
   if(!DEMO) sbUpdate('frotas_reservas_veiculos',{status:'Em uso'},'id=eq.'+r.id).catch(function(){});
   portKmResetOcr();
@@ -80204,10 +80408,10 @@ function portBloquear(placa){
 }
 
 function portAbrirLiberacaoEquipe(eqId, data){
-  var comp = composicao_dia.find(function(x){ return x.equipe_id===eqId&&(x.data||'').split('T')[0]===data; });
+  var comp = composicao_dia.find(function(x){ return String(x.equipe_id)===String(eqId)&&portDiaISO(x.data)===portDiaISO(data); });
   var eq   = portBuscarEquipe(eqId)||{codigo:'—'};
   var _pv  = (typeof _progVeiculos!=='undefined'?_progVeiculos[eqId+'_'+data]:null)||null;
-  var placa  = (comp&&comp.placa)||(_pv&&_pv.placa)||'';
+  var placa  = portPlacaProgramada(eqId, data) || (comp&&comp.placa) || (_pv&&_pv.placa) || '';
   var modelo = (_pv&&_pv.modelo)||'';
   if(!modelo && placa && frt_veiculos){
     var veic = frt_veiculos.find(function(v){return v.placa===placa;});
@@ -80427,7 +80631,7 @@ function portAbrirLiberacaoEquipe(eqId, data){
         data_saida:            new Date().toISOString(),
         status:                'Em campo',
         equipe:                portNomeEquipe(eq, eqId)||'—',
-        equipe_id:             eq.id||null,  // nunca usar código textual
+        equipe_id:             eq.id||eqId||null,
         motorista:             quem,
         quem_saiu:             quem,
         base_saida:            (_cfgPort.nome||_cfgPort.base||null),
@@ -80439,14 +80643,18 @@ function portAbrirLiberacaoEquipe(eqId, data){
         fotos_carga_extras:    fotosExtra.length?fotosExtra:[]
       };
       portKmAnexarSaida(saida, kmMeta);
-      // Verificar duplicata antes de inserir
       var _jaEmCampo = frt_portaria.some(function(p){
         return p.status==='Em campo' &&
-               (p.equipe_id===eqId || p.equipe===eqId || (placa&&p.placa===placa)) &&
-               (p.data_saida||'').split('T')[0]===dataHojeLocal();
+               (String(p.equipe_id||'')===String(eqId) || p.equipe===eqId || (placa&&portNormPlaca(p.placa)===portNormPlaca(placa))) &&
+               portDiaLocal(p.data_saida)===dataHojeLocal();
       });
       if(_jaEmCampo){ progShowToast('⚠️ Esta equipe/veículo já está Em Campo hoje.','erro'); return; }
       frt_portaria.unshift(saida);
+      (composicao_dia||[]).forEach(function(cx){
+        if(String(cx.equipe_id)===String(eqId) && (portDiaISO(cx.data)===portDiaISO(data) || portDiaISO(cx.data)===dataHojeLocal()))
+          cx._portaria_liberado=true;
+      });
+      portInvalidarCacheSaidas(saida.data_saida);
       btn.disabled=true;
       var _lbl=btn.textContent;
       btn.textContent='⏳ Salvando fotos...';
@@ -80455,6 +80663,8 @@ function portAbrirLiberacaoEquipe(eqId, data){
         portKmResetOcr();
         closeModal();
         portRenderEquipesDia();
+        portRenderAguardando();
+        if(typeof portRenderRetorno==='function') portRenderRetorno();
         progShowToast('✅ Saída liberada'+(fotoB64?' com foto':'')+(temMateriais?' — '+todosItens.length+' item(ns) conferido(s)':'')+' · '+(placa||portNomeEquipe(eq)||''));
       }).catch(function(e){
         console.warn('[Portaria] equipe saida',e);
@@ -80462,7 +80672,6 @@ function portAbrirLiberacaoEquipe(eqId, data){
         btn.textContent=_lbl;
         progShowToast('Não foi possível gravar a saída. Tente de novo.','erro');
       });
-      if(comp) comp._portaria_liberado = true;
       _portCnhExcecao=null;
     };
   },50);
@@ -80485,12 +80694,33 @@ function portRenderAguardando(){
   var hoje=dataHojeLocal();
   var ontem=(typeof _diasAtras==='function')?_diasAtras(1):hoje;
   var data=((document.getElementById('port-eq-data')||{}).value||hoje).split('T')[0]||hoje;
+  if(!DEMO && !portRenderAguardando._loading){
+    var precisa=!(window._portEqDiaBuscado && window._portEqDiaBuscado['p:'+data]);
+    if(precisa){
+      portRenderAguardando._loading=true;
+      wrap.innerHTML='<div style="color:#aaa;font-size:12px;text-align:center;padding:.75rem">⏳ Buscando saídas do dia...</div>';
+      portEnsureDadosPortariaDia(data).then(function(){
+        portRenderAguardando._loading=false;
+        portRenderAguardando();
+      }).catch(function(){
+        portRenderAguardando._loading=false;
+        portRenderAguardando();
+      });
+      return;
+    }
+  }
   var datas=[data];
   if(datas.indexOf(hoje)<0) datas.push(hoje);
   if(datas.indexOf(ontem)<0) datas.push(ontem);
   var aguard=composicao_dia.filter(function(c){
-    var cd=(c.data||'').split('T')[0];
-    return datas.indexOf(cd)>=0 && !c._portaria_liberado && !c._portaria_bloqueado;
+    var cd=portDiaISO(c.data);
+    if(datas.indexOf(cd)<0) return false;
+    if(c.deleted_at || c._deleted) return false;
+    if(!portCompVisivelPortaria(c)) return false;
+    if(c._portaria_liberado || c._portaria_bloqueado) return false;
+    var eq=portBuscarEquipe(c.equipe_id);
+    if(!eq) return false;
+    return !portSaidaDaEquipe(eq, cd, c.placa);
   });
   var rsvPend=portReservasAtivasDia(hoje).filter(function(r){return !portReservaJaSaiu(r,hoje);});
   if(!aguard.length && !rsvPend.length){
@@ -81065,7 +81295,8 @@ function portKmValidarAlertas(placa, kmInformado, confianca){
   if(!km){ msgs.push('Informe o KM do odômetro.'); bloqueia=true; return {ok:false,msgs:msgs,bloqueia:true}; }
   var ultimo=portKmUltimoRegistrado(placa);
   if(ultimo>0 && km<ultimo){
-    msgs.push('KM informado ('+km.toLocaleString('pt-BR')+') é menor que o último registrado ('+ultimo.toLocaleString('pt-BR')+').');
+    msgs.push('KM informado ('+km.toLocaleString('pt-BR')+') é menor que o último registrado ('+ultimo.toLocaleString('pt-BR')+'). Corrija o odômetro — a saída está bloqueada.');
+    bloqueia=true;
   }
   if(ultimo>0 && (km-ultimo)>PORT_KM_SALTO_ALERTA){
     msgs.push('Salto de KM muito grande: +'+(km-ultimo).toLocaleString('pt-BR')+' km desde o último registro ('+ultimo.toLocaleString('pt-BR')+').');
@@ -81074,6 +81305,23 @@ function portKmValidarAlertas(placa, kmInformado, confianca){
     msgs.push('Confiança da leitura OCR baixa ('+Math.round(confianca*100)+'%). Revise o KM antes de liberar.');
   }
   return {ok:msgs.length===0, msgs:msgs, bloqueia:bloqueia};
+}
+/** KM de retorno: obrigatório e não pode ser menor que a saída nem que o último KM da placa. */
+function portKmValidarRetorno(saida, kmInformado){
+  var msgs=[], bloqueia=false;
+  var km=parseFloat(kmInformado)||0;
+  if(!km){ return {ok:false, msgs:['Informe o KM de retorno do odômetro.'], bloqueia:true}; }
+  var saidaKm=parseFloat(saida&&saida.km_saida)||0;
+  if(saidaKm>0 && km<saidaKm){
+    msgs.push('KM retorno ('+km.toLocaleString('pt-BR')+') é menor que o KM de saída ('+saidaKm.toLocaleString('pt-BR')+').');
+    bloqueia=true;
+  }
+  var ultimo=portKmUltimoRegistrado(saida&&saida.placa);
+  if(ultimo>0 && km<ultimo){
+    msgs.push('KM retorno ('+km.toLocaleString('pt-BR')+') é menor que o último KM desta placa ('+ultimo.toLocaleString('pt-BR')+').');
+    bloqueia=true;
+  }
+  return {ok:!bloqueia, msgs:msgs, bloqueia:bloqueia};
 }
 /** Bloco HTML: campo KM + foto odômetro + OCR (reuso Diário). */
 function portKmWidgetHtml(inputId, opts){
@@ -81102,7 +81350,7 @@ function portKmWidgetHtml(inputId, opts){
     +'<input type="hidden" id="port-km-foto" value=""/>'
     +'<input type="hidden" id="port-km-ocr" value=""/>'
     +'<input type="hidden" id="port-km-conf" value=""/>'
-    +'<div id="port-km-status" style="font-size:10px;color:#888;margin-top:4px">Tire foto do odômetro. OCR preenche o KM — revise antes de liberar.</div>'
+    +'<div id="port-km-status" style="font-size:10px;color:#888;margin-top:4px">Tire foto do odômetro. OCR preenche o KM — revise antes de liberar. KM menor que o último da placa bloqueia a saída.</div>'
     +'<div id="port-km-alertas" style="display:none;margin-top:6px"></div>'
     +'</div>';
 }
@@ -81127,8 +81375,12 @@ function portKmMostrarAlertasPlaca(inputId){
   var v=portKmValidarAlertas(placa, inp.value, conf);
   if(!v.msgs.length){ box.style.display='none'; box.innerHTML=''; return; }
   box.style.display='block';
-  box.innerHTML='<div style="background:#FEF3E2;border:.5px solid #F59E0B55;border-radius:6px;padding:6px 8px;font-size:11px;color:#854F0B">'
-    +v.msgs.map(function(m){return '⚠ '+escHtml(m);}).join('<br>')+'</div>';
+  var bg=v.bloqueia?'#FCEBEB':'#FEF3E2';
+  var bd=v.bloqueia?'#A32D2D55':'#F59E0B55';
+  var cor=v.bloqueia?'#A32D2D':'#854F0B';
+  var ico=v.bloqueia?'🚫':'⚠';
+  box.innerHTML='<div style="background:'+bg+';border:.5px solid '+bd+';border-radius:6px;padding:6px 8px;font-size:11px;color:'+cor+'">'
+    +v.msgs.map(function(m){return ico+' '+escHtml(m);}).join('<br>')+'</div>';
 }
 function portKmSetPreview(b64){
   var prev=document.getElementById('port-km-prev');
@@ -81389,14 +81641,14 @@ async function portInsertSaidaDB(saida){
   saida.fotos_carga_extras=extras;
 
   var coreKeys=['placa','modelo','tipo_liberacao','destino','km_saida','data_saida','status',
-    'previsao_retorno','equipe_id','motorista','contrato_id','contrato_nome',
+    'previsao_retorno','equipe','equipe_id','motorista','contrato_id','contrato_nome',
     'base_saida','quem_saiu','liberado_por','obs','veiculo_id'];
   var core=portPickCols(saida, coreKeys);
   if(core.equipe_id && typeof isUUID==='function' && !isUUID(String(core.equipe_id))) delete core.equipe_id;
 
   var r=await sbInsert('frotas_portaria_saidas', core, {silent:true});
   if(!r){
-    var mini=portPickCols(saida, ['placa','km_saida','data_saida','status','motorista','liberado_por','obs','base_saida','contrato_id','contrato_nome','destino']);
+    var mini=portPickCols(saida, ['placa','km_saida','data_saida','status','equipe','equipe_id','motorista','liberado_por','obs','base_saida','contrato_id','contrato_nome','destino']);
     r=await sbInsert('frotas_portaria_saidas', mini, {silent:true});
   }
   if(!r) r=await sbInsert('frotas_portaria_saidas', core);
@@ -81747,32 +81999,29 @@ function frtPortariaRender(){
   if(els.dataFim && !els.dataFim.value){ els.dataFim.value=hoje; dataFim=hoje; }
   if(dataIni>dataFim){ var t=dataIni; dataIni=dataFim; dataFim=t; }
 
-  // Buscar do banco se o período não for só o dia de hoje (já vem no carregamento inicial)
   var _portariaKey = dataIni+'|'+dataFim;
   if(!DEMO && _portariaKey !== frtPortariaRender._lastKey){
     frtPortariaRender._lastKey = _portariaKey;
-    if(dataIni !== dataFim || dataIni !== hoje){
-      tb.innerHTML='<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:#aaa">⏳ Buscando registros...</td></tr>';
-      var _keyFetch = _portariaKey;
-      var _opts = {filters:portFiltrosDataSaida(dataIni, dataFim), order:'data_saida.desc', limit:2000};
-      var _fn = (typeof sbFetchPaged==='function' && dataIni!==dataFim) ? sbFetchPaged : sbFetch;
-      _fn('frotas_portaria_saidas', _opts).then(function(rows){
-        portMesclarSaidas(rows);
-        if(frtPortariaRender._lastKey === _keyFetch) frtPortariaRender();
-      }).catch(function(){
-        if(frtPortariaRender._lastKey === _keyFetch) frtPortariaRender();
-      });
-      return;
-    }
+    tb.innerHTML='<tr><td colspan="13" style="padding:1.5rem;text-align:center;color:#aaa">⏳ Buscando registros...</td></tr>';
+    var _keyFetch = _portariaKey;
+    var _opts = {filters:portFiltrosDataSaida(dataIni, dataFim), order:'data_saida.desc', limit:2000};
+    var _fn = (typeof sbFetchPaged==='function' && dataIni!==dataFim) ? sbFetchPaged : sbFetch;
+    _fn('frotas_portaria_saidas', _opts).then(function(rows){
+      portMesclarSaidas(rows);
+      if(frtPortariaRender._lastKey === _keyFetch) frtPortariaRender();
+    }).catch(function(){
+      if(frtPortariaRender._lastKey === _keyFetch) frtPortariaRender();
+    });
+    return;
   }
 
   var rows = frt_portaria.filter(function(p){
-    var ds = portDiaISO(p.data_saida);
+    var ds = portDiaLocal(p.data_saida);
     if(ds < dataIni || ds > dataFim) return false;
     if(placa && !frtPlacaMatchBusca(p.placa, placa)) return false;
     if(status   && p.status!==status) return false;
     if(base     && p.base_saida!==base) return false;
-    if(filtEq   && !(p.equipe||'').toLowerCase().includes(filtEq) && !(p.equipe_id||'').includes(filtEq)) return false;
+    if(filtEq   && !portSaidaCasaFiltroEquipe(p, filtEq)) return false;
     if(filtCont && !portContratoMatch(p.contrato_id, filtCont, p.equipe_id||p.equipe) && !(p.contrato_nome||'').toLowerCase().includes(filtCont.toLowerCase())) return false;
     return true;
   }).sort(function(a,b){ return (b.data_saida||'') > (a.data_saida||'') ? 1 : -1; });
@@ -81810,7 +82059,7 @@ function frtPortariaRender(){
     var _pEqObj = portBuscarEquipe(p.equipe_id||p.equipe)||{};
     var _pMod   = (p.modelo&&p.modelo!=='null')   ? p.modelo   : (_pVei.modelo||'—');
     var _pMot   = (p.motorista&&p.motorista!=='null') ? p.motorista : (p.quem_saiu||'—');
-    var _pEqN   = (p.equipe&&p.equipe!=='null'&&!/^[0-9a-f]{8}-/i.test(p.equipe)) ? p.equipe : portNomeEquipe(_pEqObj);
+    var _pEqN   = portNomeEquipeSaida(p);
     var _pContN = (p.contrato_nome&&p.contrato_nome!=='null') ? p.contrato_nome : ((_pEqObj.contrato_id?(contratos||[]).find(function(ct){return String(ct.id)===String(_pEqObj.contrato_id);}):{})||{}).nome||'—';
     var _pBase  = (p.base_saida&&p.base_saida!=='null') ? p.base_saida : '—';
     return '<tr style="background:'+(atrasado?'#FFF5F5':'')+';">'
@@ -85695,7 +85944,8 @@ function frtPortariaAbrirRetornoItem(saidaId){
       var saida=frt_portaria.find(function(p){return p.id===sid;});
       if(!saida){alert('Selecione a saída.');return;}
       var km=parseInt(g('fpr-km'));
-      if(!km||km<(saida.km_saida||0)){alert('KM retorno inválido. Deve ser maior que KM saída ('+saida.km_saida+').');return;}
+      var _kmRet=portKmValidarRetorno(saida, km);
+      if(_kmRet.bloqueia){ progShowToast('🚫 '+(_kmRet.msgs[0]||'KM de retorno inválido.'),'erro'); return; }
       saida.status='Retornado';saida.data_retorno=g('fpr-dt');
       saida.base_retorno=g('fpr-base');saida.km_retorno=km;saida.obs_retorno=g('fpr-obs');
       saida.retorno_registrado_por=portNomePorteiroAtual();
@@ -85775,11 +86025,12 @@ function frtPortariaMostrarDetalhe(p){
     +lin('Destino', escHtml(p.destino||'—'))
     +lin('Saída', escHtml(p.data_saida?fmtDT(p.data_saida):'—'))
     +lin('Retorno', escHtml(p.data_retorno?fmtDT(p.data_retorno):'—'))
-    +lin('KM saída', String(p.km_saida||0))
+    +lin('KM saída', String(p.km_saida||0)+(p.km_ajustado_em?' <span style="font-size:10px;color:#854F0B;font-weight:700">ajustado</span>':''))
     +lin('KM retorno', p.km_retorno!=null?String(p.km_retorno):'—')
     +lin('Status', escHtml(p.status||'—'))
     +lin('Porteiro (saída)', escHtml(p.liberado_por||'—'))
     +lin('Porteiro (retorno)', escHtml(p.retorno_registrado_por||'—'))
+    + portKmAjustesHtml(p)
     +'<div style="margin-top:.75rem"><div style="font-size:11px;color:#888;margin-bottom:4px">Observação da saída</div>'
     +'<div style="background:#f7f7f4;border-radius:8px;padding:8px 10px;font-size:12px;white-space:pre-wrap">'+(obs?escHtml(obs):'<span style="color:#aaa">Sem observação</span>')+'</div></div>'
     +(p.obs_retorno?'<div style="margin-top:.5rem"><div style="font-size:11px;color:#888;margin-bottom:4px">Observação do retorno</div>'
@@ -85788,8 +86039,147 @@ function frtPortariaMostrarDetalhe(p){
     +(fotos?'<div style="display:flex;flex-wrap:wrap;gap:10px">'+fotos+'</div>'
       :'<div style="font-size:12px;color:#aaa">Nenhuma foto neste registro.</div>')
     +'</div>'
-    +'<div style="margin-top:1rem;text-align:right"><button class="btn" onclick="closeModal()">Fechar</button></div>'
+    +'<div style="margin-top:1rem;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">'
+    +(portPodeAjustarKm()?'<button class="btn btn-pri" data-id="'+escHtml(String(p.id||''))+'" onclick="portAbrirAjusteKm(this.dataset.id)" style="background:#854F0B;border-color:#854F0B">✏ Ajustar KM (Frotas)</button>':'')
+    +'<button class="btn" onclick="closeModal()">Fechar</button></div>'
     +'</div></div>');
+}
+
+function portPodeAjustarKm(){
+  var p=String((usuarioLogado&&(usuarioLogado.perfil||usuarioLogado.role))||'').toLowerCase();
+  if(!p) return false;
+  if(p==='portaria') return false;
+  return p==='admin' || p==='diretoria' || p==='gerente_frotas' || p==='supervisor_frotas' || p.indexOf('frotas')>=0;
+}
+function portKmAjustesLista(p){
+  if(!p) return [];
+  var raw=p.km_ajustes;
+  if(typeof parseJsonField==='function') raw=parseJsonField(raw,[]);
+  else if(typeof raw==='string'){ try{ raw=JSON.parse(raw); }catch(e){ raw=[]; } }
+  return Array.isArray(raw)?raw:[];
+}
+function portKmAjustesHtml(p){
+  var hist=portKmAjustesLista(p);
+  if(!hist.length && !p.km_ajuste_justificativa) return '';
+  var itens=hist.length?hist.slice().reverse():[{
+    em:p.km_ajustado_em, por:p.km_ajustado_por, justificativa:p.km_ajuste_justificativa
+  }];
+  return '<div style="margin-top:.75rem;background:#FEF9EE;border:.5px solid #F59E0B44;border-radius:8px;padding:8px 10px">'
+    +'<div style="font-size:11px;font-weight:700;color:#854F0B;margin-bottom:6px">Histórico de ajuste de KM</div>'
+    +itens.map(function(h){
+      var quando=h.em?(typeof fmtDT==='function'?fmtDT(h.em):h.em):'—';
+      var saidaTxt=(h.km_saida_antes!=null||h.km_saida_depois!=null)
+        ? ('saída '+(h.km_saida_antes!=null?h.km_saida_antes:'—')+' → '+(h.km_saida_depois!=null?h.km_saida_depois:'—')) : '';
+      var retTxt=(h.km_retorno_antes!=null||h.km_retorno_depois!=null)
+        ? ('retorno '+(h.km_retorno_antes!=null?h.km_retorno_antes:'—')+' → '+(h.km_retorno_depois!=null?h.km_retorno_depois:'—')) : '';
+      return '<div style="font-size:11px;color:#555;margin-bottom:6px;padding-bottom:6px;border-bottom:.5px solid #F59E0B22">'
+        +'<div><b>'+escHtml(h.por||'Frotas')+'</b> · '+escHtml(quando)+'</div>'
+        +(saidaTxt||retTxt?'<div style="font-family:monospace;font-size:10px;margin-top:2px">'+escHtml([saidaTxt,retTxt].filter(Boolean).join(' · '))+'</div>':'')
+        +'<div style="margin-top:2px">'+escHtml(h.justificativa||'')+'</div></div>';
+    }).join('')
+    +'</div>';
+}
+function portAbrirAjusteKm(id){
+  if(!portPodeAjustarKm()){ progShowToast('Ajuste de KM é exclusivo de Frotas.','erro'); return; }
+  var p=(frt_portaria||[]).find(function(x){return String(x.id)===String(id);});
+  if(!p){ progShowToast('Registro não encontrado.','erro'); return; }
+  var temRet=p.km_retorno!=null && p.km_retorno!=='';
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:440px">'
+    +'<h3 style="margin:0 0 .5rem">✏ Ajustar KM</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">Correção manual exclusiva de Frotas. Informe a justificativa do erro (ex.: dígito faltando no retorno).</div>'
+    +'<div style="background:#f7f7f4;border-radius:8px;padding:8px 10px;font-size:12px;margin-bottom:.75rem">'
+    +'<div><b>Placa:</b> <span style="font-family:monospace">'+escHtml(p.placa||'—')+'</span>'
+    +(p.equipe?' · <b>Equipe:</b> '+escHtml(p.equipe):'')+'</div>'
+    +'<div>KM atual: saída <b>'+Number(p.km_saida||0).toLocaleString('pt-BR')+'</b>'
+    +(temRet?' · retorno <b>'+Number(p.km_retorno).toLocaleString('pt-BR')+'</b>':' · sem retorno')+'</div>'
+    +'</div>'
+    +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px;font-weight:600">KM saída</label>'
+    +'<input class="inp" id="km-aj-saida" type="number" min="1" style="width:100%" value="'+(p.km_saida||'')+'"/></div>'
+    +'<div class="fg" style="margin-bottom:.5rem"><label style="font-size:11px;font-weight:600">KM retorno'+(temRet||p.status==='Retornado'?' <span style="color:#A32D2D">*</span>':' <span style="font-weight:400;color:#888">(se já retornou)</span>')+'</label>'
+    +'<input class="inp" id="km-aj-retorno" type="number" min="1" style="width:100%" value="'+(temRet?p.km_retorno:'')+'" placeholder="'+(temRet?'':'Vazio = sem retorno')+'"/></div>'
+    +'<div class="fg" style="margin-bottom:.75rem"><label style="font-size:11px;font-weight:600">Justificativa <span style="color:#A32D2D">*</span></label>'
+    +'<textarea class="inp" id="km-aj-just" rows="3" style="width:100%" placeholder="Descreva o erro e o valor correto..."></textarea></div>'
+    +'<div style="display:flex;gap:8px">'
+    +'<button class="btn" onclick="frtPortariaVerDetalhe(\''+String(p.id).replace(/'/g,"\\'")+'\')" style="flex:1">Voltar</button>'
+    +'<button class="btn btn-pri" id="km-aj-salvar" data-id="'+escHtml(String(p.id||''))+'" style="flex:2;background:#854F0B;border-color:#854F0B">Salvar ajuste</button>'
+    +'</div></div></div>');
+  setTimeout(function(){
+    var btn=document.getElementById('km-aj-salvar'); if(!btn) return;
+    btn.onclick=function(){ portSalvarAjusteKm(btn.getAttribute('data-id')); };
+  },40);
+}
+function portSalvarAjusteKm(id){
+  if(!portPodeAjustarKm()){ progShowToast('Ajuste de KM é exclusivo de Frotas.','erro'); return; }
+  var p=(frt_portaria||[]).find(function(x){return String(x.id)===String(id);});
+  if(!p){ progShowToast('Registro não encontrado.','erro'); return; }
+  var kmS=parseInt((document.getElementById('km-aj-saida')||{}).value||'',10);
+  var kmRRaw=((document.getElementById('km-aj-retorno')||{}).value||'').trim();
+  var kmR=kmRRaw===''?null:parseInt(kmRRaw,10);
+  var just=((document.getElementById('km-aj-just')||{}).value||'').trim();
+  if(!kmS || kmS<1){ progShowToast('Informe o KM de saída correto.','erro'); return; }
+  if((p.status==='Retornado' || p.km_retorno!=null) && (!kmR || kmR<1)){
+    progShowToast('Informe o KM de retorno correto.','erro'); return;
+  }
+  if(kmR!=null && kmR<kmS){
+    progShowToast('🚫 KM retorno não pode ser menor que o KM de saída.','erro'); return;
+  }
+  if(just.length<8){ progShowToast('Justificativa obrigatória (mínimo 8 caracteres).','erro'); return; }
+  var antesS=p.km_saida, antesR=p.km_retorno;
+  if(Number(antesS)===kmS && (antesR==null?kmR==null:Number(antesR)===kmR)){
+    progShowToast('Nenhum KM foi alterado.','erro'); return;
+  }
+  var quem=portNomePorteiroAtual();
+  var agora=new Date().toISOString();
+  var ev={
+    em:agora, por:quem, justificativa:just,
+    km_saida_antes:antesS, km_saida_depois:kmS,
+    km_retorno_antes:antesR, km_retorno_depois:kmR
+  };
+  var hist=portKmAjustesLista(p).concat([ev]);
+  p.km_saida=kmS;
+  p.km_retorno=kmR;
+  p.km_ajustado_por=quem;
+  p.km_ajustado_em=agora;
+  p.km_ajuste_justificativa=just;
+  p.km_ajustes=hist;
+  var nota='[Ajuste KM '+agora.slice(0,16).replace('T',' ')+' por '+quem+'] saída '+(antesS||'—')+'→'+kmS
+    +(kmR!=null?' · retorno '+(antesR!=null?antesR:'—')+'→'+kmR:'')+' — '+just;
+  p.obs=((p.obs||p.observacao||'')+(p.obs||p.observacao?'\n':'')+nota).trim();
+
+  var veic=(frt_veiculos||[]).find(function(v){return portNormPlaca(v.placa)===portNormPlaca(p.placa);});
+  var kmVeic=Math.max(kmS, kmR||0);
+  if(veic && kmVeic>(parseFloat(veic.km_atual)||0)){
+    veic.km_atual=kmVeic;
+    if(!DEMO) sbUpdate('frotas_veiculos',{km_atual:kmVeic},'id=eq.'+veic.id).catch(function(){});
+  }
+
+  function ok(){
+    progShowToast('✅ KM ajustado com justificativa.');
+    frtPortariaMostrarDetalhe(p);
+    if(typeof frtPortariaRender==='function'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
+    if(typeof portRenderRetorno==='function') portRenderRetorno();
+  }
+  if(DEMO){ ok(); return; }
+  if(typeof isUUID==='function' && !isUUID(String(p.id||''))){
+    progShowToast('Registro ainda sem ID no banco — ajuste ficou só neste aparelho.','erro');
+    ok(); return;
+  }
+  var full={
+    km_saida:kmS, km_retorno:kmR, obs:p.obs,
+    km_ajustado_por:quem, km_ajustado_em:agora,
+    km_ajuste_justificativa:just, km_ajustes:hist
+  };
+  var mini={km_saida:kmS, km_retorno:kmR, obs:p.obs};
+  var _u=sbUpdate('frotas_portaria_saidas', full, 'id=eq.'+p.id);
+  Promise.resolve(_u).then(function(r){
+    if(r===false){
+      return sbUpdate('frotas_portaria_saidas', mini, 'id=eq.'+p.id);
+    }
+  }).then(function(){ ok(); }).catch(function(){
+    sbUpdate('frotas_portaria_saidas', mini, 'id=eq.'+p.id)
+      .then(function(){ ok(); })
+      .catch(function(){ progShowToast('Não foi possível gravar o ajuste. Tente de novo.','erro'); });
+  });
 }
 
 // Constantes do fluxo de manutenção
@@ -88625,7 +89015,8 @@ function gpRenderDashboard(){
   var antecipMin=antecip.reduce(function(s,r){return s+(r.minutos_antecipacao||0);},0);
   var feriasReSet={}, suspReSet={};
   regs.forEach(function(r){ if(r.ferias||r.tipo_dia==='ferias') feriasReSet[String(r.re)]=true; if(r.suspensao||r.tipo_dia==='suspensao') suspReSet[String(r.re)]=true; });
-  var ausMot=regs.filter(function(r){return r.ausencia_motivada;});
+  var ausMot=regs.filter(function(r){return r.ausencia_motivada && !pontoEhAbonoCurso(r);});
+  var abonoCurso=regs.filter(function(r){return pontoEhAbonoCurso(r);});
   var heMap=gpHEporColab(); var heTotal=Object.keys(heMap).reduce(function(s,k){return s+heMap[k];},0);
   var acima=[];
   escopo.forEach(function(c){ var he=heMap[String(c.re)]||0; var lim=gpLimiteCargo(c.cargo,c.contrato_id); if(lim!==null&&lim>0&&he>lim) acima.push({c:c,he:he,lim:lim,exc:he-lim}); });
@@ -88644,6 +89035,7 @@ function gpRenderDashboard(){
     +_gpCard('🏖','Férias (mês)',Object.keys(feriasReSet).length,'#185FA5','colaboradores')
     +_gpCard('⛔','Suspensão (mês)',Object.keys(suspReSet).length,suspReSet&&Object.keys(suspReSet).length?'#A32D2D':'#3B6D11','')
     +_gpCard('📋','Ausência motivada',ausMot.length,'#854F0B','dias no mês')
+    +_gpCard('📚','Abono Curso',abonoCurso.length,'#533AB7','dias no mês')
     +_gpCard('⏰','Horas extras (mês)',gpHHMM(heTotal),'#534AB7','total')
     +_gpCard('🔴','Acima da meta HE',acima.length,acima.length?'#A32D2D':'#3B6D11','colaboradores')
     +'</div>';
@@ -88654,6 +89046,8 @@ function gpRenderDashboard(){
   // ausências motivadas agrupadas por colab
   var ausPorColab={}; ausMot.forEach(function(r){ var k=String(r.re); (ausPorColab[k]||(ausPorColab[k]={re:k,motivos:{},dias:0})); ausPorColab[k].dias++; ausPorColab[k].motivos[r.ausencia_motivo||r.ausencia_tipo||'—']=true; });
   var lAus=Object.keys(ausPorColab).map(function(k){ var a=ausPorColab[k]; var c=gpColabByRe(k)||{}; return '<tr><td style="font-weight:500">'+escHtml(c.nome||('RE '+k))+'</td><td style="font-size:11px;color:#888">RE '+escHtml(k)+'</td><td>'+escHtml(Object.keys(a.motivos).join(', '))+'</td><td style="text-align:right;font-weight:700">'+a.dias+' dia(s)</td></tr>'; });
+  var abonoPorColab={}; abonoCurso.forEach(function(r){ var k=String(r.re); (abonoPorColab[k]||(abonoPorColab[k]={re:k,motivos:{},dias:0})); abonoPorColab[k].dias++; abonoPorColab[k].motivos[r.ausencia_motivo||r.ausencia_tipo||'Abono Curso']=true; });
+  var lAbono=Object.keys(abonoPorColab).map(function(k){ var a=abonoPorColab[k]; var c=gpColabByRe(k)||{}; return '<tr><td style="font-weight:500">'+escHtml(c.nome||('RE '+k))+'</td><td style="font-size:11px;color:#888">RE '+escHtml(k)+'</td><td>'+escHtml(Object.keys(a.motivos).join(', '))+'</td><td style="text-align:right;font-weight:700">'+a.dias+' dia(s)</td></tr>'; });
   // ferias/suspensao ativas
   var lFer=Object.keys(feriasReSet).map(function(k){ var c=gpColabByRe(k)||{}; var dias=regs.filter(function(r){return String(r.re)===k&&(r.ferias||r.tipo_dia==='ferias');}).map(function(r){return (r.data||'').slice(0,10);}).sort(); return '<tr><td style="font-weight:500">'+escHtml(c.nome||('RE '+k))+'</td><td style="font-size:11px;color:#888">RE '+escHtml(k)+'</td><td>'+(dias.length?fmtD(dias[0])+' a '+fmtD(dias[dias.length-1]):'—')+'</td><td style="text-align:right">'+dias.length+' dia(s)</td></tr>'; });
 
@@ -88671,6 +89065,7 @@ function gpRenderDashboard(){
     +_gpLista('⚠️ Entrada antecipada hoje (>5 min)','#854F0B',lAntec,'Nenhuma antecipação hoje')
     +_gpLista('🔴 Acima da meta de HE','#A32D2D',lAcima,'Nenhum colaborador acima da meta (ou metas não cadastradas)')
     +_gpLista('📋 Ausências motivadas (mês)','#854F0B',lAus,'Nenhuma ausência motivada')
+    +_gpLista('📚 Abono Curso (mês)','#533AB7',lAbono,'Nenhum Abono Curso no período')
     +_gpLista('🏖 Férias no mês','#185FA5',lFer,'Ninguém de férias no mês');
 }
 
@@ -88703,10 +89098,11 @@ function gpRenderRegistros(){
 
   if(modo==='acumulado'){
     var ag={};
-    regs.forEach(function(r){ var k=String(r.re); var a=ag[k]||(ag[k]={re:k,he:0,faltas:0,ausencias:0,ferias:0,folgas:0,trab:0,antecCount:0,antecMin:0});
+    regs.forEach(function(r){ var k=String(r.re); var a=ag[k]||(ag[k]={re:k,he:0,faltas:0,ausencias:0,abonoCurso:0,ferias:0,folgas:0,trab:0,antecCount:0,antecMin:0});
       a.he+=parseFloat(r.horas_extras)||0;
       if(r.tipo_dia==='falta'||r.status==='falta') a.faltas++;
-      if(r.ausencia_motivada) a.ausencias++;
+      if(pontoEhAbonoCurso(r)) a.abonoCurso++;
+      else if(r.ausencia_motivada) a.ausencias++;
       if(r.ferias||r.tipo_dia==='ferias') a.ferias++;
       if(r.tipo_dia==='folga') a.folgas++;
       if(r.entrada) a.trab++;
@@ -88714,16 +89110,18 @@ function gpRenderRegistros(){
     });
     var rows=Object.keys(ag).map(function(k){ return {a:ag[k], c:gpColabByRe(k)||{}}; })
       .sort(function(x,y){ return (x.c.nome||'').localeCompare(y.c.nome||''); });
-    var headA='<tr><th>Colaborador</th><th>RE</th><th>Cargo</th><th style="text-align:center">Dias trab.</th><th style="text-align:right">HE mês</th><th style="text-align:center">Faltas</th><th style="text-align:center">Aus. mot.</th><th style="text-align:center">Férias</th><th style="text-align:center">Antecip. (qtd/min)</th></tr>';
+    var headA='<tr><th>Colaborador</th><th>RE</th><th>Cargo</th><th style="text-align:center">Dias trab.</th><th style="text-align:right">HE mês</th><th style="text-align:center">Faltas</th><th style="text-align:center">Aus. mot.</th><th style="text-align:center">Abono Curso</th><th style="text-align:center">Férias</th><th style="text-align:center">Antecip. (qtd/min)</th></tr>';
     var linhasA=rows.map(function(o){ var a=o.a,c=o.c; return '<tr><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td><td style="font-family:monospace">'+escHtml(a.re)+'</td><td style="font-size:11px">'+escHtml(c.cargo||'')+'</td>'
       +'<td style="text-align:center">'+a.trab+'</td>'
       +'<td style="text-align:right;color:#534AB7;font-weight:'+(a.he?'700':'400')+'">'+(a.he?gpHHMM(a.he):'—')+'</td>'
       +'<td style="text-align:center;color:'+(a.faltas?'#A32D2D':'#555')+';font-weight:'+(a.faltas?'700':'400')+'">'+a.faltas+'</td>'
-      +'<td style="text-align:center">'+(a.ausencias||'—')+'</td><td style="text-align:center">'+(a.ferias||'—')+'</td>'
+      +'<td style="text-align:center">'+(a.ausencias||'—')+'</td>'
+      +'<td style="text-align:center;color:'+(a.abonoCurso?'#533AB7':'#555')+';font-weight:'+(a.abonoCurso?'700':'400')+'">'+(a.abonoCurso||'—')+'</td>'
+      +'<td style="text-align:center">'+(a.ferias||'—')+'</td>'
       +'<td style="text-align:center;color:'+(a.antecCount?'#854F0B':'#555')+'">'+(a.antecCount?(a.antecCount+' / '+a.antecMin+' min'):'—')+'</td></tr>'; });
     el.innerHTML=ctrl+'<div class="card"><div class="ch"><span class="ct">Σ Acumulado por colaborador — '+escHtml(gpPeriodoLabel())+' ('+rows.length+' colaboradores)</span></div>'
       +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead>'+headA+'</thead><tbody>'
-      +(linhasA.length?linhasA.join(''):'<tr><td colspan="9" style="text-align:center;color:#aaa;padding:1.5rem">Sem registros para o filtro.</td></tr>')
+      +(linhasA.length?linhasA.join(''):'<tr><td colspan="10" style="text-align:center;color:#aaa;padding:1.5rem">Sem registros para o filtro.</td></tr>')
       +'</tbody></table></div></div>';
     return;
   }
@@ -88736,14 +89134,15 @@ function gpRenderRegistros(){
     var ef=typeof pontoEntradaSaidaEfetiva==='function'?pontoEntradaSaidaEfetiva(r,d):{entrada:r.entrada,saida:r.saida,intervalo_saida:r.intervalo_saida,intervalo_retorno:r.intervalo_retorno};
     var entEx=_gpEntAtual(r)||ef.entrada||'';
     var entTit=r.entrada_ajustada?('Ajustado · original '+(r.entrada_original||r.entrada||'—')):'';
-    var tipoCor={ferias:'#185FA5',suspensao:'#A32D2D',ausencia:'#854F0B',falta:'#A32D2D',folga:'#888',normal:'#3B6D11'}[r.tipo_dia]||'#555';
+    var tipoLbl=pontoEhAbonoCurso(r)?'abono_curso':(r.tipo_dia||'—');
+    var tipoCor={ferias:'#185FA5',suspensao:'#A32D2D',ausencia:'#854F0B',abono_curso:'#533AB7',falta:'#A32D2D',folga:'#888',normal:'#3B6D11'}[tipoLbl]||'#555';
     return '<tr><td style="font-weight:500">'+escHtml(c.nome||'—')+'</td><td style="font-family:monospace">'+escHtml(String(r.re))+'</td><td style="font-size:11px">'+escHtml(c.cargo||'')+'</td>'
       +'<td>'+fmtD(d)+'</td>'
       +'<td'+(entTit?' title="'+escHtml(entTit)+'" style="font-weight:'+(r.entrada_ajustada?'700':'400')+'"':'')+'>'+(entEx||'—')+'</td>'
       +'<td>'+(ef.intervalo_saida||'—')+'</td><td>'+(ef.intervalo_retorno||'—')+'</td>'
       +'<td style="font-weight:600">'+(ef.saida||'—')+'</td>'
       +'<td style="text-align:right;color:#534AB7;font-weight:'+(parseFloat(r.horas_extras)?'700':'400')+'">'+(parseFloat(r.horas_extras)?gpHHMM(r.horas_extras):'—')+'</td>'
-      +'<td><span style="color:'+tipoCor+';font-weight:600;font-size:11px">'+(r.tipo_dia||'—')+'</span></td>'
+      +'<td><span style="color:'+tipoCor+';font-weight:600;font-size:11px">'+escHtml(tipoLbl)+'</span></td>'
       +'<td style="font-size:11px;color:#888">'+escHtml(r.ausencia_motivo||'')+'</td>'
       +'<td>'+(antec?'<span title="Entrada '+r.minutos_antecipacao+' min antes" style="color:#854F0B">⚠️ '+r.minutos_antecipacao+'m</span>':'')+'</td></tr>'; });
   el.innerHTML=ctrl+'<div class="card"><div class="ch"><span class="ct">📅 Registros diários — '+escHtml(gpPeriodoLabel())+' ('+regsD.length+' dias)</span></div>'
@@ -88756,7 +89155,8 @@ function gpExportCsv(){
   var csv='Colaborador,RE,Cargo,Data,Entrada,IntSaida,IntRetorno,Saida,HE_dia,Tipo,Motivo,MinAntecipacao\n'
     +regs.map(function(r){ var c=gpColabByRe(r.re)||{}; var d=(r.data||'').slice(0,10);
       var ef=typeof pontoEntradaSaidaEfetiva==='function'?pontoEntradaSaidaEfetiva(r,d):{entrada:r.entrada,saida:r.saida,intervalo_saida:r.intervalo_saida,intervalo_retorno:r.intervalo_retorno};
-      return ['"'+(c.nome||'').replace(/"/g,'""')+'"',r.re,'"'+(c.cargo||'')+'"',d,_gpEntAtual(r)||ef.entrada||'',ef.intervalo_saida||'',ef.intervalo_retorno||'',ef.saida||'',r.horas_extras||0,r.tipo_dia||'','"'+(r.ausencia_motivo||'')+'"',r.minutos_antecipacao||0].join(','); }).join('\n');
+      var tipoCsv=pontoEhAbonoCurso(r)?'abono_curso':(r.tipo_dia||'');
+      return ['"'+(c.nome||'').replace(/"/g,'""')+'"',r.re,'"'+(c.cargo||'')+'"',d,_gpEntAtual(r)||ef.entrada||'',ef.intervalo_saida||'',ef.intervalo_retorno||'',ef.saida||'',r.horas_extras||0,tipoCsv,'"'+(r.ausencia_motivo||'')+'"',r.minutos_antecipacao||0].join(','); }).join('\n');
   var a=document.createElement('a'); a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv); a.download='gestao_ponto_'+_gp.ini+'_a_'+_gp.fim+'.csv'; a.click();
 }
 
@@ -94515,6 +94915,7 @@ var _rhDocUltimoMeta = {
 
 function rhPermKeyPagina(pageId){
   if(pageId==='rh-cargos') return 'cadastros';
+  if(pageId==='rh-vagas') return 'rh-vagas';
   if(pageId==='rh-contratacao') return 'rh-contratacao';
   if(pageId==='rh-pisos') return 'rh-pisos';
   if(pageId==='rh-beneficios') return 'rh-beneficios';
@@ -94549,6 +94950,7 @@ function rhInit(pageId){
     else if(pageId==='rh-pendencias') rhRenderPendencias();
     else if(pageId==='rh-conformidade') rhRenderConformidade();
     else if(pageId==='rh-prontidao') rhRenderProntidao();
+    else if(pageId==='rh-vagas') rhSelRender();
     else if(pageId==='rh-contratacao') rhRenderContratacoes();
     else if(pageId==='rh-pisos') rhRenderPisos();
     else if(pageId==='rh-beneficios') rhBeneficioInit();
@@ -99774,7 +100176,7 @@ function rhBeneficioAplicarAjuste(dia, prev){
 function rhBeneficioSomarApuracao(a){
   var d=a.dias||[];
   a.dias_elegiveis=0; a.dias_sem_direito=0; a.faltas=0; a.ferias=0;
-  a.afastamentos=0; a.menos_2h=0; a.sem_marcacao=0; a.batida_incompleta=0;
+  a.afastamentos=0; a.abono_curso=0; a.menos_2h=0; a.sem_marcacao=0; a.batida_incompleta=0;
   a.qtd_vt=0; a.qtd_vr=0;
   var temAj=false, temDiv=false;
   if(!d.length){
@@ -99790,6 +100192,7 @@ function rhBeneficioSomarApuracao(a){
     if(x.status_beneficio==='Falta') a.faltas++;
     if(x.status_beneficio==='Férias') a.ferias++;
     if(x.status_beneficio==='Afastado') a.afastamentos++;
+    if(x.status_beneficio==='Abono Curso') a.abono_curso++;
     if(x.status_beneficio==='Menos de 2 horas') a.menos_2h++;
     if(x.status_beneficio==='Sem marcação') a.sem_marcacao++;
     if(x.status_beneficio==='Batida incompleta') a.batida_incompleta++;
@@ -99905,6 +100308,8 @@ function rhBeneficioClassificarDia(p, prog, perm){
   }
   if(td==='ferias' || p.ferias || st==='ferias' || progSt==='ferias')
     return {status:'Férias', vt:0, vr:0, divergencia:false, motivo:'Colaborador em férias'};
+  if(pontoEhAbonoCurso(p))
+    return {status:'Abono Curso', vt:0, vr:0, divergencia:false, motivo:'Abono Curso no relógio — sem VT/VR automático'};
   if(td==='afastado' || st==='afastado' || progSt==='afastado')
     return {status:'Afastado', vt:0, vr:0, divergencia:false, motivo:'Colaborador afastado'};
   if(td==='suspensao' || p.suspensao)
@@ -100041,6 +100446,7 @@ function rhBeneficioDiaExcluidoConfianca(data, c, progBy, pontoMap){
     var td=String(p.tipo_dia||'').toLowerCase();
     var st=String(p.status||'').toLowerCase();
     if(td==='ferias'||p.ferias||st==='ferias') return {status:'Férias', motivo:'Férias no ponto'};
+    if(pontoEhAbonoCurso(p)) return {status:'Abono Curso', motivo:'Abono Curso no relógio'};
     if(td==='afastado'||st==='afastado') return {status:'Afastado', motivo:'Afastamento no ponto'};
     if(td==='suspensao'||p.suspensao) return {status:'Suspensão', motivo:'Suspensão no ponto'};
   }
@@ -100051,7 +100457,7 @@ function rhBeneficioMontarApuracaoConfianca(a, c, per, pontoMap, progBy, prevAj)
   a.cargo_confianca_snapshot=true;
   a.regime_beneficio_snapshot=String(c.regime_beneficio||'dias_uteis');
   var excluir={};
-  var feriasN=0, afN=0;
+  var feriasN=0, afN=0, abonoN=0;
   rhBeneficioCadaDia(per.ini, per.fim, function(data){
     var ex=rhBeneficioDiaExcluidoConfianca(data, c, progBy, pontoMap);
     if(ex){
@@ -100060,6 +100466,7 @@ function rhBeneficioMontarApuracaoConfianca(a, c, per, pontoMap, progBy, prevAj)
       if(wd!==0&&wd!==6){
         if(ex.status==='Férias') feriasN++;
         else if(ex.status==='Afastado') afN++;
+        else if(ex.status==='Abono Curso') abonoN++;
       }
     }
   });
@@ -100107,12 +100514,13 @@ function rhBeneficioMontarApuracaoConfianca(a, c, per, pontoMap, progBy, prevAj)
   rhBeneficioSomarApuracao(a);
   a.ferias=Math.max(a.ferias||0, feriasN);
   a.afastamentos=Math.max(a.afastamentos||0, afN);
+  a.abono_curso=Math.max(a.abono_curso||0, abonoN);
   a.sem_marcacao=0;
   a.batida_incompleta=0;
   a.menos_2h=0;
   if(a.status==='divergencia' && a.obs_periodo && !(a.dias||[]).some(function(d){return d.status_beneficio==='Elegível';})){
     // sem dias úteis líquidos — ok sem inventar
-    a.obs_periodo='Sem dias úteis líquidos no período (admissão/desligamento/férias/afastamento)';
+    a.obs_periodo='Sem dias úteis líquidos no período (admissão/desligamento/férias/afastamento/abono curso)';
   } else if(a.status!=='ajustado'){
     a.status='cargo_confianca';
     a.obs_periodo='';
@@ -102981,7 +103389,7 @@ async function rhBeneficioCalcular(){
       var clas=rhBeneficioClassificarDia(r, progBy[String(c.id)+'|'+data], perm);
       var dia={
         data:data,
-        tipo_dia_fonte:r.tipo_dia||'',
+        tipo_dia_fonte:pontoEhAbonoCurso(r)?'abono_curso':(r.tipo_dia||''),
         status_fonte:r.status||'',
         entrada:perm.entrada||'',
         saida:perm.saida||'',
@@ -103213,12 +103621,12 @@ function rhBeneficioExportCsv(){
   var lista=rhBeneficioListaOrdenada(rhBeneficioListaFiltrada());
   if(!lista.length){ if(typeof progShowToast==='function') progShowToast('Nada para exportar.','erro'); return; }
   var per=rhBeneficioPeriodoApuracao(_rhBen.pagAno, _rhBen.pagMes);
-  var head=['RE','Nome','Contrato','Base','Piso','Dias elegíveis','Dias sem direito','Faltas','Férias','Afastamentos','Menos de 2h','Sem marcação','Batida incompleta','Qtd VT','Valor VT','Qtd VR','Valor VR','Total estimado','Status'];
+  var head=['RE','Nome','Contrato','Base','Piso','Dias elegíveis','Dias sem direito','Faltas','Férias','Afastamentos','Abono Curso','Menos de 2h','Sem marcação','Batida incompleta','Qtd VT','Valor VT','Qtd VR','Valor VR','Total estimado','Status'];
   var csv=head.join(';')+'\n';
   function csvR(v){ return v==null||v===''?'':String(Number(v).toFixed(2)).replace('.',','); }
   lista.forEach(function(a){
     rhBeneficioEstimarValores(a);
-    csv+=[a.re,a.nome,a.contrato_nome||'',a.base_nome||'',a.piso_label||'',a.dias_elegiveis,a.dias_sem_direito,a.faltas,a.ferias,a.afastamentos,a.menos_2h,a.sem_marcacao,a.batida_incompleta,a.qtd_vt,csvR(a.valor_vt_est),a.qtd_vr,csvR(a.valor_vr_est),csvR(a.valor_total_est),(a.obs_periodo||a.status||'')].join(';')+'\n';
+    csv+=[a.re,a.nome,a.contrato_nome||'',a.base_nome||'',a.piso_label||'',a.dias_elegiveis,a.dias_sem_direito,a.faltas,a.ferias,a.afastamentos,a.abono_curso||0,a.menos_2h,a.sem_marcacao,a.batida_incompleta,a.qtd_vt,csvR(a.valor_vt_est),a.qtd_vr,csvR(a.valor_vr_est),csvR(a.valor_total_est),(a.obs_periodo||a.status||'')].join(';')+'\n';
   });
   var a=document.createElement('a');
   a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
@@ -103391,11 +103799,12 @@ function rhBeneficioListaOrdenada(lista){
 }
 
 function rhBeneficioKpis(lista){
-  var k={colabs:lista.length, eleg:0, div:0, vt:0, vr:0, semReg:0, vtR:0, vrR:0, totR:0, semPiso:0};
+  var k={colabs:lista.length, eleg:0, div:0, vt:0, vr:0, semReg:0, vtR:0, vrR:0, totR:0, semPiso:0, abono:0};
   lista.forEach(function(a){
     rhBeneficioEstimarValores(a);
     k.eleg+=a.dias_elegiveis||0; k.vt+=Number(a.qtd_vt)||0; k.vr+=Number(a.qtd_vr)||0;
     k.vtR+=Number(a.valor_vt_est)||0; k.vrR+=Number(a.valor_vr_est)||0; k.totR+=Number(a.valor_total_est)||0;
+    k.abono+=Number(a.abono_curso)||0;
     if(a.status==='divergencia') k.div++;
     if(a.obs_periodo) k.semReg++;
     if(!a.piso_label) k.semPiso++;
@@ -103490,7 +103899,7 @@ function rhBeneficioRender(){
     +'<div class="card" style="padding:.75rem 1rem;background:#FEF3E2;color:#854F0B;font-size:12px;margin-bottom:1rem">'
     +'C1 usa regra padrão porque ainda não existe cadastro individual de quantidade de VT, rota ou transporte: <b>'
     +RH_BEN_VT_POR_DIA+' VT</b> e <b>'+RH_BEN_VR_POR_DIA+' VR</b> por dia elegível. Mínimo de permanência: <b>'
-    +RH_BEN_MIN_MINUTOS+' minutos</b> (primeira entrada → última saída, sem descontar intervalo). Atestado/ausência motivada não gera vale automático — exceção só com ajuste e justificativa.'
+    +RH_BEN_MIN_MINUTOS+' minutos</b> (primeira entrada → última saída, sem descontar intervalo). Atestado, ausência motivada e Abono Curso (relógio / aba afastamentos) não geram vale automático — exceção só com ajuste e justificativa.'
     +' Valor VT/VR é <b>estimado</b> pelo piso em RH → Pisos e Benefícios (cargo/função/contrato): PAT valor/dia × quantidade; valor mensal ÷ dias do piso × dias elegíveis. VR padrão <b>R$ '
     +RH_BEN_VR_VALOR_PADRAO.toFixed(2).replace('.',',')+'</b> quando o piso não tiver vale-refeição cadastrado. Não é holerite.'
     +'</div>'
@@ -103541,6 +103950,7 @@ function rhBeneficioRender(){
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:1rem">'
     +rhCard('Colaboradores',k.colabs)
     +rhCard('Dias elegíveis',k.eleg,'#3B6D11')
+    +rhCard('Abono Curso',k.abono,k.abono?'#533AB7':'#555')
     +rhCard('Com divergência',k.div,k.div?'#854F0B':'#3B6D11')
     +rhCard('Sem registro',k.semReg,k.semReg?'#854F0B':'#555')
     +rhCard('VT',k.vt,'#185FA5')
@@ -105427,6 +105837,12 @@ function rhGarantirLookups(){
   if(!(contratos||[]).length && !DEMO){
     jobs.push(sbFetch('contratos',{filters:['status=neq.Cancelado'],order:'nome'}).then(function(rows){
       if(rows&&rows.length) contratos=rows;
+    }).catch(function(){}));
+  }
+  if(!(colaboradores||[]).length && !DEMO){
+    var fetchAll=typeof sbFetchAll==='function'?sbFetchAll:sbFetch;
+    jobs.push(fetchAll('colaboradores',{select:'id,nome,re,ativo,deleted_at',order:'nome'}).then(function(rows){
+      if(rows&&rows.length) colaboradores=rows;
     }).catch(function(){}));
   }
   return jobs.length?Promise.all(jobs):Promise.resolve();
@@ -107557,6 +107973,401 @@ function rhAbrirCadastroCargos(){
   showMain('cadastros');
   setTimeout(function(){ if(typeof abrirCadastro==='function') abrirCadastro('cargos'); }, 140);
 }
+
+// =============================================================================
+// RH-SEL-1A — Vagas / Processos Seletivos
+// =============================================================================
+var _rhSel = {lista:[], atual:null, matriz:null, matrizItens:{}, view:'lista', carregado:false, disponivel:false, erro:'', filtro:''};
+function rhSelSqlHint(){ return 'Aplique SQLS/sql_rh_selecao_vagas_fase1a.sql e SQLS/sql_rh_selecao_vagas_fase_sel1a.sql no SQL Editor. O ERP não aplica SQL sozinho.'; }
+function rhSelPodeEditar(){
+  if(typeof cadPodeEditarCargos==='function') return cadPodeEditarCargos();
+  var p=(usuarioLogado&&usuarioLogado.perfil)||'';
+  return p==='admin'||p==='diretoria'||p==='dp'||p==='rh'||p==='gestor'||p==='coordenador';
+}
+function rhSelStatusLabel(st){
+  return ({RASCUNHO:'Rascunho',ABERTA:'Aberta',PAUSADA:'Pausada',SUSPENSA:'Pausada',ENCERRADA:'Encerrada',CANCELADA:'Cancelada'})[st]||st||'—';
+}
+function rhSelTipoLabel(t){
+  return ({NOVA_VAGA:'Nova vaga',SUBSTITUICAO:'Substituição',AUMENTO_QUADRO:'Aumento de quadro',TEMPORARIA:'Temporária',OUTRO:'Outro'})[t]||t||'—';
+}
+function rhSelQtdPlan(v){ var n=parseInt(v&&(v.quantidade_planejada!=null?v.quantidade_planejada:v.quantidade),10); return n>=1?n:1; }
+function rhSelQtdPre(v){ var n=parseInt(v&&v.quantidade_preenchida,10); return n>=0?n:0; }
+function rhSelQtdDisp(v){ var d=rhSelQtdPlan(v)-rhSelQtdPre(v); return d<0?0:d; }
+function rhSelCargoObj(id){
+  return (_cad_cargos||[]).filter(function(x){ return String(x.id)===String(id); })[0]||null;
+}
+function rhSelCargoNome(id){
+  var list=_cad_cargos||[];
+  var c=list.filter(function(x){ return String(x.id)===String(id); })[0];
+  return c?(c.nome||c.descricao||id):id;
+}
+function rhSelOptCargos(sel){
+  return '<option value="">Selecione o cargo…</option>'+(_cad_cargos||[]).map(function(c){
+    var id=String(c.id||'');
+    return '<option value="'+rhEsc(id)+'"'+(String(sel)===id?' selected':'')+'>'+rhEsc(c.nome||c.descricao||id)+'</option>';
+  }).join('');
+}
+function rhSelOptFiliais(sel){
+  return '<option value="">—</option>'+(filiais||[]).map(function(f){
+    var id=String(f.id||'');
+    return '<option value="'+rhEsc(id)+'"'+(String(sel)===id?' selected':'')+'>'+rhEsc(f.nome||id)+'</option>';
+  }).join('');
+}
+function rhSelOptContratos(sel){
+  return '<option value="">—</option>'+(contratos||[]).map(function(c){
+    var id=String(c.id||'');
+    return '<option value="'+rhEsc(id)+'"'+(String(sel)===id?' selected':'')+'>'+rhEsc(c.nome||c.codigo||id)+'</option>';
+  }).join('');
+}
+function rhSelOptGestores(sel){
+  var cols=(colaboradores||[]).filter(function(c){ return c.ativo!==false && !c.deleted_at; });
+  return '<option value="">—</option>'+cols.map(function(c){
+    var id=String(c.id||'');
+    return '<option value="'+rhEsc(id)+'"'+(String(sel)===id?' selected':'')+'>'+rhEsc((c.nome||'')+(c.re?' · '+c.re:''))+'</option>';
+  }).join('');
+}
+function rhSelCarregar(){
+  if(DEMO){ _rhSel.carregado=true; _rhSel.disponivel=true; _rhSel.lista=_rhSel.lista||[]; return Promise.resolve(_rhSel.lista); }
+  return sbFetch('rh_vagas',{select:'id',limit:1}).then(function(probe){
+    if(probe===null){
+      _rhSel.carregado=true; _rhSel.disponivel=false; _rhSel.erro=rhSelSqlHint(); _rhSel.lista=[];
+      return _rhSel.lista;
+    }
+    var fetchAll=typeof sbFetchAll==='function'?sbFetchAll:sbFetch;
+    return fetchAll('rh_vagas',{order:'created_at.desc',filters:['ativo=eq.true']}).then(function(rows){
+      _rhSel.carregado=true; _rhSel.disponivel=true; _rhSel.erro=''; _rhSel.lista=rows||[];
+      return _rhSel.lista;
+    });
+  }).catch(function(){
+    _rhSel.carregado=true; _rhSel.disponivel=false; _rhSel.erro=rhSelSqlHint(); _rhSel.lista=[];
+    return _rhSel.lista;
+  });
+}
+function rhSelDashHtml(lista){
+  var hoje=new Date().toISOString().slice(0,10);
+  var abertas=(lista||[]).filter(function(v){ return v.status==='ABERTA'; });
+  var pos=abertas.reduce(function(s,v){ return s+rhSelQtdDisp(v); },0);
+  var paus=(lista||[]).filter(function(v){ return v.status==='PAUSADA'||v.status==='SUSPENSA'; }).length;
+  var venc=(lista||[]).filter(function(v){ return v.status==='ABERTA' && v.data_desejada && String(v.data_desejada).slice(0,10)<hoje; }).length;
+  function card(t,n,c){ return '<div style="border:.5px solid #e8e6df;border-radius:10px;padding:10px 12px;background:#fff;min-width:120px"><div style="font-size:11px;color:#888">'+t+'</div><div style="font-size:22px;font-weight:700;color:'+c+'">'+n+'</div></div>'; }
+  return '<div style="display:flex;flex-wrap:wrap;gap:8px;padding:.4rem 1rem 0">'
+    +card('Vagas abertas',abertas.length,'#1F4E79')
+    +card('Posições disponíveis',pos,'#3B6D11')
+    +card('Pausadas',paus,'#854F0B')
+    +card('Data desejada vencida',venc,venc?'#A32D2D':'#555')
+    +'</div>';
+}
+function rhSelRender(){
+  var wrap=document.getElementById('rh-vagas-wrap'); if(!wrap) return;
+  if(!_rhSel.carregado){
+    wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">Recrutamento e Seleção</span></div><div style="padding:1.5rem;color:#888">Carregando…</div></div>';
+    rhGarantirLookups().then(function(){ return rhSelCarregar(); }).then(function(){ rhSelRender(); });
+    return;
+  }
+  if(_rhSel.view==='ficha'){ rhSelRenderFicha(); return; }
+  var q=(_rhSel.filtro||'').toLowerCase();
+  var rows=(_rhSel.lista||[]).filter(function(v){
+    if(!q) return true;
+    return [v.codigo,v.cargo_nome,v.contrato_nome,v.filial_nome,v.gestor_nome,v.responsavel_rh_nome,v.status].join(' ').toLowerCase().indexOf(q)>=0;
+  });
+  var pode=rhSelPodeEditar();
+  wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">📣 Recrutamento e Seleção — Vagas</span>'
+    +(pode?'<button class="btn btn-pri" onclick="rhSelNova()">+ Nova vaga</button>':'')
+    +'</div>'
+    +'<div style="padding:.6rem 1rem;font-size:12px;color:#666">Vaga ligada ao Cadastro Mestre (`cargo_id`) e à matriz RH-1B (consulta). Sem portal, QR, ficha, testes ou admissão. SQL: sql_rh_selecao_vagas_fase_sel1a.sql.</div>'
+    +(_rhSel.disponivel?'':'<div style="padding:.6rem 1rem;color:#854F0B;background:#FEF3E2;font-size:12px">'+rhEsc(_rhSel.erro||rhSelSqlHint())+'</div>')
+    +rhSelDashHtml(_rhSel.lista)
+    +'<div style="padding:.6rem 1rem"><input class="inp" placeholder="Buscar código, cargo, contrato, filial…" style="width:min(100%,320px)" value="'+rhEsc(_rhSel.filtro||'')+'" oninput="_rhSel.filtro=this.value;rhSelRender()"/></div>'
+    +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Código</th><th>Cargo</th><th>Filial</th><th>Contrato</th><th>Gestor</th><th>Qtd</th><th>Preenchidas</th><th>Status</th><th>Desejada</th><th>RH</th><th></th></tr></thead><tbody>'
+    +(rows.map(function(v){
+      var id=String(v.id||'').replace(/'/g,'');
+      var acoes='<button class="btn btn-sm" onclick="rhSelAbrir(\''+id+'\')">Abrir</button>';
+      if(pode && v.status==='ABERTA') acoes+=' <button class="btn btn-sm" onclick="rhSelSetStatus(\''+id+'\',\'PAUSADA\')">Pausar</button>';
+      if(pode && (v.status==='ABERTA'||v.status==='PAUSADA'||v.status==='SUSPENSA')) acoes+=' <button class="btn btn-sm" onclick="rhSelSetStatus(\''+id+'\',\'ENCERRADA\')">Encerrar</button>';
+      if(pode && v.status!=='CANCELADA' && v.status!=='ENCERRADA') acoes+=' <button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="rhSelSetStatus(\''+id+'\',\'CANCELADA\')">Cancelar</button>';
+      return '<tr><td>'+rhEsc(v.codigo||'—')+'</td><td>'+rhEsc(v.cargo_nome||rhSelCargoNome(v.cargo_id))+'</td>'
+        +'<td>'+rhEsc(v.filial_nome||'—')+'</td><td>'+rhEsc(v.contrato_nome||'—')+'</td>'
+        +'<td>'+rhEsc(v.gestor_nome||'—')+'</td>'
+        +'<td>'+rhSelQtdPlan(v)+'</td><td>'+rhSelQtdPre(v)+'</td>'
+        +'<td>'+rhEsc(rhSelStatusLabel(v.status))+'</td>'
+        +'<td>'+rhEsc(v.data_desejada?String(v.data_desejada).slice(0,10):'—')+'</td>'
+        +'<td>'+rhEsc(v.responsavel_rh_nome||'—')+'</td>'
+        +'<td style="white-space:nowrap">'+acoes+'</td></tr>';
+    }).join('')||'<tr><td colspan="11" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma vaga. '+(pode?'Clique em Nova vaga.':'')+'</td></tr>')
+    +'</tbody></table></div></div>';
+}
+function rhSelNova(){
+  if(!rhSelPodeEditar()){ progShowToast('Sem permissão para criar vaga.','erro'); return; }
+  if(!_rhSel.disponivel && !DEMO){ progShowToast(_rhSel.erro||rhSelSqlHint(),'erro'); return; }
+  _rhSel.atual={status:'RASCUNHO',quantidade:1,quantidade_planejada:1,quantidade_preenchida:0,empresa:'CENA',tipo_vaga:'NOVA_VAGA',ativo:true};
+  _rhSel.matriz=null; _rhSel.matrizItens={}; _rhSel.view='ficha';
+  rhSelRender();
+}
+function rhSelAbrir(id){
+  var v=(_rhSel.lista||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!v && !DEMO){
+    sbFetch('rh_vagas',{filters:['id=eq.'+id],limit:1}).then(function(r){
+      _rhSel.atual=(r&&r[0])||null;
+      if(!_rhSel.atual){ progShowToast('Vaga não encontrada.','erro'); return; }
+      rhSelCarregarFilhos();
+    });
+    return;
+  }
+  _rhSel.atual=v||null;
+  rhSelCarregarFilhos();
+}
+function rhSelCarregarFilhos(){
+  var v=_rhSel.atual; if(!v) return;
+  rhSelCarregarMatriz(v.cargo_id).then(function(){ _rhSel.view='ficha'; rhSelRender(); });
+}
+function rhSelCarregarMatriz(cargoId){
+  _rhSel.matriz=null; _rhSel.matrizItens={};
+  if(!cargoId || DEMO) return Promise.resolve();
+  return sbFetch('rh_cargo_requisitos',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:1}).then(function(r){
+    _rhSel.matriz=(r&&r[0])||null;
+    if(!_rhSel.matriz) return;
+    return Promise.all([
+      sbFetch('rh_cargo_requisitos_cnh',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:50}),
+      sbFetch('rh_cargo_requisitos_nrs',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:50}),
+      sbFetch('rh_cargo_requisitos_treinamentos',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:50}),
+      sbFetch('rh_cargo_requisitos_documentos',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:50}),
+      sbFetch('rh_cargo_requisitos_testes',{filters:['cargo_id=eq.'+cargoId,'ativo=eq.true'],limit:50})
+    ]).then(function(arr){
+      _rhSel.matrizItens={cnh:arr[0]||[],nrs:arr[1]||[],trein:arr[2]||[],docs:arr[3]||[],testes:arr[4]||[]};
+    });
+  }).catch(function(){});
+}
+function rhSelVoltar(){ _rhSel.view='lista'; _rhSel.atual=null; rhSelCarregar().then(function(){ rhSelRender(); }); }
+function rhSelColab(id){
+  return (colaboradores||[]).filter(function(c){ return String(c.id)===String(id); })[0]||null;
+}
+function rhSelProximoCodigo(){
+  var y=String(new Date().getFullYear());
+  var max=0;
+  (_rhSel.lista||[]).forEach(function(v){
+    var m=String(v.codigo||'').match(new RegExp('^VAG-'+y+'-(\\d+)$'));
+    if(m) max=Math.max(max,parseInt(m[1],10)||0);
+  });
+  return 'VAG-'+y+'-'+String(max+1).padStart(4,'0');
+}
+function rhSelLerForm(){
+  var cargoId=((document.getElementById('rh-sel-cargo')||{}).value)||'';
+  var filId=((document.getElementById('rh-sel-filial')||{}).value)||'';
+  var ctId=((document.getElementById('rh-sel-contrato')||{}).value)||'';
+  var geId=((document.getElementById('rh-sel-gestor')||{}).value)||'';
+  var rhId=((document.getElementById('rh-sel-rh')||{}).value)||'';
+  var fil=(filiais||[]).filter(function(f){ return String(f.id)===filId; })[0];
+  var ct=(contratos||[]).filter(function(c){ return String(c.id)===ctId; })[0];
+  var ge=rhSelColab(geId);
+  var rh=rhSelColab(rhId);
+  var plan=parseInt((document.getElementById('rh-sel-qtd')||{}).value,10);
+  var pre=parseInt((document.getElementById('rh-sel-pre')||{}).value,10);
+  if(!(plan>=1)) plan=1;
+  if(!(pre>=0)) pre=0;
+  if(pre>plan) pre=plan;
+  var st=((document.getElementById('rh-sel-status')||{}).value)||'RASCUNHO';
+  return {
+    cargo_id:cargoId,
+    cargo_nome:rhSelCargoNome(cargoId),
+    empresa:((document.getElementById('rh-sel-emp')||{}).value||'CENA').trim()||'CENA',
+    filial_id:filId||null,
+    filial_nome:fil?(fil.nome||''):null,
+    local_trabalho:((document.getElementById('rh-sel-local')||{}).value||'').trim()||null,
+    contrato_id:ctId||null,
+    contrato_nome:ct?(ct.nome||ct.codigo||''):null,
+    projeto:((document.getElementById('rh-sel-proj')||{}).value||'').trim()||null,
+    centro_custo:((document.getElementById('rh-sel-cc')||{}).value||'').trim()||null,
+    gestor_id:geId||null,
+    gestor_nome:ge?(ge.nome||''):null,
+    responsavel_rh_id:rhId||null,
+    responsavel_rh_nome:rh?(rh.nome||''):null,
+    quantidade:plan,
+    quantidade_planejada:plan,
+    quantidade_preenchida:pre,
+    tipo_vaga:((document.getElementById('rh-sel-tipo')||{}).value)||null,
+    motivo:((document.getElementById('rh-sel-motivo')||{}).value||'').trim()||null,
+    data_abertura:((document.getElementById('rh-sel-dab')||{}).value)||null,
+    data_desejada:((document.getElementById('rh-sel-ddes')||{}).value)||null,
+    status:st,
+    matriz_status:(_rhSel.matriz&&_rhSel.matriz.status)||'NAO_CONFIGURADA',
+    observacoes:((document.getElementById('rh-sel-obs')||{}).value||'').trim()||null,
+    updated_at:new Date().toISOString()
+  };
+}
+function rhSelMatrizAprovada(){ return _rhSel.matriz && _rhSel.matriz.status==='APROVADA'; }
+function rhSelSalvar(){
+  if(!rhSelPodeEditar()){ progShowToast('Sem permissão para editar vaga.','erro'); return; }
+  var p=rhSelLerForm();
+  if(!p.cargo_id){ progShowToast('Selecione o cargo oficial.','erro'); return; }
+  if(p.status==='ABERTA' && !rhSelMatrizAprovada()){
+    progShowToast('Não é possível marcar ABERTA sem Matriz de Requisitos aprovada.','erro');
+    return;
+  }
+  var antes=_rhSel.atual?(_rhSel.atual.status||''):'';
+  if(DEMO){
+    if(!_rhSel.atual.id){ _rhSel.atual=Object.assign({id:'vg'+Date.now(),codigo:rhSelProximoCodigo(),created_at:new Date().toISOString()},p); _rhSel.lista.unshift(_rhSel.atual); }
+    else Object.assign(_rhSel.atual,p);
+    progShowToast('Vaga salva (demo).'); rhSelRender(); return;
+  }
+  function ok(row){
+    _rhSel.atual=row;
+    var i=_rhSel.lista.findIndex(function(x){ return String(x.id)===String(row.id); });
+    if(i>=0) _rhSel.lista[i]=row; else _rhSel.lista.unshift(row);
+    var ev=antes===row.status?'EDITOU_VAGA':(row.status==='ABERTA'?'ABRIU_VAGA':(row.status==='PAUSADA'||row.status==='SUSPENSA'?'PAUSOU_VAGA':(row.status==='ENCERRADA'?'ENCERROU_VAGA':(row.status==='CANCELADA'?'CANCELOU_VAGA':'EDITOU_VAGA'))));
+    if(!antes) ev='CRIOU_VAGA';
+    if(typeof auditLog==='function') auditLog('editar','rh',ev+' '+(row.codigo||row.id),{antes:antes,depois:row.status,cargo_id:row.cargo_id});
+    progShowToast('Vaga salva.');
+    rhSelCarregarFilhos();
+  }
+  if(_rhSel.atual&&_rhSel.atual.id){
+    sbUpdate('rh_vagas',p,'id=eq.'+_rhSel.atual.id).then(function(r){
+      if(!r){ progShowToast('Falha ao atualizar a vaga. Aplique sql_rh_selecao_vagas_fase_sel1a.sql.','erro'); return; }
+      ok(Array.isArray(r)?(r[0]||Object.assign(_rhSel.atual,p)):r);
+    });
+  } else {
+    p.codigo=rhSelProximoCodigo();
+    p.criado_por=usuarioLogado?(usuarioLogado.nome||usuarioLogado.email):null;
+    p.ativo=true;
+    if(!p.data_abertura) p.data_abertura=new Date().toISOString().slice(0,10);
+    sbInsert('rh_vagas',p).then(function(r){
+      if(!r||!r[0]){ progShowToast('Falha ao criar a vaga. '+rhSelSqlHint(),'erro'); return; }
+      ok(r[0]);
+    });
+  }
+}
+function rhSelSetStatus(id, st){
+  if(!rhSelPodeEditar()) return;
+  var v=(_rhSel.lista||[]).filter(function(x){ return String(x.id)===String(id); })[0];
+  if(!v){ progShowToast('Vaga não encontrada.','erro'); return; }
+  if(st==='ABERTA'){
+    _rhSel.atual=v;
+    rhSelCarregarMatriz(v.cargo_id).then(function(){
+      if(!rhSelMatrizAprovada()){ progShowToast('Este cargo ainda não possui Matriz de Requisitos aprovada.','erro'); return; }
+      rhSelAplicarStatus(v,st);
+    });
+    return;
+  }
+  rhSelAplicarStatus(v,st);
+}
+function rhSelAplicarStatus(v,st){
+  var payload={status:st,updated_at:new Date().toISOString()};
+  if(DEMO){ v.status=st; rhSelRender(); return; }
+  sbUpdate('rh_vagas',payload,'id=eq.'+v.id).then(function(r){
+    if(!r){ progShowToast('Falha ao alterar status.','erro'); return; }
+    v.status=st;
+    var ev=st==='PAUSADA'||st==='SUSPENSA'?'PAUSOU_VAGA':(st==='ENCERRADA'?'ENCERROU_VAGA':(st==='CANCELADA'?'CANCELOU_VAGA':'EDITOU_VAGA'));
+    if(typeof auditLog==='function') auditLog('editar','rh',ev+' '+(v.codigo||v.id),{depois:st});
+    rhSelRender();
+  });
+}
+function rhSelOnCargoChange(){
+  var id=(document.getElementById('rh-sel-cargo')||{}).value;
+  if(_rhSel.atual) _rhSel.atual.cargo_id=id;
+  var cargoBox=document.getElementById('rh-sel-cargo-txt');
+  if(cargoBox) cargoBox.innerHTML=rhSelCargoDescHtml(id);
+  if(!id){
+    _rhSel.matriz=null; _rhSel.matrizItens={};
+    var b=document.getElementById('rh-sel-matriz'); if(b) b.innerHTML=rhSelMatrizHtml();
+    return;
+  }
+  rhSelCarregarMatriz(id).then(function(){
+    var b=document.getElementById('rh-sel-matriz'); if(b) b.innerHTML=rhSelMatrizHtml();
+  });
+}
+function rhSelCargoDescHtml(cargoId){
+  var c=rhSelCargoObj(cargoId);
+  if(!c) return '<div style="font-size:12px;color:#888">Selecione o cargo para ver Objeto da Função e Atividades.</div>';
+  var obj=String(c.objeto_funcao||'').trim();
+  var at=String(c.descricao_atividades_responsabilidades||'').trim();
+  return '<div style="font-size:12px"><div style="font-weight:700;margin-bottom:4px">Objeto da Função</div>'
+    +'<div style="white-space:pre-wrap;color:#333;margin-bottom:10px">'+(obj?rhEsc(obj):'<span style="color:#aaa">Não informado no cadastro mestre.</span>')+'</div>'
+    +'<div style="font-weight:700;margin-bottom:4px">Atividades / Responsabilidades</div>'
+    +'<div style="white-space:pre-wrap;color:#333">'+(at?rhEsc(at):'<span style="color:#aaa">Não informado no cadastro mestre.</span>')+'</div></div>';
+}
+function rhSelItensResumo(arr, labelFn){
+  if(!arr||!arr.length) return '—';
+  return arr.map(function(x){ return rhEsc(labelFn(x)); }).join(', ');
+}
+function rhSelMatrizHtml(){
+  var m=_rhSel.matriz;
+  var it=_rhSel.matrizItens||{};
+  if(!m) return '<div style="font-size:12px;color:#854F0B;background:#FEF3E2;padding:8px;border-radius:8px">Este cargo ainda não possui Matriz de Requisitos aprovada. O rascunho pode ser salvo; <b>ABERTA</b> exige matriz aprovada.</div>';
+  var st=m.status||'NAO_CONFIGURADA';
+  var lab=({NAO_CONFIGURADA:'Não configurada',EM_CONFIGURACAO:'Em configuração',APROVADA:'Aprovada'})[st]||st;
+  var cor=st==='APROVADA'?'#3B6D11':(st==='EM_CONFIGURACAO'?'#854F0B':'#888');
+  var alerta=st!=='APROVADA'
+    ?'<div style="font-size:12px;color:#854F0B;background:#FEF3E2;padding:8px;border-radius:8px;margin-bottom:8px">Este cargo ainda não possui Matriz de Requisitos aprovada.</div>':'';
+  function nrLab(x){ return (typeof rhMatrizNormaLabel==='function'?rhMatrizNormaLabel(x.norma_id):x.norma_id); }
+  function curLab(x){ return (typeof rhMatrizCursoLabel==='function'?rhMatrizCursoLabel(x.curso_id):x.curso_id); }
+  function docLab(x){ return (typeof rhMatrizDocLabel==='function'?rhMatrizDocLabel(x.tipo_documento_id):x.tipo_documento_id); }
+  return alerta+'<div style="font-size:12px">Status da matriz: <b style="color:'+cor+'">'+rhEsc(lab)+'</b></div>'
+    +'<div style="font-size:12px;margin-top:8px;display:grid;gap:4px">'
+    +'<div><b>CNH:</b> '+(m.exige_cnh?'Sim':'Não')+(it.cnh&&it.cnh.length?' — '+rhSelItensResumo(it.cnh,function(x){return x.categoria; }):'')+'</div>'
+    +'<div><b>NRs:</b> '+rhSelItensResumo(it.nrs,nrLab)+'</div>'
+    +'<div><b>Treinamentos:</b> '+rhSelItensResumo(it.trein,curLab)+'</div>'
+    +'<div><b>ASO:</b> '+(m.exige_aso?'Obrigatório':'Não informado')+'</div>'
+    +'<div><b>Documentos:</b> '+rhSelItensResumo(it.docs,docLab)+'</div>'
+    +'<div><b>Jornada/regime:</b> '+rhEsc(m.regime_jornada||'—')+(m.regime_beneficio?' · benefício '+rhEsc(m.regime_beneficio):'')+'</div>'
+    +'<div><b>Cargo de confiança:</b> '+(m.cargo_confianca?'Sim':'Não')+'</div>'
+    +'<div><b>Testes de aptidão:</b> '+(m.exige_teste_aptidao?'Sim':'Não')+(it.testes&&it.testes.length?' — '+rhSelItensResumo(it.testes,function(x){return x.perfil; }):'')+'</div>'
+    +'</div><div style="font-size:11px;color:#888;margin-top:6px">Somente leitura. A regra oficial permanece na RH-1B. Sem versionamento da matriz nesta fase — gravamos só o status no save.</div>';
+}
+function rhSelBloco(t, html){
+  return '<div style="border:.5px solid #eee;border-radius:10px;padding:10px 12px;margin:0 0 10px"><div style="font-weight:700;font-size:12px;margin-bottom:8px;color:#1F4E79">'+t+'</div>'+html+'</div>';
+}
+function rhSelRenderFicha(){
+  var wrap=document.getElementById('rh-vagas-wrap'); if(!wrap) return;
+  var v=_rhSel.atual||{};
+  var pode=rhSelPodeEditar();
+  var dis=pode?'':' disabled';
+  var stAtual=v.status==='SUSPENSA'?'PAUSADA':(v.status||'RASCUNHO');
+  wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">'+(v.id?'Vaga '+rhEsc(v.codigo||''):'Nova vaga')+'</span>'
+    +'<button class="btn" onclick="rhSelVoltar()">← Lista</button></div>'
+    +'<div style="padding:1rem">'
+    +rhSelBloco('1. Identificação',
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">'
+      +'<div><label style="font-size:11px">Código</label><input class="inp" value="'+rhEsc(v.codigo||'(gerado ao salvar)')+'" disabled/></div>'
+      +'<div><label style="font-size:11px">Status</label><select class="inp" id="rh-sel-status"'+dis+'>'
+      +['RASCUNHO','ABERTA','PAUSADA','ENCERRADA','CANCELADA'].map(function(s){
+        return '<option value="'+s+'"'+(stAtual===s?' selected':'')+'>'+rhSelStatusLabel(s)+'</option>';
+      }).join('')+'</select></div>'
+      +'<div><label style="font-size:11px">Cargo oficial *</label><select class="inp" id="rh-sel-cargo"'+dis+' onchange="rhSelOnCargoChange()">'+rhSelOptCargos(v.cargo_id)+'</select></div>'
+      +'<div><label style="font-size:11px">Tipo</label><select class="inp" id="rh-sel-tipo"'+dis+'>'
+      +[['NOVA_VAGA','Nova vaga'],['SUBSTITUICAO','Substituição'],['AUMENTO_QUADRO','Aumento de quadro'],['TEMPORARIA','Temporária'],['OUTRO','Outro']].map(function(p){
+        return '<option value="'+p[0]+'"'+(v.tipo_vaga===p[0]?' selected':'')+'>'+p[1]+'</option>';
+      }).join('')+'</select></div></div>')
+    +rhSelBloco('2. Localização',
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">'
+      +'<div><label style="font-size:11px">Empresa</label><input class="inp" id="rh-sel-emp"'+dis+' value="'+rhEsc(v.empresa||'CENA')+'"/></div>'
+      +'<div><label style="font-size:11px">Filial</label><select class="inp" id="rh-sel-filial"'+dis+'>'+rhSelOptFiliais(v.filial_id)+'</select></div>'
+      +'<div><label style="font-size:11px">Local de trabalho</label><input class="inp" id="rh-sel-local"'+dis+' value="'+rhEsc(v.local_trabalho||'')+'"/></div></div>')
+    +rhSelBloco('3. Necessidade',
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">'
+      +'<div><label style="font-size:11px">Quantidade planejada</label><input class="inp" id="rh-sel-qtd" type="number" min="1"'+dis+' value="'+rhSelQtdPlan(v)+'"/></div>'
+      +'<div><label style="font-size:11px">Preenchidas</label><input class="inp" id="rh-sel-pre" type="number" min="0"'+dis+' value="'+rhSelQtdPre(v)+'"/></div>'
+      +'<div><label style="font-size:11px">Disponíveis</label><input class="inp" value="'+rhSelQtdDisp(v)+'" disabled/></div>'
+      +'<div><label style="font-size:11px">Data de abertura</label><input class="inp" id="rh-sel-dab" type="date"'+dis+' value="'+rhEsc(v.data_abertura?String(v.data_abertura).slice(0,10):'')+'"/></div>'
+      +'<div><label style="font-size:11px">Data desejada</label><input class="inp" id="rh-sel-ddes" type="date"'+dis+' value="'+rhEsc(v.data_desejada?String(v.data_desejada).slice(0,10):'')+'"/></div>'
+      +'<div style="grid-column:1/-1"><label style="font-size:11px">Motivo</label><textarea class="inp" id="rh-sel-motivo" rows="2"'+dis+'>'+rhEsc(v.motivo||'')+'</textarea></div></div>')
+    +rhSelBloco('4. Responsáveis',
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">'
+      +'<div><label style="font-size:11px">Gestor / requisitante</label><select class="inp" id="rh-sel-gestor"'+dis+'>'+rhSelOptGestores(v.gestor_id)+'</select></div>'
+      +'<div><label style="font-size:11px">Responsável RH</label><select class="inp" id="rh-sel-rh"'+dis+'>'+rhSelOptGestores(v.responsavel_rh_id)+'</select></div></div>')
+    +rhSelBloco('5. Projeto / Contrato',
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">'
+      +'<div><label style="font-size:11px">Contrato</label><select class="inp" id="rh-sel-contrato"'+dis+'>'+rhSelOptContratos(v.contrato_id)+'</select></div>'
+      +'<div><label style="font-size:11px">Projeto</label><input class="inp" id="rh-sel-proj"'+dis+' value="'+rhEsc(v.projeto||'')+'"/></div>'
+      +'<div><label style="font-size:11px">Centro de custo</label><input class="inp" id="rh-sel-cc"'+dis+' value="'+rhEsc(v.centro_custo||'')+'"/></div></div>')
+    +rhSelBloco('6. Cargo (Cadastro Mestre)',
+      '<div id="rh-sel-cargo-txt">'+rhSelCargoDescHtml(v.cargo_id)+'</div>')
+    +rhSelBloco('7. Matriz de Requisitos (RH-1B, só leitura)',
+      '<div id="rh-sel-matriz">'+rhSelMatrizHtml()+'</div>')
+    +rhSelBloco('8. Candidatos',
+      '<div style="font-size:12px;color:#666">Relacionamento preparado (`vaga.id` estável). A ficha digital do candidato será a <b>RH-SEL-1C</b>. Nesta fase não há inscrição, portal nem QR.</div>')
+    +'<div><label style="font-size:11px">Observações</label><textarea class="inp" id="rh-sel-obs" rows="2"'+dis+'>'+rhEsc(v.observacoes||'')+'</textarea></div>'
+    +(pode?'<div style="margin-top:12px"><button class="btn btn-pri" onclick="rhSelSalvar()">Salvar vaga</button></div>':'')
+    +'</div></div>';
+}
 function rhIrPara(acao,colId){
   if(acao==='rh-docs'&&colId){ _rhColabAtual=colId; _rhAbaDossie='documentos'; showSub('rh-dossie'); return; }
   if(acao==='rh-mob'&&colId){ _rhColabAtual=colId; _rhAbaDossie='mobilizacao'; showSub('rh-dossie'); return; }
@@ -107576,6 +108387,7 @@ function rhIrPara(acao,colId){
 function rhClassificarPontoLinha(p, prog){
   var td=(p.tipo_dia||'').toLowerCase();
   var st=(p.status||'').toLowerCase();
+  if(pontoEhAbonoCurso(p)) return 'Abono Curso';
   if(p.ausencia_motivada || (p.ausencia_tipo||'').toLowerCase().indexOf('atestado')>=0) return 'Atestado';
   if(td==='falta' || st==='falta' || st==='faltou') return 'Falta';
   if(td==='ferias' || st==='ferias') return 'Férias';
@@ -107596,6 +108408,7 @@ function rhCarregarPontoColab(c){
       +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">'
       +rhCard('Faltas',data.faltas,data.faltas?'#A32D2D':'#3B6D11')
       +rhCard('Atestados (qtd.)',data.atest,data.atest?'#854F0B':'#3B6D11')
+      +rhCard('Abono Curso',data.abono||0,(data.abono)?'#533AB7':'#555')
       +rhCard('Afastados',data.afast,'#555')
       +rhCard('Férias',data.ferias,'#555')+'</div>'
       +'<table class="tbl" style="font-size:12px"><thead><tr><th>Data</th><th>Tipo</th></tr></thead><tbody>'
@@ -107604,7 +108417,7 @@ function rhCarregarPontoColab(c){
   }
   var cacheKey=String(c.id)+'|'+ini+'|'+fim;
   if(_rhPontoCache[cacheKey]){ pintar(_rhPontoCache[cacheKey]); return; }
-  if(DEMO){ var demo={faltas:0,atest:0,afast:0,ferias:0,linhas:[]}; _rhPontoCache[cacheKey]=demo; pintar(demo); return; }
+  if(DEMO){ var demo={faltas:0,atest:0,afast:0,ferias:0,abono:0,linhas:[]}; _rhPontoCache[cacheKey]=demo; pintar(demo); return; }
   var re=String(c.re||'').trim();
   var reNorm=typeof pontoReNorm==='function'?pontoReNorm(re):re;
   var jobs=[
@@ -107620,12 +108433,13 @@ function rhCarregarPontoColab(c){
   Promise.all(jobs).then(function(res){
     var visto={}, ponto=[], prog=res[1]||[];
     (res[0]||[]).forEach(function(p){ var k=String(p.id||p.re)+'|'+String(p.data||''); if(!visto[k]){ visto[k]=1; ponto.push(p); } });
-    var faltas=0, atest=0, afast=0, ferias=0, linhas=[], dias={};
+    var faltas=0, atest=0, afast=0, ferias=0, abono=0, linhas=[], dias={};
     ponto.forEach(function(p){
       var tipo=rhClassificarPontoLinha(p);
       if(!tipo) return;
       if(tipo==='Falta') faltas++;
       else if(tipo==='Atestado') atest++;
+      else if(tipo==='Abono Curso') abono++;
       else if(tipo==='Afastado') afast++;
       else if(tipo==='Férias') ferias++;
       var d=String(p.data||'').slice(0,10);
@@ -107636,6 +108450,7 @@ function rhCarregarPontoColab(c){
       var d=String(r.data||'').slice(0,10);
       var tipo='';
       if(r.com_atestado || st==='atestado') tipo='Atestado';
+      else if(st==='abono_curso' || (st.indexOf('abono')>=0 && st.indexOf('curso')>=0)) tipo='Abono Curso';
       else if(st==='falta'||st==='faltou') tipo='Falta';
       else if(st==='afastado') tipo='Afastado';
       else if(st==='ferias') tipo='Férias';
@@ -107643,12 +108458,13 @@ function rhCarregarPontoColab(c){
       dias[d+'|'+tipo]=1;
       if(tipo==='Falta') faltas++;
       else if(tipo==='Atestado') atest++;
+      else if(tipo==='Abono Curso') abono++;
       else if(tipo==='Afastado') afast++;
       else if(tipo==='Férias') ferias++;
       linhas.push({data:d,tipo:tipo});
     });
     linhas.sort(function(a,b){return String(b.data).localeCompare(String(a.data));});
-    var data={faltas:faltas,atest:atest,afast:afast,ferias:ferias,linhas:linhas};
+    var data={faltas:faltas,atest:atest,afast:afast,ferias:ferias,abono:abono,linhas:linhas};
     _rhPontoCache[cacheKey]=data;
     pintar(data);
   }).catch(function(){
