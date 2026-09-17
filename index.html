@@ -3479,6 +3479,7 @@ body.insp-campo-ativo #app-content-area {
       <button id="alm-tab-campo" onclick="almMostrarTab('campo')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">🔧 Em campo</button>
       <button id="alm-tab-retorno" onclick="almMostrarTab('retorno')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">↩ Lista de retorno</button>
       <button id="alm-tab-reservas" onclick="almMostrarTab('reservas')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">📌 Reservas/Separação</button>
+      <button id="alm-tab-nfs" onclick="almMostrarTab('nfs')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">📄 NFs de Entrada</button>
     </div>
     <!-- Métricas -->
     <div id="alm-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
@@ -3507,6 +3508,20 @@ body.insp-campo-ativo #app-content-area {
       <thead><tr><th>Data</th><th>Material</th><th>Contrato</th><th>Origem</th><th style="text-align:right">Qtd</th><th>Un</th><th>Nota/Ref</th><th>Registrado por</th><th></th></tr></thead>
       <tbody id="alm-tbody-entradas"></tbody>
     </table></div>
+  </div>
+
+  <div id="alm-content-nfs" style="display:none">
+    <div style="padding:.75rem;display:flex;flex-wrap:wrap;gap:8px;align-items:end;border-bottom:.5px solid #f0efe8">
+      <div><label style="font-size:10px;color:#888;display:block">NF / Chave</label><input class="inp" id="alm-nf-fil-num" style="width:130px" placeholder="número"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Fornecedor / CNPJ</label><input class="inp" id="alm-nf-fil-forn" style="width:150px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">De</label><input class="inp" id="alm-nf-fil-ini" type="date" style="width:140px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Até</label><input class="inp" id="alm-nf-fil-fim" type="date" style="width:140px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Depósito</label><select class="inp" id="alm-nf-fil-dep" style="width:150px"><option value="">Todos</option></select></div>
+      <div><label style="font-size:10px;color:#888;display:block">RC / Pedido</label><input class="inp" id="alm-nf-fil-rc" style="width:110px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Status</label><select class="inp" id="alm-nf-fil-st" style="width:150px"><option value="">Todas</option><option value="ATIVA">Ativas</option><option value="ESTORNADA">Estornadas</option><option value="dup">Poss. duplicidades</option></select></div>
+      <button class="btn btn-pri" onclick="almNfRenderConsulta()" style="font-size:12px">🔎 Buscar</button>
+    </div>
+    <div id="alm-nf-consulta"><div style="padding:1rem;color:#888">Clique em <b>Buscar</b> para listar as NFs de entrada.</div></div>
   </div>
 
   <div id="alm-content-saidas" style="display:none">
@@ -33457,12 +33472,17 @@ function almRenderMetricas(){
 // ── Tabs ─────────────────────────────────────────────────────
 function almMostrarTab(tab){
   _almTabAtual = tab;
-  ['estoque','entradas','saidas','campo','retorno','reservas'].forEach(function(t){
+  ['estoque','entradas','saidas','campo','retorno','reservas','nfs'].forEach(function(t){
     var btn=document.getElementById('alm-tab-'+t);
     var el =document.getElementById('alm-content-'+t);
     if(btn){btn.style.borderBottomColor=t===tab?'#1a1a18':'transparent';btn.style.color=t===tab?'#1a1a18':'#888';btn.style.fontWeight=t===tab?'700':'600';}
     if(el) el.style.display=t===tab?'':'none';
   });
+  // ALM-NF-1: aquece o cache de NFs ao abrir Entradas/NFs (habilita 📄 Ver NF e a consulta)
+  if((tab==='entradas'||tab==='nfs') && typeof almNfGarantirCache==='function'
+     && typeof _almNfCache!=='undefined' && !_almNfCache.ok && _almNfCache.disponivel!==false){
+    almNfGarantirCache().then(function(){ almRender(); });
+  }
   almRender();
 }
 
@@ -33476,6 +33496,7 @@ function almRender(){
   else if(_almTabAtual==='campo')    almRenderCampo(cid,busca);
   else if(_almTabAtual==='retorno')  almRenderRetorno(cid,busca);
   else if(_almTabAtual==='reservas') almRenderReservas(cid,busca);
+  else if(_almTabAtual==='nfs'){ if(typeof almNfPopularFiltroDep==='function') almNfPopularFiltroDep(); if(typeof almNfRenderConsulta==='function') almNfRenderConsulta(); }
 }
 
 // ── Estoque atual ────────────────────────────────────────────
@@ -33537,7 +33558,7 @@ function almRenderMovimentos(tipo,cid,busca){
         +'<td style="font-size:12px">'+m.unidade+'</td>'
         +'<td style="font-size:11px;color:#888">'+(m.nota_ref||'—')+'</td>'
         +'<td style="font-size:11px;color:#888">'+(m.registrado_por||'—')+'</td>'
-        +'<td><button class="btn btn-sm" data-mid="'+m.id+'" style="color:#A32D2D;border-color:#A32D2D;font-size:10px">Estornar</button></td>'
+        +'<td>'+((typeof almNfPorMovId==='function'&&almNfPorMovId(m.id,true))?'<button class="btn btn-sm" onclick="almNfAbrirDetalhe(\''+String((almNfPorMovId(m.id,true)||{}).id||'').replace(/[^a-zA-Z0-9_-]/g,'')+'\')" style="font-size:10px;margin-right:4px">📄 Ver NF</button>':'')+'<button class="btn btn-sm" data-mid="'+m.id+'" style="color:#A32D2D;border-color:#A32D2D;font-size:10px">Estornar</button></td>'
         +'</tr>';
     }).join('');
   } else {
@@ -42574,10 +42595,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.059',
+  numero: '8.1.060',
   data:   '17/09/2026',
-  build:  '20260917-1652',
+  build:  '20260917-1712',
   log: [
+    {v:'8.1.060', d:'17/09/2026', itens:[
+      'ALM-NF-1 / ALM-NF-1.1: NF digital vinculada à Entrada de Estoque. Ligou o salvarEntrada ao módulo almNf (upload cena-docs → cria alm_notas_fiscais → vincula movimentos patrimoniais/SAP → auditoria), com bloqueio de duplicidade por chave NF-e, "registrar mesmo assim" com justificativa, e bloqueio da entrada se o upload/registro da NF falhar. Nova aba "📄 NFs de Entrada" (consulta/estorno) e botão "📄 Ver NF" na tabela de entradas. SQL manual sql_alm_nf_digital_fase_1.sql (NÃO executado). Sem deploy. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.059', d:'17/09/2026', itens:[
       'Limpeza: remove o botão "📦 Almox." do topo que apontava para app Netlify morto (404). Almoxarifado segue acessível pela sidebar. Remove também o CSS órfão.',
     ]},
@@ -142256,7 +142280,9 @@ async function eeProcessarEntradaLinhaSap(linha, ctx, seq){
   };
   var ok = await almSalvarMovimentoSeguro(mov);
   if(!ok) return {ok:false, msg:(mat.material_desc||mat.codigo_sap)+': falha ao registrar entrada SAP'};
-  return {ok:true, nome:mat.material_desc||mat.codigo_sap, qtd:qtd, sap:true};
+  return {ok:true, nome:mat.material_desc||mat.codigo_sap, qtd:qtd, sap:true,
+    movId:mov.id, itemId:mat.material_id||null, depositoId:null, estoqueId:null,
+    saldoAntes:null, saldoDepois:null};
 }
 function eeObterCatalogoBusca(){
   var dest = eeObterDestinoEntrada();
@@ -143244,6 +143270,13 @@ async function almNfConfirmarEstorno(){
     _almNfEstornando=false;
   }
 }
+function almNfPopularFiltroDep(){
+  var sel=document.getElementById('alm-nf-fil-dep');
+  if(!sel || sel.dataset.pop==='1') return;
+  var deps=(typeof depositos!=='undefined'?depositos:[]);
+  sel.innerHTML='<option value="">Todos</option>'+deps.map(function(d){ return '<option value="'+d.id+'">'+almNfEsc(d.nome||d.codigo||d.id)+'</option>'; }).join('');
+  sel.dataset.pop='1';
+}
 function almNfRenderConsulta(){
   var wrap=document.getElementById('alm-nf-consulta');
   if(!wrap) return;
@@ -143632,6 +143665,8 @@ async function eeAnalisarNF(){
 }
 
 function openEntradaEstoque(tipoPre){
+  // ALM-NF-1: zera qualquer NF remanescente de uma abertura anterior (evita anexar arquivo antigo)
+  window._eeNfFile=null; window._eeNfBase64=null; window._eeNfMime=''; window._eeNfParsed=null; window._eeNfDupLiberada=null;
   if(tipoPre==='uniforme') tipoPre='VESTIMENTA';
   else if(tipoPre) tipoPre = almTipoCodigo(tipoPre) || tipoPre;
   function montarModal(){
@@ -144998,12 +145033,14 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     responsavel_id: usuarioLogado?usuarioLogado.id:null,
     status: 'Disponível'
   };
+  var _movId = uid;
   if(DEMO){
     movimentacoes_itens.push(Object.assign({id:uid}, payload));
   } else {
     var insMov = await sbInsert('movimentacoes_itens', payload);
     if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
     movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+    if(insMov[0] && insMov[0].id) _movId = insMov[0].id;
   }
   // Atualiza só preço no catálogo — CA fica no estoque/lote, não em itens_catalogo
   if(custo>0){
@@ -145053,7 +145090,12 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     if(!rPn.ok) return {ok:false, msg:itemCat.nome+': saldo OK, falha pneus — '+(rPn.msg||'erro')+'. Reprocesse o vínculo sem nova entrada.'};
     if(rPn.erros && rPn.erros.length) console.warn('pneus entrada parcial', rPn);
   }
-  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created};
+  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created,
+    sap:false, movId:_movId, itemId:itemId, depositoId:depId||null,
+    estoqueId:(saldoRes && saldoRes.row ? saldoRes.row.id : null),
+    saldoAntes:(saldoRes && saldoRes.saldoAntes!=null ? saldoRes.saldoAntes : null),
+    saldoDepois:(saldoRes && saldoRes.row && saldoRes.row.quantidade!=null ? saldoRes.row.quantidade
+      : (saldoRes && saldoRes.saldo!=null ? saldoRes.saldo : null))};
 }
 
 async function salvarEntrada(){
@@ -145120,9 +145162,40 @@ async function salvarEntrada(){
     data_mov: dataHoje()
   };
 
-  var ok=0, erros=[], nomes=[], novosCat=0;
+  var ok=0, erros=[], nomes=[], novosCat=0, resultadosOk=[];
   var btn = document.getElementById('ee-btn-salvar');
   if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+
+  // ── ALM-NF-1 · persistência documental da NF (upload + registro ANTES dos movimentos) ──
+  var _nfId=null, _nfMeta=null, _nfLib=window._eeNfDupLiberada||null;
+  if(window._eeNfFile && typeof almNfMetaDoForm==='function'){
+    _nfMeta = almNfMetaDoForm();
+    var dupChk = await almNfChecarDuplicidade(_nfMeta);
+    if(dupChk.tipo==='indisponivel'){
+      console.warn('[ALM-NF] tabelas indisponíveis — entrada segue sem persistir NF (aplique sql_alm_nf_digital_fase_1.sql)');
+    } else {
+      if(!dupChk.ok && (dupChk.bloqueado || !_nfLib)){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        almNfMostrarDuplicidade(dupChk, 'salvar');
+        return;
+      }
+      var _nfUp = await almNfUploadArquivo(window._eeNfFile);
+      if(!_nfUp || !_nfUp.ok){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.\n\n'+((_nfUp&&_nfUp.msg)||''));
+        return;
+      }
+      _nfUp.hash = await almNfHashFile(window._eeNfFile);
+      var _nfRec = await almNfCriarRegistro(_nfMeta, _nfUp, ctx, linhas);
+      if(!_nfRec || !_nfRec.id){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.');
+        return;
+      }
+      _nfId = _nfRec.id;
+    }
+  }
+
   if(dest==='sap' && !DEMO){
     await almRecarregarMovimentosSap(ctx.contrato_id);
   }
@@ -145131,7 +145204,7 @@ async function salvarEntrada(){
       var r = dest==='sap'
         ? await eeProcessarEntradaLinhaSap(linhas[i], ctx, i)
         : await eeProcessarEntradaLinha(linhas[i], ctx, i);
-      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; }
+      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; resultadosOk.push(r); }
       else erros.push(r.msg);
     }
   } catch(e){
@@ -145145,6 +145218,20 @@ async function salvarEntrada(){
     alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.'));
     if(erros.length) progShowToast('❌ Entrada não registrada', 'erro');
     return;
+  }
+
+  // ── ALM-NF-1 · vincular os movimentos criados à NF + auditoria ──
+  if(_nfId){
+    for(var _vi=0; _vi<resultadosOk.length; _vi++){
+      try{ await almNfVincularMov(_nfId, resultadosOk[_vi], 'entrada'); }
+      catch(_eV){ console.warn('[ALM-NF] vínculo mov', _eV); }
+    }
+    try{
+      await almNfInserirEvento(_nfId, 'ENTRADA_REGISTRADA', ok+' movimento(s) vinculado(s) à NF', {movimentos:resultadosOk.length, destino:ctx.destino});
+      if(_nfLib) await almNfInserirEvento(_nfId, 'DUPLICIDADE_LIBERADA_MANUALMENTE', (_nfLib.motivo||'')+' · '+(_nfLib.justificativa||''), _nfLib);
+    }catch(_eEv){ console.warn('[ALM-NF] evento', _eEv); }
+    almNfInvalidateCache();
+    window._eeNfFile=null; window._eeNfBase64=null; window._eeNfParsed=null; window._eeNfDupLiberada=null;
   }
 
   closeModal();
