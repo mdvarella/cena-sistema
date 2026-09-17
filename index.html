@@ -42595,10 +42595,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.060',
+  numero: '8.1.061',
   data:   '17/09/2026',
-  build:  '20260917-1712',
+  build:  '20260917-1907',
   log: [
+    {v:'8.1.061', d:'17/09/2026', itens:[
+      'ALM-NF-1.1b: estorno de ENTRADA patrimonial SEM NF (entradas legadas/duplicadas). Botão "↩ Estornar" no modal Origem — Entradas no período: retira do saldo físico (almBaixarSaldoEstoquePatrimonio, bloqueia se insuficiente), grava ajuste inverso (movimentacao_origem_id, motivo+justificativa), idempotente (não estorna 2x), só gestor (almCorrPodeSolicitar), sem DELETE. Sem SQL novo. Sem deploy. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.060', d:'17/09/2026', itens:[
       'ALM-NF-1 / ALM-NF-1.1: NF digital vinculada à Entrada de Estoque. Ligou o salvarEntrada ao módulo almNf (upload cena-docs → cria alm_notas_fiscais → vincula movimentos patrimoniais/SAP → auditoria), com bloqueio de duplicidade por chave NF-e, "registrar mesmo assim" com justificativa, e bloqueio da entrada se o upload/registro da NF falhar. Nova aba "📄 NFs de Entrada" (consulta/estorno) e botão "📄 Ver NF" na tabela de entradas. SQL manual sql_alm_nf_digital_fase_1.sql (NÃO executado). Sem deploy. HOMOLOGAÇÃO.',
     ]},
@@ -134742,7 +134745,9 @@ function estAbrirDetalheMov(elOrCodigo, depId, campo){
     if(camp==='saida' && tipo!=='entrega' && tipo!=='baixa' && tipo!=='saida' && tipo!=='ajuste' && tipo!=='perda' && tipo!=='quebra' && tipo!=='descarte' && tipo!=='transferencia') return;
     linhas.push({
       data:dt, tipo:tipo, qtd:Number(m.quantidade)||0,
-      motivo:m.motivo||m.obs||'—', ghost:ghost, status:m.status||''
+      motivo:m.motivo||m.obs||'—', ghost:ghost, status:m.status||'',
+      id:m.id, item_id:m.item_id, deposito_id:m.deposito_id||dep,
+      estornada:(typeof estEntradaJaEstornada==='function'?estEntradaJaEstornada(m.id):false)
     });
   });
   if(camp==='entrada') linhas=linhas.filter(function(l){ return l.tipo==='entrada'||l.tipo==='devolucao'; });
@@ -134752,14 +134757,22 @@ function estAbrirDetalheMov(elOrCodigo, depId, campo){
   if(!linhas.length){
     html+='<div style="padding:1rem;color:#888;font-size:13px">Nenhum lançamento no período.</div>';
   } else {
+    var _podeEstornar = camp==='entrada' && typeof almCorrPodeSolicitar==='function' && almCorrPodeSolicitar();
     html+='<div style="overflow-x:auto"><table class="tbl tbl-r" style="font-size:12px"><thead><tr>'
-      +'<th>Data</th><th>Tipo</th><th style="text-align:right">Qtd</th><th>Motivo</th></tr></thead><tbody>'
+      +'<th>Data</th><th>Tipo</th><th style="text-align:right">Qtd</th><th>Motivo</th>'+(camp==='entrada'?'<th></th>':'')+'</tr></thead><tbody>'
       +linhas.map(function(l){
-        return '<tr'+(l.ghost?' style="opacity:.55"':'')+'>'
+        var acao='';
+        if(camp==='entrada'){
+          if(l.ghost || l.tipo!=='entrada') acao='';
+          else if(l.estornada) acao='<span style="font-size:10px;color:#854F0B;font-weight:700">ESTORNADA</span>';
+          else if(_podeEstornar && l.id) acao='<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D;font-size:10px" onclick="estAbrirEstornoEntrada(\''+String(l.id).replace(/[^a-zA-Z0-9_-]/g,'')+'\')">↩ Estornar</button>';
+        }
+        return '<tr'+(l.ghost||l.estornada?' style="opacity:.55"':'')+'>'
           +'<td>'+(typeof fmtD==='function'?fmtD(l.data):l.data)+'</td>'
           +'<td>'+escHtml(l.tipo)+(l.ghost?' <span style="color:#854F0B;font-size:10px">não soma no saldo</span>':'')+'</td>'
           +'<td style="text-align:right;font-weight:600">'+l.qtd+'</td>'
-          +'<td style="font-size:11px">'+escHtml(l.motivo)+'</td></tr>';
+          +'<td style="font-size:11px">'+escHtml(l.motivo)+'</td>'
+          +(camp==='entrada'?'<td style="text-align:right">'+acao+'</td>':'')+'</tr>';
       }).join('')+'</tbody></table></div>'
       +'<div style="font-size:11px;color:#888;margin-top:.6rem">'+(camp==='saida'
         ?'Só movimentação real de saída/entrega/baixa. Aprovação e reserva não aparecem aqui.'
@@ -134767,6 +134780,130 @@ function estAbrirDetalheMov(elOrCodigo, depId, campo){
   }
   html+='<div class="ma" style="margin-top:.85rem"><button class="btn btn-pri" onclick="closeModal()">Fechar</button></div></div></div>';
   setModal(html);
+}
+
+// ── Estorno de ENTRADA patrimonial SEM NF (entradas legadas / duplicadas) ──
+// Reutiliza almBaixarSaldoEstoquePatrimonio (retira do saldo físico) e o padrão
+// de ajuste inverso do estorno por NF. Só gestor (almCorrPodeSolicitar).
+var _estEstornoEntrada=null, _estEstornando=false;
+function estEntradaJaEstornada(movId){
+  if(!movId) return false;
+  return (movimentacoes_itens||[]).some(function(m){
+    if(!m || m.deleted_at) return false;
+    if(String(m.movimentacao_origem_id||'')!==String(movId)) return false;
+    var tag=String(m.tipo_ajuste||'')+' '+String(m.motivo||'')+' '+String(m.obs||'');
+    return /ESTORNO_ENTRADA/i.test(tag);
+  });
+}
+function estEstornoLinhaEstoque(mov){
+  if(!mov) return {cat:null,row:null};
+  var cat=(itens_catalogo||[]).find(function(c){ return String(c.id)===String(mov.item_id); })
+    ||{id:mov.item_id, nome:mov.nome||mov.item_nome||'Item'};
+  var lista=(typeof almListarLinhasEstoqueItem==='function')?almListarLinhasEstoqueItem(cat):[];
+  var row=(lista||[]).find(function(e){ return String(e.deposito_id||'')===String(mov.deposito_id||''); });
+  if(!row && mov.estoque_id) row=(estoque||[]).find(function(e){ return String(e.id)===String(mov.estoque_id); });
+  return {cat:cat, row:row};
+}
+async function estAbrirEstornoEntrada(movId){
+  if(_estEstornando) return;
+  if(typeof almCorrPodeSolicitar==='function' && !almCorrPodeSolicitar()){
+    alert('Sem permissão para estornar entradas. Fale com o gestor do almoxarifado.'); return;
+  }
+  var mov=(movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(movId); });
+  if(!mov){ alert('Entrada não encontrada.'); return; }
+  if(String(mov.tipo_mov||'')!=='entrada'){ alert('Só é possível estornar movimentos de entrada.'); return; }
+  if(estEntradaJaEstornada(movId)){ alert('Esta entrada já foi estornada.'); return; }
+  var qtd=Number(mov.quantidade)||0;
+  if(qtd<=0){ alert('Quantidade da entrada inválida.'); return; }
+  var loc=estEstornoLinhaEstoque(mov);
+  if(!loc.row){ alert('Linha de estoque do depósito da entrada não encontrada — não é possível estornar com segurança.'); return; }
+  var saldoAtual=Number(loc.row.saldo)||0;
+  var apos=saldoAtual-qtd;
+  var nome=(loc.cat&&loc.cat.nome)||mov.nome||'Item';
+  var dep=(typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(mov.deposito_id||''); });
+  if(apos<-1e-9){
+    almNfOverlay('<div class="modal" style="max-width:520px" onclick="event.stopPropagation()">'
+      +'<h3 style="margin:0 0 .5rem">Não é possível estornar esta entrada</h3>'
+      +'<p style="font-size:13px"><b>'+escHtml(nome)+'</b><br>Entrada: +'+qtd+' · Saldo disponível agora: '+saldoAtual+'.<br>Parte já foi movimentada após a entrada. Não gera estoque negativo.</p>'
+      +'<div class="ma" style="margin-top:.8rem"><button class="btn btn-pri" onclick="almNfFecharOverlay()">Fechar</button></div></div>');
+    return;
+  }
+  _estEstornoEntrada={mov:mov, row:loc.row, cat:loc.cat, qtd:qtd, atual:saldoAtual, apos:apos, nome:nome};
+  almNfOverlay('<div class="modal" style="max-width:560px" onclick="event.stopPropagation()">'
+    +'<h3 style="margin:0 0 .4rem">↩ Estornar entrada</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.6rem">'+escHtml(nome)+' · '+escHtml((dep&&dep.nome)||'depósito')+'</div>'
+    +'<table class="tbl" style="font-size:12px"><thead><tr><th style="text-align:right">Saldo atual</th><th style="text-align:right">Entrada</th><th style="text-align:right">Estorno</th><th style="text-align:right">Saldo após</th></tr></thead>'
+    +'<tbody><tr><td style="text-align:right">'+saldoAtual+'</td><td style="text-align:right">+'+qtd+'</td><td style="text-align:right;color:#A32D2D">−'+qtd+'</td><td style="text-align:right;font-weight:700">'+apos+'</td></tr></tbody></table>'
+    +'<div style="margin-top:.75rem"><label style="font-size:11px;font-weight:600">Motivo *</label>'
+    +'<select class="inp" id="est-ent-motivo" style="width:100%"><option value="">Selecione...</option>'
+    +'<option>Entrada lançada em duplicidade</option><option>Entrada incorreta</option>'
+    +'<option>Quantidade incorreta</option><option>Fornecedor incorreto</option>'
+    +'<option>Entrada realizada por engano</option><option>Outro</option></select></div>'
+    +'<div style="margin-top:.5rem"><label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<textarea class="inp" id="est-ent-just" rows="3" style="width:100%" placeholder="Obrigatória para auditoria"></textarea></div>'
+    +'<div style="margin-top:.7rem;background:#FEF3E2;color:#854F0B;padding:8px 10px;border-radius:8px;font-size:12px">'
+    +'<b>CONFIRMAR ESTORNO?</b> Vai retirar '+qtd+' do saldo físico e registrar um ajuste inverso. Não apaga a entrada original.</div>'
+    +'<div class="ma" style="margin-top:.85rem;display:flex;gap:8px">'
+    +'<button class="btn" onclick="almNfFecharOverlay()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="est-ent-btn" style="background:#A32D2D;border-color:#A32D2D" onclick="estConfirmarEstornoEntrada()">Confirmar estorno</button>'
+    +'</div></div>');
+}
+async function estConfirmarEstornoEntrada(){
+  if(_estEstornando) return;
+  var p=_estEstornoEntrada;
+  if(!p||!p.mov){ return; }
+  if(estEntradaJaEstornada(p.mov.id)){ alert('Esta entrada já foi estornada.'); almNfFecharOverlay(); return; }
+  var mot=((document.getElementById('est-ent-motivo')||{}).value||'').trim();
+  var just=((document.getElementById('est-ent-just')||{}).value||'').trim();
+  if(!mot||!just){ alert('Informe motivo e justificativa.'); return; }
+  var btn=document.getElementById('est-ent-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Estornando...'; }
+  _estEstornando=true;
+  try{
+    var baixa=await almBaixarSaldoEstoquePatrimonio({row:p.row, qtd:p.qtd, itemCat:p.cat});
+    if(!baixa.ok) throw new Error(baixa.msg||'Falha ao baixar o saldo.');
+    var u={id:(usuarioLogado&&usuarioLogado.id)||null, nome:(usuarioLogado&&(usuarioLogado.nome||usuarioLogado.email))||''};
+    var payload={
+      item_id:p.mov.item_id,
+      tipo_mov:'ajuste',
+      quantidade:p.qtd,
+      deposito_id:p.mov.deposito_id||null,
+      filial_id:p.mov.filial_id||null,
+      fornecedor:p.mov.fornecedor||null,
+      nota_fiscal:p.mov.nota_fiscal||null,
+      data_mov:dataHoje(),
+      motivo:'ESTORNO_ENTRADA',
+      tipo_ajuste:'ESTORNO_ENTRADA',
+      movimentacao_origem_id:p.mov.id,
+      obs:'ESTORNO_ENTRADA · '+mot+' · '+just+' · por '+u.nome,
+      status:'Disponível',
+      responsavel_id:u.id
+    };
+    var estId='movest'+Date.now();
+    if(DEMO){
+      movimentacoes_itens.push(Object.assign({id:estId}, payload));
+    } else {
+      var insE=await sbInsert('movimentacoes_itens', payload);
+      if(!insE){
+        // registro falhou: restaura o saldo baixado (não deixa saldo baixado sem histórico)
+        p.row.saldo=(Number(p.row.saldo)||0)+p.qtd;
+        await sbUpdate('estoque',{saldo:p.row.saldo},'id=eq.'+p.row.id);
+        throw new Error('Falha ao registrar o movimento de estorno. Saldo restaurado.');
+      }
+      movimentacoes_itens.push(Object.assign({}, payload, insE[0]));
+    }
+    almNfFecharOverlay();
+    _estEstornoEntrada=null;
+    if(typeof progShowToast==='function') progShowToast('✅ Entrada estornada — '+p.qtd+' retirado do saldo de '+p.nome);
+    try{ if(typeof renderEstoque==='function') renderEstoque(); }catch(e){}
+    try{ if(typeof closeModal==='function') closeModal(); }catch(e){}
+  }catch(e){
+    alert('Não foi possível estornar: '+((e&&e.message)||e));
+  }finally{
+    _estEstornando=false;
+    var b2=document.getElementById('est-ent-btn');
+    if(b2){ b2.disabled=false; b2.textContent='Confirmar estorno'; }
+  }
 }
 function estAbrirDetalheReserva(el){
   var codigo=el&&el.getAttribute?el.getAttribute('data-codigo')||'':'';
