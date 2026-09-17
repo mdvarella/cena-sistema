@@ -7801,21 +7801,72 @@ function almMergeMovimentacoes(arrays){
   });
 }
 
-// ── Módulo SESMT/Almox: últimos 90 dias + entregas Em uso — ao acessar SESMT ─────
+function almCarregarMovimentacoesEstoque(opts){
+  opts=opts||{};
+  if(DEMO) return Promise.resolve(movimentacoes_itens||[]);
+  var d90=_diasAtras(opts.dias||90);
+  var jobs=[
+    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90],maxPages:30}),
+    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrada'],maxPages:30}),
+    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrega','status=eq.'+encodeURIComponent('"Em uso"')],maxPages:15})
+  ];
+  return Promise.all(jobs.map(function(p){
+    return Promise.resolve(p).catch(function(e){ console.warn('[movimentacoes_itens]', e); return []; });
+  })).then(function(res){
+    return almMergeMovimentacoes(res);
+  });
+}
+
+var _almLedgerEstoquePromise=null;
+function almGarantirLedgerEstoque(cb){
+  if(DEMO){ if(cb) cb(false); return Promise.resolve(false); }
+  if(window._almLedgerEstoqueOk){ if(cb) cb(false); return Promise.resolve(false); }
+  if(_almLedgerEstoquePromise){
+    return _almLedgerEstoquePromise.then(function(ch){ if(cb) cb(ch); return ch; });
+  }
+  _almLedgerEstoquePromise=Promise.all([
+    almCarregarMovimentacoesEstoque(),
+    sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
+    sbFetchAll('estoque',{order:'nome.asc',maxPages:20})
+  ]).then(function(res){
+    var changed=false;
+    if(res[0]&&res[0].length){
+      var n0=(movimentacoes_itens||[]).length;
+      movimentacoes_itens=almMergeMovimentacoes([movimentacoes_itens, res[0]]);
+      if((movimentacoes_itens||[]).length!==n0) changed=true;
+    }
+    if(res[1]&&res[1].length){
+      if(res[1].length!==(itens_catalogo||[]).length) changed=true;
+      itens_catalogo=res[1];
+    }
+    if(res[2]&&res[2].length){
+      if(res[2].length!==(estoque||[]).length) changed=true;
+      estoque=res[2];
+    }
+    window._almLedgerEstoqueOk=true;
+    _almLedgerEstoquePromise=null;
+    if(cb) cb(changed);
+    return changed;
+  }).catch(function(e){
+    console.warn('almGarantirLedgerEstoque', e);
+    _almLedgerEstoquePromise=null;
+    window._almLedgerEstoqueOk=false;
+    if(cb) cb(false);
+    return false;
+  });
+  return _almLedgerEstoquePromise;
+}
+
+// ── Módulo SESMT/Almox: catálogo + entradas completas + 90 dias — ao acessar SESMT ─────
 async function carregarModuloSESMT(){
   if(_modSESMT)return;
-  _modSESMT=true;
-  if(DEMO)return;
-  var d90=_diasAtras(90);
-  return Promise.all([
-    sbFetch('itens_catalogo',{order:'nome'}),
-    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90]}),
-    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrega','status=eq.'+encodeURIComponent('"Em uso"')]}),
-    sbFetch('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrada']})
-  ]).then(function(res){
-    if(res[0]&&res[0].length)itens_catalogo=res[0];
-    movimentacoes_itens=almMergeMovimentacoes([res[1],res[2],res[3]]);
-  }).catch(function(){});
+  if(DEMO){ _modSESMT=true; return; }
+  try{
+    await almGarantirLedgerEstoque();
+    _modSESMT=true;
+  }catch(e){
+    console.warn('carregarModuloSESMT', e);
+  }
 }
 
 // ── Helper para garantir módulo carregado antes de renderizar ─────────────
@@ -42521,10 +42572,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.056',
-  data:   '16/09/2026',
-  build:  '20260916-2255',
+  numero: '8.1.057',
+  data:   '17/09/2026',
+  build:  '20260917-0748',
   log: [
+    {v:'8.1.057', d:'17/09/2026', itens:[
+      'P1-A.4: Confirmar integração… voltava a falhar em silêncio (item não definido na validação). HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.056', d:'16/09/2026', itens:[
       'P1-A.4: IA-5B CENA atual lê o treinamento do vínculo documental (documento_final_id → treinamento_id); não deixa a coluna vazia nem pega outro ASO. HOMOLOGAÇÃO.',
     ]},
@@ -126328,8 +126382,9 @@ function rhIa5bFingerprint(item, st){
 function rhIa5bValidarAntesConfirmar(){
   var st = _rhIa5b;
   if(!st) return 'Sessão expirada.';
+  var item = (_rhIaItens||[]).find(function(x){ return String(x.id)===String(st.itemId); });
   if(!st.destinos.sesmt && !st.destinos.dossie) return 'Selecione ao menos um destino.';
-  if(st.destinos.sesmt && item._asoTreinFonte && item._asoTreinFonte.ambiguo){
+  if(st.destinos.sesmt && item && item._asoTreinFonte && item._asoTreinFonte.ambiguo){
     return 'Há mais de um vínculo ativo para este documento. Não aplico SESMT automaticamente.';
   }
   if(st.destinos.sesmt && st.existente && !st.sesmtModo) return 'Escolha o que fazer com o registro SESMT existente.';
@@ -126475,12 +126530,16 @@ function rhIa5bRenderModal(){
   setModal(html);
 }
 function rhIa5bAbrirConfirmacaoFinal(){
-  var err = rhIa5bValidarAntesConfirmar();
-  if(err){ progShowToast(err,'erro'); return; }
-  var st = _rhIa5b;
-  var item = (_rhIaItens||[]).find(function(x){ return String(x.id)===String(st.itemId); });
-  var col = rhIaRevColabById(item.colaborador_id_sugerido);
-  var vals = rhIa5bValoresDeCampos(st.campos, st.decisoes, st.modo);
+  try{
+    var err = rhIa5bValidarAntesConfirmar();
+    if(err){ progShowToast(err,'erro'); return; }
+    var st = _rhIa5b;
+    if(!st){ progShowToast('Sessão expirada. Abra o modal novamente.','erro'); return; }
+    var item = (_rhIaItens||[]).find(function(x){ return String(x.id)===String(st.itemId); });
+    if(!item){ progShowToast('Item não encontrado.','erro'); return; }
+    var col = rhIaRevColabById(item.colaborador_id_sugerido);
+    if(!col){ progShowToast('Colaborador não encontrado.','erro'); return; }
+    var vals = rhIa5bValoresDeCampos(st.campos, st.decisoes, st.modo);
   st.campos.forEach(function(c){
     if(st.decisoes[c.chave]==='documento'){
       if(c.chave==='tipo_exame') vals.titulo = 'ASO '+c.docVal;
@@ -126516,7 +126575,11 @@ function rhIa5bAbrirConfirmacaoFinal(){
     +'<div style="font-size:12px;color:#854F0B;margin:8px 0">Confirme uma única vez. Não inventa datas. Não reenvia PDF se já estiver no Dossiê.</div>'
     +'<div class="ma"><button class="btn" onclick="rhIa5bRenderModal()">Voltar</button>'
     +'<button class="btn btn-pri" onclick="rhIa5bExecutarAplicacao()">Confirmar integração</button></div></div></div>';
-  setModal(html);
+    setModal(html);
+  }catch(eConf){
+    console.error('rhIa5bAbrirConfirmacaoFinal', eConf);
+    progShowToast('Não foi possível abrir a confirmação: '+(eConf&&eConf.message||eConf),'erro');
+  }
 }
 async function rhIa5bGravarDossie(item, col, tipoDoc){
   if(item.documento_final_id) return {ok:true, ja:true, id:item.documento_final_id};
@@ -131054,8 +131117,8 @@ async function sesmtCarregarDados(){
       sbFetch('ferramentas',{order:'nome'}),
       sbFetch('ocorrencias',{order:'data_ocorrencia.desc'}),
       sbFetch('vales',{order:'data_emissao.desc'}),
-    sbFetch('estoque',{order:'nome'}),
-    sbFetch('itens_catalogo',{order:'nome'}),
+    sbFetchAll('estoque',{order:'nome.asc',maxPages:20}),
+    sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
     sbFetchAll('treinamentos',{filters:['deleted_at=is.null'],order:'validade'}),
       sbFetch('aprovacoes',{filters:['status=eq.pendente']}),
       sbFetch('uniformes_catalogo',{order:'tipo'}),
@@ -131067,7 +131130,8 @@ async function sesmtCarregarDados(){
       sbFetch('locacoes',{order:'termino'})
     ]);
     funcs=res[0]||[];epis=res[1]||[];ferramentas=res[2]||[];
-    ocorrencias=res[3]||[];vales=res[4]||[];estoque=res[5]||[];
+    ocorrencias=res[3]||[];vales=res[4]||[];
+    if(res[5]&&res[5].length) estoque=res[5];
     if(res[6]&&res[6].length) itens_catalogo=res[6];
     treinamentos=res[7]||[];aprovacoes=res[8]||[];
     uniformesCat=res[9]||[];uniformesEnt=res[10]||[];uniformesMov=res[11]||[];estoqueUni=res[12]||[];
@@ -131202,11 +131266,21 @@ function almTimelineResolverRef(){
 function almTimelineMatchMovItem(m, ref){
   if(!m||!ref) return false;
   if(ref.id && String(m.item_id||'')===String(ref.id)) return true;
-  if(!ref.id&&ref.nome){
-    var cat=(itens_catalogo||[]).find(function(c){ return String(c.id)===String(m.item_id); });
-    if(cat&&almTimelineMatchNomeItem(cat.nome,ref.nome)) return true;
+  var cat=(itens_catalogo||[]).find(function(c){ return String(c.id)===String(m.item_id||''); });
+  var refCod=String(ref.codigo||'').trim();
+  var refSku=String(ref.sku||'').trim();
+  var refNome=String(ref.nome||'').trim();
+  if(cat){
+    if(refCod && String(cat.codigo||'').trim()===refCod) return true;
+    if(refSku && String(cat.sku||'').trim()===refSku) return true;
+    if(refNome && String(cat.nome||'').trim().toLowerCase()===refNome.toLowerCase()) return true;
+  }
+  var mCod=String(m.item_codigo||m.codigo||'').trim();
+  if(refCod && mCod && mCod===refCod) return true;
+  if(!ref.id && refNome){
+    if(cat && String(cat.nome||'').trim().toLowerCase()===refNome.toLowerCase()) return true;
     var est=(estoque||[]).find(function(e){ return String(e.id)===String(m.estoque_id); });
-    if(est&&almTimelineMatchNomeItem(est.nome,ref.nome)) return true;
+    if(est && String(est.nome||'').trim().toLowerCase()===refNome.toLowerCase()) return true;
   }
   return false;
 }
@@ -133001,11 +133075,17 @@ function iniciarAbaItens(){
   carregar.then(function(){
     if(!DEMO){
       return Promise.all([
-        sbFetch('itens_catalogo',{order:'nome'}),
-        sbFetch('movimentacoes_itens',{order:'data_mov.desc'})
+        sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
+        typeof almCarregarMovimentacoesEstoque==='function'
+          ? almCarregarMovimentacoesEstoque()
+          : sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',maxPages:30})
       ]).then(function(res){
         if(res[0]&&res[0].length) itens_catalogo=res[0];
-        if(res[1]&&res[1].length) movimentacoes_itens=res[1];
+        if(res[1]&&res[1].length){
+          movimentacoes_itens=typeof almMergeMovimentacoes==='function'
+            ? almMergeMovimentacoes([movimentacoes_itens, res[1]])
+            : res[1];
+        }
       });
     }
   }).then(function(){ renderItens(); }).catch(function(){ popularFiltroTiposItens(); renderItens(); });
@@ -135052,8 +135132,16 @@ function estRefTimeline(e){
     return (typeof almMatchEstoqueRef==='function' && almMatchEstoqueRef(e,c))
       || (e.item_id && String(c.id)===String(e.item_id));
   });
+  if(!cat && e.codigo){
+    var cod=String(e.codigo||'').trim();
+    if(cod) cat=(itens_catalogo||[]).find(function(c){ return String(c.codigo||'').trim()===cod; });
+  }
+  if(!cat && e.nome){
+    var nl=String(e.nome||'').trim().toLowerCase();
+    if(nl) cat=(itens_catalogo||[]).find(function(c){ return String(c.nome||'').trim().toLowerCase()===nl; });
+  }
   return cat
-    ? {id:cat.id, nome:cat.nome, codigo:cat.codigo, sku:cat.sku, ref:cat}
+    ? {id:cat.id, nome:cat.nome, codigo:cat.codigo||e.codigo, sku:cat.sku||e.sku, ref:cat}
     : {id:e.item_id||null, nome:e.nome, codigo:e.codigo, sku:e.sku, ref:e};
 }
 function estStatusLinha(saldoAtual, reservado, disponivel, minimo, temMov){
@@ -135075,6 +135163,8 @@ function estUltimaMovData(e){
   }
   (movimentacoes_itens||[]).forEach(function(m){
     var ok=(e.item_id && String(m.item_id)===String(e.item_id))
+      || (ref.id && String(m.item_id)===String(ref.id))
+      || (typeof almTimelineMatchMovItem==='function' && almTimelineMatchMovItem(m, ref))
       || (e.nome && String(m.item_nome||m.descricao||'').toLowerCase()===String(e.nome||'').toLowerCase());
     if(!ok) return;
     if(e.deposito_id && m.deposito_id && String(m.deposito_id)!==String(e.deposito_id)) return;
@@ -135114,6 +135204,11 @@ function estLinhaCalc(e, filtIni, filtFim){
   var saidas = Number(res.saidas)||0;
   var saldoAnt = Number(res.saldoAnterior)||0;
   var saldoAtual = saldoAnt + entradas - saidas;
+  var saldoTabela = Number(e.saldo)||0;
+  var ledgerVazio = entradas===0 && saidas===0 && saldoAnt===0 && !(Number(res.ghost)||0);
+  if(ledgerVazio && saldoTabela){
+    saldoAtual = saldoTabela;
+  }
   var sMin = Number(e.saldo_minimo!=null?e.saldo_minimo:5)||0;
   var reserva = (typeof almReqReservaEstoque==='function')
     ? almReqReservaEstoque(e.item_id, cs.codigoRaw||e.codigo, e.deposito_id, e.nome)
@@ -135158,6 +135253,13 @@ function estColetarLinhas(filtros){
 
 function renderEstoque(){
   var tbody = document.getElementById('tbody-est'); if(!tbody) return;
+  if(!DEMO && typeof almGarantirLedgerEstoque==='function' && !window._estLedgerRendering && !window._almLedgerEstoqueOk){
+    window._estLedgerRendering = true;
+    almGarantirLedgerEstoque(function(){
+      window._estLedgerRendering = false;
+      renderEstoque();
+    });
+  }
   if(!DEMO && typeof _almReq!=='undefined' && typeof almReqGarantirListaSilent==='function' && !_almReq._estRendering){
     var precisaReq = !_almReq._estoqueReqOk || _almReq.filaStale;
     if(precisaReq){
@@ -143738,7 +143840,7 @@ async function almConsolidarEstoqueTodos(){
       var depKeys = Object.keys(depMap);
       for(var j=0;j<depKeys.length;j++){
         if(depKeys[j]==='__sem__') continue;
-        await almReconciliarEstoqueItem(it, depKeys[j], {permitirAcrescentar:false});
+        await almReconciliarEstoqueItem(it, depKeys[j], {permitirAcrescentar:false, permitirReduzir:false});
       }
     }
   }
@@ -144750,10 +144852,11 @@ async function salvarEntrada(){
   } else {
     if(!DEMO){
       try{
-        var freshEst = await sbFetch('estoque',{order:'nome'});
+        var freshEst = await sbFetchAll('estoque',{order:'nome.asc',maxPages:20});
         if(freshEst&&freshEst.length) estoque = freshEst;
         await almConsolidarEstoqueTodos();
         window._almEstoqueConsolidado = true;
+        window._almLedgerEstoqueOk = false;
         _almPLCarregado=false;
         await new Promise(function(r){ almCarregarProdutosLotes(r); });
       }catch(e){ console.warn('refresh estoque pós-entrada:', e); }
