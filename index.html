@@ -20358,11 +20358,93 @@ function _fornRefreshLista(){
   if(document.getElementById('tbody-forn-vis') && typeof renderFornecedoresVis==='function') renderFornecedoresVis();
   else if(typeof renderCadastros==='function') renderCadastros();
 }
-async function salvarFornecedor(){
+// ── Anti-duplicidade de fornecedores ──────────────────────────────
+function _fornNormNome(s){
+  return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+function _fornNormDoc(s){ return String(s||'').replace(/\D/g,''); }
+function _fornLev(a,b){
+  a=a||''; b=b||'';
+  if(a===b) return 0;
+  if(!a.length) return b.length;
+  if(!b.length) return a.length;
+  var prev=[], i, j;
+  for(j=0;j<=b.length;j++) prev[j]=j;
+  for(i=1;i<=a.length;i++){
+    var cur=[i];
+    for(j=1;j<=b.length;j++){
+      var cost=a.charAt(i-1)===b.charAt(j-1)?0:1;
+      cur[j]=Math.min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost);
+    }
+    prev=cur;
+  }
+  return prev[b.length];
+}
+function _fornSimil(a,b){
+  var na=_fornNormNome(a), nb=_fornNormNome(b);
+  if(!na||!nb) return 0;
+  if(na===nb) return 1;
+  var maxL=Math.max(na.length,nb.length);
+  var r=1-(_fornLev(na,nb)/maxL);
+  if(na.indexOf(nb)>=0 || nb.indexOf(na)>=0) r=Math.max(r,0.9);
+  return r;
+}
+function _fornCheckDuplicidade(nome, cnpj){
+  var seen={}, uniq=[];
+  (fornecedores||[]).concat(_fornDB||[]).forEach(function(f){
+    if(!f) return; var k=String(f.id); if(seen[k]) return; seen[k]=1; uniq.push(f);
+  });
+  var nnome=_fornNormNome(nome), ndoc=_fornNormDoc(cnpj);
+  var exato=null, similares=[];
+  uniq.forEach(function(f){
+    if(String(f.status||'')==='Inativo') return;
+    var fdoc=_fornNormDoc(f.cnpj_cpf||f.cnpj||f.documento||'');
+    if(ndoc && fdoc && ndoc===fdoc){ if(!exato) exato={f:f, motivo:'CNPJ/CPF'}; return; }
+    var fn=_fornNormNome(f.razao_social||f.nome||f.nome_fantasia||'');
+    if(nnome && fn===nnome){ if(!exato) exato={f:f, motivo:'nome'}; return; }
+    var sim=_fornSimil(nome, f.razao_social||f.nome||f.nome_fantasia||'');
+    if(sim>=0.82) similares.push({f:f, score:sim});
+  });
+  similares.sort(function(a,b){ return b.score-a.score; });
+  return {exato:exato, similares:similares.slice(0,6)};
+}
+function _fornDupResumoHtml(f){
+  var e=(typeof escHtml==='function')?escHtml:function(x){return String(x==null?'':x);};
+  return '<div style="background:#f6f6f2;border-radius:8px;padding:7px 10px;font-size:13px;margin:3px 0"><b>'+e(f.razao_social||f.nome||f.nome_fantasia||'—')+'</b>'
+    +(f.cnpj_cpf||f.cnpj?'<br><span style="color:#555">CNPJ/CPF: '+e(f.cnpj_cpf||f.cnpj)+'</span>':'')
+    +(f.tipo?' <span style="color:#888;font-size:11px">· '+e(f.tipo)+'</span>':'')+'</div>';
+}
+async function salvarFornecedor(force){
   var rs=(document.getElementById('nf-rs')||{}).value||'';if(!rs.trim())return;
+  var cnpj=(document.getElementById('nf-cnpj')||{}).value||'';
+  if(!force){
+    var _dup=_fornCheckDuplicidade(rs, cnpj);
+    if(_dup.exato){
+      almNfOverlay('<div class="modal" style="max-width:520px" onclick="event.stopPropagation()">'
+        +'<h3 style="margin:0 0 .5rem">⛔ Fornecedor já cadastrado</h3>'
+        +'<p style="font-size:13px">Já existe um fornecedor com o mesmo <b>'+_dup.exato.motivo+'</b>:</p>'
+        +_fornDupResumoHtml(_dup.exato.f)
+        +'<p style="font-size:12px;color:#555;margin-top:.4rem">Não é possível cadastrar em duplicidade. Se precisar, edite o fornecedor existente.</p>'
+        +'<div class="ma" style="margin-top:.8rem"><button class="btn btn-pri" onclick="almNfFecharOverlay()">Entendi</button></div></div>');
+      return;
+    }
+    if(_dup.similares && _dup.similares.length){
+      almNfOverlay('<div class="modal" style="max-width:560px" onclick="event.stopPropagation()">'
+        +'<h3 style="margin:0 0 .4rem">⚠ Fornecedores parecidos</h3>'
+        +'<p style="font-size:13px">Há fornecedor(es) com nome parecido. Confira se não é o mesmo antes de cadastrar:</p>'
+        +'<div style="max-height:240px;overflow:auto;margin:.4rem 0">'
+        +_dup.similares.map(function(s){ return _fornDupResumoHtml(s.f).replace('</div>',' <span style="color:#888;font-size:11px">('+Math.round(s.score*100)+'% parecido)</span></div>'); }).join('')
+        +'</div>'
+        +'<div class="ma" style="margin-top:.5rem;display:flex;gap:8px;flex-wrap:wrap">'
+        +'<button class="btn" onclick="almNfFecharOverlay()">Revisar</button>'
+        +'<button class="btn btn-pri" onclick="almNfFecharOverlay();salvarFornecedor(true)">Cadastrar mesmo assim</button>'
+        +'</div></div>');
+      return;
+    }
+  }
   var payload={
     razao_social:rs.trim(),
-    cnpj_cpf:(document.getElementById('nf-cnpj')||{}).value||'',
+    cnpj_cpf:cnpj,
     tipo:(document.getElementById('nf-tipo')||{}).value||'Fornecedor',
     contato:(document.getElementById('nf-cont')||{}).value||'',
     telefone:(document.getElementById('nf-tel')||{}).value||'',
@@ -42595,10 +42677,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.062',
+  numero: '8.1.063',
   data:   '17/09/2026',
-  build:  '20260917-1934',
+  build:  '20260917-2000',
   log: [
+    {v:'8.1.063', d:'17/09/2026', itens:[
+      'Fornecedores: anti-duplicidade no cadastro. Nome ou CNPJ/CPF idêntico → bloqueia e mostra o já cadastrado. Nome parecido (similaridade) → avisa quais e o usuário decide ("Cadastrar mesmo assim"). Sem SQL. Sem deploy. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.062', d:'17/09/2026', itens:[
       'ALM-NF-1.1c: reverter estorno de entrada (caso estorno feito por engano). Botão "↩ Reverter" na linha ESTORNADA do modal Origem — Entradas: devolve a quantidade ao saldo físico e marca o ajuste de estorno como revertido (soft-delete, histórico preservado), reativando a entrada. Só gestor, exige justificativa, idempotente. Sem SQL. Sem deploy. HOMOLOGAÇÃO.',
     ]},
