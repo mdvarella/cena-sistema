@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 17/09/2026  
-**Versão atual do sistema:** `8.1.058` (17/09/2026, build `20260917-1621`)  
+**Versão atual do sistema:** `8.1.059` (17/09/2026, build `20260917-1652`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -428,6 +428,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 17/09/2026 | 8.1.059 | Limpeza: removido botão "📦 Almox." da barra superior que apontava para app Netlify desativado (404); Almoxarifado permanece na sidebar. Removido CSS órfão `#form-alm`. |
 | 17/09/2026 | 8.1.058 | Limpeza: módulo Sugestões de Melhorias estava duplicado no `index.html` (2 cópias idênticas; a 2ª vencia por hoisting, a 1ª era código morto). Removidas 356 linhas da cópia morta. Sem mudança de comportamento. |
 | 17/09/2026 | 8.1.057 | P1-A.4: botão Confirmar integração… falhava em silêncio (`item` indefinido na validação). HOMOLOGAÇÃO. |
 | 16/09/2026 | 8.1.056 | P1-A.4: CENA atual no modal IA-5B lê o treinamento do vínculo (documento_final_id → treinamento_id); não pega outro ASO. HOMOLOGAÇÃO. Sem SQL, sem deploy. |
