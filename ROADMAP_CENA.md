@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 17/09/2026  
-**Versão atual do sistema:** `8.1.061` (17/09/2026, build `20260917-1907`)  
+**Versão atual do sistema:** `8.1.062` (17/09/2026, build `20260917-1934`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -430,6 +430,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 17/09/2026 | 8.1.062 | ALM-NF-1.1c: reverter estorno de entrada (feito por engano) — botão "↩ Reverter" na linha ESTORNADA; devolve a qtd ao saldo e marca o ajuste como revertido (soft-delete, histórico preservado), reativando a entrada. Só gestor, com justificativa, idempotente. HOMOLOGAÇÃO. |
 | 17/09/2026 | 8.1.061 | ALM-NF-1.1b: estorno de ENTRADA patrimonial sem NF (entradas legadas/duplicadas) — botão "↩ Estornar" no modal Origem — Entradas; retira do saldo físico (bloqueia se insuficiente), ajuste inverso + motivo/justificativa, idempotente, só gestor, sem DELETE. HOMOLOGAÇÃO. |
 | 17/09/2026 | 8.1.060 | ALM-NF-1/1.1: NF digital ligada à Entrada de Estoque — módulo `almNf*` (já existente) conectado ao `salvarEntrada`: upload cena-docs, cria `alm_notas_fiscais`, vincula movimentos (patrimonial/SAP) via `alm_nota_fiscal_movimentacoes`, auditoria `alm_nota_fiscal_eventos`; bloqueio por chave NF-e + "registrar mesmo assim"; bloqueia entrada se upload/registro falhar. Aba "NFs de Entrada" (consulta/estorno) + "Ver NF" na tabela. SQL manual `SQLS/sql_alm_nf_digital_fase_1.sql` **não executado**. Sem deploy. HOMOLOGAÇÃO. |
 | 17/09/2026 | 8.1.059 | Limpeza: removido botão "📦 Almox." da barra superior que apontava para app Netlify desativado (404); Almoxarifado permanece na sidebar. Removido CSS órfão `#form-alm`. |

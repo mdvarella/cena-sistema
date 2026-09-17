@@ -42595,10 +42595,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.061',
+  numero: '8.1.062',
   data:   '17/09/2026',
-  build:  '20260917-1907',
+  build:  '20260917-1934',
   log: [
+    {v:'8.1.062', d:'17/09/2026', itens:[
+      'ALM-NF-1.1c: reverter estorno de entrada (caso estorno feito por engano). Botão "↩ Reverter" na linha ESTORNADA do modal Origem — Entradas: devolve a quantidade ao saldo físico e marca o ajuste de estorno como revertido (soft-delete, histórico preservado), reativando a entrada. Só gestor, exige justificativa, idempotente. Sem SQL. Sem deploy. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.061', d:'17/09/2026', itens:[
       'ALM-NF-1.1b: estorno de ENTRADA patrimonial SEM NF (entradas legadas/duplicadas). Botão "↩ Estornar" no modal Origem — Entradas no período: retira do saldo físico (almBaixarSaldoEstoquePatrimonio, bloqueia se insuficiente), grava ajuste inverso (movimentacao_origem_id, motivo+justificativa), idempotente (não estorna 2x), só gestor (almCorrPodeSolicitar), sem DELETE. Sem SQL novo. Sem deploy. HOMOLOGAÇÃO.',
     ]},
@@ -134764,7 +134767,7 @@ function estAbrirDetalheMov(elOrCodigo, depId, campo){
         var acao='';
         if(camp==='entrada'){
           if(l.ghost || l.tipo!=='entrada') acao='';
-          else if(l.estornada) acao='<span style="font-size:10px;color:#854F0B;font-weight:700">ESTORNADA</span>';
+          else if(l.estornada){ acao='<span style="font-size:10px;color:#854F0B;font-weight:700">ESTORNADA</span>'; if(_podeEstornar && l.id) acao+=' <button class="btn btn-sm" style="font-size:10px;margin-left:5px" onclick="estReverterEstornoEntrada(\''+String(l.id).replace(/[^a-zA-Z0-9_-]/g,'')+'\')">↩ Reverter</button>'; }
           else if(_podeEstornar && l.id) acao='<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D;font-size:10px" onclick="estAbrirEstornoEntrada(\''+String(l.id).replace(/[^a-zA-Z0-9_-]/g,'')+'\')">↩ Estornar</button>';
         }
         return '<tr'+(l.ghost||l.estornada?' style="opacity:.55"':'')+'>'
@@ -134903,6 +134906,80 @@ async function estConfirmarEstornoEntrada(){
     _estEstornando=false;
     var b2=document.getElementById('est-ent-btn');
     if(b2){ b2.disabled=false; b2.textContent='Confirmar estorno'; }
+  }
+}
+function estEstornoAjusteDe(origMovId){
+  return (movimentacoes_itens||[]).find(function(m){
+    if(!m || m.deleted_at) return false;
+    if(String(m.movimentacao_origem_id||'')!==String(origMovId)) return false;
+    var tag=String(m.tipo_ajuste||'')+' '+String(m.motivo||'')+' '+String(m.obs||'');
+    return /ESTORNO_ENTRADA/i.test(tag);
+  })||null;
+}
+var _estReverterEstorno=null;
+async function estReverterEstornoEntrada(origMovId){
+  if(_estEstornando) return;
+  if(typeof almCorrPodeSolicitar==='function' && !almCorrPodeSolicitar()){ alert('Sem permissão para reverter estornos.'); return; }
+  var aj=estEstornoAjusteDe(origMovId);
+  if(!aj){ alert('Não há estorno ativo para reverter nesta entrada.'); return; }
+  var orig=(movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(origMovId); });
+  var qtd=Number(aj.quantidade)||Number(orig&&orig.quantidade)||0;
+  if(qtd<=0){ alert('Quantidade do estorno inválida.'); return; }
+  var loc=estEstornoLinhaEstoque(aj);
+  if(!loc.row){ alert('Linha de estoque não encontrada para reverter.'); return; }
+  var nome=(loc.cat&&loc.cat.nome)||(orig&&orig.nome)||'Item';
+  var atual=Number(loc.row.saldo)||0;
+  _estReverterEstorno={aj:aj, orig:orig, row:loc.row, qtd:qtd, nome:nome};
+  almNfOverlay('<div class="modal" style="max-width:540px" onclick="event.stopPropagation()">'
+    +'<h3 style="margin:0 0 .4rem">↩ Reverter estorno</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.6rem">'+escHtml(nome)+'</div>'
+    +'<p style="font-size:13px">Isto vai <b>devolver +'+qtd+'</b> ao saldo (de '+atual+' para '+(atual+qtd)+') e reativar a entrada. O estorno fica marcado como revertido (histórico preservado).</p>'
+    +'<div style="margin-top:.5rem"><label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<textarea class="inp" id="est-rev-just" rows="3" style="width:100%" placeholder="Ex.: estorno feito na entrada errada"></textarea></div>'
+    +'<div class="ma" style="margin-top:.85rem;display:flex;gap:8px">'
+    +'<button class="btn" onclick="almNfFecharOverlay()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="est-rev-btn" onclick="estConfirmarReverterEstorno()">Confirmar reversão</button>'
+    +'</div></div>');
+}
+async function estConfirmarReverterEstorno(){
+  if(_estEstornando) return;
+  var p=_estReverterEstorno;
+  if(!p||!p.aj){ return; }
+  var just=((document.getElementById('est-rev-just')||{}).value||'').trim();
+  if(!just){ alert('Informe a justificativa.'); return; }
+  if(!estEstornoAjusteDe(p.orig?p.orig.id:p.aj.movimentacao_origem_id)){ alert('Este estorno já foi revertido.'); almNfFecharOverlay(); return; }
+  var btn=document.getElementById('est-rev-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Revertendo...'; }
+  _estEstornando=true;
+  try{
+    var novoSaldo=(Number(p.row.saldo)||0)+p.qtd;
+    var u=(usuarioLogado&&(usuarioLogado.nome||usuarioLogado.email))||'';
+    if(DEMO){
+      p.row.saldo=novoSaldo;
+      p.aj.deleted_at=new Date().toISOString();
+      p.aj.obs=(p.aj.obs||'')+' | REVERTIDO: '+just+' · por '+u;
+    } else {
+      var okS=await sbUpdate('estoque',{saldo:novoSaldo},'id=eq.'+p.row.id);
+      if(!okS) throw new Error('Falha ao restaurar o saldo.');
+      p.row.saldo=novoSaldo;
+      var okD=await sbUpdate('movimentacoes_itens',{deleted_at:new Date().toISOString(), obs:(p.aj.obs||'')+' | REVERTIDO: '+just+' · por '+u},'id=eq.'+p.aj.id);
+      if(!okD){
+        p.row.saldo=novoSaldo-p.qtd;
+        await sbUpdate('estoque',{saldo:p.row.saldo},'id=eq.'+p.row.id);
+        throw new Error('Falha ao marcar o estorno como revertido. Saldo restaurado ao estado anterior.');
+      }
+      p.aj.deleted_at=new Date().toISOString();
+    }
+    almNfFecharOverlay();
+    _estReverterEstorno=null;
+    if(typeof progShowToast==='function') progShowToast('✅ Estorno revertido — +'+p.qtd+' devolvido ao saldo de '+p.nome);
+    try{ if(typeof renderEstoque==='function') renderEstoque(); }catch(e){}
+    try{ if(typeof closeModal==='function') closeModal(); }catch(e){}
+  }catch(e){
+    alert('Não foi possível reverter: '+((e&&e.message)||e));
+  }finally{
+    _estEstornando=false;
+    var b2=document.getElementById('est-rev-btn'); if(b2){ b2.disabled=false; b2.textContent='Confirmar reversão'; }
   }
 }
 function estAbrirDetalheReserva(el){
