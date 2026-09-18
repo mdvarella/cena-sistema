@@ -42626,10 +42626,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.058',
+  numero: '8.1.059',
   data:   '18/09/2026',
-  build:  '20260918-0159',
+  build:  '20260918-0236',
   log: [
+    {v:'8.1.059', d:'18/09/2026', itens:[
+      'Estoque abre só o painel de filtros (sem ledger, sem grade). Conteúdo aparece após tipo, filial, depósito, status ou busca (mín. 2 letras). Consultar / Limpar.',
+    ]},
     {v:'8.1.058', d:'18/09/2026', itens:[
       'Desempenho Estoque: hub Almox não espera o ledger completo; ledger em 2 consultas (90 dias + Em uso) em vez de 3 varreduras históricas; sem consolidar todos os itens no load; grade com índice item/depósito, paginação 25/50/100 e busca com debounce. Corrige atualizarMetricas do financeiro sobrescrita pelo SESMT. SAP Estoque também pagina. Demo: DD do SESMT deixa de apagar o DD financeiro (modo demo não quebra mais no slice).',
     ]},
@@ -128718,7 +128721,12 @@ function desmontarSesmtEstoque(){
   if(tbody) tbody.innerHTML = '';
   var pager = document.getElementById('est-pager');
   if(pager) pager.innerHTML = '';
-  if(typeof _estUi!=='undefined') _estUi.montado = false;
+  var metr = document.getElementById('est-metricas');
+  if(metr) metr.innerHTML = '';
+  if(typeof _estUi!=='undefined'){
+    _estUi.montado = false;
+    _estUi.consultou = false;
+  }
 }
 
 function evolEscId(id){ return String(id||'').replace(/'/g,"\\'"); }
@@ -135228,7 +135236,7 @@ function estStatusLinha(saldoAtual, reservado, disponivel, minimo, temMov){
 
 var _estIdx = {gen:-1, sig:null, byItem:{}, byItemDep:{}, catById:{}, depById:{}, filById:{}, reservaMap:{}};
 var _estIdxGen = 0;
-var _estUi = {page:1, pageSize:50, montado:false};
+var _estUi = {page:1, pageSize:50, montado:false, consultou:false};
 var _estBuscaTimer = null;
 function estIdxInvalidate(){
   _estIdxGen++;
@@ -135280,13 +135288,103 @@ function estMovsForRow(e, idx){
   if(dep && idx.byItemDep[iid+'|'+dep]) return idx.byItemDep[iid+'|'+dep];
   return idx.byItem[iid]||[];
 }
+function estTemFiltroAtivo(f){
+  f = f || estFiltrosAtuais();
+  if(f.tipo || f.filial || f.deposito || f.status) return true;
+  return String(f.busca||'').trim().length>=2;
+}
+function estPopularFiltrosLeve(){
+  var selFil = document.getElementById('est-fil-filial');
+  if(selFil && typeof filiais!=='undefined' && filiais.length && selFil.options.length<=1){
+    var filAnt = selFil.value||'';
+    selFil.innerHTML = '<option value="">Todas as filiais</option>'
+      + filiais.map(function(f){ return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+escHtml(f.nome||'')+'</option>'; }).join('');
+    if(filAnt && filiais.some(function(f){ return f.id===filAnt; })) selFil.value = filAnt;
+    else selFil.value = '';
+  }
+  var selDep = document.getElementById('est-fil-deposito');
+  if(selDep && typeof depositos!=='undefined'){
+    var filSelDep = (document.getElementById('est-fil-filial')||{}).value||'';
+    var lastFilDep = selDep.getAttribute('data-filial-filtro');
+    var precisaRebuildDep = (lastFilDep===null) || (lastFilDep!==filSelDep) || selDep.options.length<=1;
+    if(precisaRebuildDep){
+      var depAnt = selDep.value||'';
+      var deps = depositos.filter(function(d){
+        return !d.deleted_at && (!filSelDep || String(d.filial_id||'')===String(filSelDep));
+      });
+      selDep.innerHTML = '<option value="">Todos os depósitos</option>'
+        + deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome||'')+'</option>'; }).join('');
+      selDep.setAttribute('data-filial-filtro', filSelDep);
+      if(depAnt && deps.some(function(d){ return d.id===depAnt; })) selDep.value = depAnt;
+      else selDep.value = '';
+    }
+  }
+  var selTipo = document.getElementById('est-fil-tipo');
+  if(selTipo && selTipo.options.length<=1 && typeof TIPOS_ITEM!=='undefined'){
+    var selAnterior = selTipo.value || '';
+    selTipo.innerHTML = '<option value="">TODOS OS TIPOS</option>'
+      + TIPOS_ITEM.filter(Boolean).map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(tipoItemLabel?tipoItemLabel(t):t)+'</option>'; }).join('');
+    selTipo.value = selAnterior || '';
+  }
+  var pad = estPeriodoPadrao();
+  var elIni = document.getElementById('est-fil-ini');
+  var elFim = document.getElementById('est-fil-fim');
+  if(elIni && !elIni.value) elIni.value = pad.ini;
+  if(elFim && !elFim.value) elFim.value = pad.fim;
+}
+function estMostrarShell(){
+  var tbody = document.getElementById('tbody-est');
+  if(tbody){
+    tbody.innerHTML = '<tr><td colspan="15" style="padding:2.2rem 1.5rem;text-align:center">'
+      +'<div style="font-size:15px;font-weight:700;color:#185FA5;margin-bottom:.35rem">Selecione um filtro para listar o estoque</div>'
+      +'<div style="font-size:12px;color:#888;max-width:420px;margin:0 auto;line-height:1.45">A grade não carrega na abertura. Escolha tipo, filial, depósito, status ou busque pelo nome/código (mínimo 2 letras) e clique em Consultar.</div>'
+      +'</td></tr>';
+  }
+  var metr = document.getElementById('est-metricas');
+  if(metr) metr.innerHTML = '';
+  var pager = document.getElementById('est-pager');
+  if(pager) pager.innerHTML = '';
+}
+function estConsultar(){
+  _estUi.page=1;
+  if(!estTemFiltroAtivo()){
+    _estUi.consultou=false;
+    if(typeof progShowToast==='function') progShowToast('Selecione tipo, filial, depósito, status ou busque um item.','aviso');
+    renderEstoque();
+    return;
+  }
+  _estUi.consultou=true;
+  renderEstoque();
+}
+function estLimparFiltros(){
+  ['est-fil-tipo','est-fil-filial','est-fil-deposito','est-fil-status','est-fil-busca'].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.value='';
+  });
+  var dep=document.getElementById('est-fil-deposito');
+  if(dep) dep.removeAttribute('data-filial-filtro');
+  _estUi.consultou=false;
+  _estUi.page=1;
+  renderEstoque();
+}
 function estFiltroChange(){
+  _estUi.page=1;
+  if(estTemFiltroAtivo()) _estUi.consultou=true;
+  else _estUi.consultou=false;
+  renderEstoque();
+}
+function estPeriodoChange(){
+  if(!_estUi.consultou) return;
   _estUi.page=1;
   renderEstoque();
 }
 function estBuscaInput(){
   clearTimeout(_estBuscaTimer);
-  _estBuscaTimer=setTimeout(function(){ _estUi.page=1; renderEstoque(); },220);
+  _estBuscaTimer=setTimeout(function(){
+    _estUi.page=1;
+    if(estTemFiltroAtivo()) _estUi.consultou=true;
+    else _estUi.consultou=false;
+    renderEstoque();
+  },220);
 }
 function estPagerHtml(total, page, pageSize){
   var pages=Math.max(1, Math.ceil(total/pageSize));
@@ -135437,15 +135535,25 @@ function renderEstoque(){
   var tbody = document.getElementById('tbody-est'); if(!tbody) return;
   _estUi.montado = true;
   cenaPerfStart('estoque-render');
+  estPopularFiltrosLeve();
+
+  if(!estTemFiltroAtivo()){
+    _estUi.consultou=false;
+    estMostrarShell();
+    cenaPerfEnd('estoque-render',{shell:true,domNodes:cenaPerfDomCount('pg-sesmt-estoque')});
+    return;
+  }
+  _estUi.consultou=true;
+
   if(!DEMO && typeof almGarantirLedgerEstoque==='function' && !window._estLedgerRendering && !window._almLedgerEstoqueOk){
     window._estLedgerRendering = true;
-    if(!(estoque&&estoque.length)){
-      tbody.innerHTML = '<tr><td colspan="15" style="padding:1.2rem;text-align:center;color:#888">Carregando movimentações do período…</td></tr>';
-    }
+    tbody.innerHTML = '<tr><td colspan="15" style="padding:1.2rem;text-align:center;color:#888">Carregando movimentações do período…</td></tr>';
     almGarantirLedgerEstoque(function(){
       window._estLedgerRendering = false;
       renderEstoque();
     });
+    cenaPerfEnd('estoque-render',{ledger:'pending'});
+    return;
   }
   if(!DEMO && typeof _almReq!=='undefined' && typeof almReqGarantirListaSilent==='function' && !_almReq._estRendering){
     var precisaReq = !_almReq._estoqueReqOk || _almReq.filaStale;
@@ -135457,62 +135565,6 @@ function renderEstoque(){
         if(typeof estIdxInvalidate==='function') estIdxInvalidate();
         renderEstoque();
       });
-    }
-  }
-
-  // Popular filtro de filiais (só uma vez; preserva seleção)
-  var selFil = document.getElementById('est-fil-filial');
-  if(selFil && typeof filiais!=='undefined' && filiais.length && selFil.options.length<=1){
-    var filAnt = selFil.value||'';
-    selFil.innerHTML = '<option value="">Todas as filiais</option>'
-      + filiais.map(function(f){ return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+escHtml(f.nome||'')+'</option>'; }).join('');
-    if(filAnt && filiais.some(function(f){ return f.id===filAnt; })) selFil.value = filAnt;
-    else selFil.value = '';
-  }
-
-  // Popular depósitos só quando a filial muda (rebuild a cada renderEstoque
-  // apagava a seleção do depósito no onchange / busca)
-  var selDep = document.getElementById('est-fil-deposito');
-  if(selDep && typeof depositos!=='undefined'){
-    var filSelDep = (document.getElementById('est-fil-filial')||{}).value||'';
-    var lastFilDep = selDep.getAttribute('data-filial-filtro');
-    var precisaRebuildDep = (lastFilDep===null) || (lastFilDep!==filSelDep) || selDep.options.length<=1;
-    if(precisaRebuildDep){
-      var depAnt = selDep.value||'';
-      var deps = depositos.filter(function(d){
-        return !d.deleted_at && (!filSelDep || String(d.filial_id||'')===String(filSelDep));
-      });
-      selDep.innerHTML = '<option value="">Todos os depósitos</option>'
-        + deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome||'')+'</option>'; }).join('');
-      selDep.setAttribute('data-filial-filtro', filSelDep);
-      if(depAnt && deps.some(function(d){ return d.id===depAnt; })) selDep.value = depAnt;
-      else selDep.value = '';
-    }
-  }
-
-  // Popular filtro de tipos a partir dos tipos realmente presentes no estoque
-  // (garante que as opções batem com os dados — evita mismatch de maiúsc./minúsc. ou valores ausentes)
-  var selTipo = document.getElementById('est-fil-tipo');
-  if(selTipo){
-    var tiposPresentes = {};
-    (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){
-      var t=almTipoCodigo(e.tipo||'') || String(e.tipo||'').trim();
-      if(t) tiposPresentes[t]=true;
-    });
-    TIPOS_ITEM.forEach(function(t){ if(t) tiposPresentes[t]=true; });
-    var keysTipo = Object.keys(tiposPresentes).sort();
-    if(keysTipo.length){
-      var selAnterior = selTipo.value || '';
-      selTipo.innerHTML = '<option value="">TODOS OS TIPOS</option>'
-        + keysTipo.map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(tipoItemLabel(t))+'</option>'; }).join('');
-      // Importante: eeTipoItemMatch(x,'') é sempre true — não usar find com filtro vazio
-      // senão "TODOS" cai no primeiro tipo da lista a cada onchange.
-      if(selAnterior){
-        var matchAnt = keysTipo.find(function(t){ return eeTipoItemMatch(t, selAnterior); });
-        selTipo.value = matchAnt || '';
-      } else {
-        selTipo.value = '';
-      }
     }
   }
 
@@ -146801,19 +146853,20 @@ async function lcAnalisarContrato(){
           <option value="negativo">Saldo negativo</option>
           <option value="sem-mov">Sem movimentação</option>
         </select>
-        <input class="inp" id="est-fil-ini" type="date" title="Início do período (saldo anterior)" style="width:140px" onchange="estFiltroChange()"/>
-        <input class="inp" id="est-fil-fim" type="date" title="Fim do período" style="width:140px" onchange="estFiltroChange()"/>
+        <input class="inp" id="est-fil-ini" type="date" title="Início do período (saldo anterior)" style="width:140px" onchange="estPeriodoChange()"/>
+        <input class="inp" id="est-fil-fim" type="date" title="Fim do período" style="width:140px" onchange="estPeriodoChange()"/>
         <input class="inp" id="est-fil-busca" placeholder="Buscar item, código ou SKU..." style="width:200px" oninput="estBuscaInput()"/>
+        <button class="btn btn-pri" type="button" onclick="estConsultar()">🔍 Consultar</button>
+        <button class="btn" type="button" onclick="estLimparFiltros()" title="Limpar filtros e esconder a grade">Limpar</button>
         <button class="btn btn-pri" onclick="openEntradaEstoque()">📥 Nova entrada</button>
         <button class="btn" onclick="estAuditarDivergenciasCena()" title="Lista divergências sem corrigir o saldo">🔍 Auditar divergências</button>
         <button class="btn" onclick="almRelatorio2Movimentacao('est')" title="Movimentação por requisição: filtrar e classificar por data, status, solicitante, contrato e itens">📊 Relatório 2</button>
       </div>
     </div>
     <div style="font-size:11px;color:#888;padding:.45rem .75rem;border-top:.5px solid #f0efe8">
+      A lista só aparece depois de um filtro (tipo, filial, depósito, status ou busca). Isso evita carregar o estoque inteiro na abertura.
       Saldo físico atual = saldo anterior + entradas no período − saídas no período.
       Disponível para saída = saldo físico atual − reservado.
-      Reserva (aprovada/separação) não é saída e não baixa o físico. Saída só existe com movimentação real.
-      Corrigir informações não mexe no estoque. Estorno de estoque é fluxo separado.
     </div>
     <div id="est-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
   </div>
