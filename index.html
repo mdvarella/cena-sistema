@@ -3470,10 +3470,10 @@ body.insp-campo-ativo #app-content-area {
     <div class="ch" style="flex-wrap:wrap;gap:8px">
       <span class="ct">📦 Almoxarifado / Estoque</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="alm-fil-cont" style="width:190px" onchange="almRender()">
+        <select class="inp" id="alm-fil-cont" style="width:190px" onchange="_almEstUi.page=1;almRender()">
           <option value="">Todos os contratos</option>
         </select>
-        <input class="inp" id="alm-fil-busca" placeholder="Buscar material..." style="width:180px" oninput="almRender()"/>
+        <input class="inp" id="alm-fil-busca" placeholder="Buscar material..." style="width:180px" oninput="almSapBuscaInput()"/>
         <button class="btn btn-pri" onclick="openEntradaEstoque('sap')">+ Entrada</button>
         <button class="btn" onclick="almAbrirSaida()" style="color:#185FA5;border-color:#185FA5">↗ Saída</button>
         <button class="btn" onclick="almAbrirDevolucao()" style="color:#3B6D11;border-color:#3B6D11">↩ Devolução</button>
@@ -3508,6 +3508,7 @@ body.insp-campo-ativo #app-content-area {
       </tr></thead>
       <tbody id="alm-tbody-estoque"></tbody>
     </table></div>
+    <div id="alm-est-pager"></div>
   </div>
 
   <div id="alm-content-entradas" style="display:none">
@@ -7805,10 +7806,11 @@ function almCarregarMovimentacoesEstoque(opts){
   opts=opts||{};
   if(DEMO) return Promise.resolve(movimentacoes_itens||[]);
   var d90=_diasAtras(opts.dias||90);
+  // Uma janela de 90 dias cobre o período da grade. Entregas "Em uso" (posse)
+  // podem ser mais antigas — busca filtrada, sem varrer TODAS as entradas históricas.
   var jobs=[
-    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90],maxPages:30}),
-    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrada'],maxPages:30}),
-    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrega','status=eq.'+encodeURIComponent('"Em uso"')],maxPages:15})
+    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['data_mov=gte.'+d90],maxPages:20}),
+    sbFetchAll('movimentacoes_itens',{order:'data_mov.desc',filters:['tipo_mov=eq.entrega','status=eq.'+encodeURIComponent('"Em uso"')],maxPages:8})
   ];
   return Promise.all(jobs.map(function(p){
     return Promise.resolve(p).catch(function(e){ console.warn('[movimentacoes_itens]', e); return []; });
@@ -7826,8 +7828,12 @@ function almGarantirLedgerEstoque(cb){
   }
   _almLedgerEstoquePromise=Promise.all([
     almCarregarMovimentacoesEstoque(),
-    sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
-    sbFetchAll('estoque',{order:'nome.asc',maxPages:20})
+    (itens_catalogo&&itens_catalogo.length)
+      ? Promise.resolve(itens_catalogo)
+      : sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
+    (estoque&&estoque.length)
+      ? Promise.resolve(estoque)
+      : sbFetchAll('estoque',{order:'nome.asc',maxPages:20})
   ]).then(function(res){
     var changed=false;
     if(res[0]&&res[0].length){
@@ -7845,6 +7851,7 @@ function almGarantirLedgerEstoque(cb){
     }
     window._almLedgerEstoqueOk=true;
     _almLedgerEstoquePromise=null;
+    if(typeof estIdxInvalidate==='function') estIdxInvalidate();
     if(cb) cb(changed);
     return changed;
   }).catch(function(e){
@@ -7857,12 +7864,11 @@ function almGarantirLedgerEstoque(cb){
   return _almLedgerEstoquePromise;
 }
 
-// ── Módulo SESMT/Almox: catálogo + entradas completas + 90 dias — ao acessar SESMT ─────
+// ── Módulo SESMT/Almox: não bloqueia o hub no ledger completo (isso travava o Estoque) ─
 async function carregarModuloSESMT(){
   if(_modSESMT)return;
   if(DEMO){ _modSESMT=true; return; }
   try{
-    await almGarantirLedgerEstoque();
     _modSESMT=true;
   }catch(e){
     console.warn('carregarModuloSESMT', e);
@@ -32112,6 +32118,9 @@ function almRenderReservas(cid, busca){
 var alm_movimentos = []; // todas as movimentações
 var alm_estoque    = []; // saldo calculado por material/contrato
 var _almTabAtual   = 'estoque';
+var _almEstUi      = {page:1, pageSize:50};
+var _almSapCatById = null, _almSapCatByDesc = null;
+var _almBuscaTimer = null;
 
 // Tipos de movimento
 var ALM_TIPOS = {
@@ -32287,12 +32296,15 @@ function almChaveSaldoSap(m){
   var cont = String(m.contrato_id||'geral');
   var cod = String(m.codigo_sap||'').trim();
   if(!cod && m.material_id){
-    var catById = (catalogo_materiais||[]).find(function(x){ return String(x.id)===String(m.material_id); });
+    var catById = (_almSapCatById && _almSapCatById[String(m.material_id)])
+      || (catalogo_materiais||[]).find(function(x){ return String(x.id)===String(m.material_id); });
     if(catById && catById.codigo_sap) cod = String(catById.codigo_sap).trim();
   }
   if(!cod && m.material_desc){
-    var hit = almEscolherMaterialSapCanonico((catalogo_materiais||[]).filter(function(x){
-      return almNormSapText(x.descricao)===almNormSapText(m.material_desc);
+    var nd = almNormSapText(m.material_desc);
+    var hit = (_almSapCatByDesc && _almSapCatByDesc[nd])
+      || almEscolherMaterialSapCanonico((catalogo_materiais||[]).filter(function(x){
+      return almNormSapText(x.descricao)===nd;
     }));
     if(hit && hit.codigo_sap) cod = String(hit.codigo_sap).trim();
   }
@@ -32332,8 +32344,14 @@ function almMateriaisCatalogoUnicos(cid){
 }
 function almCalcularSaldo(){
   var mapa = {};
+  _almSapCatById={}; _almSapCatByDesc={};
+  (catalogo_materiais||[]).forEach(function(x){
+    if(x&&x.id) _almSapCatById[String(x.id)]=x;
+    var d=almNormSapText(x.descricao);
+    if(d && !_almSapCatByDesc[d]) _almSapCatByDesc[d]=x;
+  });
 
-  alm_movimentos.forEach(function(m){
+  (alm_movimentos||[]).forEach(function(m){
     var chave = almChaveSaldoSap(m);
     if(!mapa[chave]){
       mapa[chave]={
@@ -33455,6 +33473,7 @@ function almRenderMetricas(){
 // ── Tabs ─────────────────────────────────────────────────────
 function almMostrarTab(tab){
   _almTabAtual = tab;
+  if(_almEstUi) _almEstUi.page = 1;
   ['estoque','entradas','saidas','campo','retorno','reservas'].forEach(function(t){
     var btn=document.getElementById('alm-tab-'+t);
     var el =document.getElementById('alm-content-'+t);
@@ -33462,6 +33481,14 @@ function almMostrarTab(tab){
     if(el) el.style.display=t===tab?'':'none';
   });
   almRender();
+}
+
+function almSapBuscaInput(){
+  clearTimeout(_almBuscaTimer);
+  _almBuscaTimer=setTimeout(function(){
+    if(_almEstUi) _almEstUi.page=1;
+    almRender();
+  },220);
 }
 
 function almRender(){
@@ -33479,20 +33506,45 @@ function almRender(){
 // ── Estoque atual ────────────────────────────────────────────
 function almRenderEstoque(cid,busca){
   var tb=document.getElementById('alm-tbody-estoque');if(!tb)return;
+  if(!_almEstUi) _almEstUi={page:1,pageSize:50};
+  var contMap={};
+  (contratos||[]).forEach(function(c){ if(c&&c.id) contMap[c.id]=c; });
   var rows=alm_estoque.filter(function(e){
     if(cid&&e.contrato_id!==cid&&e.contrato_id!=='geral'&&e.contrato_id!=='')return false;
-    if(busca&&e.material_desc.toLowerCase().indexOf(busca)<0&&(e.codigo_sap||'').indexOf(busca)<0)return false;
+    if(busca&&(e.material_desc||'').toLowerCase().indexOf(busca)<0&&(e.codigo_sap||'').indexOf(busca)<0)return false;
     return true;
   });
+  var pageSize=_almEstUi.pageSize||50;
+  var pages=Math.max(1, Math.ceil(rows.length/pageSize));
+  if(_almEstUi.page>pages) _almEstUi.page=pages;
+  if(_almEstUi.page<1) _almEstUi.page=1;
+  var start=(_almEstUi.page-1)*pageSize;
+  var pageRows=rows.slice(start, start+pageSize);
+  var pager=document.getElementById('alm-est-pager');
+  if(pager){
+    var end=Math.min(rows.length, start+pageRows.length);
+    pager.innerHTML='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:.55rem .75rem">'
+      +'<div style="font-size:12px;color:#666">'+(rows.length?((start+1)+'–'+end+' de '+rows.length+' materiais'):'0 materiais')+'</div>'
+      +'<div style="display:flex;gap:6px;align-items:center">'
+      +'<select class="inp" style="width:100px;font-size:11px" onchange="_almEstUi.pageSize=parseInt(this.value,10)||50;_almEstUi.page=1;almRender()">'
+      +'<option value="25"'+(pageSize===25?' selected':'')+'>25 / pág</option>'
+      +'<option value="50"'+(pageSize===50?' selected':'')+'>50 / pág</option>'
+      +'<option value="100"'+(pageSize===100?' selected':'')+'>100 / pág</option>'
+      +'</select>'
+      +(_almEstUi.page>1?'<button class="btn btn-sm" type="button" onclick="_almEstUi.page--;almRender()">Anterior</button>':'')
+      +'<span style="font-size:11px;color:#888">pág. '+_almEstUi.page+'/'+pages+'</span>'
+      +(_almEstUi.page<pages?'<button class="btn btn-sm" type="button" onclick="_almEstUi.page++;almRender()">Próximo</button>':'')
+      +'</div></div>';
+  }
   if(!rows.length){tb.innerHTML='<tr><td colspan="12" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum material no estoque. Use "+ Entrada" para registrar.</td></tr>';return;}
-  tb.innerHTML=rows.map(function(e){
-    var cont=contratos.find(function(c){return c.id===e.contrato_id;})||{codigo:'Geral'};
+  tb.innerHTML=pageRows.map(function(e){
+    var cont=contMap[e.contrato_id]||{codigo:'Geral'};
     var saldoCor=e.saldo<=0?'#A32D2D':e.saldo<=5?'#854F0B':'#3B6D11';
     return '<tr>'
-      +'<td style="font-weight:500">'+e.material_desc+'</td>'
+      +'<td style="font-weight:500">'+escHtml(e.material_desc||'')+'</td>'
       +'<td style="font-family:monospace;font-size:11px">'+(e.codigo_sap||'—')+'</td>'
-      +'<td><span style="background:#E6F1FB;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:11px">'+cont.codigo+'</span></td>'
-      +'<td style="font-size:12px">'+e.unidade+'</td>'
+      +'<td><span style="background:#E6F1FB;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:11px">'+escHtml(cont.codigo||'Geral')+'</span></td>'
+      +'<td style="font-size:12px">'+escHtml(e.unidade||'')+'</td>'
       +'<td style="text-align:right;color:#3B6D11">'+e.entradas+'</td>'
       +'<td style="text-align:right;color:#185FA5">'+e.saidas+'</td>'
       +'<td style="text-align:right;color:#854F0B">'+e.em_campo+'</td>'
@@ -33500,16 +33552,18 @@ function almRenderEstoque(cid,busca){
       +'<td style="text-align:right;font-weight:700;font-size:14px;color:'+saldoCor+'">'+e.saldo+'</td>'
       +'<td style="text-align:right;font-size:12px;color:#555">'+(e.valor_unitario>0?'R$ '+fmtMoeda(e.valor_unitario):'—')+'</td>'
       +'<td style="text-align:right;font-size:12px;font-weight:700;color:'+(e.valor_total>0?'#3B6D11':'#aaa')+'">'+(e.valor_total>0?'R$ '+fmtMoeda(e.valor_total):'—')+'</td>'
-      +'<td><button class="btn btn-sm" data-mat="'+e.material_id+'" data-cid="'+e.contrato_id+'" style="font-size:10px">Movimentar</button></td>'
+      +'<td><button class="btn btn-sm" data-mat="'+escHtml(e.material_id||'')+'" data-cid="'+escHtml(e.contrato_id||'')+'" style="font-size:10px">Movimentar</button></td>'
       +'</tr>';
   }).join('');
-  setTimeout(function(){
-    rows.forEach(function(e){
-      tb.querySelectorAll('[data-mat="'+e.material_id+'"]').forEach(function(b){
-        b.onclick=function(){almMenuMovimento(e);};
-      });
-    });
-  },50);
+  tb.onclick=function(ev){
+    var b=ev.target&&ev.target.closest?ev.target.closest('[data-mat]'):null;
+    if(!b) return;
+    var mid=b.getAttribute('data-mat')||'';
+    var cidb=b.getAttribute('data-cid')||'';
+    var hit=pageRows.find(function(e){ return String(e.material_id||'')===mid && String(e.contrato_id||'')===cidb; })
+      || pageRows.find(function(e){ return String(e.material_id||'')===mid; });
+    if(hit) almMenuMovimento(hit);
+  };
 }
 
 // ── Movimentos ───────────────────────────────────────────────
@@ -42572,12 +42626,18 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.057',
-  data:   '17/09/2026',
-  build:  '20260917-0748',
+  numero: '8.1.060',
+  data:   '18/09/2026',
+  build:  '20260918-0305',
   log: [
-    {v:'8.1.057', d:'17/09/2026', itens:[
-      'P1-A.4: Confirmar integração… voltava a falhar em silêncio (item não definido na validação). HOMOLOGAÇÃO.',
+    {v:'8.1.060', d:'18/09/2026', itens:[
+      'Estoque abre na hora só com os filtros — não espera mais sesmtCarregarDados (EPIs, treinamentos, catálogo…). Filiais/depósitos vêm num fetch leve; ledger e grade só depois de tipo, filial, depósito, status ou busca.',
+    ]},
+    {v:'8.1.059', d:'18/09/2026', itens:[
+      'Estoque abre só o painel de filtros (sem ledger, sem grade). Conteúdo aparece após tipo, filial, depósito, status ou busca (mín. 2 letras). Consultar / Limpar.',
+    ]},
+    {v:'8.1.058', d:'18/09/2026', itens:[
+      'Desempenho Estoque: hub Almox não espera o ledger completo; ledger em 2 consultas (90 dias + Em uso) em vez de 3 varreduras históricas; sem consolidar todos os itens no load; grade com índice item/depósito, paginação 25/50/100 e busca com debounce. Corrige atualizarMetricas do financeiro sobrescrita pelo SESMT. SAP Estoque também pagina. Demo: DD do SESMT deixa de apagar o DD financeiro (modo demo não quebra mais no slice).',
     ]},
     {v:'8.1.056', d:'16/09/2026', itens:[
       'P1-A.4: IA-5B CENA atual lê o treinamento do vínculo documental (documento_final_id → treinamento_id); não deixa a coluna vazia nem pega outro ASO. HOMOLOGAÇÃO.',
@@ -73748,6 +73808,7 @@ function ocultarPaginasSESMTAlmoxarifado(){
   // Performance: liberar DOM pesado ao sair (dados JS permanecem)
   try{ if(typeof desmontarSesmtTreinamentos==='function') desmontarSesmtTreinamentos(); }catch(e){}
   try{ if(typeof desmontarSesmtEvolucao==='function') desmontarSesmtEvolucao(); }catch(e){}
+  try{ if(typeof desmontarSesmtEstoque==='function') desmontarSesmtEstoque(); }catch(e){}
 }
 
 
@@ -128658,6 +128719,18 @@ function desmontarSesmtTreinamentos(){
   if(cont) cont.textContent = '';
   if(typeof _trUi!=='undefined') _trUi.montado = false;
 }
+function desmontarSesmtEstoque(){
+  var tbody = document.getElementById('tbody-est');
+  if(tbody) tbody.innerHTML = '';
+  var pager = document.getElementById('est-pager');
+  if(pager) pager.innerHTML = '';
+  var metr = document.getElementById('est-metricas');
+  if(metr) metr.innerHTML = '';
+  if(typeof _estUi!=='undefined'){
+    _estUi.montado = false;
+    _estUi.consultou = false;
+  }
+}
 
 function evolEscId(id){ return String(id||'').replace(/'/g,"\\'"); }
 
@@ -130897,6 +130970,13 @@ function _almShowAbaInterna(aba){
     else if(aba==='kits-veiculo'){ if(typeof almInitKitsVeiculo==='function') almInitKitsVeiculo(); }
   };
 
+  // Estoque: pinta o shell imediatamente. Não espera EPIs/treinamentos/catálogo.
+  if(aba==='estoque'){
+    render();
+    if(typeof estGarantirFiltrosMeta==='function') estGarantirFiltrosMeta();
+    return;
+  }
+
   if(!_sesmtCarregado){
     _sesmtCarregado = true;
     if(typeof sesmtCarregarDados==='function'){
@@ -131045,7 +131125,7 @@ function toggleSenha(){
 }
 function showLoginErr(msg){var el=document.getElementById('login-err');el.textContent=msg;el.classList.remove('hidden');}
 
-var DD={
+DD=Object.assign((typeof DD==='object'&&DD)?DD:{},{
   funcionarios:[
     {id:'f1',nome:'Carlos Mendes',matricula:'0042',setor:'Obras',cargo:'Pedreiro',admissao:'2024-01-10',ativo:true,filial_id:'fil1'},
     {id:'f2',nome:'Ana Souza',matricula:'0018',setor:'Elétrica',cargo:'Eletricista',admissao:'2023-03-05',ativo:true,filial_id:'fil1'},
@@ -131101,7 +131181,19 @@ var DD={
     {id:'lc1',nome:'Guindaste Telescópico 50T',tipo:'Guindaste',locadora:'LocaMax',responsavel_id:'f1',filial_id:'fil1',inicio:'2026-01-15',termino:'2026-07-15',valor_locacao:8500,valor_aquisicao:450000,tem_seguro:true,valor_seguro:1200,status:'Funcionando',disponibilidade:'Em uso',observacoes:''},
     {id:'lc2',nome:'Compressor de Ar 25HP',tipo:'Compressor',locadora:'LocaMax',responsavel_id:'f4',filial_id:'fil1',inicio:'2025-11-01',termino:'2026-04-30',valor_locacao:1800,valor_aquisicao:42000,tem_seguro:true,valor_seguro:320,status:'Em manutenção',disponibilidade:'Em manutenção',observacoes:'Defeito no motor'}
   ]
-};
+});
+(function seedDemoEstoque(){
+  if(!DD.estoque) DD.estoque=[];
+  if(DD.estoque.length>=40) return;
+  for(var di=DD.estoque.length+1; di<=40; di++){
+    DD.estoque.push({
+      id:'s'+di, nome:'Item demo '+di, codigo:'DEM-'+String(di).padStart(3,'0'),
+      tipo: (di%3===0?'epi':di%3===1?'ferramenta':'material'),
+      saldo: di%11, saldo_minimo:5, custo_unitario:10+di, filial_id:'fil1', deposito_id:'dep1',
+      unidade_medida:'UN', item_id:'it-demo-'+di
+    });
+  }
+})();
 async function sesmtCarregarDados(){
   if(DEMO){
     funcs=DD.funcionarios.slice();epis=DD.epis.slice();ferramentas=DD.ferramentas.slice();
@@ -131117,8 +131209,9 @@ async function sesmtCarregarDados(){
       sbFetch('ferramentas',{order:'nome'}),
       sbFetch('ocorrencias',{order:'data_ocorrencia.desc'}),
       sbFetch('vales',{order:'data_emissao.desc'}),
-    sbFetchAll('estoque',{order:'nome.asc',maxPages:20}),
-    sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
+    // Estoque/catálogo não entram no load do hub — almGarantirLedgerEstoque / aba Itens carregam sob demanda.
+    Promise.resolve(estoque||[]),
+    Promise.resolve(itens_catalogo||[]),
     sbFetchAll('treinamentos',{filters:['deleted_at=is.null'],order:'validade'}),
       sbFetch('aprovacoes',{filters:['status=eq.pendente']}),
       sbFetch('uniformes_catalogo',{order:'tipo'}),
@@ -131138,12 +131231,9 @@ async function sesmtCarregarDados(){
     filiais=res[13]||[];depositos=res[14]||[];locacoes=res[15]||[];
   }
   try{ await almTiposItemLoad(); }catch(e){ console.warn('Tipos materiais:', e); }
-  window._almEstoqueConsolidado = false;
-  try{
-    await almConsolidarEstoqueTodos();
-    window._almEstoqueConsolidado = true;
-  }catch(e){ console.warn('Consolidação estoque:', e); }
-  try{ if(typeof atualizarMetricas==='function') atualizarMetricas(); }catch(e){ console.warn('atualizarMetricas erro:',e); }
+  // Consolidação global NÃO roda no carregamento: N updates sequenciais travavam o Estoque.
+  // Use Auditoria / entrada (almGarantirEstoqueConsolidado) quando precisar.
+  try{ if(typeof sesmtAtualizarMetricas==='function') sesmtAtualizarMetricas(); }catch(e){ console.warn('sesmtAtualizarMetricas erro:',e); }
   try{ if(typeof popularSelectFuncs==='function') popularSelectFuncs(); }catch(e){}
   try{ if(typeof renderSeletorFilial==='function') renderSeletorFilial(); }catch(e){}
   try{ if(typeof popularFiltrosAlm==='function') popularFiltrosAlm(); }catch(e){}
@@ -131162,7 +131252,7 @@ async function sesmtCarregarDados(){
     try{ if(typeof progCarregarBadgesPonto==='function' && Object.keys(_pontoCache).length>0) progCarregarBadgesPonto(); }catch(e){}
   }, 200);
 }
-function atualizarMetricas(){
+function sesmtAtualizarMetricas(){
   function se(id,v){var el=document.getElementById(id);if(el)el.textContent=v;}
   se('m-func',filtrarFilial(funcs).length);
   se('m-epis',filtrarFilial(epis).length);
@@ -131195,7 +131285,7 @@ function renderSeletorFilial(){
       return '<button class="btn-filial'+(filialAtiva===f.id?' on':'')+'" onclick="setFilial(\''+f.id+'\')">'+f.nome+'</button>';
     }).join('');
 }
-function setFilial(id){filialAtiva=id;renderSeletorFilial();atualizarMetricas();}
+function setFilial(id){filialAtiva=id;renderSeletorFilial();sesmtAtualizarMetricas();}
 
 var sigCtx=null,sigDrawing=false;
 function initSig(id){
@@ -134938,12 +135028,14 @@ function lcExcluirLocacao(lid){
   renderLocacoes();
   progShowToast('🗑 Equipamento removido da locação');
 }
-function _estoqueCodigoSku(e){
+function _estoqueCodigoSku(e, idx){
   var cod = String(e.codigo||'').trim();
   var sku = String(e.sku||'').trim();
   if((!cod||!sku) && typeof itens_catalogo!=='undefined'){
     var ic = null;
-    if(e.item_id) ic = itens_catalogo.find(function(i){ return i.id===e.item_id; });
+    if(e.item_id){
+      ic = (idx && idx.catById) ? idx.catById[String(e.item_id)] : itens_catalogo.find(function(i){ return i.id===e.item_id; });
+    }
     if(!ic && e.nome) ic = itens_catalogo.find(function(i){ return (i.nome||'').toLowerCase()===(e.nome||'').toLowerCase(); });
     if(ic){
       if(!cod) cod = String(ic.codigo||'').trim();
@@ -135152,6 +135244,231 @@ function estStatusLinha(saldoAtual, reservado, disponivel, minimo, temMov){
   if(!temMov) return {k:'sem-mov', label:'Sem movimentação', cor:'#888'};
   return {k:'disponivel', label:'Disponível', cor:'#3B6D11'};
 }
+
+var _estIdx = {gen:-1, sig:null, byItem:{}, byItemDep:{}, catById:{}, depById:{}, filById:{}, reservaMap:{}};
+var _estIdxGen = 0;
+var _estUi = {page:1, pageSize:50, montado:false, consultou:false};
+var _estBuscaTimer = null;
+function estIdxInvalidate(){
+  _estIdxGen++;
+  _estIdx.sig = null;
+}
+function estIdxBuild(){
+  var sig = _estIdxGen+':'+(movimentacoes_itens?movimentacoes_itens.length:0)+':'+(itens_catalogo?itens_catalogo.length:0)+':'+(estoque?estoque.length:0)+':'+((_almReq&&_almReq.lista)?_almReq.lista.length:0);
+  if(_estIdx.sig===sig) return _estIdx;
+  var byItem={}, byItemDep={}, catById={}, depById={}, filById={}, reservaMap={};
+  (itens_catalogo||[]).forEach(function(c){
+    if(c&&c.id) catById[String(c.id)]=c;
+  });
+  (depositos||[]).forEach(function(d){ if(d&&d.id) depById[String(d.id)]=d; });
+  (filiais||[]).forEach(function(f){ if(f&&f.id) filById[String(f.id)]=f; });
+  (movimentacoes_itens||[]).forEach(function(m){
+    if(!m||m.deleted_at) return;
+    var iid=String(m.item_id||'');
+    if(!iid) return;
+    (byItem[iid]=byItem[iid]||[]).push(m);
+    var k=iid+'|'+String(m.deposito_id||'');
+    (byItemDep[k]=byItemDep[k]||[]).push(m);
+  });
+  (_almReq&&_almReq.lista?_almReq.lista:[]).forEach(function(r){
+    if(typeof almReqStEhReservaAberta==='function' && !almReqStEhReservaAberta(r.status)) return;
+    var dep=String(r.deposito_id||'');
+    ((_almReq.itens&&_almReq.itens[r.id])||[]).forEach(function(it){
+      var q=(typeof almReqItemQtdReservada==='function')?almReqItemQtdReservada(it):0;
+      if(!(q>0)) return;
+      if(it.item_id) reservaMap['id:'+it.item_id+'|'+dep]=(reservaMap['id:'+it.item_id+'|'+dep]||0)+q;
+      if(it.item_codigo) reservaMap['cod:'+String(it.item_codigo).toLowerCase()+'|'+dep]=(reservaMap['cod:'+String(it.item_codigo).toLowerCase()+'|'+dep]||0)+q;
+      if(it.item_descricao) reservaMap['nom:'+String(it.item_descricao).trim().toLowerCase()+'|'+dep]=(reservaMap['nom:'+String(it.item_descricao).trim().toLowerCase()+'|'+dep]||0)+q;
+    });
+  });
+  _estIdx={gen:_estIdxGen,sig:sig,byItem:byItem,byItemDep:byItemDep,catById:catById,depById:depById,filById:filById,reservaMap:reservaMap};
+  return _estIdx;
+}
+function estMovsForRow(e, idx){
+  idx=idx||estIdxBuild();
+  var iid=String(e.item_id||'');
+  if(!iid && e.codigo && idx.catById){
+    var cod=String(e.codigo||'').trim().toLowerCase();
+    var cats=itens_catalogo||[];
+    for(var i=0;i<cats.length;i++){
+      if(String(cats[i].codigo||'').trim().toLowerCase()===cod){ iid=String(cats[i].id); break; }
+    }
+  }
+  if(!iid) return [];
+  var dep=String(e.deposito_id||'');
+  if(dep && idx.byItemDep[iid+'|'+dep]) return idx.byItemDep[iid+'|'+dep];
+  return idx.byItem[iid]||[];
+}
+function estTemFiltroAtivo(f){
+  f = f || estFiltrosAtuais();
+  if(f.tipo || f.filial || f.deposito || f.status) return true;
+  return String(f.busca||'').trim().length>=2;
+}
+var _estFiltrosMetaPromise=null;
+function estHydrateDemoEstoque(){
+  if(typeof DD==='undefined') return;
+  try{
+    if(!(estoque||[]).length && DD.estoque) estoque=DD.estoque.slice();
+    if(!(filiais||[]).length && DD.filiais) filiais=DD.filiais.slice();
+    if(!(depositos||[]).length && DD.depositos) depositos=DD.depositos.slice();
+    if(!(itens_catalogo||[]).length && DD.itens_catalogo) itens_catalogo=DD.itens_catalogo.slice();
+  }catch(e){}
+}
+function estGarantirFiltrosMeta(cb){
+  if(DEMO){
+    try{
+      if(typeof DD!=='undefined'){
+        if(!(filiais||[]).length && DD.filiais) filiais=DD.filiais.slice();
+        if(!(depositos||[]).length && DD.depositos) depositos=DD.depositos.slice();
+      }
+    }catch(e){}
+    estPopularFiltrosLeve();
+    if(cb) cb();
+    return Promise.resolve();
+  }
+  var precisaFil=!(filiais||[]).length;
+  var precisaDep=!(depositos||[]).length;
+  if(!precisaFil && !precisaDep){
+    estPopularFiltrosLeve();
+    if(cb) cb();
+    return Promise.resolve();
+  }
+  if(_estFiltrosMetaPromise){
+    return _estFiltrosMetaPromise.then(function(){ estPopularFiltrosLeve(); if(cb) cb(); });
+  }
+  var jobs=[];
+  if(precisaFil && typeof sbFetch==='function'){
+    jobs.push(sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){ if(rows&&rows.length) filiais=rows; }).catch(function(e){ console.warn('est filiais', e); }));
+  }
+  if(precisaDep && typeof sbFetch==='function'){
+    jobs.push(sbFetch('depositos',{filters:['ativo=eq.true'],order:'nome'}).then(function(rows){ if(rows&&rows.length) depositos=rows; }).catch(function(e){ console.warn('est depositos', e); }));
+  }
+  if(typeof almTiposItemLoad==='function'){
+    jobs.push(Promise.resolve(almTiposItemLoad()).catch(function(){}));
+  }
+  _estFiltrosMetaPromise=Promise.all(jobs).then(function(){
+    _estFiltrosMetaPromise=null;
+    estPopularFiltrosLeve();
+    if(cb) cb();
+  }).catch(function(e){
+    console.warn('estGarantirFiltrosMeta', e);
+    _estFiltrosMetaPromise=null;
+    estPopularFiltrosLeve();
+    if(cb) cb();
+  });
+  return _estFiltrosMetaPromise;
+}
+function estPopularFiltrosLeve(){
+  var selFil = document.getElementById('est-fil-filial');
+  if(selFil && typeof filiais!=='undefined' && filiais.length && selFil.options.length<=1){
+    var filAnt = selFil.value||'';
+    selFil.innerHTML = '<option value="">Todas as filiais</option>'
+      + filiais.map(function(f){ return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+escHtml(f.nome||'')+'</option>'; }).join('');
+    if(filAnt && filiais.some(function(f){ return f.id===filAnt; })) selFil.value = filAnt;
+    else selFil.value = '';
+  }
+  var selDep = document.getElementById('est-fil-deposito');
+  if(selDep && typeof depositos!=='undefined'){
+    var filSelDep = (document.getElementById('est-fil-filial')||{}).value||'';
+    var lastFilDep = selDep.getAttribute('data-filial-filtro');
+    var precisaRebuildDep = (lastFilDep===null) || (lastFilDep!==filSelDep) || selDep.options.length<=1;
+    if(precisaRebuildDep){
+      var depAnt = selDep.value||'';
+      var deps = depositos.filter(function(d){
+        return !d.deleted_at && (!filSelDep || String(d.filial_id||'')===String(filSelDep));
+      });
+      selDep.innerHTML = '<option value="">Todos os depósitos</option>'
+        + deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome||'')+'</option>'; }).join('');
+      selDep.setAttribute('data-filial-filtro', filSelDep);
+      if(depAnt && deps.some(function(d){ return d.id===depAnt; })) selDep.value = depAnt;
+      else selDep.value = '';
+    }
+  }
+  var selTipo = document.getElementById('est-fil-tipo');
+  if(selTipo && selTipo.options.length<=1 && typeof TIPOS_ITEM!=='undefined'){
+    var selAnterior = selTipo.value || '';
+    selTipo.innerHTML = '<option value="">TODOS OS TIPOS</option>'
+      + TIPOS_ITEM.filter(Boolean).map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(tipoItemLabel?tipoItemLabel(t):t)+'</option>'; }).join('');
+    selTipo.value = selAnterior || '';
+  }
+  var pad = estPeriodoPadrao();
+  var elIni = document.getElementById('est-fil-ini');
+  var elFim = document.getElementById('est-fil-fim');
+  if(elIni && !elIni.value) elIni.value = pad.ini;
+  if(elFim && !elFim.value) elFim.value = pad.fim;
+}
+function estMostrarShell(){
+  var tbody = document.getElementById('tbody-est');
+  if(tbody){
+    tbody.innerHTML = '<tr><td colspan="15" style="padding:2.2rem 1.5rem;text-align:center">'
+      +'<div style="font-size:15px;font-weight:700;color:#185FA5;margin-bottom:.35rem">Selecione um filtro para listar o estoque</div>'
+      +'<div style="font-size:12px;color:#888;max-width:420px;margin:0 auto;line-height:1.45">A grade não carrega na abertura. Escolha tipo, filial, depósito, status ou busque pelo nome/código (mínimo 2 letras) e clique em Consultar.</div>'
+      +'</td></tr>';
+  }
+  var metr = document.getElementById('est-metricas');
+  if(metr) metr.innerHTML = '';
+  var pager = document.getElementById('est-pager');
+  if(pager) pager.innerHTML = '';
+}
+function estConsultar(){
+  _estUi.page=1;
+  if(!estTemFiltroAtivo()){
+    _estUi.consultou=false;
+    if(typeof progShowToast==='function') progShowToast('Selecione tipo, filial, depósito, status ou busque um item.','aviso');
+    renderEstoque();
+    return;
+  }
+  _estUi.consultou=true;
+  renderEstoque();
+}
+function estLimparFiltros(){
+  ['est-fil-tipo','est-fil-filial','est-fil-deposito','est-fil-status','est-fil-busca'].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.value='';
+  });
+  var dep=document.getElementById('est-fil-deposito');
+  if(dep) dep.removeAttribute('data-filial-filtro');
+  _estUi.consultou=false;
+  _estUi.page=1;
+  renderEstoque();
+}
+function estFiltroChange(){
+  _estUi.page=1;
+  if(estTemFiltroAtivo()) _estUi.consultou=true;
+  else _estUi.consultou=false;
+  renderEstoque();
+}
+function estPeriodoChange(){
+  if(!_estUi.consultou) return;
+  _estUi.page=1;
+  renderEstoque();
+}
+function estBuscaInput(){
+  clearTimeout(_estBuscaTimer);
+  _estBuscaTimer=setTimeout(function(){
+    _estUi.page=1;
+    if(estTemFiltroAtivo()) _estUi.consultou=true;
+    else _estUi.consultou=false;
+    renderEstoque();
+  },220);
+}
+function estPagerHtml(total, page, pageSize){
+  var pages=Math.max(1, Math.ceil(total/pageSize));
+  if(page>pages) page=pages;
+  var start=(page-1)*pageSize;
+  var end=Math.min(total, start+pageSize);
+  return '<div id="est-pager" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:.55rem .75rem;border-top:.5px solid #f0efe8">'
+    +'<div style="font-size:12px;color:#666">'+(total?((start+1)+'–'+end+' de '+total+' itens'):'0 itens')+'</div>'
+    +'<div style="display:flex;gap:6px;align-items:center">'
+    +'<select class="inp" style="width:100px;font-size:11px" onchange="_estUi.pageSize=parseInt(this.value,10)||50;_estUi.page=1;renderEstoque()">'
+    +'<option value="25"'+(pageSize===25?' selected':'')+'>25 / pág</option>'
+    +'<option value="50"'+(pageSize===50?' selected':'')+'>50 / pág</option>'
+    +'<option value="100"'+(pageSize===100?' selected':'')+'>100 / pág</option>'
+    +'</select>'
+    +(page>1?'<button class="btn btn-sm" type="button" onclick="_estUi.page--;renderEstoque()">Anterior</button>':'')
+    +'<span style="font-size:11px;color:#888">pág. '+page+'/'+pages+'</span>'
+    +(page<pages?'<button class="btn btn-sm" type="button" onclick="_estUi.page++;renderEstoque()">Próximo</button>':'')
+    +'</div></div>';
+}
 function estUltimaMovData(e){
   var best='';
   var ref=estRefTimeline(e);
@@ -135190,75 +135507,120 @@ function estFiltrosAtuais(){
     fim: (elFim&&elFim.value)||pad.fim
   };
 }
-function estLinhaCalc(e, filtIni, filtFim){
-  var dep = (typeof depositos!=='undefined'&&e.deposito_id)?depositos.find(function(d){return d.id===e.deposito_id;})||null:null;
+function estLinhaCalc(e, filtIni, filtFim, ctx){
+  ctx = ctx || estIdxBuild();
+  var dep = (e.deposito_id && ctx.depById)? ctx.depById[String(e.deposito_id)] : ((typeof depositos!=='undefined'&&e.deposito_id)?depositos.find(function(d){return d.id===e.deposito_id;})||null:null);
   var filIdShow = e.filial_id || (dep && dep.filial_id) || null;
-  var fil = (typeof filiais!=='undefined'&&filIdShow)?filiais.find(function(f){return f.id===filIdShow;})||null:null;
+  var fil = (filIdShow && ctx.filById)? ctx.filById[String(filIdShow)] : ((typeof filiais!=='undefined'&&filIdShow)?filiais.find(function(f){return f.id===filIdShow;})||null:null);
   var localLabel = (fil||dep)
     ? (fil ? ((fil.codigo?fil.codigo+' — ':'')+fil.nome) : '—')+(dep ? ' / '+dep.nome : '')
     : '—';
-  var cs = _estoqueCodigoSku(e);
-  var ref = estRefTimeline(e);
-  var res = estResumoPeriodoEstoque(ref, e.deposito_id||'', filIdShow||'', filtIni, filtFim);
-  var entradas = (Number(res.entradas)||0) + (Number(res.devolucoes)||0);
-  var saidas = Number(res.saidas)||0;
-  var saldoAnt = Number(res.saldoAnterior)||0;
-  var saldoAtual = saldoAnt + entradas - saidas;
-  var saldoTabela = Number(e.saldo)||0;
-  var ledgerVazio = entradas===0 && saidas===0 && saldoAnt===0 && !(Number(res.ghost)||0);
-  if(ledgerVazio && saldoTabela){
-    saldoAtual = saldoTabela;
+  var cs = _estoqueCodigoSku(e, ctx);
+  var movs = estMovsForRow(e, ctx);
+  var ent=0, sai=0, ghost=0, ultima='';
+  var ini=filtIni||'', fim=filtFim||'';
+  for(var mi=0; mi<movs.length; mi++){
+    var m=movs[mi];
+    if(!m || m.deleted_at) continue;
+    var dt=typeof almTimelineNormData==='function'?almTimelineNormData(m.data_mov):String(m.data_mov||'').slice(0,10);
+    if(dt && dt>ultima) ultima=dt;
+    if(ini && dt && dt<ini) continue;
+    if(fim && dt && dt>fim) continue;
+    var q=Number(m.quantidade)||0;
+    if(!q) continue;
+    var tipo=String(m.tipo_mov||'');
+    if(tipo==='entrada' && estMotivoEhEstornoRetro((m.motivo||'')+' '+(m.obs||''))){
+      ghost+=q;
+      continue;
+    }
+    if(tipo==='entrada'||tipo==='devolucao'||(tipo==='transferencia' && Number(m.quantidade)>0 && String(m.deposito_id||'')===String(e.deposito_id||''))){
+      ent+=q;
+    } else if(tipo==='entrega'||tipo==='baixa'||tipo==='saida'||tipo==='ajuste'||tipo==='perda'||tipo==='quebra'||tipo==='descarte'||tipo==='transferencia'){
+      sai+=q;
+    }
   }
+  var saldoTabela = Number(e.saldo);
+  var temSaldoTabela = isFinite(saldoTabela);
+  var saldoAtual = temSaldoTabela ? saldoTabela : (ent - sai);
+  var saldoAnt = saldoAtual - ent + sai;
   var sMin = Number(e.saldo_minimo!=null?e.saldo_minimo:5)||0;
-  var reserva = (typeof almReqReservaEstoque==='function')
-    ? almReqReservaEstoque(e.item_id, cs.codigoRaw||e.codigo, e.deposito_id, e.nome)
-    : ((typeof almReqReserva==='function')?almReqReserva(e.item_id, cs.codigoRaw||e.codigo, e.deposito_id, e.nome):0);
+  var reserva = 0;
+  if(ctx && ctx.reservaMap){
+    var depK=String(e.deposito_id||'');
+    if(e.item_id) reserva = ctx.reservaMap['id:'+e.item_id+'|'+depK]||0;
+    if(!reserva && cs.codigoRaw) reserva = ctx.reservaMap['cod:'+String(cs.codigoRaw).toLowerCase()+'|'+depK]||0;
+    if(!reserva && e.nome) reserva = ctx.reservaMap['nom:'+String(e.nome).trim().toLowerCase()+'|'+depK]||0;
+  } else if(typeof almReqReservaEstoque==='function'){
+    reserva = almReqReservaEstoque(e.item_id, cs.codigoRaw||e.codigo, e.deposito_id, e.nome);
+  }
+  reserva = Math.max(0, reserva);
   var disponivel = saldoAtual - reserva;
-  var temMov = entradas>0 || saidas>0;
+  var temMov = ent>0 || sai>0;
   var st = estStatusLinha(saldoAtual, reserva, disponivel, sMin, temMov);
   return {
     e:e, dep:dep, fil:fil, localLabel:localLabel, cs:cs,
-    saldoAnt:saldoAnt, entradas:entradas, saidas:saidas, saldoAtual:saldoAtual,
+    saldoAnt:saldoAnt, entradas:ent, saidas:sai, saldoAtual:saldoAtual,
     reserva:reserva, disponivel:disponivel, sMin:sMin, st:st, temMov:temMov,
-    ghost:Number(res.ghost)||0,
+    ghost:ghost,
     un:e.unidade_medida||e.unidade||'UN',
-    ultima:estUltimaMovData(e)
+    ultima:ultima
   };
 }
 function estColetarLinhas(filtros){
   var f = filtros || estFiltrosAtuais();
+  var ctx = estIdxBuild();
+  cenaPerfStart('estoque-coletar');
   var brutos = (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
     if(f.tipo && !eeTipoItemMatch(e.tipo, f.tipo)) return false;
     if(f.filial){
       if(e.filial_id){
         if(String(e.filial_id)!==String(f.filial)) return false;
       } else {
-        var depFil = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return d.id===e.deposito_id; });
+        var depFil = ctx.depById ? ctx.depById[String(e.deposito_id||'')] : ((typeof depositos!=='undefined'?depositos:[]).find(function(d){ return d.id===e.deposito_id; }));
         if(!depFil || String(depFil.filial_id||'')!==String(f.filial)) return false;
       }
     }
     if(f.deposito && e.deposito_id!==f.deposito) return false;
     if(f.busca){
-      var cs = _estoqueCodigoSku(e);
+      var cs = _estoqueCodigoSku(e, ctx);
       if(!(e.nome||'').toLowerCase().includes(f.busca)
         && !cs.codigoRaw.toLowerCase().includes(f.busca)
         && !cs.skuRaw.toLowerCase().includes(f.busca)) return false;
     }
     return true;
-  }).map(function(e){ return estLinhaCalc(e, f.ini, f.fim); });
-  return brutos.filter(function(row){
+  }).map(function(e){ return estLinhaCalc(e, f.ini, f.fim, ctx); });
+  var out = brutos.filter(function(row){
     return !f.status || row.st.k===f.status;
   });
+  cenaPerfEnd('estoque-coletar', {linhas:out.length, estoque:(estoque||[]).length, movs:(movimentacoes_itens||[]).length});
+  return out;
 }
 
 function renderEstoque(){
   var tbody = document.getElementById('tbody-est'); if(!tbody) return;
+  _estUi.montado = true;
+  cenaPerfStart('estoque-render');
+  estPopularFiltrosLeve();
+
+  if(!estTemFiltroAtivo()){
+    _estUi.consultou=false;
+    estMostrarShell();
+    cenaPerfEnd('estoque-render',{shell:true,domNodes:cenaPerfDomCount('pg-sesmt-estoque')});
+    return;
+  }
+  _estUi.consultou=true;
+
+  if(DEMO) estHydrateDemoEstoque();
+
   if(!DEMO && typeof almGarantirLedgerEstoque==='function' && !window._estLedgerRendering && !window._almLedgerEstoqueOk){
     window._estLedgerRendering = true;
+    tbody.innerHTML = '<tr><td colspan="15" style="padding:1.2rem;text-align:center;color:#888">Carregando movimentações do período…</td></tr>';
     almGarantirLedgerEstoque(function(){
       window._estLedgerRendering = false;
       renderEstoque();
     });
+    cenaPerfEnd('estoque-render',{ledger:'pending'});
+    return;
   }
   if(!DEMO && typeof _almReq!=='undefined' && typeof almReqGarantirListaSilent==='function' && !_almReq._estRendering){
     var precisaReq = !_almReq._estoqueReqOk || _almReq.filaStale;
@@ -135267,64 +135629,9 @@ function renderEstoque(){
       Promise.resolve(almReqGarantirListaSilent()).then(function(){
         _almReq._estoqueReqOk = true;
         _almReq._estRendering = false;
+        if(typeof estIdxInvalidate==='function') estIdxInvalidate();
         renderEstoque();
       });
-    }
-  }
-
-  // Popular filtro de filiais (só uma vez; preserva seleção)
-  var selFil = document.getElementById('est-fil-filial');
-  if(selFil && typeof filiais!=='undefined' && filiais.length && selFil.options.length<=1){
-    var filAnt = selFil.value||'';
-    selFil.innerHTML = '<option value="">Todas as filiais</option>'
-      + filiais.map(function(f){ return '<option value="'+f.id+'">'+(f.codigo?f.codigo+' — ':'')+escHtml(f.nome||'')+'</option>'; }).join('');
-    if(filAnt && filiais.some(function(f){ return f.id===filAnt; })) selFil.value = filAnt;
-    else selFil.value = '';
-  }
-
-  // Popular depósitos só quando a filial muda (rebuild a cada renderEstoque
-  // apagava a seleção do depósito no onchange / busca)
-  var selDep = document.getElementById('est-fil-deposito');
-  if(selDep && typeof depositos!=='undefined'){
-    var filSelDep = (document.getElementById('est-fil-filial')||{}).value||'';
-    var lastFilDep = selDep.getAttribute('data-filial-filtro');
-    var precisaRebuildDep = (lastFilDep===null) || (lastFilDep!==filSelDep) || selDep.options.length<=1;
-    if(precisaRebuildDep){
-      var depAnt = selDep.value||'';
-      var deps = depositos.filter(function(d){
-        return !d.deleted_at && (!filSelDep || String(d.filial_id||'')===String(filSelDep));
-      });
-      selDep.innerHTML = '<option value="">Todos os depósitos</option>'
-        + deps.map(function(d){ return '<option value="'+d.id+'">'+escHtml(d.nome||'')+'</option>'; }).join('');
-      selDep.setAttribute('data-filial-filtro', filSelDep);
-      if(depAnt && deps.some(function(d){ return d.id===depAnt; })) selDep.value = depAnt;
-      else selDep.value = '';
-    }
-  }
-
-  // Popular filtro de tipos a partir dos tipos realmente presentes no estoque
-  // (garante que as opções batem com os dados — evita mismatch de maiúsc./minúsc. ou valores ausentes)
-  var selTipo = document.getElementById('est-fil-tipo');
-  if(selTipo){
-    var tiposPresentes = {};
-    (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){
-      var t=almTipoCodigo(e.tipo||'') || String(e.tipo||'').trim();
-      if(t) tiposPresentes[t]=true;
-    });
-    TIPOS_ITEM.forEach(function(t){ if(t) tiposPresentes[t]=true; });
-    var keysTipo = Object.keys(tiposPresentes).sort();
-    if(keysTipo.length){
-      var selAnterior = selTipo.value || '';
-      selTipo.innerHTML = '<option value="">TODOS OS TIPOS</option>'
-        + keysTipo.map(function(t){ return '<option value="'+escHtml(t)+'">'+escHtml(tipoItemLabel(t))+'</option>'; }).join('');
-      // Importante: eeTipoItemMatch(x,'') é sempre true — não usar find com filtro vazio
-      // senão "TODOS" cai no primeiro tipo da lista a cada onchange.
-      if(selAnterior){
-        var matchAnt = keysTipo.find(function(t){ return eeTipoItemMatch(t, selAnterior); });
-        selTipo.value = matchAnt || '';
-      } else {
-        selTipo.value = '';
-      }
     }
   }
 
@@ -135332,10 +135639,14 @@ function renderEstoque(){
 
   var metr = document.getElementById('est-metricas');
   if(metr){
-    var nDisp = lista.filter(function(r){ return r.st.k==='disponivel'; }).length;
-    var nBaixo = lista.filter(function(r){ return r.st.k==='baixo'; }).length;
-    var nSem = lista.filter(function(r){ return r.st.k==='sem-saldo'||r.st.k==='negativo'; }).length;
-    var nRes = lista.filter(function(r){ return r.st.k==='reservado-total'; }).length;
+    var nDisp=0,nBaixo=0,nSem=0,nRes=0;
+    for(var i=0;i<lista.length;i++){
+      var k=lista[i].st.k;
+      if(k==='disponivel') nDisp++;
+      else if(k==='baixo') nBaixo++;
+      else if(k==='sem-saldo'||k==='negativo') nSem++;
+      else if(k==='reservado-total') nRes++;
+    }
     metr.innerHTML = [
       {l:'Itens',c:'#185FA5',v:lista.length},
       {l:'Disponível',c:'#3B6D11',v:nDisp},
@@ -135349,14 +135660,31 @@ function renderEstoque(){
     }).join('');
   }
 
+  var pageSize=_estUi.pageSize||50;
+  var pages=Math.max(1, Math.ceil(lista.length/pageSize));
+  if(_estUi.page>pages) _estUi.page=pages;
+  if(_estUi.page<1) _estUi.page=1;
+  var start=(_estUi.page-1)*pageSize;
+  var pageRows=lista.slice(start, start+pageSize);
+  var pagerEl=document.getElementById('est-pager');
+  if(!pagerEl){
+    var card=tbody.closest('.card');
+    if(card){
+      card.insertAdjacentHTML('beforeend', estPagerHtml(lista.length, _estUi.page, pageSize));
+    }
+  } else {
+    pagerEl.outerHTML = estPagerHtml(lista.length, _estUi.page, pageSize);
+  }
+
   if(!lista.length){
     tbody.innerHTML = '<tr><td colspan="15" style="padding:2rem;text-align:center;color:#aaa">'
       +(typeof estoque!=='undefined'&&estoque.length?'Nenhum item para os filtros selecionados.':'Nenhum item no estoque. Use 📥 Nova entrada para cadastrar.')
       +'</td></tr>';
+    cenaPerfEnd('estoque-render',{total:0,domNodes:cenaPerfDomCount('pg-sesmt-estoque')});
     return;
   }
 
-  tbody.innerHTML = lista.map(function(row){
+  tbody.innerHTML = pageRows.map(function(row){
     var e=row.e;
     var corAnt='#888', corEnt=row.entradas>0?'#3B6D11':'#888', corSai=row.saidas>0?'#A32D2D':'#888';
     var corAtual=row.saldoAtual<0?'#A32D2D':row.saldoAtual<=0?'#A32D2D':'#1a1a18';
@@ -135389,6 +135717,7 @@ function renderEstoque(){
       +'<td><button class="btn btn-sm" onclick="openEntradaEstoque()">+ Entrada</button></td>'
       +'</tr>';
   }).join('');
+  cenaPerfEnd('estoque-render',{total:lista.length, page:pageRows.length, domNodes:cenaPerfDomCount('pg-sesmt-estoque')});
 }
 
 function almRelEsc(v){
@@ -137625,7 +137954,7 @@ function renderLavagem(){
       +'<td>'+(m.prestador||'—')+'</td><td>'+fmtD(m.data_saida)+'</td><td>'+fmtD(m.data_retorno)+'</td>'
       +'<td><span class="bdg ok">'+m.status+'</span></td></tr>';
   }).join('')||'<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhum histórico</td></tr>';
-  atualizarMetricas();
+  sesmtAtualizarMetricas();
 }
 function openSaidaLavagem(){
   var fOpts=funcs.map(function(f){return '<option value="'+f.id+'">'+f.nome+'</option>';}).join('');
@@ -137664,7 +137993,7 @@ function salvarSaidaRapida(tipo,fid){
   uniformesMov.unshift(novo);if(!DEMO)sbInsert('uniformes_movimentacoes',Object.assign({},novo,{id:undefined}));
   var sub={id:'ue'+Date.now(),funcionario_id:fid,uniforme_id:uid,condicao_entrega:'Higienizado',quantidade:1,data_entrega:dataHojeLocal(),tipo_entrega:'Temporária',ativo:true};
   uniformesEnt.push(sub);if(!DEMO)sbInsert('uniformes_colaborador',Object.assign({},sub,{id:undefined}));
-  closeModal();renderLavagem();renderUniformesEntregues();atualizarMetricas();
+  closeModal();renderLavagem();renderUniformesEntregues();sesmtAtualizarMetricas();
   alert('Saída registrada e substituto entregue a '+fNome(fid)+'.');
 }
 async function registrarRetorno(mid,tipoMov,uid,qtd){
@@ -137676,7 +138005,7 @@ async function registrarRetorno(mid,tipoMov,uid,qtd){
   if(sub){sub.ativo=false;if(!DEMO)await sbUpdate('uniformes_colaborador',{ativo:false},'id=eq.'+sub.id);}
   var est=estoqueUni.find(function(e){return e.uniforme_id===uid&&e.condicao===cond;});
   if(est)est.quantidade+=qtd;else estoqueUni.push({id:'eu'+Date.now(),uniforme_id:uid,condicao:cond,quantidade:qtd});
-  renderLavagem();renderEstoqueUni();atualizarMetricas();
+  renderLavagem();renderEstoqueUni();sesmtAtualizarMetricas();
   alert('Retorno registrado! '+qtd+' unidade(s) ao estoque como "'+cond+'".');
 }
 function devolverDefinitivo(ueid,fid,uid){
@@ -137687,7 +138016,7 @@ function devolverDefinitivo(ueid,fid,uid){
   var est=estoqueUni.find(function(e){return e.uniforme_id===uid&&e.condicao===cond;});
   if(est)est.quantidade+=u.quantidade;
   uniformesMov.unshift({id:'um'+Date.now(),funcionario_id:fid,uniforme_id:uid,tipo_mov:'Devolução definitiva',quantidade:u.quantidade,data_saida:dataHojeLocal(),previsao_retorno:null,data_retorno:dataHojeLocal(),prestador:'Almoxarifado',status:'Retornado'});
-  renderUniformesEntregues();atualizarMetricas();alert('Devolução registrada.');
+  renderUniformesEntregues();sesmtAtualizarMetricas();alert('Devolução registrada.');
 }
 function openNovoUniforme(){
   setModal('<div class="modal-bg"><div class="modal"><h3>Cadastrar uniforme</h3>'
@@ -137739,7 +138068,7 @@ function salvarEntregaUniforme(fid,uid,cond,qtd,tipo){
   uniformesEnt.push(novo);if(!DEMO)sbInsert('uniformes_colaborador',Object.assign({},novo,{id:undefined}));
   var est=estoqueUni.find(function(e){return e.uniforme_id===uid&&e.condicao===cond;});
   if(est)est.quantidade=Math.max(0,est.quantidade-parseInt(qtd));
-  closeModal();renderUniformesEntregues();renderEstoqueUni();atualizarMetricas();
+  closeModal();renderUniformesEntregues();renderEstoqueUni();sesmtAtualizarMetricas();
   alert('Entrega registrada com assinatura digital.');
 }
 function openEntrega(preFid){
@@ -142174,7 +142503,7 @@ function openDevolucaoEpi(funcIdPre, epiIdPre, tipoFiltro){
     if(typeof renderFichaEpi==='function') renderFichaEpi();
     if(typeof renderNR6==='function') renderNR6();
     if(typeof renderEstoque==='function') renderEstoque();
-    if(typeof atualizarMetricas==='function') atualizarMetricas();
+    if(typeof sesmtAtualizarMetricas==='function') sesmtAtualizarMetricas();
     if(pedirAssin&&r.epi){
       var col=fNome(r.epi.responsavel_id)||'Colaborador';
       abrirAssinaturaPad({ sub:col+' — devolução: '+r.epi.nome, itens:[{nome:r.epi.nome, qtd:r.epi.quantidade||1}], onConfirm:function(b64){
@@ -146573,16 +146902,16 @@ async function lcAnalisarContrato(){
     <div class="ch" style="flex-wrap:wrap;gap:8px">
       <span class="ct">🗄 Estoque — Materiais, EPIs, EPCs e Ferramentas</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <select class="inp" id="est-fil-tipo" style="width:150px" onchange="renderEstoque()">
+        <select class="inp" id="est-fil-tipo" style="width:150px" onchange="estFiltroChange()">
           <option value="">TODOS OS TIPOS</option>
         </select>
-        <select class="inp" id="est-fil-filial" style="width:160px" onchange="renderEstoque()">
+        <select class="inp" id="est-fil-filial" style="width:160px" onchange="estFiltroChange()">
           <option value="">Todas as filiais</option>
         </select>
-        <select class="inp" id="est-fil-deposito" style="width:170px" onchange="renderEstoque()">
+        <select class="inp" id="est-fil-deposito" style="width:170px" onchange="estFiltroChange()">
           <option value="">Todos os depósitos</option>
         </select>
-        <select class="inp" id="est-fil-status" style="width:160px" onchange="renderEstoque()">
+        <select class="inp" id="est-fil-status" style="width:160px" onchange="estFiltroChange()">
           <option value="">Todos os status</option>
           <option value="disponivel">Disponível</option>
           <option value="baixo">Baixo estoque</option>
@@ -146591,19 +146920,20 @@ async function lcAnalisarContrato(){
           <option value="negativo">Saldo negativo</option>
           <option value="sem-mov">Sem movimentação</option>
         </select>
-        <input class="inp" id="est-fil-ini" type="date" title="Início do período (saldo anterior)" style="width:140px" onchange="renderEstoque()"/>
-        <input class="inp" id="est-fil-fim" type="date" title="Fim do período" style="width:140px" onchange="renderEstoque()"/>
-        <input class="inp" id="est-fil-busca" placeholder="Buscar item, código ou SKU..." style="width:200px" oninput="renderEstoque()"/>
+        <input class="inp" id="est-fil-ini" type="date" title="Início do período (saldo anterior)" style="width:140px" onchange="estPeriodoChange()"/>
+        <input class="inp" id="est-fil-fim" type="date" title="Fim do período" style="width:140px" onchange="estPeriodoChange()"/>
+        <input class="inp" id="est-fil-busca" placeholder="Buscar item, código ou SKU..." style="width:200px" oninput="estBuscaInput()"/>
+        <button class="btn btn-pri" type="button" onclick="estConsultar()">🔍 Consultar</button>
+        <button class="btn" type="button" onclick="estLimparFiltros()" title="Limpar filtros e esconder a grade">Limpar</button>
         <button class="btn btn-pri" onclick="openEntradaEstoque()">📥 Nova entrada</button>
         <button class="btn" onclick="estAuditarDivergenciasCena()" title="Lista divergências sem corrigir o saldo">🔍 Auditar divergências</button>
         <button class="btn" onclick="almRelatorio2Movimentacao('est')" title="Movimentação por requisição: filtrar e classificar por data, status, solicitante, contrato e itens">📊 Relatório 2</button>
       </div>
     </div>
     <div style="font-size:11px;color:#888;padding:.45rem .75rem;border-top:.5px solid #f0efe8">
+      A tela abre só com os filtros. A lista e as movimentações só carregam depois de tipo, filial, depósito, status ou busca (mín. 2 letras).
       Saldo físico atual = saldo anterior + entradas no período − saídas no período.
       Disponível para saída = saldo físico atual − reservado.
-      Reserva (aprovada/separação) não é saída e não baixa o físico. Saída só existe com movimentação real.
-      Corrigir informações não mexe no estoque. Estorno de estoque é fluxo separado.
     </div>
     <div id="est-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
   </div>
