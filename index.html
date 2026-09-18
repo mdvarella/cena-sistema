@@ -42626,10 +42626,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.059',
+  numero: '8.1.060',
   data:   '18/09/2026',
-  build:  '20260918-0236',
+  build:  '20260918-0305',
   log: [
+    {v:'8.1.060', d:'18/09/2026', itens:[
+      'Estoque abre na hora só com os filtros — não espera mais sesmtCarregarDados (EPIs, treinamentos, catálogo…). Filiais/depósitos vêm num fetch leve; ledger e grade só depois de tipo, filial, depósito, status ou busca.',
+    ]},
     {v:'8.1.059', d:'18/09/2026', itens:[
       'Estoque abre só o painel de filtros (sem ledger, sem grade). Conteúdo aparece após tipo, filial, depósito, status ou busca (mín. 2 letras). Consultar / Limpar.',
     ]},
@@ -130967,6 +130970,13 @@ function _almShowAbaInterna(aba){
     else if(aba==='kits-veiculo'){ if(typeof almInitKitsVeiculo==='function') almInitKitsVeiculo(); }
   };
 
+  // Estoque: pinta o shell imediatamente. Não espera EPIs/treinamentos/catálogo.
+  if(aba==='estoque'){
+    render();
+    if(typeof estGarantirFiltrosMeta==='function') estGarantirFiltrosMeta();
+    return;
+  }
+
   if(!_sesmtCarregado){
     _sesmtCarregado = true;
     if(typeof sesmtCarregarDados==='function'){
@@ -131199,8 +131209,9 @@ async function sesmtCarregarDados(){
       sbFetch('ferramentas',{order:'nome'}),
       sbFetch('ocorrencias',{order:'data_ocorrencia.desc'}),
       sbFetch('vales',{order:'data_emissao.desc'}),
-    (estoque&&estoque.length)?Promise.resolve(estoque):sbFetchAll('estoque',{order:'nome.asc',maxPages:20}),
-    (itens_catalogo&&itens_catalogo.length)?Promise.resolve(itens_catalogo):sbFetchAll('itens_catalogo',{order:'nome.asc',maxPages:20}),
+    // Estoque/catálogo não entram no load do hub — almGarantirLedgerEstoque / aba Itens carregam sob demanda.
+    Promise.resolve(estoque||[]),
+    Promise.resolve(itens_catalogo||[]),
     sbFetchAll('treinamentos',{filters:['deleted_at=is.null'],order:'validade'}),
       sbFetch('aprovacoes',{filters:['status=eq.pendente']}),
       sbFetch('uniformes_catalogo',{order:'tipo'}),
@@ -135293,6 +135304,60 @@ function estTemFiltroAtivo(f){
   if(f.tipo || f.filial || f.deposito || f.status) return true;
   return String(f.busca||'').trim().length>=2;
 }
+var _estFiltrosMetaPromise=null;
+function estHydrateDemoEstoque(){
+  if(typeof DD==='undefined') return;
+  try{
+    if(!(estoque||[]).length && DD.estoque) estoque=DD.estoque.slice();
+    if(!(filiais||[]).length && DD.filiais) filiais=DD.filiais.slice();
+    if(!(depositos||[]).length && DD.depositos) depositos=DD.depositos.slice();
+    if(!(itens_catalogo||[]).length && DD.itens_catalogo) itens_catalogo=DD.itens_catalogo.slice();
+  }catch(e){}
+}
+function estGarantirFiltrosMeta(cb){
+  if(DEMO){
+    try{
+      if(typeof DD!=='undefined'){
+        if(!(filiais||[]).length && DD.filiais) filiais=DD.filiais.slice();
+        if(!(depositos||[]).length && DD.depositos) depositos=DD.depositos.slice();
+      }
+    }catch(e){}
+    estPopularFiltrosLeve();
+    if(cb) cb();
+    return Promise.resolve();
+  }
+  var precisaFil=!(filiais||[]).length;
+  var precisaDep=!(depositos||[]).length;
+  if(!precisaFil && !precisaDep){
+    estPopularFiltrosLeve();
+    if(cb) cb();
+    return Promise.resolve();
+  }
+  if(_estFiltrosMetaPromise){
+    return _estFiltrosMetaPromise.then(function(){ estPopularFiltrosLeve(); if(cb) cb(); });
+  }
+  var jobs=[];
+  if(precisaFil && typeof sbFetch==='function'){
+    jobs.push(sbFetch('filiais',{filters:['ativa=eq.true'],order:'nome'}).then(function(rows){ if(rows&&rows.length) filiais=rows; }).catch(function(e){ console.warn('est filiais', e); }));
+  }
+  if(precisaDep && typeof sbFetch==='function'){
+    jobs.push(sbFetch('depositos',{filters:['ativo=eq.true'],order:'nome'}).then(function(rows){ if(rows&&rows.length) depositos=rows; }).catch(function(e){ console.warn('est depositos', e); }));
+  }
+  if(typeof almTiposItemLoad==='function'){
+    jobs.push(Promise.resolve(almTiposItemLoad()).catch(function(){}));
+  }
+  _estFiltrosMetaPromise=Promise.all(jobs).then(function(){
+    _estFiltrosMetaPromise=null;
+    estPopularFiltrosLeve();
+    if(cb) cb();
+  }).catch(function(e){
+    console.warn('estGarantirFiltrosMeta', e);
+    _estFiltrosMetaPromise=null;
+    estPopularFiltrosLeve();
+    if(cb) cb();
+  });
+  return _estFiltrosMetaPromise;
+}
 function estPopularFiltrosLeve(){
   var selFil = document.getElementById('est-fil-filial');
   if(selFil && typeof filiais!=='undefined' && filiais.length && selFil.options.length<=1){
@@ -135544,6 +135609,8 @@ function renderEstoque(){
     return;
   }
   _estUi.consultou=true;
+
+  if(DEMO) estHydrateDemoEstoque();
 
   if(!DEMO && typeof almGarantirLedgerEstoque==='function' && !window._estLedgerRendering && !window._almLedgerEstoqueOk){
     window._estLedgerRendering = true;
@@ -146864,7 +146931,7 @@ async function lcAnalisarContrato(){
       </div>
     </div>
     <div style="font-size:11px;color:#888;padding:.45rem .75rem;border-top:.5px solid #f0efe8">
-      A lista só aparece depois de um filtro (tipo, filial, depósito, status ou busca). Isso evita carregar o estoque inteiro na abertura.
+      A tela abre só com os filtros. A lista e as movimentações só carregam depois de tipo, filial, depósito, status ou busca (mín. 2 letras).
       Saldo físico atual = saldo anterior + entradas no período − saídas no período.
       Disponível para saída = saldo físico atual − reservado.
     </div>
