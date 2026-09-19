@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 19/09/2026  
-**Versão atual do sistema:** `8.1.058` (19/09/2026, build `20260919-almox`)  
+**Versão atual do sistema:** `8.1.059` (19/09/2026, build `20260919-almox`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -325,6 +325,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
   Código   Item                                 Status
   -------- ------------------------------------ -----------------
+  ALM-CORE-1 Unificação visual Estoque + Movimentações + Catálogo (abas, sem alterar saldo/SQL)  🟠 HOMOLOGAÇÃO
   ALM-NF-1 NF digital vinculada à entrada (upload cena-docs + alm_notas_fiscais + vínculo relacional)  🟠 HOMOLOGAÇÃO
   ALM-NF-1.1 Duplicidade (chave NF-e) + estorno de entrada (movimentos inversos, sem DELETE)  🟠 HOMOLOGAÇÃO
   ALM-CORR-1 Correção item processado + aprovação gestor  🟠 HOMOLOGAÇÃO
@@ -430,6 +431,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 19/09/2026 | 8.1.059 | ALM-CORE-1: unifica Estoque, Movimentações e Catálogo de Itens em um único módulo com abas, preservando regras e dados existentes. Sem SQL, sem mudança de saldo/movimentação. HOMOLOGAÇÃO. |
 | 17/09/2026 | 8.1.063 | Fornecedores: anti-duplicidade no cadastro — nome/CNPJ idêntico bloqueia (mostra o existente); nome parecido avisa (com % de similaridade) e o usuário decide. HOMOLOGAÇÃO. |
 | 19/09/2026 | 8.1.058 | ALM-NF-1 portado para o `main` atual: NF digital vinculada à Entrada de Estoque (upload cena-docs, `alm_notas_fiscais`, vínculo relacional, duplicidade por chave NF-e, consulta/estorno). Aba **NFs de Entrada** no hub Almox + atalho em Materiais SAP. Hub Entradas/NFs abre sem esperar consolidação total do estoque. SQL manual `SQLS/sql_alm_nf_digital_fase_1.sql` **não executado**. Modo demo: segundo bloco DD do SESMT/Almox passa a mesclar (`Object.assign`) e não apaga contratos/financeiro. HOMOLOGAÇÃO. |
 | 17/09/2026 | 8.1.062 | ALM-NF-1.1c: reverter estorno de entrada (feito por engano) — botão "↩ Reverter" na linha ESTORNADA; devolve a qtd ao saldo e marca o ajuste como revertido (soft-delete, histórico preservado), reativando a entrada. Só gestor, com justificativa, idempotente. HOMOLOGAÇÃO. |
