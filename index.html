@@ -3487,6 +3487,7 @@ body.insp-campo-ativo #app-content-area {
       <button id="alm-tab-campo" onclick="almMostrarTab('campo')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">🔧 Em campo</button>
       <button id="alm-tab-retorno" onclick="almMostrarTab('retorno')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">↩ Lista de retorno</button>
       <button id="alm-tab-reservas" onclick="almMostrarTab('reservas')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#888;white-space:nowrap">📌 Reservas/Separação</button>
+      <button id="alm-sap-tab-nfs" onclick="_almShowAba('nfs')" style="padding:.5rem 1rem;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;font-size:12px;font-weight:600;color:#534AB7;white-space:nowrap">📄 NFs de Entrada</button>
     </div>
     <!-- Métricas -->
     <div id="alm-metricas" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
@@ -7216,7 +7217,16 @@ async function sbInsert(table,data,opts){
       'rejeitado_por_id','rejeitado_por_auth_user_id','rejeitado_por_nome','rejeitado_em','motivo_rejeicao',
       'movimentacao_nova_id','movimentacao_estorno_id',
       'saldo_original_antes','saldo_original_depois','saldo_substituto_antes','saldo_substituto_depois',
-      'executado_em','erro_execucao']};
+      'executado_em','erro_execucao'],
+    'alm_notas_fiscais':['numero_nf','serie_nf','chave_acesso_nfe','cnpj_emitente','fornecedor','fornecedor_id',
+      'arquivo_nome','arquivo_path','arquivo_url','arquivo_tipo','arquivo_tamanho','hash_sha256',
+      'data_emissao','data_entrada','valor_total','filial_id','deposito_id','contrato_id','rc','pedido',
+      'origem','destino','status','criado_por_id','criado_por_nome','observacao','itens_snapshot',
+      'duplicidade_liberada','duplicidade_contra_id','duplicidade_motivo','duplicidade_justificativa',
+      'estornado_em','estornado_por_id','estornado_por_nome','motivo_estorno','justificativa_estorno'],
+    'alm_nota_fiscal_movimentacoes':['nota_fiscal_id','movimentacao_id','alm_movimento_id','origem','papel',
+      'quantidade','item_id','item_nome','deposito_id','estoque_id','saldo_antes','saldo_depois'],
+    'alm_nota_fiscal_eventos':['nota_fiscal_id','evento','descricao','usuario_id','usuario_nome','dados_json']};
   if(_schemaCols[table]){
     var _cols=_schemaCols[table];
     var _san=function(obj){var r={};_cols.forEach(function(k){if(obj[k]!==undefined&&obj[k]!==null&&obj[k]!=='')r[k]=obj[k];});return r;};
@@ -33454,6 +33464,7 @@ function almRenderMetricas(){
 
 // ── Tabs ─────────────────────────────────────────────────────
 function almMostrarTab(tab){
+  if(tab==='nfs' && typeof _almShowAba==='function'){ _almShowAba('nfs'); return; }
   _almTabAtual = tab;
   ['estoque','entradas','saidas','campo','retorno','reservas'].forEach(function(t){
     var btn=document.getElementById('alm-tab-'+t);
@@ -33535,7 +33546,11 @@ function almRenderMovimentos(tipo,cid,busca){
         +'<td style="font-size:12px">'+m.unidade+'</td>'
         +'<td style="font-size:11px;color:#888">'+(m.nota_ref||'—')+'</td>'
         +'<td style="font-size:11px;color:#888">'+(m.registrado_por||'—')+'</td>'
-        +'<td><button class="btn btn-sm" data-mid="'+m.id+'" style="color:#A32D2D;border-color:#A32D2D;font-size:10px">Estornar</button></td>'
+        +'<td style="white-space:nowrap">'
+        +(typeof almNfPorMovId==='function' && almNfPorMovId(m.id,true)
+          ? '<button class="btn btn-sm" onclick="almNfAbrirDetalhe(\''+String(almNfPorMovId(m.id,true).id).replace(/'/g,'')+'\')" style="font-size:10px">📄 Ver NF</button> '
+          : '')
+        +'<button class="btn btn-sm" data-mid="'+m.id+'" style="color:#A32D2D;border-color:#A32D2D;font-size:10px">Estornar</button></td>'
         +'</tr>';
     }).join('');
   } else {
@@ -42572,10 +42587,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.057',
-  data:   '17/09/2026',
-  build:  '20260917-0748',
+  numero: '8.1.058',
+  data:   '19/09/2026',
+  build:  '20260919-almox',
   log: [
+    {v:'8.1.058', d:'19/09/2026', itens:[
+      'ALM-NF-1 / ALM-NF-1.1: NF digital vinculada à Entrada de Estoque — upload cena-docs, registro em alm_notas_fiscais, vínculo relacional com movimentos (patrimonial/SAP), bloqueio por chave NF-e, consulta/estorno na aba NFs de Entrada. Hub Entradas/NFs abre sem esperar consolidação total do estoque. SQL manual sql_alm_nf_digital_fase_1.sql (não executado). HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.057', d:'17/09/2026', itens:[
       'P1-A.4: Confirmar integração… voltava a falhar em silêncio (item não definido na validação). HOMOLOGAÇÃO.',
     ]},
@@ -72978,6 +72996,7 @@ var MAIN_CONFIG = {
   ]},
   almoxarifado: {label:'🏭 Almoxarifado CENA', subs:[
     {id:'sesmt-entradas',     label:'📥 Entradas'},
+    {id:'alm-nfs-entrada',    label:'📄 NFs de Entrada'},
     {id:'sesmt-alm',          label:'📦 Movimentações'},
     {id:'sesmt-itens',        label:'🗂 Catálogo'},
     {id:'sesmt-estoque',      label:'🗄 Estoque'},
@@ -73021,7 +73040,7 @@ var ALL_PAGES = ['dashboard','show-room-cena','contratos-lista','adiantamentos',
   'relatorios','cadastros','campo','diario','tma','campo-equipes','tma','programacao-equipes','programacao-projetos','gestao-ponto','gestor-painel','plpt-programacao','alm-dashboard',
   'sesmt-dashboard','sesmt-mobilizacao','sesmt-evolucao','sesmt-extrato-colaborador','sesmt-aptidao',
   'sesmt-entradas','sesmt-alm','sesmt-itens','sesmt-diagnostico','sesmt-sap-obra','sesmt-epis','sesmt-uniformes','sesmt-lavagem',
-  'alm-extrato-colaborador','alm-desmobilizacao','alm-requisicao',
+  'alm-extrato-colaborador','alm-desmobilizacao','alm-requisicao','alm-nfs-entrada',
   'sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','campo-solicitacoes','obras-requisicao','obras-medicao','plr','av-colaborador',
   'rh-dashboard','rh-vagas','rh-testes','rh-contratacao','rh-assinaturas','rh-pisos','rh-beneficios','rh-conciliacao-synergy','rh-central-divergencias','rh-dossie','rh-documentos','rh-entrada-ia','rh-regras','rh-pendencias','rh-conformidade','rh-prontidao','rh-cargos','rh-atalhos',
@@ -73141,6 +73160,7 @@ var SIDEBAR_GROUPS = {
   almoxarifado: [
     {label:'Entradas', items:[
       {id:'sesmt-entradas',   icon:'📥', label:'Entradas no almoxarifado'},
+      {id:'alm-nfs-entrada',  icon:'📄', label:'NFs de Entrada'},
     ]},
     {label:'Estoque e EPIs', items:[
       {id:'sesmt-alm',        icon:'📦', label:'Movimentações'},
@@ -73736,7 +73756,7 @@ function ocultarPaginasSESMTAlmoxarifado(){
     'pg-sesmt-uniformes','pg-sesmt-lavagem','pg-sesmt-ferramentas',
     'pg-sesmt-locacoes','pg-sesmt-estoque','pg-sesmt-treinamentos','pg-sesmt-turmas',
     'pg-sesmt-nr6','pg-sesmt-ocorrencias','pg-sesmt-aprovacoes','pg-sesmt-inspecoes',
-    'pg-sesmt-vales','pg-sesmt-filiais','pg-sesmt-ficha-epi','pg-sesmt-kanban-campo','pg-sesmt-kits-veiculo','pg-sesmt-vistoria-inicial','pg-alm-dashboard','pg-alm-desmobilizacao','pg-alm-requisicao'
+    'pg-sesmt-vales','pg-sesmt-filiais','pg-sesmt-ficha-epi','pg-sesmt-kanban-campo','pg-sesmt-kits-veiculo','pg-sesmt-vistoria-inicial','pg-sesmt-nfs','pg-alm-dashboard','pg-alm-desmobilizacao','pg-alm-requisicao'
     ,'pg-comgas-dashboard','pg-comgas-inspecoes','pg-comgas-checklist',
     'pg-comgas-nc','pg-comgas-pa','pg-comgas-cdi','pg-comgas-rem'
     ,'pg-enel-dashboard','pg-enel-inspecoes','pg-enel-checklist',
@@ -73762,11 +73782,11 @@ function _ensureInACA(pgId){
 
 // Subpáginas do hub Almoxarifado (dentro de #alm-conteudo) — não mover para ACA soltas
 var _ALM_HUB_SUB_PAGE_IDS = [
-  'sesmt-entradas','sesmt-alm','sesmt-itens','sesmt-estoque','sesmt-diagnostico',
+  'sesmt-entradas','alm-nfs-entrada','sesmt-alm','sesmt-itens','sesmt-estoque','sesmt-diagnostico',
   'sesmt-epis','sesmt-uniformes','sesmt-lavagem','sesmt-ferramentas','sesmt-locacoes','sesmt-filiais','sesmt-sap-obra'
 ];
 var _ALM_HUB_CHILD_PG_IDS = [
-  'pg-sesmt-entradas','pg-sesmt-kanban-campo','pg-sesmt-vistoria-inicial','pg-sesmt-kits-veiculo',
+  'pg-sesmt-entradas','pg-sesmt-nfs','pg-sesmt-kanban-campo','pg-sesmt-vistoria-inicial','pg-sesmt-kits-veiculo',
   'pg-sesmt-alm','pg-sesmt-uniformes','pg-sesmt-lavagem','pg-sesmt-epis','pg-sesmt-itens',
   'pg-sesmt-ferramentas','pg-sesmt-locacoes','pg-sesmt-estoque','pg-sesmt-diagnostico',
   'pg-sesmt-ficha-epi','pg-sesmt-filiais'
@@ -73954,6 +73974,7 @@ function showPage(pageId){
     });
   }
   else if(pageId==='sesmt-entradas')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureAlmHubIntact(); _almShowAba('entradas'); }); }
+  else if(pageId==='alm-nfs-entrada')  { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureAlmHubIntact(); _almShowAba('nfs'); }); }
   else if(pageId==='sesmt-alm')        { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _ensureInACA('pg-alm-dashboard'); _ensureAlmHubIntact(); _almShowAba('alm'); }); }
   else if(pageId==='sesmt-itens')      { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('itens'); }); }
   else if(pageId==='sesmt-sap-obra')   { _precisaModulo('sesmt',function(){ ocultarPaginasSESMTAlmoxarifado(); _almShowAba('sap-obra'); }); }
@@ -130826,7 +130847,7 @@ function _almShowAbaInterna(aba){
     : [];
 
   // Atualizar botões de aba
-  ['entradas','alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','diagnostico','vales','filiais','ficha-epi','sap-obra','kanban-campo','vistoria-inicial','kits-veiculo'].forEach(function(a){
+  ['entradas','nfs','alm','itens','epis','uniformes','lavagem','ferramentas','locacoes','estoque','diagnostico','vales','filiais','ficha-epi','sap-obra','kanban-campo','vistoria-inicial','kits-veiculo'].forEach(function(a){
     var btn = document.getElementById('alm-tab-'+a);
     if(!btn) return;
     btn.style.background  = a===aba ? '#1a1a18' : '';
@@ -130835,7 +130856,7 @@ function _almShowAbaInterna(aba){
   });
 
   // Mostrar só pg-sesmt-[aba] ou pg-sesmt-ficha-epi
-  var sesmt_abas = ['entradas','alm','itens','uniformes','lavagem','epis','ferramentas','locacoes',
+  var sesmt_abas = ['entradas','nfs','alm','itens','uniformes','lavagem','epis','ferramentas','locacoes',
                     'estoque','diagnostico','vales','filiais','kanban-campo','vistoria-inicial','kits-veiculo'];
   sesmt_abas.forEach(function(a){
     var el = document.getElementById('pg-sesmt-'+a);
@@ -130864,6 +130885,10 @@ function _almShowAbaInterna(aba){
     funcs = (typeof colaboradores!=='undefined')
       ? colaboradores.filter(function(c){ return c.ativo !== false; }) : [];
     if(aba==='entradas'){ if(typeof almRenderDashboard==='function') almRenderDashboard(); }
+    else if(aba==='nfs'){
+      if(typeof almNfPopularFiltroDep==='function') almNfPopularFiltroDep();
+      if(typeof almNfGarantirCache==='function') almNfGarantirCache();
+    }
     else if(aba==='alm'){
       if(typeof popularFiltrosAlm==='function') popularFiltrosAlm();
       if(typeof atualizarDepositos==='function') atualizarDepositos();
@@ -130881,8 +130906,18 @@ function _almShowAbaInterna(aba){
         lcCarregarVeiculosFrotas(function(){ if(typeof renderLocacoes==='function') renderLocacoes(); });
       }
     }
-    else if(aba==='estoque')     { if(typeof renderEstoque==='function')             renderEstoque(); }
-    else if(aba==='diagnostico') { if(typeof almInitDiagnosticoEstoque==='function') almInitDiagnosticoEstoque(); }
+    else if(aba==='estoque')     {
+      if(typeof almGarantirEstoqueConsolidado==='function') almGarantirEstoqueConsolidado(function(){
+        if(typeof renderEstoque==='function') renderEstoque();
+      });
+      else if(typeof renderEstoque==='function') renderEstoque();
+    }
+    else if(aba==='diagnostico') {
+      if(typeof almGarantirEstoqueConsolidado==='function') almGarantirEstoqueConsolidado(function(){
+        if(typeof almInitDiagnosticoEstoque==='function') almInitDiagnosticoEstoque();
+      });
+      else if(typeof almInitDiagnosticoEstoque==='function') almInitDiagnosticoEstoque();
+    }
     else if(aba==='vales')       { if(typeof renderVales==='function')               renderVales(); }
     else if(aba==='filiais')     { if(typeof renderFiliais==='function')             renderFiliais(); }
     else if(aba==='ficha-epi')   { iniciarFichaEpi(); }
@@ -130897,13 +130932,24 @@ function _almShowAbaInterna(aba){
     else if(aba==='kits-veiculo'){ if(typeof almInitKitsVeiculo==='function') almInitKitsVeiculo(); }
   };
 
+  var abaLeve = (aba==='entradas' || aba==='nfs');
   if(!_sesmtCarregado){
-    _sesmtCarregado = true;
-    if(typeof sesmtCarregarDados==='function'){
-      Promise.resolve(sesmtCarregarDados())
-        .then(render)
-        .catch(function(e){ console.warn('Almoxarifado:', e); render(); });
-    } else { render(); }
+    if(abaLeve) render();
+    if(typeof sesmtCarregarDados!=='function'){
+      _sesmtCarregado = true;
+      if(!abaLeve) render();
+    } else {
+      var p = _sesmtDadosPromise || Promise.resolve(sesmtCarregarDados());
+      _sesmtDadosPromise = p;
+      p.then(function(){
+        _sesmtCarregado = true;
+        if(typeof _almShowAbaInterna==='function') _almShowAbaInterna(_sesmtAbaAtiva||aba);
+      }).catch(function(e){
+        console.warn('Almoxarifado:', e);
+        _sesmtCarregado = true;
+        if(!abaLeve) render();
+      });
+    }
   } else {
     render();
   }
@@ -131139,10 +131185,7 @@ async function sesmtCarregarDados(){
   }
   try{ await almTiposItemLoad(); }catch(e){ console.warn('Tipos materiais:', e); }
   window._almEstoqueConsolidado = false;
-  try{
-    await almConsolidarEstoqueTodos();
-    window._almEstoqueConsolidado = true;
-  }catch(e){ console.warn('Consolidação estoque:', e); }
+  // Consolidação pesada só ao abrir Estoque/Diagnóstico (almGarantirEstoqueConsolidado).
   try{ if(typeof atualizarMetricas==='function') atualizarMetricas(); }catch(e){ console.warn('atualizarMetricas erro:',e); }
   try{ if(typeof popularSelectFuncs==='function') popularSelectFuncs(); }catch(e){}
   try{ if(typeof renderSeletorFilial==='function') renderSeletorFilial(); }catch(e){}
@@ -142604,7 +142647,7 @@ async function eeProcessarEntradaLinhaSap(linha, ctx, seq){
   };
   var ok = await almSalvarMovimentoSeguro(mov);
   if(!ok) return {ok:false, msg:(mat.material_desc||mat.codigo_sap)+': falha ao registrar entrada SAP'};
-  return {ok:true, nome:mat.material_desc||mat.codigo_sap, qtd:qtd, sap:true};
+  return {ok:true, nome:mat.material_desc||mat.codigo_sap, qtd:qtd, sap:true, movId:mov.id, almMovimentoId:mov.id};
 }
 function eeObterCatalogoBusca(){
   var dest = eeObterDestinoEntrada();
@@ -143001,16 +143044,666 @@ function eeMotivoEntradaChange(){
   var inp = document.getElementById('ee-forn-q');
   if(sug && inp && !inp.value.trim()) inp.value = sug;
 }
+// ── ALM-NF-1 / ALM-NF-1.1 — NF digital da Entrada de Estoque ─────────────
+var _almNfCache={lista:[],vinc:[],evt:[],ok:false,disponivel:true};
+var _almNfSalvando=false;
+var _almNfEstornando=false;
+function almNfEsc(s){ return escHtml(String(s==null?'':s)); }
+function almNfNormChave(s){
+  var d=String(s||'').replace(/\D/g,'');
+  if(d.length===44) return d;
+  if(d.length>44) return d.slice(0,44);
+  return d;
+}
+function almNfNormCnpj(s){
+  var d=String(s||'').replace(/\D/g,'');
+  return d.length>=14 ? d.slice(-14) : d;
+}
+function almNfNormNumero(s){
+  var t=String(s||'').trim();
+  var n=t.replace(/\s/g,'').replace(/^0+/,'');
+  return n||t;
+}
+function almNfNormNome(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function almNfSanNome(name){
+  var base=String(name||'nf').split(/[\\/]/).pop();
+  base=base.replace(/[^a-zA-Z0-9._-]+/g,'_').replace(/_+/g,'_');
+  if(!base || base==='.') base='nf.pdf';
+  return base.slice(0,80);
+}
+function almNfFmtMoney(v){
+  var n=Number(v);
+  if(!isFinite(n)) return '—';
+  return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+}
+function almNfUsuario(){
+  var u=typeof usuarioLogado!=='undefined'?usuarioLogado:null;
+  return {id:u&&u.id?u.id:null, nome:u&&(u.nome||u.email)?(u.nome||u.email):''};
+}
+function almNfCnpjCadastro(fornId, texto){
+  if(fornId && typeof _fornFindById==='function'){
+    var f=_fornFindById(fornId);
+    if(f) return almNfNormCnpj(f.cnpj||f.cnpj_cpf||f.documento||'');
+  }
+  return almNfNormCnpj(texto||'');
+}
+function almNfMetaDoForm(){
+  var parsed=window._eeNfParsed||{};
+  var forn=typeof eeObterFornecedorEntrada==='function'?eeObterFornecedorEntrada():{fornecedor:'',fornecedor_id:null};
+  var numero=((document.getElementById('ee-lote')||{}).value||parsed.numero_nf||'').trim();
+  var cnpj=almNfNormCnpj(parsed.cnpj_emitente||parsed.cnpj||parsed.cnpj_fornecedor||'');
+  if(!cnpj) cnpj=almNfCnpjCadastro(forn.fornecedor_id, forn.fornecedor);
+  var chave=almNfNormChave(parsed.chave_acesso_nfe||parsed.chave_nfe||parsed.chave||'');
+  var serie=String(parsed.serie_nf||parsed.serie||'').trim();
+  var emissao=String(parsed.data_emissao||'').slice(0,10);
+  var valor=parseFloat(parsed.valor_total);
+  if(!isFinite(valor)){
+    valor=(window._eeLinhas||[]).reduce(function(s,l){ return s+((parseFloat(l.qtd)||0)*(parseFloat(l.custo)||0)); },0);
+  }
+  return {
+    numero_nf:numero,
+    serie_nf:serie,
+    chave_acesso_nfe:chave.length===44?chave:'',
+    cnpj_emitente:cnpj,
+    fornecedor:forn.fornecedor||parsed.fornecedor||'',
+    fornecedor_id:forn.fornecedor_id||null,
+    data_emissao:emissao,
+    valor_total:isFinite(valor)?Math.round(valor*100)/100:null,
+    rc:((document.getElementById('ee-rc')||{}).value||'').trim(),
+    pedido:parsed.pedido||''
+  };
+}
+function almNfInvalidateCache(){ _almNfCache={lista:[],vinc:[],evt:[],ok:false,disponivel:_almNfCache.disponivel!==false}; }
+async function almNfGarantirCache(force){
+  if(!force && _almNfCache.ok) return _almNfCache;
+  if(DEMO){
+    if(!window._almNfDemoLista) window._almNfDemoLista=[];
+    if(!window._almNfDemoVinc) window._almNfDemoVinc=[];
+    if(!window._almNfDemoEvt) window._almNfDemoEvt=[];
+    _almNfCache={lista:window._almNfDemoLista,vinc:window._almNfDemoVinc,evt:window._almNfDemoEvt,ok:true,disponivel:true};
+    return _almNfCache;
+  }
+  try{
+    var res=await Promise.all([
+      sbFetchAll('alm_notas_fiscais',{order:'criado_em.desc',maxPages:10}),
+      sbFetchAll('alm_nota_fiscal_movimentacoes',{order:'criado_em.desc',maxPages:20})
+    ]);
+    if(res[0]==null && res[1]==null){
+      _almNfCache={lista:[],vinc:[],evt:[],ok:false,disponivel:false};
+      return _almNfCache;
+    }
+    _almNfCache={lista:res[0]||[],vinc:res[1]||[],evt:[],ok:true,disponivel:true};
+    return _almNfCache;
+  }catch(e){
+    console.warn('[ALM-NF] cache', e);
+    _almNfCache={lista:[],vinc:[],evt:[],ok:false,disponivel:false};
+    return _almNfCache;
+  }
+}
+function almNfVincsDaNf(nfId){
+  return (_almNfCache.vinc||[]).filter(function(v){ return String(v.nota_fiscal_id)===String(nfId); });
+}
+function almNfPorMovId(movId, sap){
+  if(!movId) return null;
+  var v=(_almNfCache.vinc||[]).find(function(x){
+    return sap ? String(x.alm_movimento_id||'')===String(movId) : String(x.movimentacao_id||'')===String(movId);
+  });
+  if(!v) return null;
+  return (_almNfCache.lista||[]).find(function(n){ return String(n.id)===String(v.nota_fiscal_id); })||null;
+}
+function almNfAtivas(){
+  return (_almNfCache.lista||[]).filter(function(n){ return String(n.status||'ATIVA')==='ATIVA'; });
+}
+function almNfMatchExato(meta, n){
+  var ch=almNfNormChave(meta.chave_acesso_nfe);
+  var nch=almNfNormChave(n.chave_acesso_nfe);
+  if(ch.length===44 && nch===ch) return 'chave';
+  var c1=almNfNormCnpj(meta.cnpj_emitente), c2=almNfNormCnpj(n.cnpj_emitente);
+  var num=almNfNormNumero(meta.numero_nf), nnum=almNfNormNumero(n.numero_nf);
+  if(!c1||!num||c1!==c2||num!==nnum) return '';
+  var s1=String(meta.serie_nf||'').trim(), s2=String(n.serie_nf||'').trim();
+  if(s1 && s2) return s1===s2 ? 'cnpj_serie_numero' : '';
+  if(!s1 || !s2) return 'cnpj_numero';
+  return '';
+}
+function almNfMatchPossivel(meta, n){
+  if(almNfMatchExato(meta,n)) return false;
+  var num=almNfNormNumero(meta.numero_nf);
+  if(!num || num!==almNfNormNumero(n.numero_nf)) return false;
+  var mesmoForn=almNfNormNome(meta.fornecedor) && almNfNormNome(meta.fornecedor)===almNfNormNome(n.fornecedor);
+  var mesmoCnpj=almNfNormCnpj(meta.cnpj_emitente) && almNfNormCnpj(meta.cnpj_emitente)===almNfNormCnpj(n.cnpj_emitente);
+  if(!mesmoForn && !mesmoCnpj) return false;
+  var mesmaData=meta.data_emissao && String(n.data_emissao||'').slice(0,10)===String(meta.data_emissao).slice(0,10);
+  var mesmoValor=meta.valor_total!=null && n.valor_total!=null && Math.abs(Number(meta.valor_total)-Number(n.valor_total))<0.02;
+  return !!(mesmaData && mesmoValor);
+}
+function almNfGruposDuplicidade(){
+  var grupos={}, out=[];
+  ( _almNfCache.lista||[]).forEach(function(n){
+    var ch=almNfNormChave(n.chave_acesso_nfe);
+    var key=ch.length===44 ? ('ch:'+ch) : ('c:'+almNfNormCnpj(n.cnpj_emitente)+'|s:'+String(n.serie_nf||'')+'|n:'+almNfNormNumero(n.numero_nf));
+    if(key==='c:|s:|n:' || key==='ch:') return;
+    if(!grupos[key]) grupos[key]=[];
+    grupos[key].push(n);
+  });
+  Object.keys(grupos).forEach(function(k){
+    if(grupos[k].length>1) out.push(grupos[k]);
+  });
+  return out;
+}
+function almNfEhDuplicadaLista(n){
+  return almNfGruposDuplicidade().some(function(g){ return g.some(function(x){ return String(x.id)===String(n.id); }); });
+}
+async function almNfHashFile(file){
+  if(!file || !window.crypto || !crypto.subtle) return '';
+  try{
+    var buf=await file.arrayBuffer();
+    var hash=await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hash)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  }catch(e){ return ''; }
+}
+async function almNfUploadArquivo(file){
+  if(!file) return {ok:false, msg:'Arquivo da NF ausente'};
+  var d=new Date();
+  var ano=d.getFullYear();
+  var mes=String(d.getMonth()+1).padStart(2,'0');
+  var path='almoxarifado/notas-fiscais/'+ano+'/'+mes+'/'+Date.now()+'_'+almNfSanNome(file.name);
+  if(DEMO){
+    return {ok:true, path:path, url:'demo://'+path, tipo:file.type||'application/octet-stream', tamanho:file.size||0, nome:file.name};
+  }
+  var url=SB.url+'/storage/v1/object/cena-docs/'+path;
+  var h={
+    'apikey':SB.key,
+    'Authorization':'Bearer '+(_sbAuthToken||SB.key),
+    'Content-Type':file.type||'application/octet-stream',
+    'x-upsert':'false'
+  };
+  var r=await fetch(url,{method:'POST',headers:h,body:file});
+  if(!r.ok){
+    var txt=await r.text().catch(function(){ return ''; });
+    return {ok:false, msg:'Falha no Storage cena-docs: '+(txt||('HTTP '+r.status))};
+  }
+  return {
+    ok:true, path:path,
+    url:SB.url+'/storage/v1/object/public/cena-docs/'+path,
+    tipo:file.type||'application/octet-stream',
+    tamanho:file.size||0,
+    nome:file.name
+  };
+}
+function almNfOverlay(html){
+  var old=document.getElementById('alm-nf-overlay');
+  if(old) old.remove();
+  var d=document.createElement('div');
+  d.id='alm-nf-overlay';
+  d.className='modal-bg';
+  d.style.zIndex='10060';
+  d.innerHTML=html;
+  d.onclick=function(ev){ if(ev.target===d) almNfFecharOverlay(); };
+  document.body.appendChild(d);
+}
+function almNfFecharOverlay(){
+  var d=document.getElementById('alm-nf-overlay');
+  if(d) d.remove();
+}
+function almNfDepLabel(id){
+  var dep=(typeof depositos!=='undefined'?depositos:[]).find(function(x){ return String(x.id)===String(id||''); });
+  return dep?dep.nome:'—';
+}
+function almNfFilialLabel(id){
+  var f=(typeof filiais!=='undefined'?filiais:[]).find(function(x){ return String(x.id)===String(id||''); });
+  return f?((f.codigo?f.codigo+' — ':'')+f.nome):'—';
+}
+async function almNfChecarDuplicidade(meta){
+  await almNfGarantirCache();
+  if(!_almNfCache.disponivel) return {ok:true, tipo:'indisponivel'};
+  var ativas=almNfAtivas();
+  var i, n, tipo;
+  for(i=0;i<ativas.length;i++){
+    n=ativas[i];
+    tipo=almNfMatchExato(meta,n);
+    if(tipo==='chave') return {ok:false, tipo:'chave', bloqueado:true, nf:n};
+    if(tipo) return {ok:false, tipo:tipo, bloqueado:false, nf:n};
+  }
+  for(i=0;i<ativas.length;i++){
+    n=ativas[i];
+    if(almNfMatchPossivel(meta,n)) return {ok:false, tipo:'possivel', bloqueado:false, nf:n};
+  }
+  return {ok:true, tipo:''};
+}
+function almNfHtmlResumo(n){
+  return '<div style="font-size:13px;line-height:1.55">'
+    +'<div><b>NF:</b> '+almNfEsc(n.numero_nf||'—')+(n.serie_nf?' · série '+almNfEsc(n.serie_nf):'')+'</div>'
+    +'<div><b>Fornecedor:</b> '+almNfEsc(n.fornecedor||'—')+'</div>'
+    +'<div><b>CNPJ:</b> '+almNfEsc(n.cnpj_emitente||'—')+'</div>'
+    +(n.chave_acesso_nfe?'<div><b>Chave NF-e:</b> <span style="font-family:monospace;font-size:11px">'+almNfEsc(n.chave_acesso_nfe)+'</span></div>':'')
+    +'<div><b>Entrada anterior:</b> '+almNfEsc((typeof fmtD==='function'?fmtD(n.data_entrada||n.criado_em):n.data_entrada)||'—')
+    +(n.criado_em?' '+String(n.criado_em).replace('T',' ').slice(11,16):'')+'</div>'
+    +'<div><b>Usuário:</b> '+almNfEsc(n.criado_por_nome||'—')+'</div>'
+    +'<div><b>Depósito:</b> '+almNfEsc(almNfDepLabel(n.deposito_id))+'</div>'
+    +'<div><b>Valor:</b> '+almNfFmtMoney(n.valor_total)+'</div>'
+    +'<div><b>Status:</b> '+almNfEsc(n.status||'ATIVA')+'</div>'
+    +'</div>';
+}
+function almNfMostrarDuplicidade(dup, origem){
+  var n=dup.nf||{};
+  var chave=dup.tipo==='chave';
+  var poss=dup.tipo==='possivel';
+  var titulo=chave?'Esta NF-e já possui entrada ativa no estoque.':(poss?'⚠ POSSÍVEL NF DUPLICADA':'⚠ NOTA FISCAL JÁ REGISTRADA');
+  var extra='';
+  if(!chave){
+    extra='<div style="margin-top:.75rem"><label style="font-size:11px;font-weight:600">Motivo (obrigatório para registrar mesmo assim)</label>'
+      +'<select class="inp" id="alm-nf-dup-motivo" style="width:100%;margin:.3rem 0">'
+      +'<option value="">Selecione...</option>'
+      +'<option>Documento relançado por motivo administrativo</option>'
+      +'<option>NF complementar / diferença</option>'
+      +'<option>Outro</option></select>'
+      +'<textarea class="inp" id="alm-nf-dup-just" rows="3" placeholder="Justificativa obrigatória" style="width:100%"></textarea></div>';
+  }
+  almNfOverlay('<div class="modal" style="max-width:560px" onclick="event.stopPropagation()">'
+    +'<h3 style="margin:0 0 .5rem">'+(chave?'⛔ ':'')+titulo+'</h3>'
+    +almNfHtmlResumo(n)
+    +(chave?'<div style="margin-top:.7rem;background:#FCEBEB;color:#A32D2D;padding:8px 10px;border-radius:8px;font-size:12px">Chave de acesso NF-e idêntica e entrada ATIVA. Nova entrada bloqueada.</div>':'')
+    +extra
+    +'<div class="ma" style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-pri" onclick="almNfAbrirDetalhe(\''+String(n.id||'').replace(/'/g,'')+'\')">Abrir entrada existente</button>'
+    +'<button class="btn" onclick="almNfFecharOverlay()">Cancelar</button>'
+    +(!chave?'<button class="btn" style="color:#854F0B;border-color:#854F0B" onclick="almNfLiberarDuplicidade(\''+String(n.id||'').replace(/'/g,'')+'\',\''+(origem||'salvar')+'\')">Registrar mesmo assim</button>':'')
+    +'</div></div>');
+}
+function almNfLiberarDuplicidade(contraId, origem){
+  var mot=((document.getElementById('alm-nf-dup-motivo')||{}).value||'').trim();
+  var just=((document.getElementById('alm-nf-dup-just')||{}).value||'').trim();
+  if(!mot || !just){ alert('Informe motivo e justificativa para registrar mesmo assim.'); return; }
+  window._eeNfDupLiberada={contra_id:contraId, motivo:mot, justificativa:just, em:new Date().toISOString()};
+  almNfFecharOverlay();
+  if(origem==='salvar' && typeof salvarEntrada==='function') salvarEntrada();
+}
+async function almNfInserirEvento(nfId, evento, descricao, dados){
+  var u=almNfUsuario();
+  var row={nota_fiscal_id:nfId, evento:evento, descricao:descricao||'', usuario_id:u.id, usuario_nome:u.nome, dados_json:dados||null};
+  if(DEMO){
+    row.id='nfevt'+Date.now();
+    (window._almNfDemoEvt||(window._almNfDemoEvt=[])).push(row);
+    return row;
+  }
+  var ins=await sbInsert('alm_nota_fiscal_eventos', row, {requireAuth:!!_sbAuthToken, silent:true});
+  return ins&&ins[0]?ins[0]:null;
+}
+async function almNfCriarRegistro(meta, up, ctx, linhas){
+  var u=almNfUsuario();
+  var lib=window._eeNfDupLiberada||null;
+  var row={
+    numero_nf:meta.numero_nf||null,
+    serie_nf:meta.serie_nf||null,
+    chave_acesso_nfe:meta.chave_acesso_nfe||null,
+    cnpj_emitente:meta.cnpj_emitente||null,
+    fornecedor:meta.fornecedor||null,
+    fornecedor_id:meta.fornecedor_id||null,
+    arquivo_nome:up.nome, arquivo_path:up.path, arquivo_url:up.url,
+    arquivo_tipo:up.tipo, arquivo_tamanho:up.tamanho, hash_sha256:up.hash||null,
+    data_emissao:meta.data_emissao||null,
+    data_entrada:ctx.data_mov||dataHoje(),
+    valor_total:meta.valor_total,
+    filial_id:ctx.filId||null, deposito_id:ctx.depId||null, contrato_id:ctx.contrato_id||null,
+    rc:meta.rc||ctx.numero_rc||null, pedido:meta.pedido||null,
+    origem:'entrada_estoque', destino:ctx.destino||'patrimonial', status:'ATIVA',
+    criado_por_id:u.id, criado_por_nome:u.nome,
+    observacao:ctx.obs||null,
+    itens_snapshot:linhas||null,
+    duplicidade_liberada:!!lib,
+    duplicidade_contra_id:lib?lib.contra_id:null,
+    duplicidade_motivo:lib?lib.motivo:null,
+    duplicidade_justificativa:lib?lib.justificativa:null
+  };
+  if(DEMO){
+    row.id='nf'+Date.now();
+    row.criado_em=new Date().toISOString();
+    (window._almNfDemoLista||(window._almNfDemoLista=[])).unshift(row);
+    _almNfCache.lista=window._almNfDemoLista;
+    return row;
+  }
+  var ins=await sbInsert('alm_notas_fiscais', row, {requireAuth:!!_sbAuthToken});
+  if(!ins||!ins[0]) return null;
+  return Object.assign({}, row, ins[0]);
+}
+async function almNfVincularMov(nfId, r, papel){
+  if(!nfId||!r||!r.ok) return;
+  var row={
+    nota_fiscal_id:nfId,
+    movimentacao_id:r.sap?null:(r.movId||null),
+    alm_movimento_id:r.sap?(r.movId||r.almMovimentoId||null):null,
+    origem:r.sap?'sap':'patrimonial',
+    papel:papel||'entrada',
+    quantidade:r.qtd||null,
+    item_id:r.itemId||null,
+    item_nome:r.nome||null,
+    deposito_id:r.depositoId||null,
+    estoque_id:r.estoqueId||null,
+    saldo_antes:r.saldoAntes!=null?r.saldoAntes:null,
+    saldo_depois:r.saldoDepois!=null?r.saldoDepois:null
+  };
+  if(DEMO){
+    row.id='nfv'+Date.now()+Math.random();
+    (window._almNfDemoVinc||(window._almNfDemoVinc=[])).push(row);
+    _almNfCache.vinc=window._almNfDemoVinc;
+    return row;
+  }
+  var ins=await sbInsert('alm_nota_fiscal_movimentacoes', row, {requireAuth:!!_sbAuthToken, silent:true});
+  if(ins&&ins[0]){
+    _almNfCache.vinc=(_almNfCache.vinc||[]).concat([Object.assign({},row,ins[0])]);
+    return ins[0];
+  }
+  return null;
+}
+function almNfAbrirArquivoId(id){
+  var n=(_almNfCache.lista||[]).find(function(x){ return String(x.id)===String(id); });
+  almNfAbrirArquivo(n);
+}
+function almNfAbrirArquivo(n){
+  if(!n||!n.arquivo_url){ alert('Arquivo da NF não disponível.'); return; }
+  var tipo=String(n.arquivo_tipo||n.arquivo_nome||'').toLowerCase();
+  if(tipo.indexOf('pdf')>=0 || /\.pdf$/i.test(n.arquivo_nome||'')){
+    window.open(n.arquivo_url,'_blank');
+    return;
+  }
+  if(tipo.indexOf('image')>=0 || /\.(png|jpe?g|webp|gif)$/i.test(n.arquivo_nome||'')){
+    almNfOverlay('<div class="modal" style="max-width:720px" onclick="event.stopPropagation()">'
+      +'<h3 style="margin:0 0 .5rem">📄 '+almNfEsc(n.arquivo_nome||'NF')+'</h3>'
+      +'<img src="'+almNfEsc(n.arquivo_url)+'" style="max-width:100%;border-radius:8px;border:.5px solid #e8e7e0"/>'
+      +'<div class="ma" style="margin-top:.8rem"><button class="btn btn-pri" onclick="almNfFecharOverlay()">Fechar</button></div></div>');
+    return;
+  }
+  window.open(n.arquivo_url,'_blank');
+}
+async function almNfAbrirDetalhe(id){
+  almNfFecharOverlay();
+  await almNfGarantirCache();
+  var n=(_almNfCache.lista||[]).find(function(x){ return String(x.id)===String(id); });
+  if(!n){ alert('NF não encontrada.'); return; }
+  var vinc=almNfVincsDaNf(n.id);
+  var itens=vinc.filter(function(v){ return v.papel!=='estorno'; }).map(function(v){
+    return '<tr><td>'+almNfEsc(v.item_nome||'—')+'</td><td>'+almNfEsc(v.origem)+'</td><td style="text-align:right">'+(v.quantidade||'—')+'</td></tr>';
+  }).join('');
+  var st=String(n.status||'ATIVA');
+  var estBtn=st==='ATIVA'
+    ? '<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="almNfIniciarEstorno(\''+String(n.id).replace(/'/g,'')+'\')">↩ Estornar entrada</button>'
+    : '<div style="font-size:12px;color:#854F0B">Esta entrada já foi estornada.</div>';
+  var preview='';
+  if(n.arquivo_url && (String(n.arquivo_tipo||'').indexOf('image')===0 || /\.(png|jpe?g|webp|gif)$/i.test(n.arquivo_nome||''))){
+    preview='<img src="'+almNfEsc(n.arquivo_url)+'" style="max-height:180px;border-radius:8px;margin:.5rem 0;border:.5px solid #e8e7e0"/>';
+  }
+  setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:640px;max-height:92vh;overflow:auto">'
+    +'<h3 style="margin:0 0 .4rem">📄 NF '+almNfEsc(n.numero_nf||'')+' · '+almNfEsc(st)+'</h3>'
+    +(almNfEhDuplicadaLista(n)?'<div style="background:#FEF3E2;color:#854F0B;padding:6px 8px;border-radius:8px;font-size:12px;margin-bottom:.6rem">⚠ POSSÍVEL DUPLICIDADE</div>':'')
+    +almNfHtmlResumo(n)
+    +'<div style="font-size:12px;margin-top:.5rem"><b>RC/Pedido:</b> '+almNfEsc(n.rc||n.pedido||'—')
+    +' · <b>Filial:</b> '+almNfEsc(almNfFilialLabel(n.filial_id))+'</div>'
+    +preview
+    +'<div style="margin-top:.7rem;font-size:12px;font-weight:700">Itens / movimentações vinculadas</div>'
+    +'<table class="tbl" style="font-size:12px;margin-top:4px"><thead><tr><th>Item</th><th>Origem</th><th style="text-align:right">Qtd</th></tr></thead><tbody>'
+    +(itens||'<tr><td colspan="3" style="color:#888">Nenhuma movimentação vinculada.</td></tr>')+'</tbody></table>'
+    +'<div class="ma" style="margin-top:1rem;display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-pri" onclick="almNfAbrirArquivoId(\''+String(n.id).replace(/'/g,'')+'\')">Abrir NF</button>'
+    +estBtn
+    +'<button class="btn" onclick="closeModal()">Fechar</button>'
+    +'</div></div></div>');
+}
+async function almNfIniciarEstorno(id){
+  if(_almNfEstornando){ return; }
+  await almNfGarantirCache();
+  var n=(_almNfCache.lista||[]).find(function(x){ return String(x.id)===String(id); });
+  if(!n){ alert('NF não encontrada.'); return; }
+  if(String(n.status||'')!=='ATIVA'){ alert('Esta entrada já foi estornada.'); return; }
+  var vinc=almNfVincsDaNf(n.id).filter(function(v){ return v.papel!=='estorno'; });
+  if(!vinc.length){ alert('Não há movimentações vinculadas a esta NF.'); return; }
+  var bloqueios=[], linhasPrev=[], i, v, saldoAtual, apos, nome;
+  for(i=0;i<vinc.length;i++){
+    v=vinc[i];
+    nome=v.item_nome||'Item';
+    if(v.origem==='sap'){
+      var mov=(typeof alm_movimentos!=='undefined'?alm_movimentos:[]).find(function(m){ return String(m.id)===String(v.alm_movimento_id||''); });
+      var chave=mov&&typeof almChaveSaldoSap==='function'?almChaveSaldoSap(mov):'';
+      var est=(typeof alm_estoque!=='undefined'?alm_estoque:[]).find(function(e){
+        return mov && String(e.contrato_id||'')===String(mov.contrato_id||'') && (
+          (mov.codigo_sap && String(e.codigo_sap||'')===String(mov.codigo_sap||''))
+          || String(e.material_id||'')===String(mov.material_id||'')
+        );
+      });
+      saldoAtual=est?Number(est.saldo)||0:0;
+      apos=saldoAtual-(Number(v.quantidade)||0);
+      if(apos<-1e-9) bloqueios.push({nome:nome, orig:v.quantidade, saldo:saldoAtual, sap:true});
+      linhasPrev.push({v:v, nome:nome, sap:true, atual:saldoAtual, qtd:Number(v.quantidade)||0, apos:apos, chave:chave});
+    } else {
+      var row=null;
+      if(v.estoque_id) row=(estoque||[]).find(function(e){ return String(e.id)===String(v.estoque_id); });
+      if(!row && v.item_id && v.deposito_id && typeof almListarLinhasEstoqueItem==='function'){
+        var cat=(itens_catalogo||[]).find(function(c){ return String(c.id)===String(v.item_id); })||{id:v.item_id,nome:v.item_nome};
+        row=almListarLinhasEstoqueItem(cat).find(function(e){ return String(e.deposito_id||'')===String(v.deposito_id); })||null;
+      }
+      saldoAtual=row?Number(row.saldo)||0:0;
+      apos=saldoAtual-(Number(v.quantidade)||0);
+      if(apos<-1e-9) bloqueios.push({nome:nome, orig:v.quantidade, saldo:saldoAtual, sap:false});
+      linhasPrev.push({v:v, nome:nome, sap:false, atual:saldoAtual, qtd:Number(v.quantidade)||0, apos:apos, row:row});
+    }
+  }
+  if(bloqueios.length){
+    almNfOverlay('<div class="modal" style="max-width:560px" onclick="event.stopPropagation()">'
+      +'<h3 style="margin:0 0 .5rem">Não é possível estornar esta entrada integralmente</h3>'
+      +'<p style="font-size:13px">Parte dos itens desta NF já foi movimentada após a entrada. Não gera estoque negativo.</p>'
+      +bloqueios.map(function(b){
+        return '<div style="font-size:12px;padding:6px 0;border-bottom:.5px solid #eee"><b>'+almNfEsc(b.nome)+'</b><br>Quantidade original: '+b.orig+' · Saldo atualmente disponível: '+b.saldo+'</div>';
+      }).join('')
+      +'<div class="ma" style="margin-top:.8rem"><button class="btn btn-pri" onclick="almNfFecharOverlay()">Fechar</button></div></div>');
+    await almNfInserirEvento(n.id,'ESTORNO_BLOQUEADO_SALDO','Saldo insuficiente para estorno integral',{bloqueios:bloqueios});
+    return;
+  }
+  window._almNfEstornoPrev={nf:n, linhas:linhasPrev};
+  var tbl=linhasPrev.map(function(l){
+    return '<tr><td>'+almNfEsc(l.nome)+(l.sap?' <span class="bdg info">SAP</span>':'')+'</td>'
+      +'<td style="text-align:right">'+l.atual+'</td>'
+      +'<td style="text-align:right">+'+l.qtd+'</td>'
+      +'<td style="text-align:right;color:#A32D2D">−'+l.qtd+'</td>'
+      +'<td style="text-align:right;font-weight:700">'+l.apos+'</td></tr>';
+  }).join('');
+  almNfOverlay('<div class="modal" style="max-width:640px;max-height:90vh;overflow:auto" onclick="event.stopPropagation()">'
+    +'<h3 style="margin:0 0 .4rem">↩ Estornar entrada — NF '+almNfEsc(n.numero_nf||'')+'</h3>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:.6rem">'+almNfEsc(n.fornecedor||'')+'</div>'
+    +'<table class="tbl" style="font-size:12px"><thead><tr><th>Item</th><th style="text-align:right">Saldo atual</th><th style="text-align:right">Entrada desta NF</th><th style="text-align:right">Estorno</th><th style="text-align:right">Saldo após</th></tr></thead><tbody>'+tbl+'</tbody></table>'
+    +'<div style="margin-top:.75rem"><label style="font-size:11px;font-weight:600">Motivo *</label>'
+    +'<select class="inp" id="alm-nf-est-motivo" style="width:100%">'
+    +'<option value="">Selecione...</option>'
+    +'<option>NF lançada em duplicidade</option>'
+    +'<option>NF incorreta</option>'
+    +'<option>Quantidade incorreta</option>'
+    +'<option>Fornecedor incorreto</option>'
+    +'<option>Entrada realizada por engano</option>'
+    +'<option>Outro</option></select></div>'
+    +'<div style="margin-top:.5rem"><label style="font-size:11px;font-weight:600">Justificativa *</label>'
+    +'<textarea class="inp" id="alm-nf-est-just" rows="3" style="width:100%" placeholder="Obrigatória para auditoria"></textarea></div>'
+    +'<div style="margin-top:.7rem;background:#FEF3E2;color:#854F0B;padding:8px 10px;border-radius:8px;font-size:12px">'
+    +'<b>CONFIRMAR ESTORNO DA ENTRADA?</b> Esta operação reverte os saldos gerados pela NF e mantém todo o histórico. Não apaga PDF nem movimentos originais.</div>'
+    +'<div class="ma" style="margin-top:.85rem;display:flex;gap:8px">'
+    +'<button class="btn" onclick="almNfFecharOverlay()">Cancelar</button>'
+    +'<button class="btn btn-pri" id="alm-nf-est-btn" style="background:#A32D2D;border-color:#A32D2D" onclick="almNfConfirmarEstorno()">Confirmar estorno</button>'
+    +'</div></div>');
+}
+async function almNfConfirmarEstorno(){
+  if(_almNfEstornando) return;
+  var prev=window._almNfEstornoPrev;
+  if(!prev||!prev.nf) return;
+  var n=prev.nf;
+  if(String(n.status||'')!=='ATIVA'){ alert('Esta entrada já foi estornada.'); return; }
+  var mot=((document.getElementById('alm-nf-est-motivo')||{}).value||'').trim();
+  var just=((document.getElementById('alm-nf-est-just')||{}).value||'').trim();
+  if(!mot||!just){ alert('Informe motivo e justificativa.'); return; }
+  var btn=document.getElementById('alm-nf-est-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Estornando...'; }
+  _almNfEstornando=true;
+  try{
+    var u=almNfUsuario();
+    var i, l, orig;
+    for(i=0;i<prev.linhas.length;i++){
+      l=prev.linhas[i];
+      if(l.sap){
+        orig=(alm_movimentos||[]).find(function(m){ return String(m.id)===String(l.v.alm_movimento_id||''); });
+        if(!orig) throw new Error('Movimento SAP original não encontrado: '+(l.nome||''));
+        var inv={
+          tipo:'saida',
+          material_id:orig.material_id||'',
+          material_desc:orig.material_desc||l.nome,
+          codigo_sap:orig.codigo_sap||'',
+          unidade:orig.unidade||'UN',
+          contrato_id:orig.contrato_id,
+          qtd:l.qtd,
+          valor_unitario:orig.valor_unitario||0,
+          valor_total:Math.round((Number(orig.valor_unitario)||0)*l.qtd*100)/100,
+          data:dataHoje(),
+          origem:'ESTORNO_ENTRADA_NF',
+          nota_ref:n.numero_nf||orig.nota_ref||'',
+          obs:'ESTORNO_ENTRADA_NF · NF '+(n.numero_nf||'')+' · '+mot+' · '+just,
+          registrado_por:u.nome,
+          criado_em:new Date().toISOString(),
+          status:'concluido'
+        };
+        var okSap=await almSalvarMovimentoSeguro(inv);
+        if(!okSap) throw new Error('Falha ao estornar movimento SAP: '+l.nome);
+        await almNfVincularMov(n.id,{ok:true,sap:true,movId:inv.id,qtd:l.qtd,nome:l.nome,itemId:null,depositoId:null,estoqueId:null,saldoAntes:l.atual,saldoDepois:l.apos},'estorno');
+      } else {
+        orig=(movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(l.v.movimentacao_id||''); });
+        if(!orig) throw new Error('Movimento patrimonial original não encontrado: '+(l.nome||''));
+        if(!l.row) throw new Error('Linha de estoque do depósito original não encontrada: '+(l.nome||''));
+        var baixa=await almBaixarSaldoEstoquePatrimonio({row:l.row, qtd:l.qtd});
+        if(!baixa.ok) throw new Error(baixa.msg||('Saldo insuficiente: '+l.nome));
+        var payloadEst={
+          item_id:orig.item_id,
+          tipo_mov:'ajuste',
+          quantidade:l.qtd,
+          deposito_id:orig.deposito_id||l.v.deposito_id,
+          filial_id:orig.filial_id||null,
+          fornecedor:orig.fornecedor||n.fornecedor||null,
+          nota_fiscal:orig.nota_fiscal||n.numero_nf||null,
+          data_mov:dataHoje(),
+          motivo:'ESTORNO_ENTRADA_NF',
+          tipo_ajuste:'ESTORNO_ENTRADA_NF',
+          movimentacao_origem_id:orig.id,
+          obs:'ESTORNO_ENTRADA_NF · NF '+(n.numero_nf||'')+' · '+mot+' · '+just,
+          status:'Disponível',
+          responsavel_id:u.id
+        };
+        var estId='movest'+Date.now()+'-'+i;
+        if(DEMO){
+          movimentacoes_itens.push(Object.assign({id:estId}, payloadEst));
+        } else {
+          var insE=await sbInsert('movimentacoes_itens', payloadEst);
+          if(!insE||!insE[0]) throw new Error('Falha ao gravar movimento de estorno: '+l.nome);
+          estId=insE[0].id;
+          movimentacoes_itens.push(Object.assign({}, payloadEst, insE[0]));
+        }
+        await almNfVincularMov(n.id,{ok:true,sap:false,movId:estId,qtd:l.qtd,nome:l.nome,itemId:orig.item_id,depositoId:payloadEst.deposito_id,estoqueId:l.row.id,saldoAntes:l.atual,saldoDepois:baixa.saldo},'estorno');
+      }
+    }
+    var patch={
+      status:'ESTORNADA',
+      estornado_em:new Date().toISOString(),
+      estornado_por_id:u.id,
+      estornado_por_nome:u.nome,
+      motivo_estorno:mot,
+      justificativa_estorno:just
+    };
+    if(DEMO){ Object.assign(n, patch); }
+    else {
+      var okUp=await sbUpdate('alm_notas_fiscais', patch, 'id=eq.'+n.id);
+      if(!okUp) throw new Error('Estorno dos saldos ok, mas falhou atualizar status da NF.');
+      Object.assign(n, patch);
+    }
+    await almNfInserirEvento(n.id,'ESTORNO_ENTRADA_NF',mot+' · '+just,{
+      motivo:mot, justificativa:just, linhas:prev.linhas.map(function(x){ return {nome:x.nome,qtd:x.qtd,sap:!!x.sap,saldo_antes:x.atual,saldo_depois:x.apos}; })
+    });
+    almNfInvalidateCache();
+    await almNfGarantirCache(true);
+    almNfFecharOverlay();
+    closeModal();
+    progShowToast('↩ Entrada da NF '+(n.numero_nf||'')+' estornada. Histórico preservado.');
+    if(typeof renderEstoque==='function') renderEstoque();
+    if(typeof almNfRenderConsulta==='function') almNfRenderConsulta();
+  }catch(e){
+    console.error('almNfConfirmarEstorno', e);
+    alert((e&&e.message)||String(e));
+    if(btn){ btn.disabled=false; btn.textContent='Confirmar estorno'; }
+  }finally{
+    _almNfEstornando=false;
+  }
+}
+function almNfPopularFiltroDep(){
+  var sel=document.getElementById('alm-nf-fil-dep');
+  if(!sel || sel.dataset.pop==='1') return;
+  var deps=(typeof depositos!=='undefined'?depositos:[]);
+  sel.innerHTML='<option value="">Todos</option>'+deps.map(function(d){ return '<option value="'+d.id+'">'+almNfEsc(d.nome||d.codigo||d.id)+'</option>'; }).join('');
+  sel.dataset.pop='1';
+}
+function almNfRenderConsulta(){
+  var wrap=document.getElementById('alm-nf-consulta');
+  if(!wrap) return;
+  wrap.innerHTML='<div style="padding:1rem;color:#888">Carregando NFs de entrada...</div>';
+  almNfGarantirCache(true).then(function(){
+    if(!_almNfCache.disponivel){
+      wrap.innerHTML='<div class="card" style="padding:1rem;color:#854F0B">Consulta de NFs indisponível até aplicar o SQL manual <b>sql_alm_nf_digital_fase_1.sql</b> (não executado pelo ERP).</div>';
+      return;
+    }
+    var num=((document.getElementById('alm-nf-fil-num')||{}).value||'').trim().toLowerCase();
+    var forn=((document.getElementById('alm-nf-fil-forn')||{}).value||'').trim().toLowerCase();
+    var ini=(document.getElementById('alm-nf-fil-ini')||{}).value||'';
+    var fim=(document.getElementById('alm-nf-fil-fim')||{}).value||'';
+    var dep=(document.getElementById('alm-nf-fil-dep')||{}).value||'';
+    var rc=((document.getElementById('alm-nf-fil-rc')||{}).value||'').trim().toLowerCase();
+    var st=(document.getElementById('alm-nf-fil-st')||{}).value||'';
+    var lista=(_almNfCache.lista||[]).filter(function(n){
+      if(num && String(n.numero_nf||'').toLowerCase().indexOf(num)<0 && String(n.chave_acesso_nfe||'').indexOf(num)<0) return false;
+      if(forn && String(n.fornecedor||'').toLowerCase().indexOf(forn)<0 && String(n.cnpj_emitente||'').indexOf(forn.replace(/\D/g,''))<0) return false;
+      var dt=String(n.data_entrada||n.criado_em||'').slice(0,10);
+      if(ini && dt && dt<ini) return false;
+      if(fim && dt && dt>fim) return false;
+      if(dep && String(n.deposito_id||'')!==String(dep)) return false;
+      if(rc && String(n.rc||'').toLowerCase().indexOf(rc)<0 && String(n.pedido||'').toLowerCase().indexOf(rc)<0) return false;
+      if(st==='dup') return almNfEhDuplicadaLista(n);
+      if(st && String(n.status||'ATIVA')!==st) return false;
+      return true;
+    });
+    var rows=lista.map(function(n){
+      var qtd=almNfVincsDaNf(n.id).filter(function(v){ return v.papel!=='estorno'; }).length;
+      var dup=almNfEhDuplicadaLista(n);
+      return '<tr>'
+        +'<td>'+almNfEsc(n.numero_nf||'—')+(n.serie_nf?' <span style="color:#888">s.'+almNfEsc(n.serie_nf)+'</span>':'')+'</td>'
+        +'<td>'+almNfEsc(n.fornecedor||'—')+'</td>'
+        +'<td>'+(typeof fmtD==='function'?fmtD(n.data_entrada||n.criado_em):almNfEsc(n.data_entrada))+'</td>'
+        +'<td>'+almNfEsc(almNfDepLabel(n.deposito_id))+'</td>'
+        +'<td style="text-align:right">'+qtd+'</td>'
+        +'<td>'+almNfEsc(n.criado_por_nome||'—')+'</td>'
+        +'<td><span style="font-size:11px;font-weight:700;color:'+(n.status==='ESTORNADA'?'#854F0B':(n.status==='ATIVA'?'#3B6D11':'#888'))+'">'+almNfEsc(n.status||'ATIVA')+'</span>'
+        +(dup?' <span style="color:#854F0B;font-size:11px">⚠ DUPLICIDADE</span>':'')+'</td>'
+        +'<td><button class="btn btn-sm" onclick="almNfAbrirDetalhe(\''+String(n.id).replace(/'/g,'')+'\')">📄 Ver NF</button></td>'
+        +'</tr>';
+    }).join('');
+    wrap.innerHTML='<div style="overflow-x:auto"><table class="tbl tbl-r" style="font-size:12px"><thead><tr>'
+      +'<th>NF</th><th>Fornecedor</th><th>Data</th><th>Depósito</th><th style="text-align:right">Movs</th><th>Usuário</th><th>Status</th><th></th>'
+      +'</tr></thead><tbody>'
+      +(rows||'<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma NF de entrada encontrada.</td></tr>')
+      +'</tbody></table></div>';
+  });
+}
+
 function eePreviewNF(inp){
   var prev = document.getElementById('ee-nf-preview');
   var btn  = document.getElementById('ee-nf-btn-ia');
   if(!inp||!inp.files||!inp.files[0]){
-    window._eeNfBase64=null; window._eeNfMime='';
+    window._eeNfBase64=null; window._eeNfMime=''; window._eeNfFile=null; window._eeNfParsed=null;
     if(prev) prev.style.display='none';
     if(btn) btn.disabled=true;
     return;
   }
   var file = inp.files[0];
+  window._eeNfFile = file;
   window._eeNfMime = file.type || (file.name.toLowerCase().endsWith('.pdf')?'application/pdf':'image/jpeg');
   var r = new FileReader();
   r.onload = function(e){
@@ -143294,7 +143987,7 @@ async function eeAnalisarNF(){
 
   var prompt = 'Analise esta Nota Fiscal (NF) de compra para almoxarifado/estoque.\n'
     +'Extraia em JSON puro (sem markdown):\n'
-    +'{"numero_nf":"","data_emissao":"YYYY-MM-DD","fornecedor":"","requisicao_compra":"","pedido":"","observacoes":"",'
+    +'{"numero_nf":"","serie_nf":"","chave_acesso_nfe":"44 digitos se visivel","cnpj_emitente":"","data_emissao":"YYYY-MM-DD","fornecedor":"","requisicao_compra":"","pedido":"","observacoes":"",'
     +'"filial":"","deposito":"","contrato":"","confianca_destino":"baixa",'
     +'"valor_total":0,'
     +'"itens":[{"nome":"","codigo":"","tipo":"material|epi|epc|ferramenta|consumivel|vestimenta",'
@@ -143316,6 +144009,7 @@ async function eeAnalisarNF(){
     var data = await resp.json();
     var text = (data.content||[]).map(function(b){return b.type==='text'?b.text:'';}).join('').replace(/```json|```/g,'').trim();
     var parsed = JSON.parse(text);
+    window._eeNfParsed = parsed;
     if(st) st.textContent='✅ NF lida — '+((parsed.itens||parsed.items||[]).length)+' item(ns) na tabela.';
     eePreencherCamposNF(parsed);
     progShowToast('✅ NF analisada: '+((parsed.itens||parsed.items||[]).length)+' item(ns) — registre todos de uma vez');
@@ -143479,7 +144173,7 @@ function openEntradaEstoque(tipoPre){
   if(elFil && !elFil.value && filiais.length===1) elFil.value=filiais[0].id;
   almAtualizarDepEntrada();
 
-  window._eeNfBase64=null; window._eeNfMime='';
+  window._eeNfBase64=null; window._eeNfMime=''; window._eeNfFile=null; window._eeNfParsed=null; window._eeNfDupLiberada=null;
   }
 
   var cargas = [];
@@ -144695,12 +145389,14 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     responsavel_id: usuarioLogado?usuarioLogado.id:null,
     status: 'Disponível'
   };
+  var movId = uid;
   if(DEMO){
     movimentacoes_itens.push(Object.assign({id:uid}, payload));
   } else {
     var insMov = await sbInsert('movimentacoes_itens', payload);
     if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
     movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+    if(insMov[0] && insMov[0].id) movId = insMov[0].id;
   }
   // Atualiza só preço no catálogo — CA fica no estoque/lote, não em itens_catalogo
   if(custo>0){
@@ -144750,7 +145446,10 @@ async function eeProcessarEntradaLinha(linha, ctx, seq){
     if(!rPn.ok) return {ok:false, msg:itemCat.nome+': saldo OK, falha pneus — '+(rPn.msg||'erro')+'. Reprocesse o vínculo sem nova entrada.'};
     if(rPn.erros && rPn.erros.length) console.warn('pneus entrada parcial', rPn);
   }
-  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created};
+  var saldoDepois = saldoRes.row ? (Number(saldoRes.row.saldo)||0) : null;
+  var saldoAntes = (saldoDepois!=null) ? saldoDepois - qtd : null;
+  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created, movId:movId, itemId:itemId,
+    depositoId:depId||null, estoqueId:saldoRes.row?saldoRes.row.id:null, saldoAntes:saldoAntes, saldoDepois:saldoDepois, sap:false};
 }
 
 async function salvarEntrada(){
@@ -144817,9 +145516,50 @@ async function salvarEntrada(){
     data_mov: dataHoje()
   };
 
-  var ok=0, erros=[], nomes=[], novosCat=0;
+  var ok=0, erros=[], nomes=[], novosCat=0, resultadosOk=[];
   var btn = document.getElementById('ee-btn-salvar');
   if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+
+  // ── ALM-NF-1 · persistência documental da NF (upload + registro ANTES dos movimentos) ──
+  var _nfId=null, _nfMeta=null, _nfLib=window._eeNfDupLiberada||null;
+  if(window._eeNfFile && typeof almNfMetaDoForm==='function'){
+    _nfMeta = almNfMetaDoForm();
+    if(window._almNfSubsistema===undefined){
+      if(DEMO){ window._almNfSubsistema=true; }
+      else{
+        try{
+          var _prb = await fetch(SB.url+'/rest/v1/alm_notas_fiscais?select=id&limit=1',
+            {headers:{apikey:SB.key, Authorization:'Bearer '+(window._sbAuthToken||SB.key)}});
+          window._almNfSubsistema = (_prb.status<400);
+        }catch(_ep){ window._almNfSubsistema=false; }
+      }
+    }
+    if(!window._almNfSubsistema){
+      console.warn('[ALM-NF] tabelas ausentes — entrada segue SEM persistir NF (aplique sql_alm_nf_digital_fase_1.sql)');
+    } else {
+      var dupChk = await almNfChecarDuplicidade(_nfMeta);
+      if(!dupChk.ok && dupChk.tipo!=='indisponivel' && (dupChk.bloqueado || !_nfLib)){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        almNfMostrarDuplicidade(dupChk, 'salvar');
+        return;
+      }
+      var _nfUp = await almNfUploadArquivo(window._eeNfFile);
+      if(!_nfUp || !_nfUp.ok){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.\n\n'+((_nfUp&&_nfUp.msg)||''));
+        return;
+      }
+      _nfUp.hash = await almNfHashFile(window._eeNfFile);
+      var _nfRec = await almNfCriarRegistro(_nfMeta, _nfUp, ctx, linhas);
+      if(!_nfRec || !_nfRec.id){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.');
+        return;
+      }
+      _nfId = _nfRec.id;
+    }
+  }
+
   if(dest==='sap' && !DEMO){
     await almRecarregarMovimentosSap(ctx.contrato_id);
   }
@@ -144828,7 +145568,7 @@ async function salvarEntrada(){
       var r = dest==='sap'
         ? await eeProcessarEntradaLinhaSap(linhas[i], ctx, i)
         : await eeProcessarEntradaLinha(linhas[i], ctx, i);
-      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; }
+      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; resultadosOk.push(r); }
       else erros.push(r.msg);
     }
   } catch(e){
@@ -144842,6 +145582,20 @@ async function salvarEntrada(){
     alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.'));
     if(erros.length) progShowToast('❌ Entrada não registrada', 'erro');
     return;
+  }
+
+  // ── ALM-NF-1 · vincular os movimentos criados à NF + auditoria ──
+  if(_nfId){
+    for(var _vi=0; _vi<resultadosOk.length; _vi++){
+      try{ await almNfVincularMov(_nfId, resultadosOk[_vi], 'entrada'); }
+      catch(_eV){ console.warn('[ALM-NF] vínculo mov', _eV); }
+    }
+    try{
+      await almNfInserirEvento(_nfId, 'ENTRADA_REGISTRADA', ok+' movimento(s) vinculado(s) à NF', {movimentos:resultadosOk.length, destino:ctx.destino});
+      if(_nfLib) await almNfInserirEvento(_nfId, 'DUPLICIDADE_LIBERADA_MANUALMENTE', (_nfLib.motivo||'')+' · '+(_nfLib.justificativa||''), _nfLib);
+    }catch(_eEv){ console.warn('[ALM-NF] evento', _eEv); }
+    almNfInvalidateCache();
+    window._eeNfFile=null; window._eeNfBase64=null; window._eeNfParsed=null; window._eeNfDupLiberada=null;
   }
 
   closeModal();
@@ -144865,6 +145619,7 @@ async function salvarEntrada(){
     if(typeof renderItens==='function') renderItens();
   }
   if(_sesmtAbaAtiva==='entradas' && typeof almRenderDashboard==='function') almRenderDashboard();
+  if(_sesmtAbaAtiva==='nfs' && typeof almNfRenderConsulta==='function') almNfRenderConsulta();
 
   var msg = dest==='sap'
     ? '✅ '+ok+' item(ns) registrados no estoque SAP'+(ctx.lote?' · NF '+ctx.lote:'')
@@ -146158,6 +146913,7 @@ async function lcAnalisarContrato(){
       <span class="ct">🏭 Almoxarifado e Patrimônio</span>
       <div style="display:flex;gap:4px;flex-wrap:wrap" id="alm-tabs-bar">
         <button class="btn btn-sm" id="alm-tab-entradas"    onclick="_almShowAba('entradas')"    title="Registrar entradas de materiais, EPIs, EPCs e ferramentas">📥 Entradas</button>
+        <button class="btn btn-sm" id="alm-tab-nfs"         onclick="_almShowAba('nfs')"         title="Notas fiscais digitais vinculadas às entradas" style="border-color:#534AB7;color:#534AB7;font-weight:600">📄 NFs de Entrada</button>
         <button class="btn btn-sm" id="alm-tab-kanban-campo" onclick="_almShowAba('kanban-campo')" title="Kanban operacional de equipes e veículos" style="border-color:#085041;color:#085041;font-weight:600">📋 Kanban Equipes</button>
         <button class="btn btn-sm" id="alm-tab-kits-veiculo" onclick="_almShowAba('kits-veiculo')" title="Kit de materiais por modelo operacional (Fiorino TMA, Moto TMA…)" style="border-color:#0F6E56;color:#0F6E56;font-weight:600">🚗 Kits Modelo Materiais</button>
         <button class="btn btn-sm" id="alm-tab-alm"         onclick="_almShowAba('alm')"         title="Entradas, saídas e movimentações">📦 Movimentações</button>
@@ -146183,7 +146939,7 @@ async function lcAnalisarContrato(){
   <div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,#1a1a18 0%,#2d4a3e 100%);color:#fff;border:none">
     <div style="padding:1.25rem 1.5rem">
       <div style="font-size:18px;font-weight:700;margin-bottom:4px">📥 Entradas no Almoxarifado</div>
-      <div style="font-size:13px;opacity:.85;max-width:680px">Registre aqui tudo que entra no estoque: <b>materiais</b>, <b>EPIs</b>, <b>EPCs</b>, <b>ferramentas</b>, <b>uniformes</b> e <b>materiais SAP</b>. Escolha o tipo abaixo e clique em <b>Registrar entrada</b>.</div>
+      <div style="font-size:13px;opacity:.85;max-width:720px">Registre aqui tudo que entra no estoque: <b>materiais</b>, <b>EPIs</b>, <b>EPCs</b>, <b>ferramentas</b>, <b>uniformes</b> e <b>materiais SAP</b>. Anexe a <b>NF (foto/PDF)</b> na entrada para arquivar e consultar depois em <b>NFs de Entrada</b>.</div>
     </div>
   </div>
 
@@ -146197,6 +146953,7 @@ async function lcAnalisarContrato(){
   <div class="card">
     <div class="ch" style="flex-wrap:wrap;gap:8px">
       <span class="ct">📋 Últimas entradas registradas</span>
+      <button class="btn btn-sm" onclick="_almShowAba('nfs')" style="border-color:#534AB7;color:#534AB7">📄 NFs de Entrada</button>
       <button class="btn btn-sm" onclick="_almShowAba('estoque')">Ver estoque completo →</button>
     </div>
     <div style="overflow-x:auto">
@@ -146210,6 +146967,28 @@ async function lcAnalisarContrato(){
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<div id="pg-sesmt-nfs" class="hidden">
+  <div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,#2c2460 0%,#534AB7 100%);color:#fff;border:none">
+    <div style="padding:1.1rem 1.4rem">
+      <div style="font-size:18px;font-weight:700;margin-bottom:4px">📄 NFs de Entrada</div>
+      <div style="font-size:13px;opacity:.88;max-width:720px">Consulta das notas fiscais digitais vinculadas às entradas de estoque. Estorno reverte o saldo e preserva o histórico — não apaga o PDF nem os movimentos originais. Requer SQL <b>sql_alm_nf_digital_fase_1.sql</b>.</div>
+    </div>
+  </div>
+  <div class="card">
+    <div style="padding:.75rem;display:flex;flex-wrap:wrap;gap:8px;align-items:end;border-bottom:.5px solid #f0efe8">
+      <div><label style="font-size:10px;color:#888;display:block">NF / Chave</label><input class="inp" id="alm-nf-fil-num" style="width:130px" placeholder="número"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Fornecedor / CNPJ</label><input class="inp" id="alm-nf-fil-forn" style="width:150px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">De</label><input class="inp" id="alm-nf-fil-ini" type="date" style="width:140px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Até</label><input class="inp" id="alm-nf-fil-fim" type="date" style="width:140px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Depósito</label><select class="inp" id="alm-nf-fil-dep" style="width:150px"><option value="">Todos</option></select></div>
+      <div><label style="font-size:10px;color:#888;display:block">RC / Pedido</label><input class="inp" id="alm-nf-fil-rc" style="width:110px"/></div>
+      <div><label style="font-size:10px;color:#888;display:block">Status</label><select class="inp" id="alm-nf-fil-st" style="width:150px"><option value="">Todas</option><option value="ATIVA">Ativas</option><option value="ESTORNADA">Estornadas</option><option value="dup">Poss. duplicidades</option></select></div>
+      <button class="btn btn-pri" onclick="almNfRenderConsulta()" style="font-size:12px">🔎 Buscar</button>
+    </div>
+    <div id="alm-nf-consulta"><div style="padding:1rem;color:#888">Clique em <b>Buscar</b> para listar as NFs de entrada.</div></div>
   </div>
 </div>
 
