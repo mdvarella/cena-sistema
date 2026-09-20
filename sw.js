@@ -1,8 +1,11 @@
 // ══════════════════════════════════════════════════════════════
-// CENA ERP — Service Worker v5.9.11
+// CENA ERP — Service Worker v8.1.085 (PORTARIA-OFFLINE-1)
+// App shell cache (network-first no HTML e nos scripts do app).
+// NÃO cacheia API Supabase / Azure / Nexus.
+// IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-5.9.11';
+const SW_VERSION   = 'cena-8.1.085';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
@@ -12,12 +15,21 @@ const BYPASS_HOSTS = [
   'nexusweb.com.br'
 ];
 
+const PRECACHE = [
+  './',
+  './index.html',
+  './manifest.json',
+  './portaria-offline.js'
+];
+
 // ── Install ────────────────────────────────────────────────
 self.addEventListener('install', function(e){
-  self.skipWaiting(); // ativar imediatamente sem esperar tabs antigas
+  self.skipWaiting();
   e.waitUntil(
     caches.open(CACHE_STATIC).then(function(cache){
-      return cache.addAll(['./manifest.json']);
+      return Promise.all(PRECACHE.map(function(url){
+        return cache.add(url).catch(function(){});
+      }));
     }).catch(function(){})
   );
 });
@@ -31,7 +43,7 @@ self.addEventListener('activate', function(e){
             .map(function(k){ return caches.delete(k); })
       );
     }).then(function(){
-      return self.clients.claim(); // tomar controle imediato de todas as abas
+      return self.clients.claim();
     }).then(function(){
       return self.clients.matchAll().then(function(clients){
         clients.forEach(function(client){
@@ -48,16 +60,19 @@ self.addEventListener('fetch', function(event){
   try {
     url = new URL(event.request.url);
   } catch(e) {
-    return; // URL inválida — ignorar sem interceptar
+    return;
   }
 
-  // Não interceptar URLs não-http (chrome-extension, blob, data, etc.)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return;
   }
 
-  // Supabase, Azure e Nexusweb — direto para a rede, sem cache
+  // API — nunca cache-first; não interceptar
   if (BYPASS_HOSTS.some(function(host){ return url.hostname.includes(host); })) {
+    return;
+  }
+
+  if (event.request.method !== 'GET') {
     return;
   }
 
@@ -66,39 +81,54 @@ self.addEventListener('fetch', function(event){
     || url.pathname.endsWith('/')
     || url.pathname === '/';
 
-  // HTML — sempre da rede (garante versão mais recente)
+  // HTML — network-first; grava no cache para uso offline; NÃO destrói IndexedDB
   if (isHTML) {
     event.respondWith(
-      fetch(event.request, {cache: 'no-store'}).catch(function(){
+      fetch(event.request, {cache: 'no-store'}).then(function(res){
+        if (res && res.ok) {
+          var cloneReq = res.clone();
+          var cloneIdx = res.clone();
+          caches.open(CACHE_STATIC).then(function(c){
+            c.put(event.request, cloneReq).catch(function(){});
+            c.put('./index.html', cloneIdx).catch(function(){});
+          });
+        }
+        return res;
+      }).catch(function(){
         return caches.match(event.request).then(function(cached){
-          return cached || new Response('<h2>Sem conexão — CENA ERP offline</h2>',
-            {headers: {'Content-Type': 'text/html'}});
+          if (cached) return cached;
+          return caches.match('./index.html').then(function(idx){
+            return idx || caches.match('./').then(function(root){
+              return root || new Response(
+                '<!doctype html><meta charset="utf-8"><title>CENA</title><h2>Sem conexão — abra o CENA uma vez online para usar a Portaria offline.</h2>',
+                {headers: {'Content-Type': 'text/html; charset=utf-8'}}
+              );
+            });
+          });
         });
       })
     );
     return;
   }
 
-  // Estáticos (ícones, manifest) — cache-first
-  if (event.request.method === 'GET') {
-    event.respondWith(
-      caches.match(event.request).then(function(cached){
-        if (cached) return cached;
-        return fetch(event.request).then(function(res){
-          if (res && res.ok) {
-            var clone = res.clone();
-            caches.open(CACHE_STATIC).then(function(c){
-              c.put(event.request, clone).catch(function(){});
-            });
-          }
-          return res;
+  // Estáticos / scripts do app — network-first (revalida sempre); cache é só
+  // fallback offline. Evita index.html novo rodar com portaria-offline.js velho.
+  event.respondWith(
+    fetch(event.request).then(function(res){
+      if (res && res.ok) {
+        var clone = res.clone();
+        caches.open(CACHE_STATIC).then(function(c){
+          c.put(event.request, clone).catch(function(){});
         });
-      })
-    );
-  }
+      }
+      return res;
+    }).catch(function(){
+      return caches.match(event.request);
+    })
+  );
 });
 
-// ── Background Sync ─────────────────────────────────────────
+// ── Background Sync (opcional; a Portaria NÃO depende só disto) ─
 self.addEventListener('sync', function(e){
   if (e.tag === 'cena-sync-queue') {
     e.waitUntil(

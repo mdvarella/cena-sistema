@@ -1936,7 +1936,8 @@ body.insp-campo-ativo #app-content-area {
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
-<script src="portaria-offline.js"></script>
+<!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
+<script src="portaria-offline.js?v=8.1.085"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43115,6 +43116,7 @@ var APP_VERSAO = {
       'Portaria/Sincronização: ao clicar “Sincronizar agora”, o painel agora FECHA ao terminar e mostra um aviso do resultado (✅ tudo enviado, ou ⚠ o que ainda falta: pendentes/erro/conflito). Antes o painel reabria, sem confirmar o que aconteceu. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
       'Frotas/Portaria — CORREÇÃO 500: os carregadores de saídas dos últimos 30 dias usavam select=* e arrastavam ~20MB de fotos base64 (foto_carga_saida_b64/retorno_b64) → o banco cancelava por statement timeout (57014) e a lista de saídas/dashboard de Frotas não carregava. Agora pedem só as 36 colunas da lista (constante PORT_SAIDA_SEL_LISTA, sem os 2 campos base64); a foto continua sendo buscada por id ao abrir o detalhe. 3 pontos corrigidos (showRoomFetchLeve, frtInit, frtCarregarDados). Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
       'Portaria offline — probe de conexão mais robusto: (1) alvo passa de /rest/v1/ (que devolvia 401 e poluía o console) para um HEAD leve em frotas_portaria_saidas?select=id&limit=1 (200); (2) falha/abort do probe não força mais “offline” — usa navigator.onLine e deixa o sync tentar (insert que falhar fica pendente e re-tenta). Remove o falso-offline que podia travar a sincronização. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+      'PWA — botão “🔄 Atualizar app” no cabeçalho da Portaria + tag do portaria-offline.js versionada (?v=8.1.085). A URL versionada fura o cache do service worker antigo (o SW guarda por URL exata), então o JS novo entra sozinho no próximo carregamento — sem precisar “limpar dados” no tablet. O botão (cenaForcarAtualizacao) força na hora: desregistra SWs, limpa caches e recarrega; NÃO apaga o IndexedDB (a fila offline é preservada). Lembrete: subir o ?v junto com APP_VERSAO/SW_VERSION a cada release. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
       'Portaria/foto — tablets fracos REINICIAVAM ao tirar a foto: o app decodificava a imagem em resolução cheia (12MP) na memória antes de comprimir. Agora portComprimirArquivo decodifica JÁ reduzido (createImageBitmap com resizeWidth = downscale do decodificador JPEG, sem materializar a imagem inteira), libera o canvas após uso e trata erro sem travar. Qualidade reduzida (lado máx. 480px padrão / 520px no odômetro para OCR; JPEG q=0.5; alvo ~80KB por foto) — some no consumo de memória e no tamanho do base64 (ajuda o sync). Paliativo até a troca do modelo do tablet. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
     ]},
     {v:'8.1.084', d:'20/09/2026', itens:[
@@ -93422,6 +93424,7 @@ window.addEventListener('load',async function(){
     <span id="port-ativa-label" style="font-size:11px;color:#3B6D11;background:#EAF3DE;border-radius:6px;padding:3px 10px;display:none"></span>
     <div id="port-off-indicador" onclick="portOffAbrirPainel()" title="Sincronização da Portaria">🟢 Online<br><span style="font-weight:500">Todos os registros sincronizados</span></div>
     <button type="button" onclick="portOffAbrirPainel()" style="font-size:11px;padding:6px 10px;background:#fff;color:#1a1a18;border:none;border-radius:8px;font-weight:700;cursor:pointer">Sincronização</button>
+    <button type="button" data-fastclick onclick="cenaForcarAtualizacao()" title="Baixa a versão mais recente do app (preserva a fila offline)" style="font-size:11px;padding:6px 10px;background:#185FA5;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer">🔄 Atualizar app</button>
   </div>
 
   <!-- Abas da Portaria -->
@@ -150884,6 +150887,37 @@ function cenaApplyDeviceLayout(){
   }
 }
 cenaApplyDeviceLayout();
+
+// ── Atualização forçada do app (destrava SW/cache velho no tablet) ──
+// Seguro: desregistra service workers e limpa caches, mas NÃO toca no
+// IndexedDB (a fila offline da Portaria é preservada). Depois recarrega.
+function cenaForcarAtualizacao(){
+  if(!confirm('Atualizar o app agora?\n\nO CENA vai recarregar com a versão mais recente.\nOs registros já enviados e a fila offline são preservados.')) return;
+  try{ if(typeof progShowToast==='function') progShowToast('🔄 Atualizando o app…'); }catch(e){}
+  var recarregou=false;
+  function recarregar(){
+    if(recarregou) return; recarregou=true;
+    setTimeout(function(){ try{ location.reload(); }catch(e){ location.href=location.pathname+'?u='+Date.now(); } }, 250);
+  }
+  var jobs=[];
+  try{
+    if(navigator.serviceWorker && navigator.serviceWorker.getRegistrations){
+      jobs.push(navigator.serviceWorker.getRegistrations().then(function(rs){
+        return Promise.all((rs||[]).map(function(r){ return r.unregister().catch(function(){}); }));
+      }).catch(function(){}));
+    }
+  }catch(e){}
+  try{
+    if(window.caches && caches.keys){
+      jobs.push(caches.keys().then(function(ks){
+        return Promise.all((ks||[]).map(function(k){ return caches.delete(k).catch(function(){}); }));
+      }).catch(function(){}));
+    }
+  }catch(e){}
+  Promise.all(jobs).then(recarregar).catch(recarregar);
+  setTimeout(recarregar, 4000); // segurança se algo travar
+}
+window.cenaForcarAtualizacao = cenaForcarAtualizacao;
 
 // ── Service Worker ────────────────────────────────────────
 if(!window._CENA_FILE_MODE && 'serviceWorker' in navigator){
