@@ -387,6 +387,7 @@ function portOffRegistrarRetorno(saida, campos){
         obs_retorno: campos.obs_retorno||null,
         retorno_registrado_por: campos.retorno_registrado_por,
         status_devolucao: campos.status_devolucao||null,
+        base_retorno: campos.base_retorno||saida.base_retorno||null,
         foto_carga_retorno_ts: campos.foto_carga_retorno_ts||null,
         fotos: refs
       }
@@ -493,8 +494,14 @@ function portOffColunaAusente(msg){
   return /PGRST204|schema cache|column/i.test(s);
 }
 
+// Colunas do sql_portaria_offline_1 que NÃO existem na tabela (SQL não aplicado).
+// Consultá-las gera 400; retornamos null direto (a dedupe cai no id do registro).
+var PORT_OFF_COLS_AUSENTES = {
+  'frotas_portaria_saidas': {offline_event_id:1, retorno_offline_event_id:1}
+};
 async function portOffFetchPorEventId(tabela, col, id){
   if(!id || typeof sbFetch!=='function') return null;
+  if(PORT_OFF_COLS_AUSENTES[tabela] && PORT_OFF_COLS_AUSENTES[tabela][col]) return null;
   try{
     var rows=await sbFetch(tabela,{filters:[col+'=eq.'+id], limit:1});
     return rows && rows[0] ? rows[0] : null;
@@ -649,19 +656,20 @@ async function portOffSyncRetorno(ev){
     status:'Retornado',
     km_retorno:p.km_retorno,
     data_retorno:p.data_retorno, // horário REAL
+    base_retorno:p.base_retorno||null,
     obs_retorno:p.obs_retorno||null,
     retorno_registrado_por:p.retorno_registrado_por||null,
     status_devolucao:p.status_devolucao||null,
     foto_carga_retorno_b64:fotoUrl||null,
-    foto_carga_retorno_ts:p.foto_carga_retorno_ts||null,
-    retorno_offline_event_id:ev.event_id,
-    sincronizado_em:syncEm,
-    dispositivo_id:ev.dispositivo_id
+    foto_carga_retorno_ts:p.foto_carga_retorno_ts||null
+    // NÃO enviar colunas do sql_portaria_offline_1 (dispositivo_id/retorno_offline_event_id/
+    // sincronizado_em) — não existem na tabela (SQL não aplicado) e causavam 400 PGRST204.
   };
   var ok=await sbUpdate('frotas_portaria_saidas', patch, 'id=eq.'+sid);
   if(ok===false && portOffColunaAusente('column')){
     ok=await sbUpdate('frotas_portaria_saidas', {
       status:'Retornado', km_retorno:p.km_retorno, data_retorno:p.data_retorno,
+      base_retorno:p.base_retorno||null, status_devolucao:p.status_devolucao||null,
       obs_retorno:p.obs_retorno||null, retorno_registrado_por:p.retorno_registrado_por||null,
       foto_carga_retorno_b64:fotoUrl||null
     }, 'id=eq.'+sid);
