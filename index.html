@@ -1937,7 +1937,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.088"></script>
+<script src="portaria-offline.js?v=8.1.089"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43107,10 +43107,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.088',
+  numero: '8.1.089',
   data:   '20/09/2026',
-  build:  '20260920-1830',
+  build:  '20260920-1930',
   log: [
+    {v:'8.1.089', d:'20/09/2026', itens:[
+      'Portaria — saídas que gravavam FORA da fila offline (perda em queda de rede, Failed to fetch): a liberação de equipe com foto (portAbrirLiberacaoEquipe) e a saída rápida de Frotas (frtPortariaAbrirSaida) chamavam portInsertSaidaDB/sbInsert direto. Agora passam por portOffRegistrarSaida (fila offline: resiste à queda de rede, guarda a foto e sincroniza sozinho com horário real); fallback ao insert direto (com aviso de erro) só se o módulo offline não estiver carregado. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.088', d:'20/09/2026', itens:[
       'Portaria/Sincronização — conflitos que ficavam parados na fila: quando o retorno/saída já foi lançado no sistema (por outro tablet/turno), o evento vira CONFLITO e não sobe mais, mas ficava ocupando a fila e o indicador seguia avisando “requer atenção” (parecia travado). Agora o painel de Sincronização mostra um aviso explicando o conflito e um botão MANUAL “🗑 Descartar conflito(s)” (nunca apaga sozinho, para não confundir): remove só desta fila do tablet — nada é apagado do sistema. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
     ]},
@@ -84482,7 +84485,11 @@ function portAbrirLiberacaoEquipe(eqId, data){
       btn.disabled=true;
       var _lbl=btn.textContent;
       btn.textContent='⏳ Salvando fotos...';
-      var _salvar=(!DEMO)?portInsertSaidaDB(saida):Promise.resolve();
+      // Fila offline (resiste a queda de rede, guarda foto e sincroniza sozinho);
+      // fallback ao insert direto só se o módulo offline não estiver carregado.
+      var _salvar=(!DEMO)
+        ? (typeof portOffRegistrarSaida==='function' ? portOffRegistrarSaida(saida) : portInsertSaidaDB(saida))
+        : Promise.resolve();
       _salvar.then(function(){
         portKmResetOcr();
         closeModal();
@@ -90646,7 +90653,14 @@ function frtPortariaAbrirSaida(){
       if(veic){veic.status='Em uso';veic.km_atual=km;}
       // Gerar risco se sem programação prévia (auditoria)
       frtGerarRisco('Uso sem programação','Baixa',saida.placa,saida.motorista,'Saída não vinculada a programação prévia');
-      if(!DEMO){ var _saidaDB3=Object.assign({},_semId(saida)); delete _saidaDB3.equipe; sbInsert('frotas_portaria_saidas',_saidaDB3); }
+      if(!DEMO){
+        if(typeof portOffRegistrarSaida==='function'){
+          portOffRegistrarSaida(saida); // fila offline: resiste a queda de rede e sincroniza sozinho
+        } else {
+          var _saidaDB3=Object.assign({},_semId(saida)); delete _saidaDB3.equipe;
+          sbInsert('frotas_portaria_saidas',_saidaDB3).catch(function(){ progShowToast('⚠ Sem conexão — a saída pode não ter sido enviada. Confira em Frotas.','erro'); });
+        }
+      }
       closeModal();frtPortariaRender();
     };
   },50);

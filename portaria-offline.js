@@ -1089,12 +1089,35 @@ function portOffAbrirPainel(){
       +bloco('Pendentes', pend, '#185FA5')
       +bloco('Erros', err, '#854F0B')
       +bloco('Conflitos', conf, '#A32D2D')
+      +(conf.length
+        ? '<div style="background:#FCEBEB;border-radius:8px;padding:8px 10px;margin-bottom:.75rem;font-size:11px;color:#A32D2D">'
+          +'Conflito = este retorno/saída <b>já consta no sistema</b> (foi lançado por outro tablet/turno). Ele não sobe de novo e fica só ocupando a fila. Você pode descartá-lo — nada é apagado do sistema.'
+          +'<div style="margin-top:6px"><button class="btn btn-sm" onclick="portOffDescartarConflitos()" style="color:#fff;background:#A32D2D;border-color:#A32D2D;font-size:11px;font-weight:700">🗑 Descartar '+conf.length+' conflito(s)</button></div>'
+          +'</div>'
+        : '')
       +bloco('Sincronizados (recentes)', ok, '#3B6D11')
       +(!lista.length?'<div style="color:#aaa;font-size:12px;text-align:center;padding:1rem">Nenhum registro na fila deste tablet.</div>':'')
       +'<div style="display:flex;gap:8px;margin-top:1rem">'
       +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
       +'<button class="btn btn-pri" onclick="portOffSyncAgora()" style="flex:2">Sincronizar agora</button>'
       +'</div></div></div>');
+  });
+}
+
+/** Descarta manualmente os eventos em CONFLITO (já constam no sistema). Nunca automático. */
+function portOffDescartarConflitos(){
+  portOffListEvents().then(function(lista){
+    var conf=(lista||[]).filter(function(e){ return e && e.status_sync==='CONFLITO'; });
+    if(!conf.length){ portOffToast('Nenhum conflito para descartar.'); return; }
+    if(!confirm('Descartar '+conf.length+' conflito(s)?\n\nEsses registros JÁ constam no sistema (retorno/saída já lançado). Serão removidos apenas desta fila do tablet — nada é apagado do sistema.')) return;
+    var jobs=conf.map(function(e){
+      return portOffApagarFotos((e.payload&&e.payload.fotos)||{}).catch(function(){}).then(function(){ return portOffDel('portaria_eventos', e.event_id).catch(function(){}); });
+    });
+    Promise.all(jobs).then(function(){
+      portOffToast('✅ '+conf.length+' conflito(s) descartado(s).','ok');
+      portOffRenderIndicador();
+      portOffAbrirPainel();
+    }).catch(function(){ portOffToast('⚠ Não foi possível descartar todos.','erro'); portOffAbrirPainel(); });
   });
 }
 
@@ -1192,6 +1215,7 @@ global.portOffSnapshotCache=portOffSnapshotCache;
 global.portOffHidatarCache=portOffHidatarCache;
 global.portOffInit=portOffInit;
 global.portOffAbrirPainel=portOffAbrirPainel;
+global.portOffDescartarConflitos=portOffDescartarConflitos;
 global.portOffSyncAgora=portOffSyncAgora;
 global.portOffRenderIndicador=portOffRenderIndicador;
 global.portOffOnConnectivityChange=portOffOnConnectivityChange;
