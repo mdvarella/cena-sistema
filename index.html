@@ -1316,7 +1316,9 @@ body.perfil-almoxarife #pg-av-colaborador { display:none !important; }
   font-size: 13px;
   padding-bottom: calc(12px + var(--safe-bottom));
 }
-#pwa-install-banner.visible { display: none !important; } /* PWA desabilitado */
+/* Banner de instalação: só em celular/tablet (nunca no desktop — lá a versão instalada ficava diferente do browser) */
+html:not([data-device="desktop"]) #pwa-install-banner.visible { display: flex !important; }
+html[data-device="desktop"] #pwa-install-banner.visible { display: none !important; }
 @keyframes chatPiscar { 0%,100%{background:transparent;color:#ccc} 50%{background:#F59E0B;color:#fff;border-color:#F59E0B} }
 #btn-chat.tem-nao-lidas { animation: chatPiscar 1.2s ease-in-out infinite; }
 #pwa-install-banner button { padding: 7px 14px; border-radius: 8px; border: none; font-weight: 600; cursor: pointer; }
@@ -8856,6 +8858,11 @@ function showRoomEnsureData(){
   });
 }
 
+/* Colunas da LISTA de saídas SEM as fotos base64 (foto_carga_saida_b64/foto_carga_retorno_b64).
+   Puxar select=* de 30 dias arrastava ~20MB de base64 → 500 (statement timeout 57014).
+   As fotos são buscadas por id ao abrir o detalhe (frtPortariaVerDetalhe). */
+var PORT_SAIDA_SEL_LISTA = 'base_retorno,base_saida,contrato_id,contrato_nome,criado_em,data_retorno,data_saida,deleted_at,destino,equipe,equipe_id,equipe_nome,foto_carga_retorno_ts,foto_carga_saida_ts,id,km_ajustado_em,km_ajustado_por,km_ajuste_justificativa,km_ajustes,km_retorno,km_saida,liberado_por,modelo,motorista,obs,obs_retorno,placa,previsao_retorno,quem_saiu,registrado_por,retorno_registrado_por,status,status_devolucao,tem_materiais_saida,tipo_liberacao,veiculo_id';
+
 /** Fetches leves só se arrays ainda vazios — não chama frtInit (evita side-effects de UI). */
 function showRoomFetchLeve(){
   if(typeof DEMO!=='undefined' && DEMO) return Promise.resolve();
@@ -8864,7 +8871,7 @@ function showRoomFetchLeve(){
   var d30 = (typeof _diasAtras==='function') ? _diasAtras(30) : '';
 
   if(!(typeof frt_portaria!=='undefined' && frt_portaria && frt_portaria.length) && d30){
-    jobs.push(sbFetch('frotas_portaria_saidas',{order:'data_saida.desc',filters:['data_saida=gte.'+d30],limit:2000})
+    jobs.push(sbFetch('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',filters:['data_saida=gte.'+d30],limit:2000})
       .then(function(r){ if(r&&r.length) portMesclarSaidas(r); }).catch(function(){}));
   }
   if(!(typeof frt_documentos!=='undefined' && frt_documentos && frt_documentos.length)){
@@ -43099,10 +43106,20 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.083',
+  numero: '8.1.085',
   data:   '20/09/2026',
-  build:  '20260920-0039',
+  build:  '20260920-0114',
   log: [
+    {v:'8.1.085', d:'20/09/2026', itens:[
+      'PWA/Portaria offline — CORREÇÃO CRÍTICA: tablets ficavam presas em service worker antigo (cache cena-5.9.11), servindo index.html novo com portaria-offline.js velho/ausente → portOffRegistrarSaida/portOffAbrirPainel indefinidos → a portaria offline NÃO rodava e saídas sem internet eram perdidas silenciosamente (porteiro via “✅ Saída liberada” sem gravar nem enfileirar). Correção: (1) registro do SW passa a usar a versão do app (?v=APP_VERSAO.numero) em vez de ?v fixo, forçando troca do SW a cada release; (2) SW_VERSION alinhado (cena-8.1.085) para o activate limpar o cache antigo; (3) scripts do app (portaria-offline.js etc.) passam a network-first (stale-while-revalidate) para HTML e JS nunca mais ficarem em versões diferentes. IndexedDB (fila) é preservado — não é tocado pelo cache. REQUER DEPLOY em landtec.com.br. HOMOLOGAÇÃO.',
+      'Portaria/Sincronização: ao clicar “Sincronizar agora”, o painel agora FECHA ao terminar e mostra um aviso do resultado (✅ tudo enviado, ou ⚠ o que ainda falta: pendentes/erro/conflito). Antes o painel reabria, sem confirmar o que aconteceu. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+      'Frotas/Portaria — CORREÇÃO 500: os carregadores de saídas dos últimos 30 dias usavam select=* e arrastavam ~20MB de fotos base64 (foto_carga_saida_b64/retorno_b64) → o banco cancelava por statement timeout (57014) e a lista de saídas/dashboard de Frotas não carregava. Agora pedem só as 36 colunas da lista (constante PORT_SAIDA_SEL_LISTA, sem os 2 campos base64); a foto continua sendo buscada por id ao abrir o detalhe. 3 pontos corrigidos (showRoomFetchLeve, frtInit, frtCarregarDados). Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+      'Portaria offline — probe de conexão mais robusto: (1) alvo passa de /rest/v1/ (que devolvia 401 e poluía o console) para um HEAD leve em frotas_portaria_saidas?select=id&limit=1 (200); (2) falha/abort do probe não força mais “offline” — usa navigator.onLine e deixa o sync tentar (insert que falhar fica pendente e re-tenta). Remove o falso-offline que podia travar a sincronização. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+      'Portaria/foto — tablets fracos REINICIAVAM ao tirar a foto: o app decodificava a imagem em resolução cheia (12MP) na memória antes de comprimir. Agora portComprimirArquivo decodifica JÁ reduzido (createImageBitmap com resizeWidth = downscale do decodificador JPEG, sem materializar a imagem inteira), libera o canvas após uso e trata erro sem travar. Qualidade reduzida (lado máx. 480px padrão / 520px no odômetro para OCR; JPEG q=0.5; alvo ~80KB por foto) — some no consumo de memória e no tamanho do base64 (ajuda o sync). Paliativo até a troca do modelo do tablet. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.084', d:'20/09/2026', itens:[
+      'PWA: reativado o convite “Instalar o CENA ERP na tela inicial” — SOMENTE em celular/tablet (nunca no desktop, onde a versão instalada ficava diferente do browser). Aparece após login quando não instalado (ou 1ª vez); em iOS/Safari mostra instrução manual. Gate por data-device + botão ✕ dispensa por sessão (sessionStorage). Sem SQL, sem deploy. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.083', d:'20/09/2026', itens:[
       'Almoxarifado/Requisição: corrige criação de requisições DUPLICADAS por duplo-clique no Salvar/Enviar (usuário achava que travou por rede lenta). Trava de reentrada em almReqSalvar/almReqEnviar + novo helper btnBusy: o botão desabilita na hora, vira “Salvando…/Enviando…” com spinner e restaura ao terminar (ou em erro). Aplicado aos botões de ação da Requisição e ao Registrar entrada de estoque. Sem SQL, sem deploy. HOMOLOGAÇÃO.',
       'Anti-duplo-clique GLOBAL: rede de segurança única (fase de captura) que ignora o repique acidental no mesmo botão dentro de 600ms — vale para qualquer botão de ação do sistema sem tocar em cada onclick. Exceções: botões pequenos (.btn-sm) e data-fastclick. Camada aditiva; os fluxos críticos mantêm a proteção mais forte (btnBusy + reentrada). Sem SQL, sem deploy. HOMOLOGAÇÃO.',
@@ -81826,7 +81843,7 @@ function frtInit(subpage){
 
     // Carregar demais tabelas em background (condutas: só sob demanda em fcdEnsureLoaded)
     Promise.all([
-      p('frotas_portaria_saidas',{order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
+      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
       frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
@@ -81870,7 +81887,7 @@ function frtCarregarDados(){
     // Carregar demais tabelas em paralelo sem bloquear
     var p = function(t,o){ return sbFetch(t,o).catch(function(){return[];}); };
     Promise.all([
-      p('frotas_portaria_saidas',{order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
+      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
       frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
@@ -85445,28 +85462,39 @@ function portFotoLer(id){
 }
 function portComprimirArquivo(file, opts){
   opts = opts || {};
-  var MAX = opts.max || 520;
-  var Q = opts.q || 0.58;
+  var MAX = opts.max || 480;      // lado máx. (px) — reduzido p/ tablets fracos
+  var Q = opts.q || 0.5;          // qualidade JPEG inicial
+  var LIMITE = opts.limite || 80000; // ~80KB por foto (base64 menor = sync mais leve)
   return new Promise(function(resolve){
     function canvasDe(imgW, imgH, draw){
       var w=imgW, h=imgH;
       if(w>MAX||h>MAX){ if(w>h){h=Math.round(h*MAX/w);w=MAX;} else {w=Math.round(w*MAX/h);h=MAX;} }
       var canvas=document.createElement('canvas');
       canvas.width=w; canvas.height=h;
-      draw(canvas.getContext('2d'), w, h);
+      try{ draw(canvas.getContext('2d'), w, h); }catch(eD){ resolve(''); return; }
       var q=Q, out='';
-      try{ out=canvas.toDataURL('image/jpeg', q); }catch(e){ resolve(''); return; }
-      while(out && out.length>100000 && q>0.38){
-        q-=0.1;
+      try{ out=canvas.toDataURL('image/jpeg', q); }catch(e){ try{canvas.width=canvas.height=0;}catch(_e){} resolve(''); return; }
+      while(out && out.length>LIMITE && q>0.35){
+        q-=0.08;
         try{ out=canvas.toDataURL('image/jpeg', q); }catch(e2){ break; }
       }
+      try{ canvas.width=canvas.height=0; }catch(_c){} // libera a memória do canvas
       resolve(out||'');
     }
+    // Tablets fracos reiniciavam ao decodificar a foto em resolução cheia (12MP).
+    // createImageBitmap com resizeWidth decodifica JÁ reduzido (usa o downscale do
+    // próprio decodificador JPEG) e não materializa a imagem inteira na memória.
     if(typeof createImageBitmap==='function'){
-      createImageBitmap(file).then(function(bmp){
+      createImageBitmap(file, {resizeWidth: MAX, resizeQuality: 'medium'}).then(function(bmp){
         canvasDe(bmp.width, bmp.height, function(ctx,w,h){ ctx.drawImage(bmp,0,0,w,h); });
         if(bmp.close) try{ bmp.close(); }catch(e){}
-      }).catch(function(){ viaReader(); });
+      }).catch(function(){
+        // Fallback 1: createImageBitmap sem resize (WebView que ignora as opções)
+        createImageBitmap(file).then(function(bmp){
+          canvasDe(bmp.width, bmp.height, function(ctx,w,h){ ctx.drawImage(bmp,0,0,w,h); });
+          if(bmp.close) try{ bmp.close(); }catch(e){}
+        }).catch(function(){ viaReader(); });
+      });
     } else viaReader();
     function viaReader(){
       var reader=new FileReader();
@@ -85710,7 +85738,7 @@ function portKmSetPreview(b64){
 }
 function portKmFotoManual(input, targetInputId){
   var file=input.files&&input.files[0]; if(!file) return;
-  portComprimirArquivo(file,{max:520,q:0.58}).then(function(b64){
+  portComprimirArquivo(file,{max:520,q:0.5}).then(function(b64){
     if(!b64){ progShowToast('Não foi possível ler a foto do odômetro. Tire de novo.','erro'); return; }
     portKmSetPreview(b64);
     var st=document.getElementById('port-km-status');
@@ -85736,7 +85764,7 @@ function portAbrirCameraOdometro(targetInputId){
     var reader=new FileReader();
     reader.onload=function(e){
       var dataUrl=e.target.result;
-      portComprimirArquivo(file,{max:480,q:0.55}).then(function(b64Prev){
+      portComprimirArquivo(file,{max:480,q:0.5}).then(function(b64Prev){
         if(b64Prev) portKmSetPreview(b64Prev);
         else progShowToast('Não foi possível compactar a foto do odômetro. Tire de novo.','erro');
       });
@@ -86018,7 +86046,7 @@ function portFotosExtraAdd(input){
   var arr=portFotosExtraColetar();
   var pending=files.length;
   files.forEach(function(file){
-    portComprimirArquivo(file,{max:480,q:0.55}).then(function(b64){
+    portComprimirArquivo(file,{max:480,q:0.5}).then(function(b64){
       if(b64) arr.push({nome:file.name||('foto.jpg'), b64:b64});
       pending--;
       portFotosExtraPersist(arr);
@@ -113537,7 +113565,7 @@ async function rhDocRenderFilaAssinaturas(){
   if(!DEMO){
     try{
       docs=await sbFetch('rh_contratacao_documentos_gerados',{
-        order:'atualizado_em.desc',
+        order:'gerado_em.desc',
         limit:300
       })||[];
     }catch(e){ docs=[]; }
@@ -150862,7 +150890,7 @@ if(!window._CENA_FILE_MODE && 'serviceWorker' in navigator){
   window.addEventListener('load', function(){
     fetch('./sw.js', {method:'HEAD'}).then(function(r){
       if(!r.ok) return;
-      return navigator.serviceWorker.register('./sw.js?v=8.1.065');
+      return navigator.serviceWorker.register('./sw.js?v=' + (typeof APP_VERSAO!=='undefined' && APP_VERSAO.numero ? APP_VERSAO.numero : '0'));
     }).then(function(reg){
       if(reg) console.log('[PWA] SW ativo');
     }).catch(function(){});
@@ -151621,6 +151649,8 @@ function pwaInstalar(){
 // Show PWA banner after login for tablet/mobile
 function pwaMostrarSeDisponivel(){
   if(localStorage.getItem('pwa_instalado') || _isPWA) return;
+  if(_device==='desktop') return;                    // só celular/tablet — no PC ficava diferente do browser
+  try{ if(sessionStorage.getItem('pwa_banner_dispensado')) return; }catch(e){}
   var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   var isSafari = /safari/i.test(navigator.userAgent) && !/chrome/i.test(navigator.userAgent);
   // Show for iOS/Safari too (manual instructions)
@@ -151634,6 +151664,7 @@ function pwaMostrarSeDisponivel(){
 function pwaFecharBanner(){
   var b = document.getElementById('pwa-install-banner');
   if(b) b.classList.remove('visible');
+  try{ sessionStorage.setItem('pwa_banner_dispensado','1'); }catch(e){}
 }
 
 // ── Fila Offline ──────────────────────────────────────────
