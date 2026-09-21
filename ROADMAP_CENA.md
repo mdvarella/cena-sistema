@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 21/09/2026  
-**Versão atual do sistema:** `8.1.096` (21/09/2026, build `20260921-1635`)  
+**Versão atual do sistema:** `8.1.098` (21/09/2026, build `20260921-1725`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -456,6 +456,8 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 21/09/2026 | 8.1.098 | Frotas Multas: importação Excel vincula motorista pela escala/portaria (placa+data+hora); botão “Vincular motorista” para multas já lançadas. Sem SQL. HOMOLOGAÇÃO. |
+| 21/09/2026 | 8.1.097 | PWA: botão “Atualizar app” da Portaria (`cenaForcarAtualizacao`) restaurado; modais de versão/multa com `#modal-area`. Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.096 | Modais: `#modal-area` recolocado no HTML — setModal não quebra mais (versão / nova multa). Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.095 | Frotas Multas: + Nova multa volta a abrir a modal (`#modal-area` recriado se faltar). Importação em massa Excel/CSV + modelo. Sem SQL novo. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.094 | FRO-MUL-1: modal de multa com Município, Código, Tipo de Infração, Gravidade e Valor C/ Desconto; exclusão com justificativa (soft-delete). SQL `sql_frotas_documentos_multa_extra.sql` (não aplicar). HOMOLOGAÇÃO. |
