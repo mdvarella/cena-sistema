@@ -1937,7 +1937,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.091"></script>
+<script src="portaria-offline.js?v=8.1.093"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43107,10 +43107,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.091',
+  numero: '8.1.093',
   data:   '20/09/2026',
-  build:  '20260920-2130',
+  build:  '20260920-2335',
   log: [
+    {v:'8.1.093', d:'20/09/2026', itens:[
+      'TMA-OPS-1 — Programação de Equipes TMA: bloco Operação automático (Portaria + Diário + OS). Remove o botão manual “Saída OK”; Em Campo/Retornou vêm só da Portaria (equipe_id, mesmo registro na virada de dia); Dia iniciado/encerrado de sessoes_disponibilidade; OS ativa/última de ordens_diario com horário do evento. Carga em lote + poll 30s. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.092', d:'20/09/2026', itens:[
+      'Programação de Equipes TMA — selos padronizados: novo helper progSelo (pill: fundo claro + texto/borda na cor semântica) e paleta PROG_SELO_COR. “🚗 Dirigida” (motorista do dia) vira selo azul consistente com o badge de CNH; veículo bloqueado vira selo laranja e a placa fica em azul. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.091', d:'20/09/2026', itens:[
       'Portaria OFFLINE — tela ficava vazia/travada em “⏳ Buscando…” após uma saída sem internet: ao registrar, o cache era invalidado e o render tentava re-buscar no servidor; offline, o portEnsureDadosPortariaDia hidratava do cache mas NÃO marcava os dias como “buscados”, então o render entrava em loop e nunca exibia a lista. Agora, offline, ele hidrata da memória local (snapshot da última vez online + fila de eventos, que já inclui a saída recém-feita) e marca os dias como buscados — a relação de saídas/retornos aparece normalmente, sem depender de recarregar. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
     ]},
@@ -45726,6 +45732,24 @@ var PROG_STATUS = {
   observacao:   {label:'Observação',      cor:'#00788A', bg:'#E0F3F6', bdg:'info'},
 };
 
+// ── Selo padronizado (pill) dos cards da Programação de Equipes ──────────
+// Padrão visual único: fundo claro + texto/borda na cor semântica.
+// bg opcional; se omitido, deriva um tom claro da própria cor.
+function progSelo(label, cor, bg){
+  var fundo = bg || (cor+'18');
+  return '<span style="display:inline-block;background:'+fundo+';color:'+cor
+    +';border:.5px solid '+cor+'55;border-radius:5px;padding:1px 6px;font-size:9px;'
+    +'font-weight:700;line-height:1.55;margin-top:2px;white-space:nowrap">'+label+'</span>';
+}
+// Paleta semântica dos selos (uma cor por conceito, reutilizável)
+var PROG_SELO_COR = {
+  motorista: '#185FA5', // azul — Dirigida / motorista do dia
+  bloqueado: '#854F0B', // laranja — veículo bloqueado
+  folga:     '#E65C00', // laranja forte — folga
+  alerta:    '#A32D2D', // vermelho — alertas (2x CNH D, etc.)
+  ok:        '#3B6D11'  // verde — trabalhou/positivo
+};
+
 // Autor da consideração/observação em status (prog_status_diario.registrado_por)
 function progStatusAutor(info){
   info = info || {};
@@ -46729,6 +46753,7 @@ function progLimparFiltros(){
 
 
 function progInit(){
+  if(typeof _progTmaOpsLastFetch!=='undefined') _progTmaOpsLastFetch='';
   _progData = dataHojeLocal();
   if(window._filtroContrato) _progContrato = window._filtroContrato;
   progAtualizarBadgeContTma();
@@ -47363,12 +47388,14 @@ function progAtualizarQuadro(){
       // Dados base — recarregar colaboradores e equipes para pegar folgas atualizadas
       sbFetch('colaboradores',{filters:[cidFilter,'ativo=eq.true'],order:'nome',limit:500}),
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
+      (typeof progTmaOpsFetchPromise==='function'?progTmaOpsFetchPromise(data):Promise.resolve())
     ]).then(function(res){
       var rowsDia     = res[0]||[];
       var persistRows = res[1]||[];
       var comps       = res[2]||[];
       var colabs      = res[3]||[];
       var equipes     = res[4]||[];
+      if(typeof _progTmaOpsLastFetch!=='undefined') _progTmaOpsLastFetch=data;
 
       // Update base data — MERGE incremental (não reativa dispensado/inativo)
       if(colabs.length){
@@ -47720,6 +47747,20 @@ function progRenderQuadro(){
 
   progBindDrag();
   setTimeout(progBindVeiculos, 50);
+  if(typeof progTmaOpsStartPoll==='function') progTmaOpsStartPoll();
+  if(typeof progTmaOpsCarregarLote==='function'){
+    var _opsDia=data;
+    if(!_progTmaOpsLastFetch || _progTmaOpsLastFetch!==_opsDia){
+      _progTmaOpsLastFetch=_opsDia;
+      progTmaOpsCarregarLote(_opsDia, false).then(function(){
+        if(typeof progGetData==='function' && progGetData()!==_opsDia) return;
+        var pg=document.getElementById('pg-programacao-equipes');
+        if(pg && !pg.classList.contains('hidden') && typeof progRenderQuadroDebounced==='function'){
+          progRenderQuadroDebounced();
+        }
+      });
+    }
+  }
 }
 
 // ── Resumo executivo ─────────────────────────────────────────
@@ -48809,7 +48850,7 @@ function progRenderGrupo(tNome, grupo, data){
     +'<th style="padding:6px 10px;text-align:left">Titular 2</th>'
     +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
     +'<th style="padding:6px 10px;text-align:center;width:90px">Status</th>'
-    +'<th style="padding:6px 10px;width:40px"></th>'
+    +'<th style="padding:6px 10px;text-align:left;min-width:140px">Operação</th>'
     +'</tr></thead>'
     +'<tbody>'+rows+'</tbody>'
     +'</table></div></div>';
@@ -49076,6 +49117,327 @@ function _telCellHtml(eq, confirmada, saveFn){
     +';color:'+(ok?'#3B6D11':'#555')+'"/></div>';
 }
 
+// ══════════════════════════════════════════════════════════════
+// TMA-OPS-1 — Status operacional (Portaria + Diário + OS)
+// Somente Programação TMA / Disponibilidade. Não grava em composicao_dia.
+// ══════════════════════════════════════════════════════════════
+var PROG_TMA_OS_ATIVA=['a_caminho','no_local','em_andamento','encerrando'];
+var PROG_TMA_OS_EV={
+  a_caminho:['A caminho','a_caminho'],
+  no_local:['Chegou_local','Cheguei','Chegou no local','no_local'],
+  em_andamento:['Inicio_ativ','Início','Início das atividades','em_andamento'],
+  encerrando:['Encerramento_ativ','Encerramento das atividades','encerrando'],
+  encerrada:['Atividade_encerrada','Atividade encerrada','encerrada','Equipe_disponivel'],
+  executada:['Atividade_encerrada','Atividade encerrada','executada'],
+  cancelada:['Atividade cancelada','cancelada'],
+  disponivel:['Equipe_disponivel','disponivel'],
+  pendente:['pendente','Pendente']
+};
+
+function progTmaDiaISO(v){
+  if(typeof portDiaISO==='function'){
+    var d=portDiaISO(v);
+    if(d) return d;
+  }
+  return String(v||'').slice(0,10);
+}
+function progTmaAmanha(dia){
+  if(typeof dataAddDias==='function') return dataAddDias(dia, 1);
+  return dia;
+}
+/** Formata HH:MM a partir de timestamp real. Não inventa horário. */
+function progTmaFmtHora(v){
+  if(v==null||v==='') return '';
+  if(typeof v==='number' && isFinite(v)){
+    if(v>0 && v<1e12) v=v<1e11?v*1000:v;
+    var dn=new Date(v);
+    if(!isNaN(dn.getTime())) return dn.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    return '';
+  }
+  var s=String(v).trim();
+  var hm=s.match(/^(\d{1,2}:\d{2})/);
+  if(hm && s.length<=8 && s.indexOf('T')<0 && s.indexOf('-')<0) return hm[1].length===4?('0'+hm[1]):hm[1];
+  var n=Number(s);
+  if(isFinite(n) && n>1e11){
+    var d2=new Date(n);
+    if(!isNaN(d2.getTime())) return d2.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  }
+  var d3=new Date(s);
+  if(!isNaN(d3.getTime())) return d3.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  return '';
+}
+function progTmaPortariaRetornou(p){
+  if(!p || p.deleted_at || p.status==='Cancelado') return false;
+  if(p.status==='Retornado') return true;
+  if(p.data_retorno) return true;
+  if(p.hora_retorno) return true;
+  return false;
+}
+function progTmaMatchPortariaEq(p, eqId, dia){
+  if(!p || !eqId) return false;
+  if(p.deleted_at || p.status==='Cancelado') return false;
+  if(!p.equipe_id || String(p.equipe_id)!==String(eqId)) return false;
+  var ds=typeof portDiaLocal==='function'?portDiaLocal(p.data_saida):String(p.data_saida||'').slice(0,10);
+  return ds===dia;
+}
+function progTmaPlacaProg(eqId, dia){
+  var placa='';
+  var comp=typeof progFindCompDia==='function'?progFindCompDia(eqId, dia):null;
+  if(comp) placa=String(comp.placa||comp.veiculo_placa||'');
+  if(!placa && typeof _progVeiculos!=='undefined'){
+    var pv=_progVeiculos[eqId+'_'+dia];
+    if(pv && pv.placa) placa=String(pv.placa);
+  }
+  if(!placa && typeof progGetVeiculo==='function'){
+    var v=progGetVeiculo(eqId, dia);
+    if(v && v.placa) placa=String(v.placa);
+  }
+  return placa.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+}
+function progTmaStatusPortaria(eqId, data){
+  var dia=progTmaDiaISO(data);
+  var vazio={status:'aguardando', label:'Aguardando Portaria', data_saida:null, data_retorno:null, registro:null, hora:''};
+  if(!eqId || !dia) return vazio;
+  var cands=(frt_portaria||[]).filter(function(p){ return progTmaMatchPortariaEq(p, eqId, dia); });
+  if(!cands.length){
+    var placa=progTmaPlacaProg(eqId, dia);
+    if(placa){
+      cands=(frt_portaria||[]).filter(function(p){
+        if(!p || p.deleted_at || p.status==='Cancelado') return false;
+        if(p.equipe_id && String(p.equipe_id)!==String(eqId)) return false;
+        var ds=typeof portDiaLocal==='function'?portDiaLocal(p.data_saida):String(p.data_saida||'').slice(0,10);
+        if(ds!==dia) return false;
+        return String(p.placa||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase()===placa;
+      });
+    }
+  }
+  cands.sort(function(a,b){ return String(b.data_saida||'').localeCompare(String(a.data_saida||'')); });
+  var aberta=cands.find(function(p){
+    if(progTmaPortariaRetornou(p)) return false;
+    return typeof portEstaEmCampo==='function' ? portEstaEmCampo(p) : (p.status==='Em campo' && !p.data_retorno);
+  });
+  var rec=aberta||cands[0]||null;
+  if(!rec) return vazio;
+  // Retorno do MESMO registro de saída (pode ser no dia seguinte — não exige data_retorno === dia).
+  if(progTmaPortariaRetornou(rec)){
+    var tsRet=rec.data_retorno||rec.hora_retorno;
+    return {status:'retornou', label:'Retornou', data_saida:rec.data_saida, data_retorno:tsRet, registro:rec, hora:progTmaFmtHora(tsRet)};
+  }
+  var emCampo=typeof portEstaEmCampo==='function' ? portEstaEmCampo(rec) : (rec.status==='Em campo' && !rec.data_retorno && !rec.hora_retorno);
+  if(emCampo){
+    return {status:'em_campo', label:'Em Campo', data_saida:rec.data_saida, data_retorno:null, registro:rec, hora:progTmaFmtHora(rec.data_saida)};
+  }
+  return vazio;
+}
+function progTmaSessaoEquipe(eqId, data){
+  var dia=progTmaDiaISO(data);
+  var amanha=progTmaAmanha(dia);
+  var list=(sessoes_disp||[]).filter(function(s){
+    if(!s || String(s.equipe_id)!==String(eqId)) return false;
+    var sd=String(s.data||'').slice(0,10);
+    return sd===dia || sd===amanha;
+  });
+  var noDia=list.filter(function(s){ return String(s.data||'').slice(0,10)===dia && s.login_ts; });
+  noDia.sort(function(a,b){ return Number(b.login_ts||0)-Number(a.login_ts||0); });
+  if(noDia[0]) return noDia[0];
+  var extra=list.filter(function(s){ return s.login_ts; });
+  extra.sort(function(a,b){ return Number(b.login_ts||0)-Number(a.login_ts||0); });
+  return extra[0]||null;
+}
+function progTmaOsStatusTs(o){
+  if(!o) return {ts:null, fonte:null};
+  var st=String(o.status||'');
+  var keys=PROG_TMA_OS_EV[st]||[st];
+  var evs=o.eventos;
+  if(typeof parseJsonField==='function') evs=parseJsonField(evs, []);
+  if(!Array.isArray(evs)) evs=[];
+  for(var i=evs.length-1;i>=0;i--){
+    var t=String((evs[i]&&evs[i].tipo)||'');
+    for(var k=0;k<keys.length;k++){
+      if(t===keys[k] || t.toLowerCase()===String(keys[k]).toLowerCase()){
+        return {ts:evs[i].ts||null, fonte:'evento'};
+      }
+    }
+  }
+  if(o.updated_at||o.atualizado_em) return {ts:o.updated_at||o.atualizado_em, fonte:'updated_at'};
+  return {ts:null, fonte:null};
+}
+function progTmaOsVisual(st){
+  var s=String(st||'');
+  if(s==='a_caminho') return {icon:'🚗', label:'A caminho', cor:'#185FA5'};
+  if(s==='no_local') return {icon:'📍', label:'Cheguei / No local', cor:'#854F0B'};
+  if(s==='em_andamento') return {icon:'⚙', label:'Em execução', cor:'#3B6D11'};
+  if(s==='encerrando') return {icon:'🔄', label:'Encerrando', cor:'#534AB7'};
+  if(s==='executada'||s==='encerrada'||s==='disponivel') return {icon:'✅', label:s==='executada'?'Executada':'Encerrada', cor:'#3B6D11'};
+  if(s==='cancelada') return {icon:'❌', label:'Cancelada', cor:'#A32D2D'};
+  if(s==='pendente') return {icon:'⏳', label:'Pendente', cor:'#888'};
+  return {icon:'⏳', label:s||'Pendente', cor:'#888'};
+}
+function progTmaOrdemEquipe(eqId, data){
+  var dia=progTmaDiaISO(data);
+  var amanha=progTmaAmanha(dia);
+  var list=(ordens_db||[]).filter(function(o){
+    if(!o || String(o.equipe_id)!==String(eqId)) return false;
+    var od=String(o.data||'').slice(0,10);
+    return od===dia || od===amanha;
+  });
+  var ativas=list.filter(function(o){ return PROG_TMA_OS_ATIVA.indexOf(o.status)>=0; });
+  ativas.sort(function(a,b){ return String(b.updated_at||b.data||'').localeCompare(String(a.updated_at||a.data||'')); });
+  var rec=ativas[0]||null;
+  if(!rec){
+    var resto=list.slice().sort(function(a,b){ return String(b.updated_at||b.data||'').localeCompare(String(a.updated_at||a.data||'')); });
+    rec=resto[0]||null;
+  }
+  var concluidas=list.filter(function(o){
+    return ['encerrada','executada','disponivel'].indexOf(o.status)>=0;
+  }).length;
+  return {ordem:rec, concluidas:concluidas};
+}
+function progTmaGetOperacaoEquipe(eqId, data){
+  var port=progTmaStatusPortaria(eqId, data);
+  var sess=progTmaSessaoEquipe(eqId, data);
+  var osInfo=progTmaOrdemEquipe(eqId, data);
+  var o=osInfo.ordem;
+  var tsInfo=o?progTmaOsStatusTs(o):{ts:null, fonte:null};
+  return {
+    portaria:{
+      status:port.status,
+      label:port.label,
+      saida:port.data_saida||null,
+      retorno:port.data_retorno||null,
+      hora:port.hora||'',
+      registro:port.registro||null
+    },
+    diario:{
+      iniciado:!!(sess && sess.login_ts),
+      login_ts:sess?sess.login_ts:null,
+      encerrado:!!(sess && sess.logout_ts),
+      logout_ts:sess?sess.logout_ts:null
+    },
+    ordem:o?{
+      id:o.id,
+      numero:o.numero_ordem||o.numero||'',
+      status:o.status||'',
+      status_ts:tsInfo.ts,
+      status_ts_fonte:tsInfo.fonte,
+      concluidas:osInfo.concluidas
+    }:null,
+    osConcluidas:osInfo.concluidas
+  };
+}
+function progTmaHtmlOperacao(eqId, data){
+  var op=progTmaGetOperacaoEquipe(eqId, data);
+  var p=op.portaria;
+  var d=op.diario;
+  var o=op.ordem;
+  var pCor=p.status==='em_campo'?'#3B6D11':p.status==='retornou'?'#185FA5':'#888';
+  var pIcon=p.status==='em_campo'?'🟢':p.status==='retornou'?'🔵':'⚪';
+  var pTxt=p.label+(p.hora?' · '+p.hora:'');
+  var aIcon, aTxt, aCor;
+  if(d.encerrado){
+    aIcon='✅'; aCor='#185FA5';
+    aTxt='Dia encerrado'+(progTmaFmtHora(d.logout_ts)?' · '+progTmaFmtHora(d.logout_ts):'');
+  } else if(d.iniciado){
+    aIcon='🟢'; aCor='#3B6D11';
+    aTxt='Dia iniciado'+(progTmaFmtHora(d.login_ts)?' · '+progTmaFmtHora(d.login_ts):'');
+  } else {
+    aIcon='⚪'; aCor='#888'; aTxt='App não iniciado';
+  }
+  var osHtml;
+  if(!o){
+    osHtml='<div style="color:#888">Sem OS em atendimento</div>';
+  } else {
+    var vis=progTmaOsVisual(o.status);
+    var hh=progTmaFmtHora(o.status_ts);
+    var tit=o.status_ts_fonte==='updated_at'?' title="horário aproximado (updated_at)"':'';
+    var nOs=o.numero?('OS '+escHtml(String(o.numero))):'OS';
+    var extra=(op.osConcluidas>1 && PROG_TMA_OS_ATIVA.indexOf(o.status)<0)
+      ? '<div style="color:#888">'+op.osConcluidas+' OS concluídas hoje</div>' : '';
+    osHtml='<div style="color:'+vis.cor+'">'+nOs+'</div>'
+      +'<div style="color:'+vis.cor+'"'+tit+'>'+vis.icon+' '+escHtml(vis.label)+(hh?' · '+hh:'')+'</div>'
+      +extra;
+  }
+  return '<div data-prog-tma-ops="'+escHtml(String(eqId))+'" style="font-size:9px;line-height:1.35;text-align:left">'
+    +'<div style="font-size:8px;color:#888;font-weight:700;letter-spacing:.02em">PORTARIA</div>'
+    +'<div style="color:'+pCor+';font-weight:600">'+pIcon+' '+escHtml(pTxt)+'</div>'
+    +'<div style="font-size:8px;color:#888;font-weight:700;margin-top:3px">APP</div>'
+    +'<div style="color:'+aCor+';font-weight:600">'+aIcon+' '+escHtml(aTxt)+'</div>'
+    +'<div style="font-size:8px;color:#888;font-weight:700;margin-top:3px">'+(o && PROG_TMA_OS_ATIVA.indexOf(o.status)<0?'ÚLTIMA OS':'OS')+'</div>'
+    +osHtml
+    +'</div>';
+}
+function progTmaOpsFetchPromise(data){
+  var dia=progTmaDiaISO(data);
+  if(!dia || DEMO || typeof sbFetch!=='function') return Promise.resolve();
+  var amanha=progTmaAmanha(dia);
+  var jobs=[];
+  var filPort=(typeof portFiltrosDataSaida==='function')
+    ? portFiltrosDataSaida(dia, dia)
+    : ['data_saida=gte.'+dia, 'data_saida=lt.'+amanha];
+  var optsPort={filters:filPort, order:'data_saida.desc', limit:2000};
+  if(typeof PORT_SAIDA_SEL_LISTA==='string') optsPort.select=PORT_SAIDA_SEL_LISTA;
+  jobs.push(sbFetch('frotas_portaria_saidas', optsPort).then(function(rows){
+    if(rows && rows.length && typeof portMesclarSaidas==='function') portMesclarSaidas(rows);
+  }).catch(function(){}));
+  jobs.push(sbFetch('sessoes_disponibilidade',{filters:['data=gte.'+dia,'data=lte.'+amanha], order:'login_ts.desc', limit:2000}).then(function(rows){
+    (rows||[]).forEach(function(s){
+      if(!sessoes_disp) sessoes_disp=[];
+      var ix=sessoes_disp.findIndex(function(x){ return String(x.id)===String(s.id); });
+      if(ix>=0) sessoes_disp[ix]=Object.assign({}, sessoes_disp[ix], s);
+      else sessoes_disp.push(s);
+    });
+  }).catch(function(){}));
+  jobs.push(sbFetch('ordens_diario',{filters:['data=gte.'+dia,'data=lte.'+amanha], order:'data.desc', limit:3000}).then(function(rows){
+    (rows||[]).forEach(function(o){
+      if(typeof parseJsonField==='function') o.eventos=parseJsonField(o.eventos, []);
+      if(!ordens_db) ordens_db=[];
+      var ix=ordens_db.findIndex(function(x){ return String(x.id)===String(o.id); });
+      if(ix>=0) ordens_db[ix]=o;
+      else ordens_db.push(o);
+    });
+  }).catch(function(){}));
+  return Promise.all(jobs);
+}
+function progTmaOpsCarregarLote(data, reRender){
+  var dia=progTmaDiaISO(data);
+  if(!dia) return Promise.resolve();
+  return progTmaOpsFetchPromise(dia).then(function(){
+    if(reRender && typeof progRenderQuadroDebounced==='function'){
+      var pg=document.getElementById('pg-programacao-equipes');
+      if(pg && !pg.classList.contains('hidden')) progRenderQuadroDebounced();
+    }
+  });
+}
+var _progTmaOpsTimer=null;
+var _progTmaOpsLastFetch='';
+var _progTmaOpsVisBound=false;
+function progTmaOpsTelaVisivel(){
+  var pg=document.getElementById('pg-programacao-equipes');
+  if(!pg || pg.classList.contains('hidden')) return false;
+  if(pg.style.display==='none') return false;
+  return true;
+}
+function progTmaOpsStartPoll(){
+  if(!_progTmaOpsVisBound){
+    _progTmaOpsVisBound=true;
+    document.addEventListener('visibilitychange', function(){
+      if(document.hidden) return;
+      if(!progTmaOpsTelaVisivel()) return;
+      var data=typeof progGetData==='function'?progGetData():'';
+      if(data) progTmaOpsCarregarLote(data, true);
+    });
+  }
+  if(_progTmaOpsTimer) return;
+  _progTmaOpsTimer=setInterval(function(){
+    if(document.hidden || !progTmaOpsTelaVisivel()) return;
+    var data=typeof progGetData==='function'?progGetData():'';
+    if(data) progTmaOpsCarregarLote(data, true);
+  }, 30000);
+}
+function progTmaOpsStopPoll(){
+  if(_progTmaOpsTimer){ clearInterval(_progTmaOpsTimer); _progTmaOpsTimer=null; }
+}
+
 function progRenderEquipeRow(eq, data){
   var STATUS_BLOQUEADOS = BLOQ_STATUS;
 
@@ -49192,7 +49554,7 @@ function progRenderEquipeRow(eq, data){
     // Motorista do dia
     var compSlot = composicao_dia.find(function(c){return c.equipe_id===eqId&&((c.data||'').split('T')[0]===data||c.data===data);});
     var isMotoristaDia = compSlot && compSlot.motorista_id === col.id;
-    var motoristaBadge = isMotoristaDia ? '<div style="margin-top:2px;background:#185FA5;color:#fff;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;display:inline-block">🚗 Dirigida</div>' : '';
+    var motoristaBadge = isMotoristaDia ? progSelo('🚗 Dirigida', PROG_SELO_COR.motorista, '#E6F1FB') : '';
     var cnhValBadge = (isMotoristaDia && typeof fmdAvaliarCnh==='function') ? fmdBadgeHtml(fmdAvaliarCnh(col)) : '';
     if(cnhValBadge) motoristaBadge += cnhValBadge;
 
@@ -49334,8 +49696,11 @@ function progRenderEquipeRow(eq, data){
     +_celStatusBadge
     +'</div>';
 
-  var supConfirmada = compAtual && compAtual.sup_confirmada;
-  var trBg = supConfirmada ? 'background:#EDF5FD;border-left:3px solid #185FA5;border-bottom:.5px solid #c3dff7' : 'border-bottom:.5px solid #f5f5f3';
+  var opsTma=typeof progTmaGetOperacaoEquipe==='function'?progTmaGetOperacaoEquipe(eq.id, data):null;
+  var stPort=opsTma&&opsTma.portaria?opsTma.portaria.status:'';
+  var trBg = stPort==='em_campo' ? 'background:#F3FAEE;border-left:3px solid #3B6D11;border-bottom:.5px solid #d5e8c8'
+    : stPort==='retornou' ? 'background:#EDF5FD;border-left:3px solid #185FA5;border-bottom:.5px solid #c3dff7'
+    : 'border-bottom:.5px solid #f5f5f3';
   return '<tr style="'+trBg+';vertical-align:top" id="row-eq-'+eq.id+'">'
     +'<td style="padding:4px 10px;font-weight:700;font-size:12px;vertical-align:top">'+eq.codigo
     +'<div style="font-size:9px;color:#888;font-weight:400">'+eq.supervisor+'</div>'
@@ -49354,17 +49719,13 @@ function progRenderEquipeRow(eq, data){
       ? '<button class="btn btn-sm" onclick="progDesprogramarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap;color:#A32D2D;border-color:#A32D2D">↩ Desprogramar</button>'
       : '<button class="btn btn-sm btn-pri" onclick="progSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
     )
-    +(confirmada
-      ? (supConfirmada
-        ? '<button class="btn btn-sm" onclick="progSupConfirmar(\''+eq.id+'\',false)" style="font-size:10px;padding:2px 6px;white-space:nowrap;background:#185FA5;color:#fff;border-color:#185FA5">✓ Saída OK</button>'
-        : '<button class="btn btn-sm" onclick="progSupConfirmar(\''+eq.id+'\',true)" style="font-size:10px;padding:2px 6px;white-space:nowrap;color:#185FA5;border-color:#185FA5">☐ Confirmar saída</button>'
-      )
-      : ''
-    )
+    +(typeof progTmaHtmlOperacao==='function'?progTmaHtmlOperacao(eq.id, data):'')
     +'</td>'
     +'</tr>';
 }
 
+/** Legado TMA: grava composicao_dia.sup_confirmada. Não é mais a fonte de “Em Campo”.
+ *  A UI da Programação TMA não chama mais esta função (TMA-OPS-1). Mantida para compatibilidade. */
 function progSupConfirmar(eqId, confirmar){
   var data = progGetData();
   var comp = typeof progFindCompDia==='function'
@@ -49570,9 +49931,9 @@ function progRenderVeiculoCellBloqueado(eq, data){
   var veic = progGetVeiculo(eq.id, data);
   if(!veic) return '<div style="font-size:11px;color:#bbb;padding:4px 6px">🔒 Sem veículo</div>';
   return '<div style="display:flex;flex-direction:column;gap:2px;padding:2px 4px">'
-    +'<div style="font-size:12px;font-weight:700;color:#555;font-family:monospace">🚗 '+veic.placa+'</div>'
-    +'<div style="font-size:10px;color:#888">'+veic.modelo+'</div>'
-    +'<div style="font-size:9px;color:#bbb;display:flex;align-items:center;gap:3px">🔒 bloqueado</div>'
+    +'<div style="font-size:12px;font-weight:700;color:#185FA5;font-family:monospace">🚗 '+veic.placa+'</div>'
+    +(veic.modelo?'<div style="font-size:10px;color:#888">'+veic.modelo+'</div>':'')
+    +progSelo('🔒 bloqueado', PROG_SELO_COR.bloqueado, '#FEF3E2')
     +'</div>';
 }
 
@@ -50448,20 +50809,17 @@ function progMobileRenderEquipe(eqId){
       +'</div>';
   });
 
-  var supConf = comp && comp.sup_confirmada;
   html += '<div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">';
   var minColMob = progMinColaboradoresEquipe(equipes_disp.find(function(e){return e.id===eqId;})||equipes.find(function(e){return e.id===eqId;}));
+  if(typeof progTmaHtmlOperacao==='function'){
+    html += '<div style="background:#f9f9f7;border:.5px solid #e0dfd8;border-radius:8px;padding:10px">'
+      +progTmaHtmlOperacao(eqId, data)+'</div>';
+  }
   if(!confirmada && membros.length < minColMob){
     html += '<button id="mob-btn-adicionar" style="padding:12px;border-radius:8px;border:none;background:#185FA5;color:#fff;font-size:14px;font-weight:600;cursor:pointer">+ Adicionar colaborador</button>';
   }
   if(confirmada){
     html += '<button id="mob-btn-desprog" style="padding:12px;border-radius:8px;border:.5px solid #A32D2D;background:#FCEBEB;color:#A32D2D;font-size:14px;font-weight:600;cursor:pointer">&#128275; Desprogramar para editar</button>';
-    // Confirmar saída — igual ao desktop (sup_confirmada)
-    if(supConf){
-      html += '<button id="mob-btn-saida" style="padding:12px;border-radius:8px;border:none;background:#185FA5;color:#fff;font-size:14px;font-weight:600;cursor:pointer">✓ Saída confirmada — desfazer</button>';
-    } else {
-      html += '<button id="mob-btn-saida" style="padding:12px;border-radius:8px;border:.5px solid #185FA5;background:#fff;color:#185FA5;font-size:14px;font-weight:600;cursor:pointer">☐ Confirmar saída</button>';
-    }
   } else if(membros.length >= minColMob){
     html += '<button id="mob-btn-prog" style="padding:12px;border-radius:8px;border:none;background:#3B6D11;color:#fff;font-size:14px;font-weight:600;cursor:pointer">&#10003; Confirmar programação</button>';
   }
@@ -50483,12 +50841,6 @@ function progMobileRenderEquipe(eqId){
   if(btnAdicionar) btnAdicionar.addEventListener('click', function(){ progMobileAdicionar(eqId); });
   if(btnProg) btnProg.addEventListener('click', function(){ progMobileProgramar(eqId); });
   if(btnDesprog) btnDesprog.addEventListener('click', function(){ progMobileDesprogramar(eqId); });
-  var btnSaida = document.getElementById('mob-btn-saida');
-  if(btnSaida) btnSaida.addEventListener('click', function(){
-    var supConf = comp && comp.sup_confirmada;
-    progSupConfirmar(eqId, !supConf);
-    setTimeout(function(){ progMobileRenderEquipe(eqId); }, 300);
-  });
 
   mobile.querySelectorAll('.mob-btn-remover').forEach(function(btn){
     btn.addEventListener('click', function(){
@@ -55067,6 +55419,7 @@ function showTMA(aba){
     // Ocultar pg-programacao-equipes
     var pgProg = document.getElementById('pg-programacao-equipes');
     if(pgProg){ pgProg.classList.add('hidden'); pgProg.style.display='none'; }
+    if(typeof progTmaOpsStopPoll==='function') progTmaOpsStopPoll();
 
     var pg = document.getElementById('pg-tma');
     if(!pg) return;
@@ -74904,6 +75257,9 @@ document.addEventListener('visibilitychange', function(){
 });
 
 function showPage(pageId){
+  if(pageId!=='programacao-equipes' && pageId!=='tma' && typeof progTmaOpsStopPoll==='function'){
+    progTmaOpsStopPoll();
+  }
   // Reset scroll position on every page change
   var aca=document.getElementById('app-content-area');
   if(aca && !(typeof _inspCampoAtivo!=='undefined' && _inspCampoAtivo)) aca.scrollTop=0;
@@ -152640,1285 +152996,4 @@ function inspCampoPackNcItens(itensNc){
     })
   });
 }
-/** Restaura itens de NC agrupada */
-function inspCampoUnpackNcItens(nc){
-  if(!nc) return [];
-  var og=nc.observacao;
-  if(typeof og==='string'&&og.charAt(0)==='{'){
-    try{
-      var p=JSON.parse(og);
-      if(p&&p._nc_agrupada&&p.itens) return p.itens;
-    }catch(e){}
-  }
-  if(nc.descricao) return [{grupo:'',item:nc.descricao,observacao:(typeof og==='string'&&og.charAt(0)!=='{'?og:'')}];
-  return [];
-}
-function inspCampoNcItensQtd(nc){
-  var itens=inspCampoUnpackNcItens(nc);
-  return itens.length||(nc.itens_qtd||0);
-}
-function inspCampoNcItensHtml(nc){
-  var itens=inspCampoUnpackNcItens(nc);
-  if(!itens.length) return '';
-  return itens.map(function(it,ix){
-    var tit='['+(it.grupo||'Item')+'] '+(it.item||'');
-    return '<div style="background:#A32D2D11;border-left:3px solid #A32D2D;border-radius:4px;padding:.45rem .65rem;margin-top:.35rem;font-size:11px">'
-      +'<b>'+(ix+1)+'. '+escHtml(tit)+'</b>'
-      +(it.colaborador_nome?'<span style="color:#888"> — '+escHtml(it.colaborador_nome)+'</span>':'')
-      +(it.observacao?'<br><span style="color:#666">'+escHtml(it.observacao)+'</span>':'')
-      +'</div>';
-  }).join('');
-}
-function inspCampoNcObsResumo(nc){
-  var qtd=inspCampoNcItensQtd(nc);
-  if(qtd>1) return qtd+' itens agrupados nesta NC';
-  var itens=inspCampoUnpackNcItens(nc);
-  if(itens.length===1) return (itens[0].observacao||'').trim();
-  var og=nc.observacao;
-  return (typeof og==='string'&&og.charAt(0)!=='{'?og:'')||'';
-}
-function inspCampoPrazoPa(dias){
-  var d=new Date();
-  d.setDate(d.getDate()+(dias||7));
-  return d.toISOString().slice(0,10);
-}
-/** Cria uma única NC aberta com todos os itens da vistoria */
-function inspCampoCriarNcUnificada(inspecao, itensNc, cfg){
-  if(!itensNc||!itensNc.length||!cfg) return null;
-  var qtd=itensNc.length;
-  var eq=inspecao.equipe_codigo||inspecao.local||'';
-  var nc={
-    id:'nc_'+Date.now()+'_'+Math.random().toString(36).substr(2,5),
-    inspecao_id:inspecao.id,
-    gravidade:qtd>=5?'grave':(qtd>=3?'media':'media'),
-    descricao:'NC vistoria — '+qtd+' item(ns) não conforme(s)'+(eq?' — Eq. '+eq:''),
-    observacao:inspCampoPackNcItens(itensNc),
-    local:inspecao.local||eq,
-    contrato:inspecao.contrato_label||inspecao.contrato||'',
-    inspetor:inspecao.inspetor||'',
-    status:'aberta',
-    itens_qtd:qtd,
-    criado_em:new Date().toISOString(),
-    criado_por:(usuarioLogado||{}).nome||''
-  };
-  cfg.ncArr().unshift(nc);
-  if(!DEMO) sbInsert(cfg.tblNc, inspCampoNcToDbRow(nc)).catch(function(){});
-  return nc;
-}
-/** Cria um único plano de ação para tratar todos os itens da NC */
-function inspCampoCriarPaUnificado(modulo, nc, inspecao, itensNc){
-  if(!nc||!itensNc||!itensNc.length) return null;
-  var paArr=modulo==='enel'?enel_pa:comgas_pa;
-  var tblPa=modulo==='enel'?'enel_pa':'comgas_pa';
-  var linhas=itensNc.map(function(it,ix){
-    return (ix+1)+'. ['+(it.grupo||'Item')+'] '+it.item+(it.observacao?': '+it.observacao:'');
-  }).join('\n');
-  var pa={
-    id:'pa_'+Date.now(),
-    nc_id:nc.id,
-    acao:'Tratar '+itensNc.length+' não conformidade(s) da vistoria:\n'+linhas,
-    responsavel:inspecao.supervisor||inspecao.inspetor||'',
-    prazo:inspCampoPrazoPa(7),
-    prioridade:itensNc.length>=3?'alta':'media',
-    status:'pendente',
-    criado_em:new Date().toISOString(),
-    criado_por:(usuarioLogado||{}).nome||''
-  };
-  paArr.push(pa);
-  if(!DEMO) sbInsert(tblPa, pa).catch(function(){});
-  return pa;
-}
-function inspCampoInspUpdateDbRow(ins){
-  return inspCampoInspToDbRow(ins);
-}
-function inspCampoSyncPortfolioFromDb(){
-  inspCampoPortfolioLoad();
-  function mergeArr(arr){
-    (arr||[]).forEach(function(i){
-      if((i.tipo==='campo_vistoria'||i.versao_campo>=2)&&i.membros&&i.membros.length){
-        var blocosCol=((i.blocos||{}).colaboradores)||{};
-        i.membros.forEach(function(m){
-          var cid=String(m.id);
-          var bl=blocosCol[m.id]||blocosCol[cid]||{};
-          var exists=(_inspCampoPortfolio[cid]||[]).some(function(x){return x.inspecao_id===i.id;});
-          if(exists) return;
-          if(!_inspCampoPortfolio[cid]) _inspCampoPortfolio[cid]=[];
-          _inspCampoPortfolio[cid].push({
-            id:'iph_'+i.id+'_'+cid,
-            inspecao_id:i.id, data:i.data,
-            contrato_label:i.contrato_label||i.contrato,
-            equipe_codigo:i.equipe_codigo, resultado:i.resultado,
-            ncs_count:bl.nao_conformes||0, modulo:i.modulo, inspetor:i.inspetor
-          });
-        });
-      }
-    });
-  }
-  mergeArr(comgas_inspecoes);
-  mergeArr(enel_inspecoes);
-  inspCampoPortfolioSave();
-}
-function inspCampoPortfolioColaborador(colId, ini, fim){
-  var arr=_inspCampoPortfolio[String(colId)]||[];
-  return arr.filter(function(h){
-    var d=(h.data||'').slice(0,10);
-    return (!ini||d>=ini) && (!fim||d<=fim);
-  }).sort(function(a,b){ return (b.data||'').localeCompare(a.data||''); });
-}
-function inspCampoPenalidadeSeguranca(colId, ini, fim){
-  var hist=inspCampoPortfolioColaborador(colId, ini, fim);
-  var ncCount=0, negativas=0;
-  hist.forEach(function(h){
-    ncCount+=(h.ncs_count||0);
-    if(h.resultado==='negativo') negativas++;
-  });
-  var penalidade=Math.min(40, ncCount*10+negativas*5);
-  return {ncCount:ncCount, negativas:negativas, penalidade:penalidade};
-}
-function inspCampoRegistrarPortfolio(inspecao){
-  var membros=inspecao.membros||[];
-  var blocosCol=((inspecao.blocos||{}).colaboradores)||{};
-  membros.forEach(function(m){
-    var cid=String(m.id);
-    if(!_inspCampoPortfolio[cid]) _inspCampoPortfolio[cid]=[];
-    var blocoCol=blocosCol[cid]||{};
-    _inspCampoPortfolio[cid].unshift({
-      id:'iph_'+Date.now()+'_'+Math.random().toString(36).substr(2,4),
-      inspecao_id:inspecao.id,
-      data:inspecao.data,
-      contrato_label:inspecao.contrato_label,
-      equipe_codigo:inspecao.equipe_codigo,
-      resultado:inspecao.resultado,
-      ncs_count:blocoCol.nao_conformes||0,
-      modulo:inspecao.modulo,
-      inspetor:inspecao.inspetor
-    });
-    if(_inspCampoPortfolio[cid].length>50) _inspCampoPortfolio[cid].length=50;
-  });
-  inspCampoPortfolioSave();
-}
-function inspCampoContratoOptsHtml(selId, selectedId){
-  var opts=(contratos||[]).filter(function(c){ return c.status!=='Inativo'; })
-    .sort(function(a,b){ return almContratoLabel(a,true).localeCompare(almContratoLabel(b,true),'pt-BR',{sensitivity:'base'}); })
-    .map(function(c){
-      var lbl=almContratoLabel(c,true);
-      return '<option value="'+c.id+'"'+(String(c.id)===String(selectedId)?' selected':'')+'>'+escHtml(lbl)+'</option>';
-    }).join('');
-  return '<select class="inp" id="'+selId+'" style="width:100%" onchange="inspCampoOnContratoChange(\''+selId.replace(/-contrato$/,'')+'\')">'
-    +'<option value="">Selecione o contrato...</option>'+opts+'</select>';
-}
-function inspCampoEquipesDoContrato(cid, dataRef){
-  if(!cid) return [];
-  var seen={}, out=[];
-  function eqCodigo(e){
-    return String(e.codigo||e.nome_equipe||e.nome||'').trim();
-  }
-  function pushEq(e, origem){
-    if(!e) return;
-    var eid=e.id||e._id;
-    if(!eid||seen[eid]) return;
-    if(e.status==='Inativo') return;
-    seen[eid]=1;
-    var copy=Object.assign({}, e);
-    if(!copy.id) copy.id=eid;
-    if(!copy.codigo && copy.nome_equipe) copy.codigo=copy.nome_equipe;
-    copy._origem=origem||'';
-    out.push(copy);
-  }
-  function contratoEq(e){
-    return String(e.contrato_id||'')===String(cid);
-  }
-  function colabUsaEquipe(eid){
-    return (colaboradores||[]).some(function(c){
-      return String(c.contrato_id)===String(cid) && String(c.equipe_id||'')===String(eid);
-    });
-  }
-  (equipes||[]).forEach(function(e){
-    if(contratoEq(e) || colabUsaEquipe(e.id)) pushEq(e, 'plpt');
-  });
-  (equipes_disp||[]).forEach(function(e){
-    if(contratoEq(e) || colabUsaEquipe(e.id)) pushEq(e, 'tma');
-  });
-  var d=dataRef?_compDataStr(dataRef):'';
-  if(d){
-    (composicao_dia||[]).forEach(function(cd){
-      if(_compDataStr(cd.data)!==d || !cd.equipe_id) return;
-      var eq=(equipes||[]).find(function(e){return e.id===cd.equipe_id;})
-        ||(equipes_disp||[]).find(function(e){return e.id===cd.equipe_id;});
-      if(eq && (contratoEq(eq) || colabUsaEquipe(eq.id))) pushEq(eq, 'escala');
-      else if(!eq && colabUsaEquipe(cd.equipe_id)){
-        pushEq({id:cd.equipe_id, codigo:cd.equipe_codigo||cd.equipe_id, contrato_id:cid, status:'Ativo'}, 'escala-id');
-      }
-    });
-  }
-  (colaboradores||[]).forEach(function(c){
-    if(String(c.contrato_id)!==String(cid)) return;
-    if(c.equipe_id){
-      var eq=(equipes||[]).find(function(e){return e.id===c.equipe_id;})
-        ||(equipes_disp||[]).find(function(e){return e.id===c.equipe_id;});
-      if(eq) pushEq(eq, 'colab');
-    }else if(c.equipe_codigo){
-      var cod=String(c.equipe_codigo).trim();
-      if(!cod) return;
-      var eqCod=(equipes||[]).concat(equipes_disp||[]).find(function(e){
-        return eqCodigo(e).toUpperCase()===cod.toUpperCase() || String(e.id)===cod;
-      });
-      if(eqCod) pushEq(eqCod, 'colab-cod');
-      else pushEq({id:'eqcod_'+cod, codigo:cod, contrato_id:cid, status:'Ativo', _sintetica:true}, 'colab-cod');
-    }
-  });
-  return out.sort(function(a,b){
-    return eqCodigo(a).localeCompare(eqCodigo(b),'pt-BR',{sensitivity:'base'});
-  });
-}
-async function inspCampoGarantirDados(dataRef){
-  if(DEMO) return;
-  var d=dataRef?_compDataStr(dataRef):_compDataStr(dataHoje());
-  var tasks=[];
-  if(!contratos||!contratos.length){
-    tasks.push(sbFetch('contratos',{order:'nome'}).then(function(r){ if(r&&r.length) contratos=r; }));
-  }
-  if(!colaboradores||!colaboradores.length){
-    tasks.push(sbFetch('colaboradores',{filters:['ativo=eq.true'],order:'nome',limit:5000}).then(function(r){
-      if(r&&r.length) colaboradores=r;
-    }));
-  }
-  if(!equipes||!equipes.length){
-    tasks.push(sbFetch('equipes',{filters:['status=neq.Inativo'],order:'nome_equipe',limit:3000}).then(function(r){
-      if(r&&r.length) equipes=r;
-    }));
-  }
-  if(!equipes_disp||!equipes_disp.length){
-    tasks.push(sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo',limit:3000}).then(function(r){
-      if(r&&r.length) equipes_disp=r;
-    }));
-  }
-  if(tasks.length) await Promise.all(tasks);
-  var temComp=(composicao_dia||[]).some(function(c){ return _compDataStr(c.data)===d; });
-  if(!temComp){
-    var comps=await sbFetch('composicao_dia',{filters:['data=eq.'+d],limit:500}).catch(function(){return[];});
-    (comps||[]).forEach(function(c){
-      c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
-      _mergeComposicaoDia(c);
-    });
-  }
-}
-async function inspCampoCarregarEquipesContrato(cid, dataRef){
-  if(!cid) return [];
-  await inspCampoGarantirDados(dataRef);
-  var lista=inspCampoEquipesDoContrato(cid, dataRef);
-  if(lista.length || DEMO) return lista;
-  var fetched=await Promise.all([
-    sbFetch('equipes',{filters:['contrato_id=eq.'+cid,'status=eq.Ativo'],order:'nome_equipe',limit:500}).catch(function(){return[];}),
-    sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo',limit:3000}).catch(function(){return[];})
-  ]);
-  (fetched[0]||[]).forEach(function(e){
-    if(!equipes.find(function(x){return x.id===e.id;})) equipes.push(e);
-    else{ var i=equipes.findIndex(function(x){return x.id===e.id;}); equipes[i]=e; }
-  });
-  (fetched[1]||[]).forEach(function(e){
-    mergeEquipesDispFromFetch([e]);
-  });
-  if(dataRef){
-    var comps=await sbFetch('composicao_dia',{filters:['data=eq.'+_compDataStr(dataRef)],limit:500}).catch(function(){return[];});
-    (comps||[]).forEach(function(c){
-      c.colaborador_ids=parseJsonField(c.colaborador_ids,[]);
-      _mergeComposicaoDia(c);
-    });
-  }
-  return inspCampoEquipesDoContrato(cid, dataRef);
-}
-function inspCampoEquipeOptsHtml(prefix, contratoId, selectedId, eqs){
-  eqs=eqs||[];
-  var opts=eqs.map(function(e){
-    var cod=e.codigo||e.nome_equipe||e.nome||e.id;
-    var sup=e.supervisor?(' — Sup. '+e.supervisor):'';
-    return '<option value="'+e.id+'"'+(String(e.id)===String(selectedId)?' selected':'')+'>'+escHtml(cod+sup)+'</option>';
-  }).join('');
-  var vazioMsg=contratoId&&!eqs.length
-    ? '<div style="font-size:11px;color:#A32D2D;margin-top:4px">Nenhuma equipe encontrada para este contrato. Verifique cadastro ou escala do dia.</div>'
-    : '';
-  return '<select class="inp" id="'+prefix+'-equipe" style="width:100%" onchange="inspCampoOnEquipeChange(\''+prefix+'\')">'
-    +'<option value="">Selecione a equipe...</option>'+opts+'</select>'+vazioMsg;
-}
-async function inspCampoResolverEscala(equipeId, data){
-  await inspCampoGarantirDados(data);
-  var realEqId=equipeId, eqCodSint='';
-  if(String(equipeId).indexOf('eqcod_')===0){
-    eqCodSint=String(equipeId).slice(6);
-    var eqMatch=(equipes||[]).concat(equipes_disp||[]).find(function(e){
-      return String(e.codigo||e.nome_equipe||'').toUpperCase()===eqCodSint.toUpperCase();
-    });
-    if(eqMatch) realEqId=eqMatch.id;
-  }
-  var comp=_findComposicaoEquipe(realEqId, data);
-  if(!comp && eqCodSint){
-    comp=(composicao_dia||[]).find(function(c){
-      return _compDataStr(c.data)===_compDataStr(data)
-        && String(c.equipe_codigo||'').toUpperCase()===eqCodSint.toUpperCase();
-    });
-  }
-  if(!comp && !DEMO){
-    var filters=['data=eq.'+_compDataStr(data)];
-    if(realEqId && String(realEqId).indexOf('eqcod_')!==0) filters.push('equipe_id=eq.'+realEqId);
-    var rows=await sbFetch('composicao_dia',{filters:filters,limit:20}).catch(function(){return[];});
-    if(rows&&rows.length){
-      rows.forEach(function(r){ r.colaborador_ids=parseJsonField(r.colaborador_ids,[]); _mergeComposicaoDia(r); });
-      comp=_findComposicaoEquipe(realEqId, data)
-        ||(eqCodSint?(composicao_dia||[]).find(function(c){
-          return _compDataStr(c.data)===_compDataStr(data)
-            && String(c.equipe_codigo||'').toUpperCase()===eqCodSint.toUpperCase();
-        }):null)
-        ||rows[0];
-    }
-  }
-  var eq=(equipes||[]).find(function(e){return e.id===realEqId;})
-    ||(equipes_disp||[]).find(function(e){return e.id===realEqId;});
-  var membros=[], ids=comp?parseColabIds(comp.colaborador_ids):[];
-  ids.forEach(function(cid){
-    var c=(colaboradores||[]).find(function(x){return String(x.id)===String(cid);});
-    if(c) membros.push({id:c.id,nome:c.nome,re:c.re||'',cargo:c.funcao||c.cargo||'',motorista:false});
-  });
-  if(comp&&comp.motorista_id){
-    var mid=String(comp.motorista_id);
-    var m=membros.find(function(x){return String(x.id)===mid;});
-    if(m) m.motorista=true;
-    else{
-      var mc=(colaboradores||[]).find(function(x){return String(x.id)===mid;});
-      if(mc) membros.push({id:mc.id,nome:mc.nome,re:mc.re||'',cargo:mc.funcao||mc.cargo||'',motorista:true});
-    }
-  }
-  if(!membros.length){
-    (colaboradores||[]).forEach(function(c){
-      if(c.ativo===false) return;
-      var ok=String(c.equipe_id||'')===String(realEqId);
-      if(!ok && eqCodSint) ok=String(c.equipe_codigo||'').toUpperCase()===eqCodSint.toUpperCase();
-      if(!ok && eq) ok=String(c.equipe_codigo||'').toUpperCase()===String(eq.codigo||eq.nome_equipe||'').toUpperCase();
-      if(ok) membros.push({id:c.id,nome:c.nome,re:c.re||'',cargo:c.funcao||c.cargo||'',motorista:false});
-    });
-  }
-  var equipeCodigo=eq?(eq.codigo||eq.nome_equipe||''):(eqCodSint||comp&&(comp.equipe_codigo||'')||String(equipeId));
-  return {
-    supervisor: eq?(eq.supervisor||''):'',
-    equipe_codigo: equipeCodigo,
-    placa: comp?(comp.placa||comp.veiculo_placa||''):'',
-    membros: membros
-  };
-}
-function inspCampoModuloCfg(modulo){
-  if(modulo==='enel') return {label:'ENEL', cor:'#185FA5', bg:'#EEF4FF', showTab:enelShowTab, formId:'enel-checklist-form', tituloId:'en-ck-titulo', arr:function(){return enel_inspecoes;}, ncArr:function(){return enel_ncs;}, tblInsp:'enel_inspecoes', tblNc:'enel_ncs'};
-  return {label:'COMGÁS', cor:'#E8521A', bg:'#FFF8F0', showTab:comgasShowTab, formId:'comgas-checklist-form', tituloId:'cg-ck-titulo', arr:function(){return comgas_inspecoes;}, ncArr:function(){return comgas_ncs;}, tblInsp:'comgas_inspecoes', tblNc:'comgas_ncs'};
-}
-function inspCampoNovaInspecao(modulo){
-  inspCampoPortfolioLoad();
-  var cfg=inspCampoModuloCfg(modulo);
-  var prefix=modulo==='enel'?'ic-en':'ic-cg';
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:520px;text-align:center;padding:2rem">'
-    +'<div style="color:#888;font-size:13px">Carregando contratos e equipes...</div></div></div>');
-  inspCampoGarantirDados(dataHojeLocal()).then(function(){
-    var html='<div class="modal-bg"><div class="modal" style="max-width:520px">'
-      +'<h3 style="margin-bottom:1rem">🔍 Nova Inspeção de Campo — '+cfg.label+'</h3>'
-      +'<div class="fg"><label>Contrato</label>'+inspCampoContratoOptsHtml(prefix+'-contrato','')+'</div>'
-      +'<div class="fg"><label>Data</label><input class="inp" type="date" id="'+prefix+'-data" style="width:100%" value="'+dataHojeLocal()+'" onchange="inspCampoOnContratoChange(\''+prefix+'\')"/></div>'
-      +'<div class="fg"><label>Código da equipe</label><div id="'+prefix+'-equipe-wrap">'
-      +inspCampoEquipeOptsHtml(prefix,'','')+'</div></div>'
-      +'<div id="'+prefix+'-escala-preview" style="display:none;margin-bottom:.75rem;padding:.75rem;background:#f5f5f3;border-radius:8px;font-size:12px"></div>'
-      +'<div class="fg"><label>Inspetor responsável</label><input class="inp" id="'+prefix+'-inspetor" style="width:100%" value="'+escHtml((usuarioLogado||{}).nome||'')+'"/></div>'
-      +'<div class="fg"><label>Local / frente (opcional)</label><input class="inp" id="'+prefix+'-local" style="width:100%" placeholder="Endereço ou frente de trabalho"/></div>'
-      +'<div style="display:flex;gap:8px;margin-top:1.25rem">'
-      +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-      +'<button class="btn btn-pri" onclick="inspCampoAbrirWizard(\''+modulo+'\',\''+prefix+'\')" style="flex:1">Abrir checklists →</button>'
-      +'</div></div></div>';
-    setModal(html);
-  }).catch(function(){
-    setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
-      +'<p style="font-size:13px;color:#A32D2D">Erro ao carregar dados. Tente novamente.</p>'
-      +'<button class="btn" onclick="closeModal()">Fechar</button></div></div>');
-  });
-}
-async function inspCampoOnContratoChange(prefix){
-  var cid=(document.getElementById(prefix+'-contrato')||{}).value||'';
-  var data=(document.getElementById(prefix+'-data')||{}).value||dataHojeLocal();
-  var wrap=document.getElementById(prefix+'-equipe-wrap');
-  var prev=document.getElementById(prefix+'-escala-preview');
-  if(prev){ prev.style.display='none'; prev.innerHTML=''; }
-  if(!wrap) return;
-  if(!cid){
-    wrap.innerHTML=inspCampoEquipeOptsHtml(prefix,'','');
-    return;
-  }
-  wrap.innerHTML='<span style="font-size:11px;color:#888">Carregando equipes...</span>';
-  var eqs=await inspCampoCarregarEquipesContrato(cid, data);
-  wrap.innerHTML=inspCampoEquipeOptsHtml(prefix, cid, '', eqs);
-}
-async function inspCampoOnEquipeChange(prefix){
-  var eqId=(document.getElementById(prefix+'-equipe')||{}).value||'';
-  var data=(document.getElementById(prefix+'-data')||{}).value||dataHojeLocal();
-  var prev=document.getElementById(prefix+'-escala-preview');
-  if(!prev) return;
-  if(!eqId){ prev.style.display='none'; prev.innerHTML=''; return; }
-  prev.style.display='block';
-  prev.innerHTML='<span style="color:#888">Carregando escala do dia...</span>';
-  var esc=await inspCampoResolverEscala(eqId, data);
-  if(!esc.membros.length){
-    prev.innerHTML='<span style="color:#A32D2D">⚠ Nenhum colaborador na escala desta equipe para '+fmtD(data)+'.</span>';
-    return;
-  }
-  prev.innerHTML='<div style="font-weight:600;margin-bottom:6px">Escala do dia — Equipe '+escHtml(esc.equipe_codigo)+'</div>'
-    +'<div style="margin-bottom:4px"><b>Supervisão:</b> '+escHtml(esc.supervisor||'—')+(esc.placa?' · <b>Placa:</b> '+escHtml(esc.placa):'')+'</div>'
-    +'<div><b>Colaboradores:</b> '+esc.membros.map(function(m){
-      return escHtml(m.nome+(m.re?' (RE '+m.re+')':'')+(m.motorista?' 🚗':''));
-    }).join(', ')+'</div>';
-}
-async function inspCampoAbrirWizard(modulo, prefix){
-  var contratoId=(document.getElementById(prefix+'-contrato')||{}).value||'';
-  var data=(document.getElementById(prefix+'-data')||{}).value||dataHojeLocal();
-  var equipeId=(document.getElementById(prefix+'-equipe')||{}).value||'';
-  var inspetor=((document.getElementById(prefix+'-inspetor')||{}).value||'').trim();
-  var local=((document.getElementById(prefix+'-local')||{}).value||'').trim();
-  if(!contratoId){ alert('Selecione o contrato.'); return; }
-  if(!equipeId){ alert('Selecione o código da equipe.'); return; }
-  if(!inspetor){ alert('Informe o inspetor responsável.'); return; }
-  var cont=(contratos||[]).find(function(c){return c.id===contratoId;});
-  var esc=await inspCampoResolverEscala(equipeId, data);
-  if(!esc.membros.length){
-    alert('Não há colaboradores na escala desta equipe para a data selecionada.');
-    return;
-  }
-  closeModal();
-  _inspCampoMeta={
-    modulo:modulo, prefix:prefix,
-    id:'insp_'+Date.now(),
-    contrato_id:contratoId,
-    contrato_label:almContratoLabel(cont,true),
-    equipe_id:equipeId,
-    equipe_codigo:esc.equipe_codigo,
-    data:data, inspetor:inspetor, local:local,
-    supervisor:esc.supervisor, placa:esc.placa,
-    membros:esc.membros,
-    abaAtiva:'documentos'
-  };
-  inspCampoRenderWizard();
-}
-function inspCampoUsaBotoesStatus(){
-  return window.innerWidth < 768 || (typeof _device!=='undefined' && _device!=='desktop') || (typeof _isTouch!=='undefined' && _isTouch);
-}
-function inspCampoEntrarChecklist(){
-  _inspCampoAtivo = true;
-  document.body.classList.add('insp-campo-ativo');
-  if(typeof _autoRefresh!=='undefined') _autoRefresh.pausar();
-}
-function inspCampoSairChecklist(){
-  _inspCampoAtivo = false;
-  _inspCampoTabPronta = false;
-  _inspCampoAcaOk = false;
-  document.body.classList.remove('insp-campo-ativo');
-  if(typeof _autoRefresh!=='undefined' && !_autoRefresh._modalAberto) _autoRefresh.retomar();
-}
-function inspCampoCapturarParaMeta(){
-  if(!_inspCampoMeta) return;
-  var r=_inspCampoMeta.rascunho||{};
-  var cfg=inspCampoModuloCfg(_inspCampoMeta.modulo);
-  var formEl=document.getElementById(cfg.formId);
-  if(!formEl) return;
-  formEl.querySelectorAll('[id$="_s"]').forEach(function(el){
-    var base=el.id.replace(/_s$/,'');
-    if(!r[base]) r[base]={};
-    r[base].status=el.value||'';
-  });
-  formEl.querySelectorAll('[id$="_obs"]').forEach(function(el){
-    var base=el.id.replace(/_obs$/,'');
-    if(!r[base]) r[base]={};
-    r[base].obs=el.value||'';
-  });
-  _inspCampoMeta.rascunho=r;
-  var og=document.getElementById('ic-obs-geral');
-  if(og) _inspCampoMeta.obsGeral=og.value||'';
-}
-function inspCampoSalvarRascunhoLocal(){
-  inspCampoCapturarParaMeta();
-  if(!_inspCampoMeta) return;
-  try{
-    var pack={meta:_inspCampoMeta, rascunho:_inspCampoMeta.rascunho, obsGeral:_inspCampoMeta.obsGeral||''};
-    sessionStorage.setItem('insp_campo_rascunho_'+_inspCampoMeta.id, JSON.stringify(pack));
-    sessionStorage.setItem('insp_campo_wizard_state', JSON.stringify(pack));
-  }catch(e){}
-}
-function inspCampoRestaurarSessao(modulo){
-  try{
-    var raw=sessionStorage.getItem('insp_campo_wizard_state');
-    if(!raw||_inspCampoMeta) return;
-    var p=JSON.parse(raw);
-    if(!p||!p.meta) return;
-    if(modulo && p.meta.modulo!==modulo) return;
-    _inspCampoMeta=p.meta;
-    _inspCampoMeta.rascunho=p.rascunho||{};
-    _inspCampoMeta.obsGeral=p.obsGeral||'';
-    _inspCampoTabPronta=false;
-    _inspCampoAcaOk=false;
-    inspCampoRenderWizard();
-  }catch(e){}
-}
-function inspCampoSetStatus(btn){
-  if(!btn) return;
-  var wrap=btn.closest('.insp-campo-st-btns');
-  if(!wrap) return;
-  var hidId=wrap.getAttribute('data-for');
-  var hid=document.getElementById(hidId);
-  var val=btn.getAttribute('data-v')||'';
-  if(hid) hid.value=val;
-  wrap.querySelectorAll('.insp-campo-st-btn').forEach(function(b){ b.classList.remove('on'); });
-  btn.classList.add('on');
-  inspCampoSalvarRascunhoLocal();
-}
-function inspCampoStatusBtnHtml(val, selected){
-  var labels={C:'✅ C',NC:'⚠️ NC',NA:'➖ N/A'};
-  return '<button type="button" class="insp-campo-st-btn'+(selected===val?' on':'')+'" data-v="'+val+'" onclick="inspCampoSetStatus(this)">'+(labels[val]||val)+'</button>';
-}
-function inspCampoRenderChecklistItems(domPrefix, itens, salvas){
-  salvas=salvas||[];
-  var botoes=inspCampoUsaBotoesStatus();
-  return itens.map(function(item, ii){
-    var id=domPrefix+'_'+ii;
-    var sv=salvas[ii]||{};
-    var st=sv.status||'';
-    var ob=sv.obs||'';
-    if(botoes){
-      return '<div class="insp-campo-item">'
-        +'<div class="insp-campo-item-txt">'+escHtml(item)+'</div>'
-        +'<input type="hidden" id="'+id+'_s" value="'+escHtml(st)+'"/>'
-        +'<div class="insp-campo-st-btns" data-for="'+id+'_s">'
-        +inspCampoStatusBtnHtml('C',st)+inspCampoStatusBtnHtml('NC',st)+inspCampoStatusBtnHtml('NA',st)
-        +'</div>'
-        +'<textarea class="inp insp-campo-obs" id="'+id+'_obs" rows="2" placeholder="Observação (opcional)" oninput="inspCampoSalvarRascunhoLocal()">'+escHtml(ob)+'</textarea>'
-        +'</div>';
-    }
-    return '<div class="insp-campo-item">'
-      +'<div class="insp-campo-item-txt">'+escHtml(item)+'</div>'
-      +'<div class="insp-campo-item-acoes">'
-      +'<select class="inp" id="'+id+'_s" aria-label="Status" onchange="inspCampoSalvarRascunhoLocal()">'
-      +'<option value=""'+(!st?' selected':'')+'>—</option>'
-      +'<option value="C"'+(st==='C'?' selected':'')+'>✅ C</option>'
-      +'<option value="NC"'+(st==='NC'?' selected':'')+'>⚠️ NC</option>'
-      +'<option value="NA"'+(st==='NA'?' selected':'')+'>➖ N/A</option>'
-      +'</select>'
-      +'<input class="inp" id="'+id+'_obs" placeholder="Observação..." value="'+escHtml(ob)+'" oninput="inspCampoSalvarRascunhoLocal()"/>'
-      +'</div></div>';
-  }).join('');
-}
-function inspCampoSalvasDoRascunho(domPrefix, qtd){
-  var r=(_inspCampoMeta&&_inspCampoMeta.rascunho)||{};
-  var out=[];
-  for(var i=0;i<qtd;i++){
-    var base=domPrefix+'_'+i;
-    var item=r[base]||{};
-    out.push({status:item.status||'', obs:item.obs||''});
-  }
-  return out;
-}
-function inspCampoBlocoCard(titulo, domPrefix, itens){
-  var salvas=inspCampoSalvasDoRascunho(domPrefix, itens.length);
-  return '<div class="card insp-campo-bloco" style="margin-bottom:1rem">'
-    +'<div class="ch"><span class="ct" style="font-size:13px">'+titulo+'</span></div>'
-    +'<div class="insp-campo-itens">'+inspCampoRenderChecklistItems(domPrefix,itens,salvas)+'</div></div>';
-}
-function inspCampoAfterRender(modulo){
-  if(!_inspCampoAcaOk){
-    var pgId='pg-'+(modulo==='enel'?'enel':'comgas')+'-checklist';
-    if(typeof _ensureInACA==='function') _ensureInACA(pgId);
-    _inspCampoAcaOk=true;
-  }
-}
-function inspCampoRenderWizard(){
-  var meta=_inspCampoMeta;
-  if(!meta) return;
-  inspCampoCapturarParaMeta();
-  var cfg=inspCampoModuloCfg(meta.modulo);
-  var tituloEl=document.getElementById(cfg.tituloId);
-  if(tituloEl) tituloEl.textContent='📋 Inspeção de Campo — '+cfg.label+' · Equipe '+meta.equipe_codigo;
-  var formEl=document.getElementById(cfg.formId);
-  if(!formEl) return;
-  var html='<div class="insp-campo-page">'
-    +'<div class="card" style="margin-bottom:1rem;background:'+cfg.bg+';border-color:'+cfg.cor+'44">'
-    +'<div style="display:flex;gap:1rem;flex-wrap:wrap;font-size:12px;padding:.25rem 0">'
-    +'<span><b>Data:</b> '+fmtD(meta.data)+'</span>'
-    +'<span><b>Contrato:</b> '+escHtml(meta.contrato_label)+'</span>'
-    +'<span><b>Equipe:</b> '+escHtml(meta.equipe_codigo)+'</span>'
-    +'<span><b>Supervisão:</b> '+escHtml(meta.supervisor||'—')+'</span>'
-    +'<span><b>Inspetor:</b> '+escHtml(meta.inspetor)+'</span>'
-    +(meta.placa?'<span><b>Placa:</b> '+escHtml(meta.placa)+'</span>':'')
-    +'</div></div>';
-  html+=inspCampoBlocoCard('📄 Documentos','ic_doc', INSP_CAMPO_BLOCOS.documentos.itens);
-  html+=inspCampoBlocoCard('🚗 Veículo','ic_veic', INSP_CAMPO_BLOCOS.veiculo.itens);
-  html+=inspCampoBlocoCard('🏗️ Canteiro','ic_cant', INSP_CAMPO_BLOCOS.canteiro.itens);
-  meta.membros.forEach(function(m){
-    html+=inspCampoBlocoCard('👷 '+m.nome+(m.re?' (RE '+m.re+')':'')+(m.motorista?' — Motorista':''), 'ic_col_'+m.id, INSP_CAMPO_BLOCOS.colaborador.itens);
-  });
-  html+='<div class="card" style="margin-bottom:1rem"><div class="fg"><label>Observações gerais</label>'
-    +'<textarea class="inp" id="ic-obs-geral" style="width:100%;height:80px" placeholder="Obs. gerais da vistoria..." oninput="inspCampoSalvarRascunhoLocal()">'+(meta.obsGeral||'')+'</textarea></div></div>'
-    +'<div class="insp-campo-footer">'
-    +'<button type="button" class="btn" onclick="inspCampoCancelarWizard()" style="flex:1">Cancelar</button>'
-    +'<button type="button" class="btn btn-pri" onclick="inspCampoSalvarWizard()" style="flex:2">💾 Finalizar vistoria</button>'
-    +'</div></div>';
-  formEl.innerHTML=html;
-  if(!_inspCampoTabPronta){
-    cfg.showTab('checklist');
-    _inspCampoTabPronta=true;
-    inspCampoEntrarChecklist();
-  }
-  inspCampoAfterRender(meta.modulo);
-}
-function inspCampoCancelarWizard(){
-  var cfg=_inspCampoMeta?inspCampoModuloCfg(_inspCampoMeta.modulo):null;
-  if(_inspCampoMeta&&_inspCampoMeta.id){
-    try{
-      sessionStorage.removeItem('insp_campo_rascunho_'+_inspCampoMeta.id);
-      sessionStorage.removeItem('insp_campo_wizard_state');
-    }catch(e){}
-  }
-  _inspCampoMeta=null;
-  inspCampoSairChecklist();
-  if(cfg) cfg.showTab('inspecoes');
-}
-function inspCampoSetAba(aba){
-  if(!_inspCampoMeta) return;
-  _inspCampoMeta.abaAtiva=aba;
-  inspCampoRenderWizard();
-}
-function inspCampoColetarBloco(domPrefix, itens, grupoNome){
-  var respostas=[], conformes=0, nao_conformes=0, nao_aplicaveis=0, ncs=[];
-  itens.forEach(function(item, ii){
-    var sel=document.getElementById(domPrefix+'_'+ii+'_s');
-    var obs=document.getElementById(domPrefix+'_'+ii+'_obs');
-    var status=sel?sel.value:'';
-    var observacao=obs?(obs.value||'').trim():'';
-    respostas.push({item:item, status:status, obs:observacao});
-    if(status==='C') conformes++;
-    else if(status==='NC'){ nao_conformes++; ncs.push({item:item, grupo:grupoNome, observacao:observacao}); }
-    else if(status==='NA') nao_aplicaveis++;
-  });
-  return {respostas:respostas, conformes:conformes, nao_conformes:nao_conformes, nao_aplicaveis:nao_aplicaveis, ncs:ncs};
-}
-function inspCampoSalvarWizard(){
-  var meta=_inspCampoMeta;
-  if(!meta) return;
-  var cfg=inspCampoModuloCfg(meta.modulo);
-  var blocos={};
-  var totalC=0, totalNC=0, totalNA=0, todasNcs=[];
-  ['documentos','veiculo','canteiro'].forEach(function(key){
-    var prefix=key==='documentos'?'ic_doc':(key==='veiculo'?'ic_veic':'ic_cant');
-    var bl=inspCampoColetarBloco(prefix, INSP_CAMPO_BLOCOS[key].itens, INSP_CAMPO_BLOCOS[key].label);
-    blocos[key]=bl;
-    totalC+=bl.conformes; totalNC+=bl.nao_conformes; totalNA+=bl.nao_aplicaveis;
-    bl.ncs.forEach(function(n){ n.bloco=key; todasNcs.push(n); });
-  });
-  blocos.colaboradores={};
-  meta.membros.forEach(function(m){
-    var bl=inspCampoColetarBloco('ic_col_'+m.id, INSP_CAMPO_BLOCOS.colaborador.itens, 'Colaborador — '+m.nome);
-    blocos.colaboradores[m.id]=bl;
-    totalC+=bl.conformes; totalNC+=bl.nao_conformes; totalNA+=bl.nao_aplicaveis;
-    bl.ncs.forEach(function(n){ n.bloco='colaborador'; n.colaborador_id=m.id; n.colaborador_nome=m.nome; todasNcs.push(n); });
-  });
-  var obsGeral=(document.getElementById('ic-obs-geral')||{}).value||'';
-  var resultado=totalNC>0?'negativo':'positivo';
-  var inspecao={
-    id:meta.id, tipo:'campo_vistoria', versao_campo:2, modulo:meta.modulo,
-    contrato_id:meta.contrato_id, contrato:meta.contrato_label, contrato_label:meta.contrato_label,
-    equipe_id:meta.equipe_id, equipe_codigo:meta.equipe_codigo,
-    data:meta.data, local:meta.local||meta.equipe_codigo, inspetor:meta.inspetor,
-    supervisor:meta.supervisor, placa:meta.placa, membros:meta.membros,
-    blocos:blocos, resultado:resultado,
-    conformes:totalC, nao_conformes:totalNC, nao_aplicaveis:totalNA,
-    ncs_geradas:todasNcs.length, obs_geral:obsGeral,
-    status:'pendente_gestor', criado_em:new Date().toISOString()
-  };
-  cfg.arr().unshift(inspecao);
-  if(!DEMO) sbInsert(cfg.tblInsp, inspCampoInspToDbRow(inspecao)).catch(function(){});
-  if(todasNcs.length){
-    var ncUnif=inspCampoCriarNcUnificada(inspecao, todasNcs, cfg);
-    if(ncUnif) inspCampoCriarPaUnificado(meta.modulo, ncUnif, inspecao, todasNcs);
-  }
-  inspCampoRegistrarPortfolio(inspecao);
-  auditLog('criar','sesmt','Inspeção de campo '+resultado+' — '+inspecao.contrato_label+' / Eq. '+inspecao.equipe_codigo, {id:inspecao.id,ncs:todasNcs.length,nc_agrupada:!!todasNcs.length});
-  if(meta.id){
-    try{
-      sessionStorage.removeItem('insp_campo_rascunho_'+meta.id);
-      sessionStorage.removeItem('insp_campo_wizard_state');
-    }catch(e){}
-  }
-  _inspCampoMeta=null;
-  inspCampoSairChecklist();
-  var msg='✅ Vistoria registrada e enviada ao gestor do contrato.\n\nResultado: '+(resultado==='positivo'?'POSITIVO':'NEGATIVO')
-    +'\n'+totalC+' conformes · '+totalNC+' NC(s)';
-  if(todasNcs.length){
-    msg+='\n\n1 NC aberta com '+todasNcs.length+' item(ns) + 1 plano de ação criado.';
-    if(confirm(msg+'\n\nDeseja abrir as Não Conformidades?')){
-      cfg.showTab('nc'); return;
-    }
-  } else {
-    alert(msg);
-  }
-  cfg.showTab('inspecoes');
-}
-function inspCampoLabelTipo(i){
-  if(i.tipo==='campo_vistoria'||i.versao_campo>=2) return '🔍 Inspeção de Campo';
-  var ck=(i.modulo==='enel'?ENEL_CHECKLISTS:COMGAS_CHECKLISTS)[i.tipo]||{};
-  return (ck.icon||'')+' '+(ck.label||i.tipo||'—');
-}
-// Renderiza o checklist completo (item a item) da inspeção de campo, a partir de i.blocos
-function _inspCampoChecklistHtml(i){
-  var bl=i.blocos||{};
-  if(!bl.documentos && !bl.veiculo && !bl.canteiro && !bl.colaboradores) return '';
-  function icon(s){ return s==='C'?'<span style="color:#3B6D11;font-weight:700">✅</span>':s==='NC'?'<span style="color:#A32D2D;font-weight:700">🚫</span>':'<span style="color:#aaa">—</span>'; }
-  function linhaResp(rp){
-    if(!rp) return '';
-    var it=rp.item; var txt=(it&&typeof it==='object')?(it.descricao||it.pergunta||it.texto||''):String(it==null?'':it);
-    return '<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;border-bottom:.5px solid #f5f5f3">'
-      +icon(rp.status)+'<div style="flex:1"><span style="font-size:11px">'+escHtml(txt)+'</span>'
-      +(rp.obs?'<div style="font-size:10px;color:#888;margin-top:1px">'+escHtml(rp.obs)+'</div>':'')+'</div></div>';
-  }
-  function secao(titulo,bloco){
-    if(!bloco||!bloco.respostas||!bloco.respostas.length) return '';
-    return '<div style="margin-bottom:.5rem"><div style="font-size:10px;font-weight:700;color:#185FA5;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">'+escHtml(titulo)+'</div>'
-      +bloco.respostas.map(linhaResp).join('')+'</div>';
-  }
-  var h='<div style="margin-top:.75rem;border-top:.5px solid #e0dfd8;padding-top:.6rem"><div style="font-size:12px;font-weight:700;margin-bottom:.5rem">📋 Checklist completo</div>';
-  h+=secao('📄 Documentos',bl.documentos);
-  h+=secao('🚗 Veículo',bl.veiculo);
-  h+=secao('🏗️ Canteiro',bl.canteiro);
-  var cols=bl.colaboradores||{}, membros=i.membros||[];
-  Object.keys(cols).forEach(function(cid){
-    var m=membros.find(function(x){return String(x.id)===String(cid);})||{};
-    h+=secao('👷 '+(m.nome||('Colaborador '+cid)),cols[cid]);
-  });
-  return h+'</div>';
-}
-function inspCampoVerInspecao(modulo, id){
-  var cfg=inspCampoModuloCfg(modulo);
-  var i=cfg.arr().find(function(x){return x.id===id;});
-  if(!i) return;
-  if(i.tipo!=='campo_vistoria'&&!(i.versao_campo>=2)){
-    if(modulo==='enel') return enelVerInspecaoLegacy(id);
-    return comgasVerInspecaoLegacy(id);
-  }
-  var ncs_rel=cfg.ncArr().filter(function(n){return n.inspecao_id===id;});
-  var rc=i.resultado==='positivo'?'#3B6D11':'#A32D2D';
-  var html='<div class="modal-bg"><div class="modal" style="max-width:680px;max-height:90vh;overflow-y:auto">'
-    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem">'
-    +'<span style="font-size:20px">🔍</span><div><h3 style="margin:0">Inspeção de Campo</h3>'
-    +'<div style="font-size:11px;color:#888">'+fmtD(i.data)+' · '+escHtml(i.contrato_label||i.contrato||'—')+' · Eq. '+escHtml(i.equipe_codigo||'—')+'</div></div>'
-    +'<button class="btn btn-sm" onclick="closeModal()" style="margin-left:auto">Fechar</button></div>'
-    +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem;font-size:11px">'
-    +'<div style="background:'+rc+'22;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Resultado</div>'
-    +'<div style="font-size:14px;font-weight:700;color:'+rc+'">'+(i.resultado==='positivo'?'Positivo':'Negativo')+'</div></div>'
-    +'<div style="background:#3B6D1120;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Conformes</div><div style="font-size:20px;font-weight:700;color:#3B6D11">'+(i.conformes||0)+'</div></div>'
-    +'<div style="background:#A32D2D20;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">NC</div><div style="font-size:20px;font-weight:700;color:#A32D2D">'+(i.nao_conformes||0)+'</div></div>'
-    +'<div style="background:#88888820;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Status gestor</div><div style="font-size:12px;font-weight:600">'+(i.status==='pendente_gestor'?'Pendente':'Visto')+'</div></div>'
-    +'</div>'
-    +'<div style="font-size:12px;margin-bottom:.75rem"><b>Supervisão:</b> '+escHtml(i.supervisor||'—')+' · <b>Inspetor:</b> '+escHtml(i.inspetor||'—')+'</div>';
-  if(i.membros&&i.membros.length){
-    html+='<div style="font-size:11px;margin-bottom:.75rem;color:#555"><b>Colaboradores:</b> '+i.membros.map(function(m){
-      return escHtml(m.nome+(m.re?' (RE '+m.re+')':''));
-    }).join(', ')+'</div>';
-  }
-  html+=_inspCampoChecklistHtml(i);
-  if(ncs_rel.length){
-    html+='<div style="margin-bottom:.75rem"><div style="font-size:12px;font-weight:600">⚠️ Não conformidades</div>'
-      +ncs_rel.map(function(n){
-        var qtd=inspCampoNcItensQtd(n);
-        return '<div style="background:#A32D2D11;border-left:3px solid #A32D2D;border-radius:4px;padding:.5rem .75rem;margin-top:.4rem;font-size:11px">'
-          +'<b>'+escHtml(n.descricao||'')+'</b>'
-          +(qtd>1?inspCampoNcItensHtml(n):(n.observacao&&inspCampoNcObsResumo(n)?'<br><span style="color:#666">'+escHtml(inspCampoNcObsResumo(n))+'</span>':''))
-          +'</div>';
-      }).join('')+'</div>';
-  }
-  if(i.obs_geral) html+='<div style="font-size:11px;background:#f5f5f3;border-radius:6px;padding:.6rem"><b>Obs.:</b> '+escHtml(i.obs_geral)+'</div>';
-  if(i.status==='pendente_gestor' && typeof inspCampoGestorPodeVer==='function' && inspCampoGestorPodeVer(i)){
-    html+='<div style="margin-top:1rem"><button class="btn btn-pri" onclick="inspCampoMarcarVisto(\''+modulo+'\',\''+i.id+'\')">✓ Marcar como visto (gestor)</button></div>';
-  }
-  html+='</div></div>';
-  setModal(html);
-}
-function inspCampoGestorPodeVer(inspecao){
-  if(!usuarioLogado) return false;
-  var perfil=(usuarioLogado.perfil||'').toLowerCase();
-  if(perfil==='admin'||perfil==='gestor') return true;
-  if(_gestorContratos&&_gestorContratos.length&&inspecao.contrato_id) return _gestorContratos.indexOf(inspecao.contrato_id)>=0;
-  return false;
-}
-function inspCampoMarcarVisto(modulo, id){
-  var cfg=inspCampoModuloCfg(modulo);
-  var i=cfg.arr().find(function(x){return x.id===id;});
-  if(!i||!inspCampoGestorPodeVer(i)) return;
-  i.status='visto_gestor';
-  i.gestor_visto_em=new Date().toISOString();
-  i.gestor_visto_por=(usuarioLogado||{}).nome||'';
-  if(!DEMO) sbUpdate(cfg.tblInsp, inspCampoInspUpdateDbRow(i), 'id=eq.'+id).catch(function(){});
-  closeModal();
-  if(typeof renderGestorPainel==='function') renderGestorPainel();
-  cfg.showTab('inspecoes');
-  alert('Inspeção marcada como vista pelo gestor.');
-}
-function inspCampoPendentesGestor(contratoIds){
-  var out=[];
-  function pushArr(arr, modulo){
-    (arr||[]).forEach(function(i){
-      if(i.status!=='pendente_gestor') return;
-      if(contratoIds&&contratoIds.length&&i.contrato_id&&contratoIds.indexOf(i.contrato_id)<0) return;
-      out.push({inspecao:i, modulo:modulo});
-    });
-  }
-  pushArr(comgas_inspecoes,'comgas');
-  pushArr(enel_inspecoes,'enel');
-  return out.sort(function(a,b){ return (b.inspecao.criado_em||'').localeCompare(a.inspecao.criado_em||''); });
-}
-function renderGestorPainel(){
-  var wrap=document.getElementById('gestor-painel-wrap');
-  if(!wrap) return;
-  inspCampoPortfolioLoad();
-  var bar=document.getElementById('gestor-bar');
-  var sel=document.getElementById('gestor-cont-sel');
-  var cids=_gestorContratos&&_gestorContratos.length?_gestorContratos:[];
-  if(bar) bar.style.display=cids.length>1?'block':'none';
-  if(sel&&sel.options.length<=1&&contratos.length){
-    sel.innerHTML='<option value="">Todos contratos</option>'
-      +contratos.filter(function(c){ return !cids.length||cids.indexOf(c.id)>=0; })
-      .map(function(c){ return '<option value="'+c.id+'">'+escHtml(almContratoLabel(c,true))+'</option>'; }).join('');
-  }
-  var filtroC=sel?(sel.value||''):'';
-  var filtroIds=filtroC?[filtroC]:(cids.length?cids:null);
-  var pendentes=inspCampoPendentesGestor(filtroIds);
-  var html='<div class="card" style="margin-bottom:1rem"><div class="ch"><span class="ct">🔍 Inspeções de Campo — aguardando gestor</span></div>';
-  if(!pendentes.length){
-    html+='<div style="padding:1.5rem;text-align:center;color:#aaa;font-size:12px">Nenhuma vistoria pendente de ciência.</div>';
-  }else{
-    html+='<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
-      +'<th>Data</th><th>Contrato</th><th>Equipe</th><th>Resultado</th><th>NC</th><th>Inspetor</th><th></th></tr></thead><tbody>'
-      +pendentes.map(function(p){
-        var i=p.inspecao, rc=i.resultado==='positivo'?'#3B6D11':'#A32D2D';
-        return '<tr><td>'+fmtD(i.data)+'</td><td style="font-size:11px">'+escHtml(i.contrato_label||'—')+'</td>'
-          +'<td>'+escHtml(i.equipe_codigo||'—')+'</td>'
-          +'<td><span style="color:'+rc+';font-weight:600">'+(i.resultado==='positivo'?'Positivo':'Negativo')+'</span></td>'
-          +'<td style="text-align:center">'+(i.nao_conformes||0)+'</td><td style="font-size:11px">'+escHtml(i.inspetor||'—')+'</td>'
-          +'<td><button class="btn btn-sm" onclick="inspCampoVerInspecao(\''+p.modulo+'\',\''+i.id+'\')">Ver</button></td></tr>';
-      }).join('')+'</tbody></table></div>';
-  }
-  html+='</div>';
-  wrap.innerHTML=html;
-}
-
-// ── Navegação entre sub-abas ──────────────────────────────────────────
-function comgasShowTab(tab) {
-  if(tab!=='checklist' && typeof _inspCampoAtivo!=='undefined' && _inspCampoAtivo) inspCampoSairChecklist();
-  var pageId = 'pg-comgas-' + tab;
-  if(typeof _ensureInACA==='function') _ensureInACA(pageId);
-  ['dashboard','inspecoes','checklist','nc','pa','cdi','rem'].forEach(function(t) {
-    var el = document.getElementById('pg-comgas-' + t);
-    if (el) el.classList.add('hidden');
-  });
-  var target = document.getElementById(pageId);
-  if (target) target.classList.remove('hidden');
-  var aca = document.getElementById('app-content-area');
-  if (aca) {
-    aca.style.overflowY = 'auto';
-    aca.style.webkitOverflowScrolling = 'touch';
-    if(!(typeof _inspCampoAtivo!=='undefined' && _inspCampoAtivo)) aca.scrollTop = 0;
-  }
-  // Update sidebar active state
-  var inner = document.getElementById('sidebar-inner');
-  if (inner) inner.querySelectorAll('.sb-item').forEach(function(b){
-    b.classList[b.id==='sn-comgas-'+tab?'add':'remove']('on');
-  });
-  // Render content
-  if (tab === 'dashboard')  comgasRenderDashboard();
-  else if (tab === 'inspecoes') comgasRenderInspecoes();
-  else if (tab === 'nc')    comgasRenderNCs();
-  else if (tab === 'pa')    comgasRenderPA();
-  else if (tab === 'cdi')   comgasRenderCDIs();
-  else if (tab === 'rem')   comgasRenderREM();
-  if(tab==='checklist') inspCampoRestaurarSessao('comgas');
-}
-
-// ── Inicialização do módulo ───────────────────────────────────────────
-function comgasInit() {
-  var pg = document.getElementById('pg-comgas');
-  if (!pg) return;
-  inspCampoPortfolioLoad();
-  comgasShowTab('dashboard');
-  // Ensure pg-comgas-dashboard is visible
-  var pgdb = document.getElementById('pg-comgas-dashboard');
-  if (pgdb) pgdb.classList.remove('hidden');
-  if (!DEMO) {
-    Promise.all([
-      sbFetch('comgas_inspecoes', {order:'data.desc'}).catch(function(){return [];}),
-      sbFetch('comgas_ncs', {order:'criado_em.desc'}).catch(function(){return [];}),
-      sbFetch('comgas_pa', {order:'prazo'}).catch(function(){return [];}),
-      sbFetch('comgas_cdis', {order:'data.desc'}).catch(function(){return [];}),
-      sbFetch('comgas_rems', {order:'referencia.desc'}).catch(function(){return [];}),
-    ]).then(function(res) {
-      if (res[0].length) comgas_inspecoes = res[0].map(inspCampoUnpackObsGeral);
-      if (res[1].length) comgas_ncs = res[1];
-      if (res[2].length) comgas_pa = res[2];
-      if (res[3].length) comgas_cdis = res[3];
-      if (res[4].length) comgas_rems = res[4];
-      inspCampoSyncPortfolioFromDb();
-      comgasRenderDashboard();
-    });
-  } else {
-    comgasRenderDashboard();
-  }
-}
-
-// ── DASHBOARD ────────────────────────────────────────────────────────
-function comgasRenderDashboard() {
-  var ncs = comgas_ncs;
-  var pa  = comgas_pa;
-  var ins = comgas_inspecoes;
-
-  var ncAbertas = ncs.filter(function(n){ return n.status !== 'encerrada'; });
-  var ncGraves  = ncs.filter(function(n){ return n.gravidade === 'grave' && n.status !== 'encerrada'; });
-  var paVencidos = pa.filter(function(p){ return p.status !== 'concluido' && p.prazo && new Date(p.prazo) < new Date(); });
-  var paPendentes = pa.filter(function(p){ return p.status !== 'concluido'; });
-
-  var metrEl = document.getElementById('comgas-metricas');
-  if (metrEl) metrEl.innerHTML = [
-    {l:'Inspeções (mês)', v: ins.filter(function(i){var d=new Date(i.data);var n=new Date();return d.getMonth()===n.getMonth()&&d.getFullYear()===n.getFullYear();}).length, cor:'#185FA5'},
-    {l:'NCs Abertas', v: ncAbertas.length, cor: ncAbertas.length > 0 ? '#854F0B' : '#3B6D11'},
-    {l:'NCs Graves', v: ncGraves.length, cor: ncGraves.length > 0 ? '#A32D2D' : '#3B6D11'},
-    {l:'Planos de Ação', v: paPendentes.length, cor: paVencidos.length > 0 ? '#A32D2D' : '#185FA5'},
-    {l:'PA Vencidos', v: paVencidos.length, cor: paVencidos.length > 0 ? '#A32D2D' : '#888'},
-  ].map(function(m){
-    return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.75rem;text-align:center">'
-      +'<div style="font-size:9px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.3px">'+m.l+'</div>'
-      +'<div style="font-size:22px;font-weight:700;color:'+m.cor+'">'+m.v+'</div>'
-      +'</div>';
-  }).join('');
-
-  // NC resumo
-  var ncEl = document.getElementById('comgas-nc-resumo');
-  if (ncEl) {
-    if (!ncAbertas.length) {
-      ncEl.innerHTML = '<div style="text-align:center;color:#aaa;padding:1.5rem;font-size:12px">✅ Nenhuma NC aberta</div>';
-    } else {
-      ncEl.innerHTML = ncAbertas.slice(0,4).map(function(n){
-        var cor = {grave:'#A32D2D',media:'#854F0B',leve:'#185FA5'}[n.gravidade]||'#555';
-        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:.5px solid #f0efe8">'
-          +'<span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap">'+((n.gravidade||'?').toUpperCase())+'</span>'
-          +'<div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(n.descricao||'—')+'</div>'
-          +'<button class="btn btn-sm" style="font-size:10px" onclick="comgasAbrirNC(\''+n.id+'\')">Ver</button>'
-          +'</div>';
-      }).join('');
-    }
-  }
-
-  // PA resumo
-  var paEl = document.getElementById('comgas-pa-resumo');
-  if (paEl) {
-    if (!paPendentes.length) {
-      paEl.innerHTML = '<div style="text-align:center;color:#aaa;padding:1.5rem;font-size:12px">✅ Nenhum plano pendente</div>';
-    } else {
-      paEl.innerHTML = paPendentes.slice(0,4).map(function(p){
-        var venc = p.prazo && new Date(p.prazo) < new Date();
-        var cor = venc ? '#A32D2D' : '#185FA5';
-        var label = venc ? 'VENCIDO' : (p.status||'pendente').toUpperCase();
-        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:.5px solid #f0efe8">'
-          +'<span style="background:'+cor+'22;color:'+cor+';border-radius:4px;padding:1px 7px;font-size:10px;font-weight:700;white-space:nowrap">'+label+'</span>'
-          +'<div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(p.acao||'—')+'</div>'
-          +'<span style="font-size:10px;color:#888">'+(p.prazo?p.prazo.slice(0,10):'')+'</span>'
-          +'</div>';
-      }).join('');
-    }
-  }
-
-  // Inspeções recentes
-  var insEl = document.getElementById('comgas-insp-resumo');
-  if (insEl) {
-    if (!ins.length) {
-      insEl.innerHTML = '<div style="text-align:center;color:#aaa;padding:1.5rem;font-size:12px">Nenhuma inspeção registrada. Clique em "+ Nova Inspeção".</div>';
-    } else {
-      insEl.innerHTML = '<div style="overflow-x:auto"><table class="tbl" style="font-size:12px">'
-        +'<thead><tr><th>Data</th><th>Tipo</th><th>Inspetor</th><th>Local</th><th>NCs</th><th>Status</th><th></th></tr></thead>'
-        +'<tbody>'+ins.slice(0,8).map(function(i){
-          var tipo = (COMGAS_CHECKLISTS[i.tipo]||{});
-          var ncs_count = (i.ncs_geradas||0);
-          return '<tr>'
-            +'<td style="white-space:nowrap">'+((i.data||'').slice(0,10))+'</td>'
-            +'<td>'+(tipo.icon||'')+'&nbsp;'+(tipo.label||i.tipo||'—')+'</td>'
-            +'<td style="font-size:11px">'+(i.inspetor||'—')+'</td>'
-            +'<td style="font-size:11px">'+(i.local||'—')+'</td>'
-            +'<td style="text-align:center"><span style="background:'+(ncs_count>0?'#A32D2D22':'#3B6D1122')+';color:'+(ncs_count>0?'#A32D2D':'#3B6D11')+';border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600">'+ncs_count+'</span></td>'
-            +'<td><span style="background:#e0dfd8;border-radius:4px;padding:1px 6px;font-size:10px">'+(i.status||'concluída')+'</span></td>'
-            +'<td><button class="btn btn-sm" style="font-size:10px" onclick="comgasVerInspecao(\''+i.id+'\')">Ver</button></td>'
-            +'</tr>';
-        }).join('')+'</tbody></table></div>';
-    }
-  }
-}
-
-// ── NOVA INSPEÇÃO ────────────────────────────────────────────────────
-function comgasNovaInspecao() {
-  inspCampoNovaInspecao('comgas');
-}
-
-function _comgasAbrirChecklist() {
-  var tipo = (document.getElementById('cg-ni-tipo')||{}).value;
-  var data = (document.getElementById('cg-ni-data')||{}).value;
-  var local = (document.getElementById('cg-ni-local')||{}).value;
-  var inspetor = (document.getElementById('cg-ni-inspetor')||{}).value;
-  var contrato = (document.getElementById('cg-ni-contrato')||{}).value;
-  if (!local.trim()) { alert('Informe o local da inspeção.'); return; }
-  closeModal();
-  comgasAbrirChecklist(tipo, {data:data, local:local, inspetor:inspetor, contrato:contrato, id:'novo_'+Date.now()});
-}
-
-// ── CHECKLIST ────────────────────────────────────────────────────────
-function comgasAbrirChecklist(tipo, meta) {
-  var ck = COMGAS_CHECKLISTS[tipo];
-  if (!ck) return;
-
-  var tituloEl = document.getElementById('cg-ck-titulo');
-  if (tituloEl) tituloEl.textContent = '📋 Checklist — ' + ck.icon + ' ' + ck.label;
-
-  var formEl = document.getElementById('comgas-checklist-form');
-  if (!formEl) return;
-
-  var html = '<div class="card" style="margin-bottom:1rem;background:#FFF8F0;border-color:#E8521A44">'
-    +'<div style="display:flex;gap:1.5rem;flex-wrap:wrap;font-size:12px;padding:.25rem 0">'
-    +'<span><b>Data:</b> '+(meta.data||'—')+'</span>'
-    +'<span><b>Local:</b> '+(meta.local||'—')+'</span>'
-    +'<span><b>Inspetor:</b> '+(meta.inspetor||'—')+'</span>'
-    +'<span><b>Contrato:</b> '+(meta.contrato||'—')+'</span>'
-    +'</div></div>';
-
-  var itemCount = 0;
-  ck.grupos.forEach(function(grupo, gi) {
-    html += '<div class="card" style="margin-bottom:1rem">'
-      +'<div class="ch"><span class="ct" style="font-size:13px">'+grupo.nome+'</span></div>'
-      +'<table style="width:100%;border-collapse:collapse">'
-      +'<thead><tr style="background:#f5f5f3">'
-      +'<th style="padding:6px 8px;font-size:11px;text-align:left;border-bottom:.5px solid #e0dfd8">Item</th>'
-      +'<th style="padding:6px;font-size:11px;text-align:center;border-bottom:.5px solid #e0dfd8;width:80px">Status</th>'
-      +'<th style="padding:6px;font-size:11px;text-align:left;border-bottom:.5px solid #e0dfd8">Observação / NC</th>'
-      +'</tr></thead><tbody>';
-
-    grupo.itens.forEach(function(item, ii) {
-      var id = 'ck_'+gi+'_'+ii;
-      itemCount++;
-      html += '<tr style="border-bottom:.5px solid #f0efe8">'
-        +'<td style="padding:8px;font-size:12px">'+item+'</td>'
-        +'<td style="padding:6px;text-align:center">'
-        +'<select class="inp" id="'+id+'_s" style="width:90px;font-size:11px;padding:3px 4px">'
-        +'<option value="">—</option>'
-        +'<option value="C">✅ C</option>'
-        +'<option value="NC">⚠️ NC</option>'
-        +'<option value="NA">➖ N/A</option>'
-        +'</select></td>'
-        +'<td style="padding:6px">'
-        +'<input class="inp" id="'+id+'_obs" style="width:100%;font-size:11px" placeholder="Observação..."/>'
-        +'</td></tr>';
-    });
-
-    html += '</tbody></table></div>';
-  });
-
-  html += '<div class="card" style="margin-bottom:1rem">'
-    +'<div class="fg"><label>Observações Gerais</label>'
-    +'<textarea class="inp" id="cg-ck-obs-geral" style="width:100%;height:80px" placeholder="Observações gerais da inspeção..."></textarea></div>'
-    +'</div>'
-    +'<div style="display:flex;gap:8px">'
-    +'<button class="btn" onclick="comgasShowTab(\'inspecoes\')" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" onclick="_comgasSalvarChecklist(\''+tipo+'\','+JSON.stringify(meta).replace(/'/g,"&#39;")+','+itemCount+')" style="flex:1">💾 Salvar Inspeção</button>'
-    +'</div>';
-
-  formEl.innerHTML = html;
-  comgasShowTab('checklist');
-}
-
-function _comgasSalvarChecklist(tipo, meta, itemCount) {
-  var ncs_encontradas = [];
-  var conformes = 0, naoConformes = 0, naoAplicaveis = 0;
-
-  // Coletar resultados de todos os itens
-  var grupos = (COMGAS_CHECKLISTS[tipo]||{}).grupos || [];
-  var gi = 0;
-  grupos.forEach(function(grupo, gi_) {
-    grupo.itens.forEach(function(item, ii) {
-      var sel = document.getElementById('ck_'+gi_+'_'+ii+'_s');
-      var obs = document.getElementById('ck_'+gi_+'_'+ii+'_obs');
-      var status = sel ? sel.value : '';
-      var observacao = obs ? obs.value.trim() : '';
-      if (status === 'C') conformes++;
-      else if (status === 'NC') {
-        naoConformes++;
-        ncs_encontradas.push({item: item, grupo: grupo.nome, observacao: observacao});
-      } else if (status === 'NA') naoAplicaveis++;
-    });
-  });
-
-  var obsGeral = (document.getElementById('cg-ck-obs-geral')||{}).value || '';
-
-  var inspecao = {
-    id: meta.id || ('ci_'+Date.now()),
-    tipo: tipo,
-    data: meta.data || dataHojeLocal(),
-    local: meta.local,
-    inspetor: meta.inspetor,
-    contrato: meta.contrato,
-    obs_geral: obsGeral,
-    conformes: conformes,
-    nao_conformes: naoConformes,
-    nao_aplicaveis: naoAplicaveis,
-    ncs_geradas: ncs_encontradas.length,
-    status: 'concluida',
-    criado_em: new Date().toISOString(),
-  };
-
-  comgas_inspecoes.unshift(inspecao);
-  if (!DEMO) sbInsert('comgas_inspecoes', inspecao).catch(function(){});
-
-  // Gerar uma única NC com todos os itens + um plano de ação
-  if (ncs_encontradas.length > 0) {
-    var cfgNc=inspCampoModuloCfg('comgas');
-    var ncUnif=inspCampoCriarNcUnificada(inspecao, ncs_encontradas, cfgNc);
-    if(ncUnif) inspCampoCriarPaUnificado('comgas', ncUnif, inspecao, ncs_encontradas);
-
-    auditLog('criar','sesmt','Inspeção COMGÁS com '+ncs_encontradas.length+' itens NC — 1 NC agrupada — '+meta.local, {tipo:tipo});
-
-    var msg = '✅ Inspeção salva!\n\n1 NC aberta com '+ncs_encontradas.length+' item(ns) não conforme(s).\n1 plano de ação criado automaticamente.\nDeseja abrir as NCs agora?';
-    if (confirm(msg)) {
-      comgasShowTab('nc');
-      return;
-    }
-  } else {
-    auditLog('criar','sesmt','Inspeção COMGÁS concluída sem NCs — '+meta.local, {tipo:tipo});
-    alert('✅ Inspeção salva com sucesso!\n'+conformes+' itens conformes. Nenhuma NC registrada.');
-  }
-
-  comgasShowTab('inspecoes');
-}
-
-// ── RENDER INSPEÇÕES ─────────────────────────────────────────────────
-function comgasRenderInspecoes() {
-  var filtStatus = (document.getElementById('cg-insp-fil-status')||{}).value || '';
-  var filtTipo   = (document.getElementById('cg-insp-fil-tipo')||{}).value || '';
-  var filtData   = (document.getElementById('cg-insp-fil-data')||{}).value || '';
-
-  var lista = comgas_inspecoes.filter(function(i){
-    if (filtStatus && i.status !== filtStatus) return false;
-    if (filtTipo && i.tipo !== filtTipo) return false;
-    if (filtData && (i.data||'').slice(0,10) !== filtData) return false;
-    return true;
-  });
-
-  var el = document.getElementById('comgas-insp-lista');
-  if (!el) return;
-
-  if (!lista.length) {
-    el.innerHTML = '<div style="text-align:center;color:#aaa;padding:2rem;font-size:12px">Nenhuma inspeção encontrada.</div>';
-    return;
-  }
-
-  el.innerHTML = '<div style="overflow-x:auto"><table class="tbl" style="font-size:12px">'
-    +'<thead><tr><th>Data</th><th>Tipo</th><th>Contrato</th><th>Equipe</th><th>Inspetor</th><th>C</th><th>NC</th><th>Resultado</th><th>Status</th><th></th></tr></thead>'
-    +'<tbody>'+lista.map(function(i){
-      var ncs = i.nao_conformes||i.ncs_geradas||0;
-      var rc = i.resultado==='positivo'?'#3B6D11':(i.resultado==='negativo'?'#A32D2D':'#888');
-      return '<tr>'
-        +'<td style="white-space:nowrap">'+((i.data||'').slice(0,10))+'</td>'
-        +'<td style="white-space:nowrap">'+inspCampoLabelTipo(i)+'</td>'
-        +'<td style="font-size:11px">'+(i.contrato_label||i.contrato||'—')+'</td>'
-        +'<td style="font-size:11px">'+(i.equipe_codigo||'—')+'</td>'
-        +'<td style="font-size:11px">'+(i.inspetor||'—')+'</td>'
-        +'<td style="text-align:center;color:#3B6D11;font-weight:600">'+(i.conformes||0)+'</td>'
-        +'<td style="text-align:center"><span style="background:'+(ncs>0?'#A32D2D22':'#f0efe8')+';color:'+(ncs>0?'#A32D2D':'#888')+';border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">'+ncs+'</span></td>'
-        +'<td style="font-size:11px;color:'+rc+';font-weight:600">'+(i.resultado?(i.resultado==='positivo'?'Positivo':'Negativo'):'—')+'</td>'
-        +'<td><span style="background:#e0dfd8;border-radius:4px;padding:1px 6px;font-size:10px">'+(i.status||'—')+'</span></td>'
-        +'<td><button class="btn btn-sm" style="font-size:10px" onclick="comgasVerInspecao(\''+i.id+'\')">Ver</button></td>'
-        +'</tr>';
-    }).join('')+'</tbody></table></div>';
-}
-
-function comgasVerInspecao(id) {
-  var i = comgas_inspecoes.find(function(x){return x.id===id;});
-  if (!i) return;
-  if (i.tipo==='campo_vistoria'||i.versao_campo>=2) return inspCampoVerInspecao('comgas', id);
-  return comgasVerInspecaoLegacy(id);
-}
-
-function comgasVerInspecaoLegacy(id) {
-  var i = comgas_inspecoes.find(function(x){return x.id===id;});
-  if (!i) return;
-  var ck = COMGAS_CHECKLISTS[i.tipo]||{};
-  var ncs_rel = comgas_ncs.filter(function(n){return n.inspecao_id===id;});
-
-  var html = '<div class="modal-bg"><div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">'
-    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:1rem">'
-    +'<span style="font-size:20px">'+(ck.icon||'🔍')+'</span>'
-    +'<div><h3 style="margin:0">'+(ck.label||i.tipo)+'</h3>'
-    +'<div style="font-size:11px;color:#888">'+(i.data||'')+'&nbsp;·&nbsp;'+(i.local||'')+'</div></div>'
-    +'<button class="btn btn-sm" onclick="closeModal()" style="margin-left:auto">Fechar</button>'
-    +'</div>'
-    +'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:1rem">'
-    +'<div style="background:#3B6D1120;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Conformes</div><div style="font-size:20px;font-weight:700;color:#3B6D11">'+(i.conformes||0)+'</div></div>'
-    +'<div style="background:#A32D2D20;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Não Conformes</div><div style="font-size:20px;font-weight:700;color:#A32D2D">'+(i.nao_conformes||i.ncs_geradas||0)+'</div></div>'
-    +'<div style="background:#88888820;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">N/A</div><div style="font-size:20px;font-weight:700;color:#888">'+(i.nao_aplicaveis||0)+'</div></div>'
-    +'</div>';
-
-  if (ncs_rel.length) {
-    html += '<div style="margin-bottom:.75rem"><div style="font-size:12px;font-weight:600;margin-bottom:.5rem">⚠️ Não Conformidades geradas:</div>'
-      +ncs_rel.map(function(n){
-        var cor = {grave:'#A32D2D',media:'#854F0B',leve:'#185FA5'}[n.gravidade]||'#555';
-        var qtd=inspCampoNcItensQtd(n);
-        return '<div style="background:'+cor+'11;border-left:3px solid '+cor+';border-radius:4px;padding:.5rem .75rem;margin-bottom:.4rem;font-size:11px">'
-          +'<b>'+escHtml(n.descricao||'')+'</b>'
-          +(qtd>1?inspCampoNcItensHtml(n):(inspCampoNcObsResumo(n)?'<br><span style="color:#666">'+escHtml(inspCampoNcObsResumo(n))+'</span>':''))
-          +'</div>';
-      }).join('')+'</div>';
-  }
-
-  if (i.obs_geral) {
-    html += '<div style="font-size:12px;color:#555;background:#f5f5f3;border-radius:6px;padding:.6rem;font-size:11px"><b>Obs. gerais:</b> '+i.obs_geral+'</div>';
-  }
-
-  html += '</div></div>';
-  setModal(html);
-}
-
-// ── NÃO CONFORMIDADES ────────────────────────────────────────────────
-function comgasRenderNCs() {
-  var filtGrav   = (document.getElementById('cg-nc-fil-grav')||{}).value || '';
-  var filtStatus = (document.getElementById('cg-nc-fil-status')||{}).value || '';
-
-  var lista = comgas_ncs.filter(function(n){
-    if (filtGrav && n.gravidade !== filtGrav) return false;
-    if (filtStatus && n.status !== filtStatus) return false;
-    return true;
-  });
-
-  var el = document.getElementById('comgas-nc-lista');
-  if (!el) return;
-
-  if (!lista.length) {
-    el.innerHTML = '<div style="text-align:center;color:#aaa;padding:2rem;font-size:12px">Nenhuma NC encontrada.</div>';
-    return;
-  }
-
-  el.innerHTML = lista.map(function(n){
-    var cor = {grave:'#A32D2D',media:'#854F0B',leve:'#185FA5'}[n.gravidade]||'#555';
-    var statusCor = {aberta:'#854F0B',em_andamento:'#185FA5',encerrada:'#3B6D11'}[n.status]||'#888';
-    var pa_vinc = comgas_pa.filter(function(p){return p.nc_id===n.id;});
-    var qtdItens=inspCampoNcItensQtd(n);
-    var obsResumo=inspCampoNcObsResumo(n);
-    return '<div class="card" style="margin-bottom:.75rem;border-left:3px solid '+cor+'">'
-      +'<div style="display:flex;align-items:flex-start;gap:10px">'
-      +'<span style="background:'+cor+'22;color:'+cor+';border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0">'+((n.gravidade||'?').toUpperCase())+'</span>'
-      +'<div style="flex:1">'
-      +'<div style="font-size:13px;font-weight:600;margin-bottom:3px">'+(n.descricao||'—')+'</div>'
-      +(qtdItens>1?'<div style="font-size:10px;color:#A32D2D;font-weight:600;margin-bottom:4px">📋 '+qtdItens+' itens nesta NC</div>':'')
-      +'<div style="font-size:11px;color:#888">'
-      +(n.local?'📍 '+n.local+'&nbsp;·&nbsp;':'')
-      +(n.contrato?'📋 '+n.contrato+'&nbsp;·&nbsp;':'')
-      +(n.criado_em?'🗓 '+n.criado_em.slice(0,10):'')
-      +'</div>'
-      +(qtdItens>1?inspCampoNcItensHtml(n):(obsResumo?'<div style="font-size:11px;color:#666;margin-top:3px">'+escHtml(obsResumo)+'</div>':''))
-      +((n.fotos&&n.fotos.length)?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+n.fotos.map(function(f){return '<img src="'+f+'" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:.5px solid #e0dfd8;c
+/** Restaura itens de NC agrupada
