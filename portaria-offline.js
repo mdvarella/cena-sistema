@@ -12,6 +12,7 @@ var PORT_OFF_DB_VER = 1;
 var PORT_OFF_TTL_MS = 48 * 3600 * 1000;
 var PORT_OFF_LOCK_MS = 2500;
 var PORT_OFF_RETRY = [0, 4000, 12000, 30000, 60000];
+var PORT_OFF_MAX_TENTATIVAS_AUTO = 3;
 
 var _db = null;
 var _syncing = false;
@@ -812,7 +813,10 @@ async function portOffSyncPendentes(){
   }
   var lista=await portOffListEvents();
   var fila=portOffOrdenarFila(lista.filter(function(e){
-    return e && (e.status_sync==='PENDENTE' || e.status_sync==='ERRO' || e.status_sync==='SINCRONIZANDO');
+    if(!e) return false;
+    if(e.status_sync==='PENDENTE' || e.status_sync==='SINCRONIZANDO') return true;
+    if(e.status_sync==='ERRO') return (e.tentativas_sync||0)<PORT_OFF_MAX_TENTATIVAS_AUTO;
+    return false;
   }));
   if(!fila.length){
     _backoffIdx=0;
@@ -1071,11 +1075,19 @@ function portOffAbrirPainel(){
           var saida=(p.saida)||{};
           var eq=saida.equipe||p.placa||saida.placa||'—';
           var vei=saida.placa||p.placa||'—';
+          var travado=e.status_sync==='ERRO' && (e.tentativas_sync||0)>=PORT_OFF_MAX_TENTATIVAS_AUTO;
           return '<div style="background:#f7f7f4;border-radius:8px;padding:8px 10px;margin-bottom:4px;font-size:12px">'
             +'<div style="font-weight:700">'+portOffTipoLabel(e.tipo_evento)+' · '+escHtml(String(eq))+'</div>'
             +'<div style="color:#555">Veículo: '+escHtml(String(vei))+' · Evento: '+escHtml(portOffFmtHora(e.data_hora_evento))+'</div>'
             +'<div style="font-size:11px;color:#888">Status: '+escHtml(e.status_sync)+' · Tentativas: '+(e.tentativas_sync||0)+'</div>'
             +(e.ultimo_erro?'<div style="font-size:11px;color:#A32D2D;margin-top:3px">'+escHtml(e.ultimo_erro)+'</div>':'')
+            +(travado
+              ? '<div style="font-size:11px;color:#854F0B;margin-top:3px">Excedeu '+PORT_OFF_MAX_TENTATIVAS_AUTO+' tentativas automáticas — requer ação manual.</div>'
+                +'<div style="margin-top:6px;display:flex;gap:6px">'
+                +'<button class="btn btn-sm" onclick="portOffTentarEventoAgora(\''+e.event_id+'\')" style="font-size:11px">🔄 Tentar novamente</button>'
+                +'<button class="btn btn-sm" onclick="portOffExcluirEvento(\''+e.event_id+'\')" style="color:#fff;background:#A32D2D;border-color:#A32D2D;font-size:11px;font-weight:700">🗑 Excluir</button>'
+                +'</div>'
+              : '')
             +'</div>';
         }).join('')+'</div>';
     }
@@ -1119,6 +1131,36 @@ function portOffDescartarConflitos(){
       portOffAbrirPainel();
     }).catch(function(){ portOffToast('⚠ Não foi possível descartar todos.','erro'); portOffAbrirPainel(); });
   });
+}
+
+/** Retentativa manual de um único evento travado (excedeu tentativas automáticas). */
+function portOffTentarEventoAgora(eventId){
+  portOffGetEvent(eventId).then(function(ev){
+    if(!ev){ portOffToast('Evento não encontrado.','erro'); return; }
+    portOffToast('🔄 Tentando novamente…');
+    return portOffSyncUm(ev).then(function(res){
+      portOffRenderIndicador();
+      portOffAbrirPainel();
+      if(res && res.status_sync==='SINCRONIZADO') portOffToast('✅ Sincronizado.','ok');
+      else if(res && res.status_sync==='CONFLITO') portOffToast('⚠ Em conflito — veja o painel.','aviso');
+      else portOffToast('⚠ Ainda não foi possível sincronizar.','erro');
+    });
+  }).catch(function(){ portOffToast('⚠ Erro ao tentar novamente.','erro'); });
+}
+
+/** Exclui manualmente um evento específico da fila (ex.: preso por dependência quebrada). Nunca automático. */
+function portOffExcluirEvento(eventId){
+  portOffGetEvent(eventId).then(function(ev){
+    if(!ev){ portOffToast('Evento não encontrado.','erro'); return; }
+    if(!confirm('Excluir este evento da fila deste tablet?\n\nEsse registro NUNCA foi enviado ao sistema e será descartado apenas aqui — não é possível desfazer.')) return;
+    return portOffApagarFotos((ev.payload&&ev.payload.fotos)||{}).catch(function(){}).then(function(){
+      return portOffDel('portaria_eventos', eventId);
+    }).then(function(){
+      portOffToast('✅ Evento excluído.','ok');
+      portOffRenderIndicador();
+      portOffAbrirPainel();
+    });
+  }).catch(function(){ portOffToast('⚠ Não foi possível excluir.','erro'); });
 }
 
 function portOffSyncAgora(){
@@ -1216,6 +1258,8 @@ global.portOffHidatarCache=portOffHidatarCache;
 global.portOffInit=portOffInit;
 global.portOffAbrirPainel=portOffAbrirPainel;
 global.portOffDescartarConflitos=portOffDescartarConflitos;
+global.portOffTentarEventoAgora=portOffTentarEventoAgora;
+global.portOffExcluirEvento=portOffExcluirEvento;
 global.portOffSyncAgora=portOffSyncAgora;
 global.portOffRenderIndicador=portOffRenderIndicador;
 global.portOffOnConnectivityChange=portOffOnConnectivityChange;
