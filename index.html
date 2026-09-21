@@ -1937,7 +1937,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.089"></script>
+<script src="portaria-offline.js?v=8.1.090"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43107,10 +43107,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.089',
+  numero: '8.1.090',
   data:   '20/09/2026',
-  build:  '20260920-1930',
+  build:  '20260920-2030',
   log: [
+    {v:'8.1.090', d:'20/09/2026', itens:[
+      'Portaria/KM — CORREÇÃO do bloqueio falso “não foi dado retorno da saída anterior”: uma saída encerrada SEM KM (encerramento administrativo: status=Retornado + data_retorno, km_retorno vazio) era tratada como AINDA ABERTA pelo portKmSaidaAbertaSemRetorno (ele exigia km_retorno), travando novas saídas mesmo depois de fechada. Agora considera FECHADA toda saída com status=Retornado OU data_retorno (com ou sem KM). Além disso, ao abrir a Vistoria de Saída, o sistema rebusca as saídas daquela placa e reconcilia a memória (evita bloqueio por dado velho fechado em outro tablet/turno). Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.089', d:'20/09/2026', itens:[
       'Portaria — saídas que gravavam FORA da fila offline (perda em queda de rede, Failed to fetch): a liberação de equipe com foto (portAbrirLiberacaoEquipe) e a saída rápida de Frotas (frtPortariaAbrirSaida) chamavam portInsertSaidaDB/sbInsert direto. Agora passam por portOffRegistrarSaida (fila offline: resiste à queda de rede, guarda a foto e sincroniza sozinho com horário real); fallback ao insert direto (com aviso de erro) só se o módulo offline não estiver carregado. Sem SQL. REQUER DEPLOY. HOMOLOGAÇÃO.',
     ]},
@@ -84244,6 +84247,8 @@ function portAbrirLiberacaoEquipe(eqId, data){
     var veic = frt_veiculos.find(function(v){return v.placa===placa;});
     if(veic) modelo = veic.modelo||veic.tipo||'';
   }
+  // Reconcilia a memória com o servidor (evita bloqueio falso por saída fechada em outro tablet/turno).
+  if(placa && typeof portRefrescarSaidasPlaca==='function') portRefrescarSaidasPlaca(placa);
   var ids = comp ? parseColabIds(comp.colaborador_ids).filter(Boolean) : [];
   var nomesColab = ids.map(function(id){
     var f=colaboradores.find(function(x){return x.id===id;}); return f?f.nome:'?';
@@ -85722,6 +85727,15 @@ function portKmValorDoRegistro(p){
   return Math.max(parseFloat(p.km_retorno)||0, parseFloat(p.km_saida)||0);
 }
 /** Saída ainda sem retorno (qualquer dia) — exceção ao liberar nova saída. */
+/** Rebusca as saídas recentes de UMA placa e reconcilia a memória (status atualizado por
+ *  outro tablet/turno). Evita bloqueio falso por dado velho na memória. */
+function portRefrescarSaidasPlaca(placa){
+  if(DEMO || typeof sbFetch!=='function' || !placa) return Promise.resolve();
+  var sel=(typeof PORT_SAIDA_SEL_LISTA!=='undefined')?PORT_SAIDA_SEL_LISTA:'*';
+  return sbFetch('frotas_portaria_saidas',{select:sel, filters:['placa=eq.'+encodeURIComponent(placa)], order:'data_saida.desc', limit:60})
+    .then(function(rows){ if(rows && rows.length && typeof portMesclarSaidas==='function') portMesclarSaidas(rows); })
+    .catch(function(){});
+}
 function portKmSaidaAbertaSemRetorno(placa, opts){
   opts = opts||{};
   var pl = portNormPlaca(placa);
@@ -85730,9 +85744,12 @@ function portKmSaidaAbertaSemRetorno(placa, opts){
     if(portNormPlaca(p.placa)!==pl) return false;
     if(opts.excluirId && String(p.id)===String(opts.excluirId)) return false;
     if(p.status==='Cancelado' || p.deleted_at) return false;
+    // FECHADA = status Retornado OU tem data_retorno OU tem km_retorno.
+    // Inclui encerramento administrativo (Retornado + data_retorno, SEM km) — que antes
+    // era tratado como "aberta" por não ter km_retorno e travava novas saídas.
+    if(p.status==='Retornado') return false;
+    if(p.data_retorno) return false;
     var temRet = p.km_retorno!=null && p.km_retorno!=='' && !isNaN(parseFloat(p.km_retorno));
-    if(p.status==='Em campo') return true;
-    if(p.status==='Retornado' && temRet) return false;
     return !temRet;
   });
   if(!list.length) return null;
