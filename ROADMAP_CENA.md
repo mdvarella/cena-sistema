@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 21/09/2026  
-**Versão atual do sistema:** `8.1.094` (21/09/2026, build `20260921-1500`)  
+**Versão atual do sistema:** `8.1.095` (21/09/2026, build `20260921-1600`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -367,8 +367,8 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
   FRO-MUL-1: modal Editar/Nova multa com Município, Código, Tipo de
   Infração, Gravidade e Valor C/ Desconto (se flagar desconto).
-  Exclusão com justificativa (soft-delete). SQL manual
-  `sql_frotas_documentos_multa_extra.sql` (**não executar** pelo ERP).
+  Exclusão com justificativa (soft-delete). Importação em massa Excel.
+  SQL manual `sql_frotas_documentos_multa_extra.sql` (**não executar**).
 
 # 10. Programação
 
@@ -456,6 +456,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 21/09/2026 | 8.1.095 | Frotas Multas: + Nova multa volta a abrir a modal (`#modal-area` recriado se faltar). Importação em massa Excel/CSV + modelo. Sem SQL novo. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.094 | FRO-MUL-1: modal de multa com Município, Código, Tipo de Infração, Gravidade e Valor C/ Desconto; exclusão com justificativa (soft-delete). SQL `sql_frotas_documentos_multa_extra.sql` (não aplicar). HOMOLOGAÇÃO. |
 | 20/09/2026 | 8.1.093 | TMA-OPS-1: Programação TMA troca “Saída OK” manual por Operação (Portaria + Diário + OS) em lote, com virada de dia. Sem SQL, sem deploy. HOMOLOGAÇÃO. |
 | 20/09/2026 | 8.1.084 | PWA: reativado o convite “Instalar na tela inicial” **só em celular/tablet** (nunca desktop — lá a versão instalada divergia do browser). Aparece após login quando não instalado; iOS/Safari com instrução manual; gate por `data-device` + dispensa por sessão. Sem SQL, sem deploy. HOMOLOGAÇÃO. |
