@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.098"></script>
+<script src="portaria-offline.js?v=8.1.099"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -8933,7 +8933,7 @@ function showRoomFetchLeve(){
       .then(function(r){ if(r&&r.length) portMesclarSaidas(r); }).catch(function(){}));
   }
   if(!(typeof frt_documentos!=='undefined' && frt_documentos && frt_documentos.length)){
-    jobs.push(sbFetch('frotas_documentos',{order:'validade',limit:3000})
+    jobs.push(frtFetchDocumentosCompleto()
       .then(function(r){ if(r&&r.length) frt_documentos=(typeof fdocNormRows==='function'?fdocNormRows(r):r); }).catch(function(){}));
   }
   if(!(typeof frt_veiculos!=='undefined' && frt_veiculos && frt_veiculos.length)){
@@ -11934,7 +11934,7 @@ function relFrotasGerar(){
   }
   // Documentos
   if(!DEMO){
-    jobs.push(sbFetch('frotas_documentos',{order:'validade',limit:5000}).then(function(r){
+    jobs.push(frtFetchDocumentosCompleto().then(function(r){
       if(r&&r.length) frt_documentos=(typeof fdocNormRows==='function'?fdocNormRows(r):r);
     }).catch(function(){}));
   }
@@ -43164,10 +43164,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.098',
+  numero: '8.1.099',
   data:   '21/09/2026',
-  build:  '20260921-1725',
+  build:  '20260921-1755',
   log: [
+    {v:'8.1.099', d:'21/09/2026', itens:[
+      'Frotas Multas: lista voltava vazia após importar — o reload puxava só 1000 documentos (ordenados por validade) e as multas novas ficavam de fora. Agora carrega a tabela inteira; se faltar coluna no banco, a importação grava o restante (não some). Sem SQL. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.098', d:'21/09/2026', itens:[
       'Frotas Multas: importação Excel busca o motorista na escala/portaria (placa + data + hora). Botão “Vincular motorista” faz o mesmo nas multas já lançadas sem condutor. Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -62429,7 +62432,7 @@ function avColPrimeFrota(){
   _avColFrotaPrimePromise=(async function(){
     // Multas (frotas_documentos tipo=Multa) — merge sem duplicar no frt_documentos
     try{
-      var docs=await sbFetch('frotas_documentos',{filters:['tipo=eq.Multa'],order:'validade.desc',limit:5000})||[];
+      var docs=(typeof sbFetchAll==='function'?await sbFetchAll('frotas_documentos',{filters:['tipo=eq.Multa'],order:'id.desc',maxPages:10}):await sbFetch('frotas_documentos',{filters:['tipo=eq.Multa'],order:'id.desc',limit:5000}))||[];
       if(typeof frt_documentos==='undefined'||!frt_documentos) frt_documentos=[];
       var ids={}; frt_documentos.forEach(function(x){ if(x&&x.id) ids[x.id]=true; });
       docs.forEach(function(x){ if(x&&x.id&&!ids[x.id]) frt_documentos.push(typeof fdocNormRow==='function'?fdocNormRow(x):x); });
@@ -82059,6 +82062,25 @@ var FRT_INTEGRACOES = [
 
 // ── Inicialização ─────────────────────────────────────────────
 /** Carrega frota completa (paginado) — sbFetch padrão corta em 1000 e some placas no meio/fim do alfabeto. */
+
+function frtFetchDocumentosCompleto(){
+  if(DEMO) return Promise.resolve(frt_documentos||[]);
+  function apply(rows){
+    rows=(rows||[]).filter(function(d){ return d && (typeof fdocDocAtivo!=='function' || fdocDocAtivo(d)); });
+    return typeof fdocNormRows==='function'?fdocNormRows(rows):rows;
+  }
+  function viaLimit(){
+    return sbFetch('frotas_documentos',{order:'id.desc',limit:5000}).then(function(r){ return apply(r||[]); }).catch(function(){
+      return sbFetch('frotas_documentos',{order:'validade',limit:5000}).then(function(r){ return apply(r||[]); }).catch(function(){ return []; });
+    });
+  }
+  if(typeof sbFetchAll==='function'){
+    return sbFetchAll('frotas_documentos',{order:'id.desc',maxPages:20})
+      .then(function(r){ return (r&&r.length)?apply(r):viaLimit(); })
+      .catch(viaLimit);
+  }
+  return viaLimit();
+}
 function frtFetchVeiculosCompleto(){
   if(DEMO) return Promise.resolve(frt_veiculos||[]);
   if(typeof sbFetchAll==='function'){
@@ -82296,7 +82318,7 @@ function frtInit(subpage){
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
       p('frotas_avarias',{order:'data.desc'}),
-      p('frotas_documentos',{order:'validade'}),
+      frtFetchDocumentosCompleto(),
       p('frotas_riscos_auditoria',{filters:['status=neq.Resolvido'],order:'criado_em.desc'}),
       p('frotas_motorista_documentos',{order:'atualizado_em.desc',limit:3000}),
       p('frotas_veiculo_implementos',{order:'criado_em.asc',limit:5000}),
@@ -82312,6 +82334,14 @@ function frtInit(subpage){
       if(res[7]){ frt_motorista_docs = res[7]||[]; _fmdLoaded=true; }
       if(res[8]){ frt_implementos = res[8]||[]; _fviLoaded=true; }
       if(res[9]){ frt_impl_tipos_extra = (res[9]||[]).filter(function(t){return t.ativo!==false;}).map(function(t){return t.nome;}); }
+      if(subpage==='frotas-documentos' || subpage==='frotas-multas'){
+        try{
+          var abaMul=document.getElementById('fdoc-aba-multas');
+          if(abaMul && abaMul.style.display!=='none' && typeof fdocRenderMultas==='function') fdocRenderMultas();
+          else if(typeof fdocRenderDocs==='function') fdocRenderDocs();
+          else if(typeof frtDocRender==='function') frtDocRender();
+        }catch(eR){}
+      }
       // Re-renderizar dashboard se estiver nele (agora com dados completos)
       if(subpage==='frotas-dashboard') frtDashRender();
       if(subpage==='frotas-veiculos') frtVeiculosRender();
@@ -82340,7 +82370,7 @@ function frtCarregarDados(){
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
       p('frotas_avarias',{order:'data.desc'}),
-      p('frotas_documentos',{order:'validade'}),
+      frtFetchDocumentosCompleto(),
       p('frotas_riscos_auditoria',{filters:['status=neq.Resolvido'],order:'criado_em.desc'}),
       p('frotas_motorista_documentos',{order:'atualizado_em.desc',limit:3000}),
     ]).then(function(res){
@@ -88979,6 +89009,34 @@ function fdocAtualizarCamposTipo(){
   wrap.innerHTML=html;
 }
 
+
+async function fdocInsertComFallback(payload){
+  var p=Object.assign({}, payload||{});
+  ['created_at','updated_at','data_emissao','data_vencimento','numero_documento','observacao','id','_linha','_placaCad','_condFonte'].forEach(function(k){ delete p[k]; });
+  var nuclear=['colaborador_id','anexo_url','data_validade','empresa_executora','laudo_certificado',
+    'numero_auto','orgao_emissor','data_infracao','hora_infracao','local_infracao','condutor_responsavel',
+    'pontos_cnh','desconto_disponivel','status_recurso','pago','data_pagamento'];
+  var extra=(typeof FDOC_MULTA_EXTRA_COLS!=='undefined'?FDOC_MULTA_EXTRA_COLS:[]);
+  for(var tentativa=0; tentativa<12; tentativa++){
+    var res=await sbInsert('frotas_documentos', p, {silent:true});
+    if(typeof fdocSaveOk==='function'?fdocSaveOk(res):(res&&(res.length||res===true))) return res;
+    var err=String(window._sbLastInsertErr||'');
+    var m=err.match(/Could not find the '([^']+)' column/i);
+    if(m && m[1] && Object.prototype.hasOwnProperty.call(p, m[1])){
+      if(m[1]==='valor') window._frotasDocsTemValor=false;
+      if(extra.indexOf(m[1])>=0) window._frotasDocsTemMultaExtra=false;
+      delete p[m[1]];
+      continue;
+    }
+    if(p.valor!=null){ window._frotasDocsTemValor=false; delete p.valor; continue; }
+    var tinha=false;
+    extra.forEach(function(k){ if(k in p){ tinha=true; delete p[k]; } });
+    if(tinha){ window._frotasDocsTemMultaExtra=false; continue; }
+    nuclear.forEach(function(k){ delete p[k]; });
+    return sbInsert('frotas_documentos', p, {silent:true});
+  }
+  return null;
+}
 function fdocSaveOk(res){
   if(res===true) return true;
   if(!res || res===false) return false;
@@ -89642,19 +89700,7 @@ async function fdocMultaImportConfirm(){
       continue;
     }
     var payload=fdocPayloadDb(dados);
-    ['created_at','updated_at','data_emissao','data_vencimento','numero_documento','observacao'].forEach(function(k){ delete payload[k]; });
-    var res=await sbInsert('frotas_documentos', payload, {silent:true});
-    if(!fdocSaveOk(res) && payload.valor!=null){
-      window._frotasDocsTemValor=false;
-      var pVal=Object.assign({},payload); delete pVal.valor;
-      res=await sbInsert('frotas_documentos', pVal, {silent:true});
-    }
-    if(!fdocSaveOk(res)){
-      window._frotasDocsTemMultaExtra=false;
-      var pExtra=Object.assign({},payload); delete pExtra.valor;
-      FDOC_MULTA_EXTRA_COLS.forEach(function(k){ delete pExtra[k]; });
-      res=await sbInsert('frotas_documentos', pExtra, {silent:true});
-    }
+    var res=await fdocInsertComFallback(payload);
     if(fdocSaveOk(res)){
       var saved=Array.isArray(res)?res[0]:res;
       if(saved&&saved.id) dados.id=saved.id;
