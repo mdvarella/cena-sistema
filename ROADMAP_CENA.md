@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 21/09/2026  
-**Versão atual do sistema:** `8.1.099` (21/09/2026, build `20260921-1755`)  
+**Versão atual do sistema:** `8.1.100` (21/09/2026, build `20260921-1810`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -456,6 +456,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 21/09/2026 | 8.1.100 | Frotas Multas: reimportar planilha atualiza valor das já lançadas (placa+nº auto), sem duplicar. SQL opcional `sql_frotas_documentos_valor.sql` se a coluna não existir (não aplicar pelo ERP). HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.099 | Frotas Multas: lista não perde mais importadas no reload (carrega todos os documentos, não só 1000 por validade); importação resiste a coluna ausente. Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.098 | Frotas Multas: importação Excel vincula motorista pela escala/portaria (placa+data+hora); botão “Vincular motorista” para multas já lançadas. Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.097 | PWA: botão “Atualizar app” da Portaria (`cenaForcarAtualizacao`) restaurado; modais de versão/multa com `#modal-area`. Sem SQL. HOMOLOGAÇÃO. |

@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.099"></script>
+<script src="portaria-offline.js?v=8.1.100"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43164,10 +43164,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.099',
+  numero: '8.1.100',
   data:   '21/09/2026',
-  build:  '20260921-1755',
+  build:  '20260921-1810',
   log: [
+    {v:'8.1.100', d:'21/09/2026', itens:[
+      'Frotas Multas: reimportar a planilha atualiza o valor das multas já lançadas (placa + nº auto), sem duplicar e sem erro. SQL opcional sql_frotas_documentos_valor.sql se a coluna valor ainda não existir (NÃO executar pelo ERP). HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.099', d:'21/09/2026', itens:[
       'Frotas Multas: lista voltava vazia após importar — o reload puxava só 1000 documentos (ordenados por validade) e as multas novas ficavam de fora. Agora carrega a tabela inteira; se faltar coluna no banco, a importação grava o restante (não some). Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -89037,6 +89040,33 @@ async function fdocInsertComFallback(payload){
   }
   return null;
 }
+
+async function fdocUpdateComFallback(id, payload){
+  if(!id) return false;
+  if(typeof isUUID==='function' && !isUUID(id)) return false;
+  var p=Object.assign({}, payload||{});
+  ['created_at','updated_at','data_emissao','data_vencimento','numero_documento','observacao','id','_linha','_placaCad','_condFonte','_existId','_acao','tipo'].forEach(function(k){ delete p[k]; });
+  var extra=(typeof FDOC_MULTA_EXTRA_COLS!=='undefined'?FDOC_MULTA_EXTRA_COLS:[]);
+  for(var tentativa=0; tentativa<12; tentativa++){
+    if(!Object.keys(p).length) return false;
+    var ok=await sbUpdate('frotas_documentos', p, 'id=eq.'+id, {silent:true});
+    if(ok) return true;
+    var err=String(window._sbLastUpdateErr||window._sbLastInsertErr||'');
+    var m=err.match(/Could not find the '([^']+)' column/i);
+    if(m && m[1] && Object.prototype.hasOwnProperty.call(p, m[1])){
+      if(m[1]==='valor') window._frotasDocsTemValor=false;
+      if(extra.indexOf(m[1])>=0) window._frotasDocsTemMultaExtra=false;
+      delete p[m[1]];
+      continue;
+    }
+    if(p.valor!=null){ window._frotasDocsTemValor=false; delete p.valor; continue; }
+    var tinha=false;
+    extra.forEach(function(k){ if(k in p){ tinha=true; delete p[k]; } });
+    if(tinha){ window._frotasDocsTemMultaExtra=false; continue; }
+    return false;
+  }
+  return false;
+}
 function fdocSaveOk(res){
   if(res===true) return true;
   if(!res || res===false) return false;
@@ -89311,7 +89341,7 @@ function fdocImportarMultas(){
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">'
     +'<h3 style="margin:0">📥 Importar multas (Excel)</h3>'
     +'<button class="btn" onclick="closeModal()" style="padding:3px 9px">✕</button></div>'
-    +'<div style="font-size:12px;color:#666;margin-bottom:.6rem;line-height:1.5">Planilha <b>.xlsx / .xls / .csv</b>. Coluna obrigatória: <b>Placa</b>. Com <b>Data Infração</b> (e Hora, se houver), o sistema busca o motorista na escala/portaria daquele veículo — não precisa preencher Condutor na planilha. Reconhecidas também: Nº Auto, Órgão, Hora, Município, Local, Código, Tipo de Infração, Gravidade, Pontos, Valor, Valor C/ Desconto, Desconto, Vencimento, Status, Recurso, Condutor, RE, Observação.</div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:.6rem;line-height:1.5">Planilha <b>.xlsx / .xls / .csv</b>. Coluna obrigatória: <b>Placa</b>. Se a multa já existir (<b>placa + nº auto</b>), a planilha <b>atualiza o valor</b> e os demais campos — não duplica e não dá erro. Com <b>Data Infração</b> (e Hora), busca o motorista na escala/portaria. Reconhecidas também: Nº Auto, Órgão, Hora, Município, Local, Código, Tipo de Infração, Gravidade, Pontos, Valor, Valor C/ Desconto, Desconto, Vencimento, Status, Recurso, Condutor, RE, Observação.</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.6rem">'
     +'<button class="btn" onclick="fdocMultaBaixarModelo()">⬇ Baixar modelo</button>'
     +'</div>'
@@ -89426,7 +89456,20 @@ function fdocMultaImportPreview(rows){
   var cTipo=col(/tipo/i);
   var cGrav=col(/gravidade/i);
   var cPts=col(/pontos/i);
-  var cValor=col(/^valor$|valor(?!.*desc)/i);
+  var cValor=null;
+  headers.forEach(function(h){
+    var s=String(h||'').toLowerCase();
+    try{ s=s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }catch(eN){}
+    if(/^valor$/.test(s) || /^valor\s*(r\$|da multa|infracao|multa)/.test(s) || /^vl\.?\s*(infrac|multa)?$/.test(s)){
+      if(!cValor) cValor=h;
+    }
+  });
+  if(!cValor){
+    headers.forEach(function(h){
+      var s=String(h||'').toLowerCase();
+      if(/valor/.test(s) && !/desc/.test(s) && !cValor) cValor=h;
+    });
+  }
   var cVDesc=col(/desc/i);
   var cDescFlag=col(/^desconto$|desconto\?|antecip/i);
   var cVenc=col(/venc/i);
@@ -89439,8 +89482,10 @@ function fdocMultaImportPreview(rows){
   var ja={};
   (frt_documentos||[]).forEach(function(d){
     if(String(d.tipo||'')!=='Multa' || d.deleted_at) return;
-    var k=(typeof frtNormPlaca==='function'?frtNormPlaca(d.placa):String(d.placa||'').toUpperCase())+'|'+(d.numero_auto||d.numero||'');
-    ja[k]=true;
+    var auto=String(d.numero_auto||d.numero||'').trim();
+    if(!auto) return;
+    var k=(typeof frtNormPlaca==='function'?frtNormPlaca(d.placa):String(d.placa||'').toUpperCase())+'|'+auto;
+    ja[k]=d;
   });
   var recs=[], semPlaca=0, dups=0, semCad=[];
   rows.forEach(function(r, idx){
@@ -89450,8 +89495,11 @@ function fdocMultaImportPreview(rows){
     var placa=veic?(veic.placa||placaRaw):placaRaw;
     var auto=cAuto?String(r[cAuto]||'').trim():'';
     var key=(typeof frtNormPlaca==='function'?frtNormPlaca(placa):placa.toUpperCase())+'|'+auto;
-    if(auto && ja[key]){ dups++; return; }
-    ja[key]=true;
+    var exist=null;
+    if(auto && ja[key]){
+      if(ja[key]._seenSheet){ dups++; return; }
+      exist=ja[key].id?ja[key]:null;
+    }
     var grav=cGrav?String(r[cGrav]||'').trim():'';
     if(grav){
       var gl=grav.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -89500,16 +89548,21 @@ function fdocMultaImportPreview(rows){
       status_recurso:cRec?String(r[cRec]||'').trim():'',
       condutor_responsavel:col?(col.nome||condNome):condNome,
       colaborador_id:col?col.id:null,
-      observacao:cObs?String(r[cObs]||'').trim():''
+      observacao:cObs?String(r[cObs]||'').trim():'',
+      _existId:exist&&exist.id?exist.id:null,
+      _acao:exist&&exist.id?'atualizar':'nova'
     });
+    if(auto) ja[key]={_seenSheet:true, id:exist&&exist.id?exist.id:null};
   });
   _fdocMulImport=recs;
-  fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad, buscando:!!recs.length});
+  var nAtu=recs.filter(function(d){return d._acao==='atualizar';}).length;
+  var nNov=recs.length-nAtu;
+  fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad, atualizar:nAtu, novas:nNov, buscando:!!recs.length});
   if(!recs.length) return;
   fdocMultaVincularRecs(recs).then(function(st){
-    fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad, vinculo:st});
+    fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad, atualizar:nAtu, novas:nNov, vinculo:st});
   }).catch(function(){
-    fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad});
+    fdocMultaImportMostrarPreview(recs, {dups:dups, semPlaca:semPlaca, semCad:semCad, atualizar:nAtu, novas:nNov});
   });
 }
 function fdocMulMatchPlacaSafe(pl){
@@ -89613,6 +89666,8 @@ function fdocMultaImportMostrarPreview(recs, meta){
     +(meta.dups?'<span style="color:#854F0B">Duplicadas (puladas): <b>'+meta.dups+'</b></span>':'')
     +(meta.semPlaca?'<span style="color:#854F0B">Sem placa: <b>'+meta.semPlaca+'</b></span>':'')
     +(meta.semCad&&meta.semCad.length?'<span style="color:#A32D2D">Placa fora do cadastro: <b>'+meta.semCad.length+'</b></span>':'')
+    +(meta.novas?'<span>Novas: <b>'+meta.novas+'</b></span>':'')
+    +(meta.atualizar?'<span style="color:#185FA5">Atualizar valor: <b>'+meta.atualizar+'</b></span>':'')
     +(meta.buscando?'<span style="color:#185FA5">⏳ Buscando motorista na escala/portaria…</span>':'')
     +(meta.vinculo?'<span style="color:#3B6D11">🚗 Vinculados pela escala: <b>'+meta.vinculo.ok+'</b></span>'
       +(meta.vinculo.miss?'<span style="color:#854F0B">Sem motorista: <b>'+meta.vinculo.miss+'</b></span>':''):'')
@@ -89624,7 +89679,7 @@ function fdocMultaImportMostrarPreview(recs, meta){
       var cond=d.condutor_responsavel||'—';
       var fonte=d._condFonte?(d._condFonte.indexOf('portaria')>=0?'portaria':'escala'):(d.colaborador_id?'planilha':'');
       return '<tr>'
-        +'<td style="font-family:monospace;font-weight:700">'+(d._placaCad?'':'⚠ ')+escHtml(d.placa)+'</td>'
+        +'<td style="font-family:monospace;font-weight:700">'+(d._placaCad?'':'⚠ ')+escHtml(d.placa)+(d._acao==='atualizar'?'<div style="font-size:10px;color:#185FA5;font-weight:600">atualizar</div>':'')+'</td>'
         +'<td>'+escHtml(d.numero_auto||'—')+'</td>'
         +'<td>'+(d.data_infracao?fmtD(d.data_infracao):'—')+'</td>'
         +'<td>'+(d.colaborador_id||d.condutor_responsavel?escHtml(cond):'<span style="color:#854F0B">—</span>')
@@ -89681,6 +89736,8 @@ async function fdocMultaImportConfirm(){
   var btn=document.getElementById('fdoc-mul-imp-btn');
   var prev=document.getElementById('fdoc-mul-imp-preview');
   if(btn){ btn.disabled=true; btn.textContent='Vinculando motoristas...'; }
+  window._frotasDocsTemValor=undefined;
+  window._frotasDocsTemMultaExtra=undefined;
   try{
     var stVin=await fdocMultaVincularRecs(recs);
     if(stVin && (stVin.ok||stVin.miss) && prev){
@@ -89692,22 +89749,39 @@ async function fdocMultaImportConfirm(){
   var ok=0, fail=0;
   for(var i=0;i<recs.length;i++){
     var dados=Object.assign({}, recs[i]);
-    delete dados._linha; delete dados._placaCad;
+    var existId=dados._existId||null;
+    var acao=dados._acao||'nova';
+    delete dados._linha; delete dados._placaCad; delete dados._condFonte; delete dados._existId; delete dados._acao;
     if(DEMO){
-      dados.id='mul'+Date.now()+'_'+i;
-      frt_documentos.unshift(fdocNormRow(dados));
+      if(existId){
+        var di=(frt_documentos||[]).findIndex(function(x){return String(x.id)===String(existId);});
+        if(di>=0) frt_documentos[di]=fdocNormRow(Object.assign({},frt_documentos[di],dados,{id:existId}));
+      } else {
+        dados.id='mul'+Date.now()+'_'+i;
+        frt_documentos.unshift(fdocNormRow(dados));
+      }
       ok++;
       continue;
     }
     var payload=fdocPayloadDb(dados);
-    var res=await fdocInsertComFallback(payload);
-    if(fdocSaveOk(res)){
-      var saved=Array.isArray(res)?res[0]:res;
-      if(saved&&saved.id) dados.id=saved.id;
-      else dados.id='mul'+Date.now()+'_'+i;
-      frt_documentos.unshift(fdocNormRow(dados));
-      ok++;
-    } else fail++;
+    var res;
+    if(existId){
+      res=await fdocUpdateComFallback(existId, payload);
+      if(res===true || fdocSaveOk(res)){
+        var idxU=(frt_documentos||[]).findIndex(function(x){return String(x.id)===String(existId);});
+        if(idxU>=0) frt_documentos[idxU]=fdocNormRow(Object.assign({},frt_documentos[idxU],dados,{id:existId}));
+        ok++;
+      } else fail++;
+    } else {
+      res=await fdocInsertComFallback(payload);
+      if(fdocSaveOk(res)){
+        var saved=Array.isArray(res)?res[0]:res;
+        if(saved&&saved.id) dados.id=saved.id;
+        else dados.id='mul'+Date.now()+'_'+i;
+        frt_documentos.unshift(fdocNormRow(dados));
+        ok++;
+      } else fail++;
+    }
     if(btn) btn.textContent='Importando... '+(i+1)+'/'+recs.length;
   }
   if(typeof avColInvalidarCacheFrota==='function') avColInvalidarCacheFrota();
@@ -89716,9 +89790,11 @@ async function fdocMultaImportConfirm(){
   _fdocMulImport=null;
   var nMot=0, nSem=0;
   recs.forEach(function(d){ if(d.colaborador_id||d.condutor_responsavel) nMot++; else nSem++; });
+  var nAtuOk=recs.filter(function(d){return d._acao==='atualizar';}).length;
   var extra=nMot?(' · '+nMot+' com motorista'):'';
   if(nSem) extra+=' · '+nSem+' sem motorista (use Vincular motorista)';
-  progShowToast(fail?('⚠ Importadas '+ok+' · falhas '+fail+extra):('✅ '+ok+' multa(s) importada(s)'+extra), fail?'erro':undefined);
+  var msgBase=nAtuOk?('✅ '+ok+' multa(s) processada(s) (inclui atualização de valor)'):('✅ '+ok+' multa(s) importada(s)');
+  progShowToast(fail?('⚠ Processadas '+ok+' · falhas '+fail+extra):(msgBase+extra), fail?'erro':undefined);
 }
 
 function _diasAdiante(n){
