@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.101"></script>
+<script src="portaria-offline.js?v=8.1.103"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43164,10 +43164,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.101',
+  numero: '8.1.103',
   data:   '21/09/2026',
-  build:  '20260921-1830',
+  build:  '20260921-1910',
   log: [
+    {v:'8.1.103', d:'21/09/2026', itens:[
+      'Portaria Registros: some duplicata de saída/retorno (cópia local + servidor, ou retorno em um e Em campo no clone). Junta placa+equipe+minuto, mantém o Retornado e oculta o clone (soft-delete). Sem SQL. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.102', d:'21/09/2026', itens:[
+      'Frotas Combustível: converte nomes de contrato nos lançamentos de ago/2026 (Equatorial PLPT→PLPT TERESINA, TMA→TMA OESTE, Obra/CENA OBRAS→OBRAS PARTICULARES, HV ETD→ETD, BTZERO→BT0, COMGAS→COMGAS CAMPINAS, SOT OBRAS OESTE→SOT OBRAS) e vincula ao cadastro. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.101', d:'21/09/2026', itens:[
       'Frotas: filtro de contrato (cadastro do veículo) em Multas, Manutenções e Avarias; Multas também filtra por motorista; Avarias ganha placa e motorista. Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -82319,7 +82325,7 @@ function frtInit(subpage){
 
     // Carregar demais tabelas em background (condutas: só sob demanda em fcdEnsureLoaded)
     Promise.all([
-      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
+      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['deleted_at=is.null','data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
       frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
@@ -82352,6 +82358,10 @@ function frtInit(subpage){
       if(subpage==='frotas-dashboard') frtDashRender();
       if(subpage==='frotas-veiculos') frtVeiculosRender();
       if(subpage==='frotas-manutencoes') frtManutRender();
+      if(subpage==='frotas-combustivel'){
+        frtCombRender();
+        if(typeof frtCombCorrigirContratosAgo2026==='function') frtCombCorrigirContratosAgo2026({auto:true});
+      }
       if(subpage==='frotas-conduta') fcdEnsureLoaded().then(function(){ fcdRender(); });
       // Re-renderizar aba Retorno se estiver visível
       var _retEl = document.getElementById('port-aba-retorno');
@@ -82371,7 +82381,7 @@ function frtCarregarDados(){
     // Carregar demais tabelas em paralelo sem bloquear
     var p = function(t,o){ return sbFetch(t,o).catch(function(){return[];}); };
     Promise.all([
-      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
+      p('frotas_portaria_saidas',{select:PORT_SAIDA_SEL_LISTA,order:'data_saida.desc',limit:5000,filters:['deleted_at=is.null','data_saida=gte.'+(function(_ms){var _d=new Date(_ms);return _d.getFullYear()+'-'+String(_d.getMonth()+1).padStart(2,'0')+'-'+String(_d.getDate()).padStart(2,'0');})(Date.now()-30*86400000)]}),
       frtFetchManutencoesCompleto(),
       sbFetchAll('frotas_combustivel',{order:'data.desc'}).catch(function(){return[];}),
       p('frotas_multas',{order:'data_infracao.desc'}),
@@ -83499,7 +83509,7 @@ function portFiltrosDataSaida(ini, fim){
   var a=portDiaISO(ini), b=portDiaISO(fim)||a;
   if(!a) return [];
   // Janela larga: date-only (meia-noite UTC) + saída após 21h BRT. O recorte fino é no cliente (portDiaLocal).
-  return ['data_saida=gte.'+a, 'data_saida=lt.'+portIsoMais1(portIsoMais1(b))+'T00:00:00-03:00'];
+  return ['deleted_at=is.null','data_saida=gte.'+a, 'data_saida=lt.'+portIsoMais1(portIsoMais1(b))+'T00:00:00-03:00'];
 }
 function portMatchSaidaEquipe(p, eq){
   if(!p || !eq) return false;
@@ -83891,54 +83901,178 @@ function portAplicarFotosPacote(p){
   }
   return p;
 }
+
+function portEquipeChaveSaida(p){
+  if(!p) return '';
+  var eq=(typeof portBuscarEquipe==='function' && (portBuscarEquipe(p.equipe_id)||portBuscarEquipe(p.equipe)))||null;
+  if(eq) return String(eq.codigo||eq.nome_equipe||eq.id||'').toUpperCase();
+  var cod=String(p.equipe||'').trim().toUpperCase();
+  if(cod) return cod;
+  return String(p.equipe_id||'').toUpperCase();
+}
+function portSaidaMinutoLocal(p){
+  var s=(p&&p.data_saida)||'';
+  try{
+    var d=new Date(s);
+    if(!isNaN(d.getTime())){
+      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')
+        +'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+    }
+  }catch(e){}
+  return String(s).replace(' ','T').slice(0,16);
+}
+function portSaidaChaveDedup(p){
+  if(!p) return '';
+  var pl=typeof portNormPlaca==='function'?portNormPlaca(p.placa):String(p.placa||'').toUpperCase();
+  if(!pl) return '';
+  var min=portSaidaMinutoLocal(p);
+  if(!min) return '';
+  var km=p.km_saida;
+  if(km!=null && km!=='') return pl+'|'+min+'|km:'+String(km);
+  return pl+'|'+min+'|'+portEquipeChaveSaida(p);
+}
+function portFotoScoreSaida(v){
+  var s=typeof portFotoSrcValido==='function'?portFotoSrcValido(v):'';
+  if(!s) return 0;
+  if(s.indexOf('data:image')===0) return 3;
+  if(s.indexOf('blob:')===0) return 2;
+  return 1;
+}
+function portMelhorFotoSaida(a,b){
+  return portFotoScoreSaida(a)>=portFotoScoreSaida(b)?(a||b||null):(b||a||null);
+}
+function portExtraScoreSaida(arr){
+  if(!Array.isArray(arr)||!arr.length) return 0;
+  var n=0, data=0;
+  arr.forEach(function(f){
+    var src=typeof f==='string'?f:(f&&(f.url||f.b64||f.src))||'';
+    var sc=portFotoScoreSaida(src);
+    if(sc){ n++; if(sc>=3) data++; }
+  });
+  return data*10+n;
+}
+function portPreferirSaida(a,b){
+  if(!a) return b;
+  if(!b) return a;
+  if(a.deleted_at && !b.deleted_at) return b;
+  if(b.deleted_at && !a.deleted_at) return a;
+  var aRet=a.status==='Retornado' || !!a.data_retorno;
+  var bRet=b.status==='Retornado' || !!b.data_retorno;
+  if(aRet && !bRet) return a;
+  if(bRet && !aRet) return b;
+  var aU=typeof isUUID==='function' && isUUID(String(a.id||''));
+  var bU=typeof isUUID==='function' && isUUID(String(b.id||''));
+  if(aU && !bU) return a;
+  if(bU && !aU) return b;
+  if(a.km_retorno!=null && a.km_retorno!=='' && (b.km_retorno==null || b.km_retorno==='')) return a;
+  if(b.km_retorno!=null && b.km_retorno!=='' && (a.km_retorno==null || a.km_retorno==='')) return b;
+  if((a.offline_event_id||'') && !(b.offline_event_id||'')) return a;
+  if((b.offline_event_id||'') && !(a.offline_event_id||'')) return b;
+  return a;
+}
+function portFundirSaidas(mem, r){
+  if(!mem) return portAplicarFotosPacote(r);
+  if(!r) return portAplicarFotosPacote(mem);
+  portAplicarFotosPacote(mem);
+  portAplicarFotosPacote(r);
+  var winner=portPreferirSaida(mem, r);
+  var loser=winner===mem?r:mem;
+  var merged=Object.assign({}, loser, winner);
+  merged.km_foto_url=portMelhorFotoSaida(mem.km_foto_url, r.km_foto_url);
+  merged.foto_carga_saida_b64=portMelhorFotoSaida(mem.foto_carga_saida_b64, r.foto_carga_saida_b64);
+  merged.foto_carga_retorno_b64=portMelhorFotoSaida(mem.foto_carga_retorno_b64, r.foto_carga_retorno_b64);
+  var memExtras=Array.isArray(mem.fotos_carga_extras)?mem.fotos_carga_extras:[];
+  var dbExtras=Array.isArray(r.fotos_carga_extras)?r.fotos_carga_extras:[];
+  merged.fotos_carga_extras=portExtraScoreSaida(memExtras)>=portExtraScoreSaida(dbExtras)?memExtras:dbExtras;
+  if(winner.status==='Retornado' || winner.data_retorno){
+    merged.status='Retornado';
+    merged.data_retorno=winner.data_retorno||merged.data_retorno;
+    if(winner.km_retorno!=null && winner.km_retorno!=='') merged.km_retorno=winner.km_retorno;
+  }
+  if(winner.id) merged.id=winner.id;
+  if(loser.offline_event_id && !merged.offline_event_id) merged.offline_event_id=loser.offline_event_id;
+  return merged;
+}
+var _portClonesSuprimidos={};
+function portSuprimirCloneSaida(p){
+  if(!p) return;
+  if(!p.deleted_at) p.deleted_at=new Date().toISOString();
+  var id=p.id;
+  if(!id || _portClonesSuprimidos[String(id)]) return;
+  _portClonesSuprimidos[String(id)]=true;
+  if(typeof DEMO!=='undefined' && DEMO) return;
+  if(typeof isUUID==='function' && !isUUID(String(id))) return;
+  if(typeof sbUpdate==='function'){
+    sbUpdate('frotas_portaria_saidas',{deleted_at:p.deleted_at},'id=eq.'+id).catch(function(){});
+  }
+}
+function portDedupSaidasMemoria(){
+  if(!frt_portaria||!frt_portaria.length) return;
+  var byId={}, byKey={}, keep=[], losers=[];
+  frt_portaria.forEach(function(p){
+    if(!p) return;
+    if(p.id && byId[String(p.id)]){
+      var prev=byId[String(p.id)];
+      var w=portFundirSaidas(prev, p);
+      var ix=keep.indexOf(prev);
+      if(ix>=0) keep[ix]=w;
+      byId[String(w.id||p.id)]=w;
+      var k0=portSaidaChaveDedup(w); if(k0) byKey[k0]=w;
+      return;
+    }
+    var k=portSaidaChaveDedup(p);
+    if(k && byKey[k]){
+      var prev2=byKey[k];
+      var w2=portFundirSaidas(prev2, p);
+      var ix2=keep.indexOf(prev2);
+      if(ix2>=0) keep[ix2]=w2;
+      byKey[k]=w2;
+      if(w2.id) byId[String(w2.id)]=w2;
+      var l2=String(prev2.id||'')!==String(w2.id||'')?prev2:(String(p.id||'')!==String(w2.id||'')?p:null);
+      if(l2 && l2!==w2 && String(l2.id||'') && String(l2.id)!==String(w2.id||'')) losers.push(l2);
+      return;
+    }
+    keep.push(p);
+    if(p.id) byId[String(p.id)]=p;
+    if(k) byKey[k]=p;
+  });
+  frt_portaria=keep;
+  losers.forEach(portSuprimirCloneSaida);
+}
 function portMesclarSaidas(rows){
   if(!rows||!rows.length) return;
   if(!frt_portaria) frt_portaria=[];
-  function fotoOk(v){ return typeof portFotoSrcValido==='function' && !!portFotoSrcValido(v); }
-  function fotoScore(v){
-    var s=typeof portFotoSrcValido==='function'?portFotoSrcValido(v):'';
-    if(!s) return 0;
-    if(s.indexOf('data:image')===0) return 3;
-    if(s.indexOf('blob:')===0) return 2;
-    return 1;
-  }
-  function melhorFoto(a,b){ return fotoScore(a)>=fotoScore(b)?(a||b||null):(b||a||null); }
-  function extraScore(arr){
-    if(!Array.isArray(arr)||!arr.length) return 0;
-    var n=0, data=0;
-    arr.forEach(function(f){
-      var src=typeof f==='string'?f:(f&&(f.url||f.b64||f.src))||'';
-      var sc=fotoScore(src);
-      if(sc){ n++; if(sc>=3) data++; }
-    });
-    return data*10+n;
-  }
   rows.forEach(function(r){
     if(!r) return;
-    var ix=frt_portaria.findIndex(function(p){return p && String(p.id)===String(r.id);});
+    var ix=frt_portaria.findIndex(function(p){return p && r.id && String(p.id)===String(r.id);});
+    if(ix<0 && r.offline_event_id){
+      ix=frt_portaria.findIndex(function(p){ return p && String(p.offline_event_id||'')===String(r.offline_event_id); });
+    }
+    if(ix<0){
+      var chave=portSaidaChaveDedup(r);
+      if(chave){
+        ix=frt_portaria.findIndex(function(p){
+          if(!p || p.deleted_at) return false;
+          return portSaidaChaveDedup(p)===chave;
+        });
+      }
+    }
     if(ix<0 && r.placa){
       ix=frt_portaria.findIndex(function(p){
-        if(!p) return false;
+        if(!p || p.deleted_at) return false;
         var local=!p.id || (typeof isUUID==='function' && !isUUID(String(p.id)));
         if(!local) return false;
-        return portNormPlaca(p.placa)===portNormPlaca(r.placa)
-          && portDiaLocal(p.data_saida)===portDiaLocal(r.data_saida)
-          && String(p.equipe_id||p.equipe||'')===String(r.equipe_id||r.equipe||'');
+        if(portNormPlaca(p.placa)!==portNormPlaca(r.placa)) return false;
+        if(portSaidaMinutoLocal(p)!==portSaidaMinutoLocal(r) && portDiaLocal(p.data_saida)!==portDiaLocal(r.data_saida)) return false;
+        var ea=portEquipeChaveSaida(p), eb=portEquipeChaveSaida(r);
+        if(ea && eb) return ea===eb;
+        return String(p.km_saida||'')===String(r.km_saida||'') && p.km_saida!=null && p.km_saida!=='';
       });
     }
     if(ix<0){ frt_portaria.push(portAplicarFotosPacote(r)); return; }
-    var mem=frt_portaria[ix];
-    portAplicarFotosPacote(mem);
-    portAplicarFotosPacote(r);
-    var merged=Object.assign({}, mem, r);
-    merged.km_foto_url=melhorFoto(mem.km_foto_url, r.km_foto_url);
-    merged.foto_carga_saida_b64=melhorFoto(mem.foto_carga_saida_b64, r.foto_carga_saida_b64);
-    merged.foto_carga_retorno_b64=melhorFoto(mem.foto_carga_retorno_b64, r.foto_carga_retorno_b64);
-    var memExtras=Array.isArray(mem.fotos_carga_extras)?mem.fotos_carga_extras:[];
-    var dbExtras=Array.isArray(r.fotos_carga_extras)?r.fotos_carga_extras:[];
-    merged.fotos_carga_extras=extraScore(memExtras)>=extraScore(dbExtras)?memExtras:dbExtras;
-    frt_portaria[ix]=merged;
+    frt_portaria[ix]=portFundirSaidas(frt_portaria[ix], r);
   });
+  portDedupSaidasMemoria();
 }
 function portMesclarComposicao(rows){
   if(!rows||!rows.length) return;
@@ -87082,7 +87216,9 @@ function frtPortariaRender(){
     return;
   }
 
+  if(typeof portDedupSaidasMemoria==='function') portDedupSaidasMemoria();
   var rows = frt_portaria.filter(function(p){
+    if(p.deleted_at || p._deleted) return false;
     var ds = portDiaLocal(p.data_saida);
     if(ds < dataIni || ds > dataFim) return false;
     if(placa && !frtPlacaMatchBusca(p.placa, placa)) return false;
@@ -87381,6 +87517,119 @@ function frtCombMesMaisRecente(){
     if(m && m>max) max=m;
   });
   return max||new Date().toISOString().substring(0,7);
+}
+
+var FRT_COMB_MAP_CONT_AGO2026 = [
+  ['EQUATORIAL PLPT','PLPT TERESINA'],
+  ['SOT OBRAS OESTE','SOT OBRAS'],
+  ['CENA OBRAS','OBRAS PARTICULARES'],
+  ['HV ETD','ETD'],
+  ['BTZERO','BT0'],
+  ['BT ZERO','BT0'],
+  ['COMGAS','COMGAS CAMPINAS'],
+  ['TMA','TMA OESTE'],
+  ['OBRA','OBRAS PARTICULARES']
+];
+var _frtCombMapAgo2026Busy=false;
+function frtCombNormContNome(s){
+  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[-_./]+/g,' ').replace(/\s+/g,' ').trim();
+}
+function frtCombAcharContratoPorNome(nome){
+  var n=frtCombNormContNome(nome);
+  if(!n) return null;
+  return (contratos||[]).find(function(c){
+    return frtCombNormContNome(c.nome)===n || frtCombNormContNome(c.codigo)===n;
+  })||null;
+}
+function frtCombMapaDestinoAgo2026(nome){
+  var n=frtCombNormContNome(nome);
+  if(!n) return null;
+  for(var i=0;i<FRT_COMB_MAP_CONT_AGO2026.length;i++){
+    if(FRT_COMB_MAP_CONT_AGO2026[i][0]===n) return FRT_COMB_MAP_CONT_AGO2026[i][1];
+  }
+  return null;
+}
+function frtCombResolverContratoLanc(nomeTxt, dataISO){
+  var txt=String(nomeTxt||'').trim();
+  var dest=null;
+  if(String(dataISO||'').substring(0,7)==='2026-08') dest=frtCombMapaDestinoAgo2026(txt);
+  var nome=dest||txt;
+  var ct=frtCombAcharContratoPorNome(nome);
+  if(ct) return {id:ct.id||null, nome:ct.nome||ct.codigo||nome, mapeado:!!dest};
+  if(dest) return {id:null, nome:dest, mapeado:true};
+  var orig=frtCombAcharContratoPorNome(txt);
+  if(orig) return {id:orig.id||null, nome:orig.nome||orig.codigo||txt, mapeado:false};
+  return {id:null, nome:txt, mapeado:false};
+}
+function frtCombNomeContratoRow(c){
+  var n=String((c&&c.contrato_nome)||'').trim();
+  if(n && n!=='null' && n!=='—' && n!=='-') return n;
+  var ct=(contratos||[]).find(function(x){ return String(x.id)===String((c&&c.contrato_id)||''); });
+  return (ct&&(ct.nome||ct.codigo))||'';
+}
+function frtCombColetarMapaAgo2026(){
+  var out=[];
+  (frt_combustivel||[]).forEach(function(c){
+    if(String(c.data||'').substring(0,7)!=='2026-08') return;
+    var nome=frtCombNomeContratoRow(c);
+    var dest=frtCombMapaDestinoAgo2026(nome);
+    if(!dest && c.contrato_id){
+      var ct=(contratos||[]).find(function(x){ return String(x.id)===String(c.contrato_id); });
+      if(ct){
+        dest=frtCombMapaDestinoAgo2026(ct.nome||ct.codigo);
+        if(dest) nome=ct.nome||ct.codigo||nome;
+      }
+    }
+    if(!dest) return;
+    var resolved=frtCombResolverContratoLanc(nome, c.data);
+    if(!resolved || !resolved.mapeado) return;
+    if(String(c.contrato_nome||'')===String(resolved.nome||'') && String(c.contrato_id||'')===String(resolved.id||'')) return;
+    out.push({row:c, de:nome, para:resolved.nome, id:resolved.id});
+  });
+  return out;
+}
+async function frtCombCorrigirContratosAgo2026(opts){
+  opts=opts||{};
+  if(_frtCombMapAgo2026Busy) return;
+  var lista=frtCombColetarMapaAgo2026();
+  if(!lista.length){
+    if(!opts.auto && typeof progShowToast==='function') progShowToast('Nenhum lançamento de ago/2026 com os nomes antigos.');
+    return;
+  }
+  var contagem={};
+  lista.forEach(function(x){
+    var k=x.de+' → '+x.para;
+    contagem[k]=(contagem[k]||0)+1;
+  });
+  var linhas=Object.keys(contagem).sort().map(function(k){ return '• '+k+': '+contagem[k]; }).join('\n');
+  if(!confirm('Converter os nomes de contrato em '+lista.length+' abastecimento(s) de agosto/2026?\n\n'+linhas+'\n\nO vínculo passa a ser o contrato do cadastro quando o nome novo existir.')) return;
+  _frtCombMapAgo2026Busy=true;
+  var nOk=0, nFail=0;
+  try{
+    for(var i=0;i<lista.length;i++){
+      var it=lista[i];
+      var patch={contrato_nome:it.para};
+      if(it.id) patch.contrato_id=it.id;
+      var ok=true;
+      if(typeof frtCombPatchSafe==='function') ok=await frtCombPatchSafe(it.row.id, patch);
+      else {
+        it.row.contrato_nome=it.para;
+        if(it.id) it.row.contrato_id=it.id;
+      }
+      if(ok) nOk++; else nFail++;
+    }
+  } finally {
+    _frtCombMapAgo2026Busy=false;
+  }
+  var mesEl=document.getElementById('frt-comb-mes');
+  if(mesEl) mesEl.value='2026-08';
+  var todos=document.getElementById('frt-comb-todos');
+  if(todos) todos.checked=false;
+  if(typeof frtCombRender==='function') frtCombRender();
+  var msg='Contratos de ago/2026: '+nOk+' convertidos';
+  if(nFail) msg+=', '+nFail+' falha(s)';
+  if(typeof progShowToast==='function') progShowToast(msg+'.');
+  else alert(msg);
 }
 function frtCombRender(){
   var tbs=document.querySelectorAll('#frt-comb-tbody');
@@ -92934,7 +93183,8 @@ function frtAbrirNovoAbastecimento(){
       var kmAnt=frtCombKmAnterior(veic.placa, km, g('fcomb-data'));
       var media=(km>0&&kmAnt>0&&km>kmAnt&&litros>0)?((km-kmAnt)/litros):null;
       var contTxt=g('fcomb-cont').trim();
-      var contMatch=contratos.find(function(c){
+      var contRes=typeof frtCombResolverContratoLanc==='function'?frtCombResolverContratoLanc(contTxt, g('fcomb-data')):null;
+      var contMatch=contRes?null:contratos.find(function(c){
         return contTxt && ((c.nome||'').toLowerCase()===contTxt.toLowerCase() || (c.codigo||'').toLowerCase()===contTxt.toLowerCase());
       });
       var abs={id:'cb'+Date.now(),placa:veic.placa,modelo:veic.modelo,
@@ -92948,8 +93198,8 @@ function frtAbrirNovoAbastecimento(){
         km:km,km_anterior:kmAnt||null,media_consumo:media,
         posto:g('fcomb-posto'),posto_endereco:g('fcomb-end'),
         posto_bairro:g('fcomb-bairro'),posto_cidade:g('fcomb-cidade'),
-        contrato_id:contMatch?contMatch.id:null,
-        contrato_nome:contMatch?(contMatch.nome||contMatch.codigo):contTxt,
+        contrato_id:contRes?contRes.id:(contMatch?contMatch.id:null),
+        contrato_nome:contRes?contRes.nome:(contMatch?(contMatch.nome||contMatch.codigo):contTxt),
         origem:'manual'};
       frt_combustivel.unshift(abs);
       if(!DEMO){
@@ -93148,7 +93398,8 @@ async function frtCombImportPreview(rows){
     }
     jaExiste[hash]=true;
     var contTxt=cCont?String(r[cCont]||'').trim():'';
-    var contMatch=contratos.find(function(c){ return contTxt && ((c.nome||'').toLowerCase()===contTxt.toLowerCase()||(c.codigo||'').toLowerCase()===contTxt.toLowerCase()); });
+    var contRes=typeof frtCombResolverContratoLanc==='function'?frtCombResolverContratoLanc(contTxt, dataISO):null;
+    var contMatch=contRes?null:contratos.find(function(c){ return contTxt && ((c.nome||'').toLowerCase()===contTxt.toLowerCase()||(c.codigo||'').toLowerCase()===contTxt.toLowerCase()); });
     if(cls.status_conciliacao==='CONCILIADO') nFrota++;
     else if(cls.status_conciliacao==='PENDENTE_VEICULO_PORTARIA'){ nPort++; portariaSet[pnP]=placa; }
     else { nDesc++; desconhecidas[pnP]=placa+(cls._sugestao?(' (sugestão: '+cls._sugestao+')'):''); }
@@ -93158,7 +93409,7 @@ async function frtCombImportPreview(rows){
       litros:litros, valor_litro:vl, valor_total:vt, km:km, km_anterior:kmAnt||null, media_consumo:media,
       posto:posto, posto_endereco:cEnd?String(r[cEnd]||''):'',
       posto_bairro:cBairro?String(r[cBairro]||''):'', posto_cidade:cCidade?String(r[cCidade]||''):'',
-      contrato_id:contMatch?contMatch.id:null, contrato_nome:contMatch?(contMatch.nome||contMatch.codigo):contTxt,
+      contrato_id:contRes?contRes.id:(contMatch?contMatch.id:null), contrato_nome:contRes?contRes.nome:(contMatch?(contMatch.nome||contMatch.codigo):contTxt),
       origem:'import', origem_importacao:origemImp, hash_deduplicacao:hash
     }, cls));
   });
@@ -95209,6 +95460,7 @@ window.addEventListener('load',async function(){
         <input class="inp" id="frt-comb-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" oninput="frtCombRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtCombRender)" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha"/>
         <input class="inp" id="frt-comb-motorista" placeholder="Motorista..." style="width:150px" oninput="frtCombRender()" title="Filtrar por motorista"/>
         <button class="btn btn-pri" onclick="frtAbrirNovoAbastecimento()">+ Abastecimento</button>
+        <button class="btn" onclick="frtCombCorrigirContratosAgo2026()" title="Renomeia os contratos dos lançamentos de agosto/2026">Corrigir contratos ago/2026</button>
         <button class="btn" onclick="frtImportarCombustivel()" style="color:#3B6D11;border-color:#3B6D11">📊 Importar Excel</button>
         <button class="btn" onclick="frtImportarTicketLog()" style="color:#185FA5;border-color:#185FA5">📥 Importar Ticket Log</button>
       </div>

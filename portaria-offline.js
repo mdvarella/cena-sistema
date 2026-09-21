@@ -985,11 +985,19 @@ async function portOffRehidratarEventos(){
     if(ev.tipo_evento==='SAIDA' && ev.payload && ev.payload.saida){
       var s=Object.assign({}, ev.payload.saida);
       s._sync_status=ev.status_sync;
-      var ix=frt_portaria.findIndex(function(p){
-        return p && (String(p.id)===String(s.id) || String(p.offline_event_id)===String(ev.event_id));
-      });
-      if(ix<0) frt_portaria.unshift(s);
-      else if(ev.status_sync!=='SINCRONIZADO') frt_portaria[ix]._sync_status=ev.status_sync;
+      if(typeof portMesclarSaidas==='function'){
+        portMesclarSaidas([s]);
+        var memS=(frt_portaria||[]).find(function(p){
+          return p && (String(p.id)===String(s.id) || String(p.offline_event_id)===String(ev.event_id) || (typeof portSaidaChaveDedup==='function' && portSaidaChaveDedup(p)===portSaidaChaveDedup(s)));
+        });
+        if(memS && ev.status_sync!=='SINCRONIZADO') memS._sync_status=ev.status_sync;
+      } else {
+        var ix=frt_portaria.findIndex(function(p){
+          return p && (String(p.id)===String(s.id) || String(p.offline_event_id)===String(ev.event_id));
+        });
+        if(ix<0) frt_portaria.unshift(s);
+        else if(ev.status_sync!=='SINCRONIZADO') frt_portaria[ix]._sync_status=ev.status_sync;
+      }
     }
     if(ev.tipo_evento==='RETORNO' && ev.payload && ev.status_sync!=='CONFLITO'){
       var sid=ev.payload.saida_id;
