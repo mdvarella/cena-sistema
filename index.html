@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.100"></script>
+<script src="portaria-offline.js?v=8.1.101"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43164,10 +43164,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.100',
+  numero: '8.1.101',
   data:   '21/09/2026',
-  build:  '20260921-1810',
+  build:  '20260921-1830',
   log: [
+    {v:'8.1.101', d:'21/09/2026', itens:[
+      'Frotas: filtro de contrato (cadastro do veículo) em Multas, Manutenções e Avarias; Multas também filtra por motorista; Avarias ganha placa e motorista. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.100', d:'21/09/2026', itens:[
       'Frotas Multas: reimportar a planilha atualiza o valor das multas já lançadas (placa + nº auto), sem duplicar e sem erro. SQL opcional sql_frotas_documentos_valor.sql se a coluna valor ainda não existir (NÃO executar pelo ERP). HOMOLOGAÇÃO.',
     ]},
@@ -82452,8 +82455,11 @@ function frtMigrarFiorinosUtilitario(){
 function frtPopularSelects(){
   var contOpts = '<option value="">Todos os contratos</option>'
     +contratos.map(function(c){return '<option value="'+c.id+'">'+c.nome+'</option>';}).join('');
-  ['frt-dash-cont','frt-prog-cont','frt-comb-cont','frt-cust-cont'].forEach(function(id){
-    var el=document.getElementById(id);if(el)el.innerHTML=contOpts;
+  ['frt-dash-cont','frt-prog-cont','frt-comb-cont','frt-cust-cont','mul-fil-cont','frt-man-cont','frt-avar-cont','fdoc-fil-cont'].forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    var cur=el.value||'';
+    el.innerHTML=contOpts;
+    if(cur) el.value=cur;
   });
   // Data padrão
   var hoje = dataHoje();
@@ -82469,6 +82475,35 @@ function frtPopularSelects(){
 }
 
 // ── DASHBOARD ─────────────────────────────────────────────────
+
+function frtVeiculoDaPlaca(placa, veiculoId){
+  if(veiculoId){
+    var byId=(frt_veiculos||[]).find(function(v){ return String(v.id)===String(veiculoId); });
+    if(byId) return byId;
+  }
+  var pn=typeof frtNormPlaca==='function'?frtNormPlaca(placa):String(placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!pn) return null;
+  return (frt_veiculos||[]).find(function(v){
+    var vp=typeof frtNormPlaca==='function'?frtNormPlaca(v.placa):String(v.placa||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    return !!(vp && vp===pn);
+  })||null;
+}
+function frtFiltroContratoVeiculo(placa, veiculoId, cid){
+  if(!cid) return true;
+  var v=frtVeiculoDaPlaca(placa, veiculoId);
+  return !!(v && String(v.contrato_id||'')===String(cid));
+}
+function frtFiltroMotorista(q, nomes, colabId){
+  var qq=String(q||'').trim().toLowerCase();
+  if(!qq) return true;
+  var blob='';
+  (nomes||[]).forEach(function(n){ if(n) blob+=' '+n; });
+  if(colabId){
+    var col=(colaboradores||[]).find(function(c){ return String(c.id)===String(colabId); });
+    if(col) blob+=' '+(col.nome||'')+' '+(col.re||'')+' '+(col.matricula||'');
+  }
+  return blob.toLowerCase().indexOf(qq)>=0;
+}
 function frtDashRender(){
   var disponiveis = frt_veiculos.filter(function(v){return v.status==='Disponível';}).length;
   var emUso      = frt_veiculos.filter(function(v){return v.status==='Em uso';}).length;
@@ -87139,6 +87174,7 @@ function frtManutEls(){
       buscaEl: document.getElementById('frt-man-busca'),
       tipoEl: document.getElementById('frt-man-tipo'),
       statusEl: document.getElementById('frt-man-status'),
+      contEl: document.getElementById('frt-man-cont'),
       mets: Array.prototype.slice.call(document.querySelectorAll('#frt-man-metricas'))
     };
   }
@@ -87147,6 +87183,7 @@ function frtManutEls(){
     buscaEl: pg.querySelector('#frt-man-busca'),
     tipoEl: pg.querySelector('#frt-man-tipo'),
     statusEl: pg.querySelector('#frt-man-status'),
+    contEl: pg.querySelector('#frt-man-cont'),
     mets: Array.prototype.slice.call(pg.querySelectorAll('#frt-man-metricas'))
   };
 }
@@ -87158,12 +87195,17 @@ function frtManutRender(opts){
   var busca=((els.buscaEl||{}).value||'').trim();
   var tipo=((els.tipoEl||{}).value||'');
   var status=((els.statusEl||{}).value||'');
+  var cid=((els.contEl||{}).value||'');
   if(els.buscaEl) frtHintFiltroPlacas(els.buscaEl);
 
   function _filtrar(){
     return (frt_manutencoes||[]).filter(function(m){
       if(tipo&&m.tipo!==tipo)return false;
       if(status&&String(m.status||'')!==status)return false;
+      if(cid){
+        var placaC=typeof frtManutPlacaOf==='function'?frtManutPlacaOf(m):(m.placa||'');
+        if(!frtFiltroContratoVeiculo(placaC, m.veiculo_id, cid)) return false;
+      }
       if(busca){
         var placa=frtManutPlacaOf(m);
         var nPlacas=frtParsePlacasBusca(busca).length;
@@ -87466,7 +87508,18 @@ function frtMultasRender(){
 function frtAvarRender(){
   var tb=document.getElementById('frt-avar-tbody');if(!tb)return;
   var tipo=(document.getElementById('frt-avar-tipo')||{}).value||'';
-  var rows=frt_avarias.filter(function(a){return !tipo||a.tipo===tipo;});
+  var placaRaw=String((document.getElementById('frt-avar-placa')||{}).value||'').trim();
+  var motQ=(document.getElementById('frt-avar-motorista')||{}).value||'';
+  var cid=(document.getElementById('frt-avar-cont')||{}).value||'';
+  var placaEl=document.getElementById('frt-avar-placa');
+  if(placaEl && typeof frtHintFiltroPlacas==='function') frtHintFiltroPlacas(placaEl);
+  var rows=(frt_avarias||[]).filter(function(a){
+    if(tipo && a.tipo!==tipo) return false;
+    if(placaRaw && typeof frtPlacaMatchBusca==='function' && !frtPlacaMatchBusca(a.placa, placaRaw)) return false;
+    if(!frtFiltroMotorista(motQ, [a.motorista], a.colaborador_id)) return false;
+    if(!frtFiltroContratoVeiculo(a.placa, a.veiculo_id, cid)) return false;
+    return true;
+  });
   if(!rows.length){tb.innerHTML='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma avaria registrada.</td></tr>';return;}
   tb.innerHTML=rows.map(function(a){
     var stCor={Aberto:'#854F0B','Em andamento':'#185FA5',Concluído:'#3B6D11','Mau uso':'#A32D2D'}[a.status]||'#555';
@@ -87652,7 +87705,7 @@ function fdocAba(aba){
   if(aba==='dashboard') fdocRenderDashboard();
   if(aba==='docs')      { fdocPopularContratos(); fdocRenderDocs(); }
   if(aba==='motoristas'){ fmdEnsureLoaded().then(function(){ fmdRender(); }); }
-  if(aba==='multas')    fdocRenderMultas();
+  if(aba==='multas')    { fdocPopularContratos(); fdocRenderMultas(); }
   if(aba==='alertas')   fdocRenderAlertas();
 }
 
@@ -88132,10 +88185,15 @@ function portAbrirLiberacaoCnhExcecao(av, placa, onLiberado){
 }
 
 function fdocPopularContratos(){
-  var sel=document.getElementById('fdoc-fil-cont');
-  if(!sel||sel.options.length>1)return;
-  contratos.sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');}).forEach(function(c){
-    var o=document.createElement('option');o.value=c.id;o.textContent=c.nome;sel.appendChild(o);
+  var ids=['fdoc-fil-cont','mul-fil-cont','frt-man-cont','frt-avar-cont'];
+  var lista=(contratos||[]).slice().sort(function(a,b){return String(a.codigo||a.nome||'').localeCompare(String(b.codigo||b.nome||''),'pt');});
+  ids.forEach(function(id){
+    var sel=document.getElementById(id);
+    if(!sel) return;
+    if(sel.options.length>1) return;
+    lista.forEach(function(c){
+      var o=document.createElement('option'); o.value=c.id; o.textContent=c.nome||c.codigo||c.id; sel.appendChild(o);
+    });
   });
 }
 
@@ -88524,6 +88582,8 @@ function fdocRenderMultas(){
   var placa =((document.getElementById('mul-fil-placa')||{}).value||'').toUpperCase();
   var status=(document.getElementById('mul-fil-status')||{}).value||'';
   var mes   =(document.getElementById('mul-fil-mes')||{}).value||'';
+  var motQ  =(document.getElementById('mul-fil-motorista')||{}).value||'';
+  var cid   =(document.getElementById('mul-fil-cont')||{}).value||'';
 
   var multas=(frt_documentos||[]).filter(function(d){return d.tipo==='Multa' && fdocDocAtivo(d);});
   multas.forEach(function(d){
@@ -88534,6 +88594,8 @@ function fdocRenderMultas(){
     if(placa && !frtPlacaMatchBusca(d.placa, placa)) return false;
     if(status&&d.status!==status) return false;
     if(mes&&!(d.data_infracao||d.data_emissao||'').startsWith(mes)) return false;
+    if(!frtFiltroMotorista(motQ, [d.condutor_responsavel], d.colaborador_id)) return false;
+    if(!frtFiltroContratoVeiculo(d.placa, d.veiculo_id, cid)) return false;
     return true;
   });
 
@@ -89696,10 +89758,14 @@ async function fdocMultaVincularMotoristas(){
   var placa=((document.getElementById('mul-fil-placa')||{}).value||'').toUpperCase();
   var status=(document.getElementById('mul-fil-status')||{}).value||'';
   var mes=(document.getElementById('mul-fil-mes')||{}).value||'';
+  var motQ=(document.getElementById('mul-fil-motorista')||{}).value||'';
+  var cid=(document.getElementById('mul-fil-cont')||{}).value||'';
   var filtradas=rows.filter(function(d){
     if(placa && typeof frtPlacaMatchBusca==='function' && !frtPlacaMatchBusca(d.placa, placa)) return false;
     if(status&&d.status!==status) return false;
     if(mes&&!(d.data_infracao||d.data_emissao||'').startsWith(mes)) return false;
+    if(!frtFiltroMotorista(motQ, [d.condutor_responsavel], d.colaborador_id)) return false;
+    if(!frtFiltroContratoVeiculo(d.placa, d.veiculo_id, cid)) return false;
     return true;
   });
   var alvo=filtradas.filter(function(d){ return !d.colaborador_id && d.placa && (d.data_infracao||d.data_emissao); });
@@ -95112,6 +95178,9 @@ window.addEventListener('load',async function(){
           <option>Requisição</option><option>Aguardando Peça</option><option>Em Execução</option>
           <option>Concluída</option><option>Disponível</option><option>Negada</option>
         </select>
+        <select class="inp" id="frt-man-cont" style="width:175px" onchange="frtManutRender()" title="Contrato do cadastro do veículo">
+          <option value="">Todos os contratos</option>
+        </select>
         <button class="btn btn-pri" onclick="frtAbrirNovaManutencao()">+ Nova solicitação</button>
       </div>
     </div>
@@ -95203,7 +95272,12 @@ window.addEventListener('load',async function(){
   <div class="card" style="margin-bottom:1rem">
     <div class="ch" style="flex-wrap:wrap;gap:8px">
       <span class="ct">🔨 Avarias / Sinistros</span>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <input class="inp" id="frt-avar-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" title="Cole várias placas do Excel (Ctrl+C / Ctrl+V), uma por linha" oninput="frtAvarRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtAvarRender)"/>
+        <input class="inp" id="frt-avar-motorista" placeholder="Motorista..." style="width:150px" oninput="frtAvarRender()" title="Filtrar por motorista"/>
+        <select class="inp" id="frt-avar-cont" style="width:175px" onchange="frtAvarRender()" title="Contrato do cadastro do veículo">
+          <option value="">Todos os contratos</option>
+        </select>
         <select class="inp" id="frt-avar-tipo" style="width:160px" onchange="frtAvarRender()">
           <option value="">Todos os tipos</option>
           <option>Avaria leve</option><option>Avaria grave</option><option>Colisão</option>
@@ -95348,6 +95422,10 @@ window.addEventListener('load',async function(){
             <option>Pendente</option><option>Pago</option><option>Em recurso</option><option>Cancelado</option>
           </select>
           <input class="inp" type="month" id="mul-fil-mes" style="width:140px" onchange="fdocRenderMultas()"/>
+          <input class="inp" id="mul-fil-motorista" placeholder="Motorista..." style="width:150px" oninput="fdocRenderMultas()" title="Filtrar por condutor"/>
+          <select class="inp" id="mul-fil-cont" style="width:175px" onchange="fdocRenderMultas()" title="Contrato do cadastro do veículo">
+            <option value="">Todos os contratos</option>
+          </select>
           <button class="btn btn-pri" onclick="fdocNovaMulta()">+ Nova multa</button>
           <button class="btn" onclick="fdocImportarMultas()">📥 Importar Excel</button>
           <button class="btn" onclick="fdocMultaVincularMotoristas()" title="Preenche o condutor pela escala/portaria (placa + data + hora) nas multas da lista que ainda não têm colaborador">🚗 Vincular motorista</button>

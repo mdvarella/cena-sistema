@@ -1,11 +1,11 @@
 // ══════════════════════════════════════════════════════════════
-// CENA ERP — Service Worker v8.1.100 (PORTARIA-OFFLINE-1)
+// CENA ERP — Service Worker v8.1.101 (PORTARIA-OFFLINE-1)
 // App shell cache (network-first no HTML e nos scripts do app).
 // NÃO cacheia API Supabase / Azure / Nexus.
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.100';
+const SW_VERSION   = 'cena-8.1.101';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
