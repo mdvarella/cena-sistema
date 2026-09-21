@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
-**Atualizado em:** 20/09/2026  
-**Versão atual do sistema:** `8.1.093` (20/09/2026, build `20260920-2335`)  
+**Atualizado em:** 21/09/2026  
+**Versão atual do sistema:** `8.1.094` (21/09/2026, build `20260921-1500`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -349,6 +349,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
   FRO-PORT-AUTH   Portaria — Autorizados            🟠 HOMOLOGAÇÃO
   FRO-PORT-OFF    Portaria offline-first            🟠 HOMOLOGAÇÃO
   FRO-COMB-CONC-1 Combustível — conciliação placa   🟠 HOMOLOGAÇÃO
+  FRO-MUL-1       Multas: campos + exclusão         🟠 HOMOLOGAÇÃO
 
   FRO-PORT-AUTH: cadastro (foto pessoa/veículo, RG, CPF, setor, dados do
   veículo) por usuário não-portaria; tablet só libera entrada/saída.
@@ -363,6 +364,11 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
   (`status_conciliacao`); sem tabela paralela e sem criar veículo
   automático. SQL manual `sql_frotas_combustivel_conciliacao_fase1.sql`
   (**não executar** pelo ERP). Tela Combustível → Inconsistências.
+
+  FRO-MUL-1: modal Editar/Nova multa com Município, Código, Tipo de
+  Infração, Gravidade e Valor C/ Desconto (se flagar desconto).
+  Exclusão com justificativa (soft-delete). SQL manual
+  `sql_frotas_documentos_multa_extra.sql` (**não executar** pelo ERP).
 
 # 10. Programação
 
@@ -450,6 +456,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 21/09/2026 | 8.1.094 | FRO-MUL-1: modal de multa com Município, Código, Tipo de Infração, Gravidade e Valor C/ Desconto; exclusão com justificativa (soft-delete). SQL `sql_frotas_documentos_multa_extra.sql` (não aplicar). HOMOLOGAÇÃO. |
 | 20/09/2026 | 8.1.093 | TMA-OPS-1: Programação TMA troca “Saída OK” manual por Operação (Portaria + Diário + OS) em lote, com virada de dia. Sem SQL, sem deploy. HOMOLOGAÇÃO. |
 | 20/09/2026 | 8.1.084 | PWA: reativado o convite “Instalar na tela inicial” **só em celular/tablet** (nunca desktop — lá a versão instalada divergia do browser). Aparece após login quando não instalado; iOS/Safari com instrução manual; gate por `data-device` + dispensa por sessão. Sem SQL, sem deploy. HOMOLOGAÇÃO. |
 | 20/09/2026 | 8.1.083 | Almoxarifado/Requisição: corrige requisições DUPLICADAS por duplo-clique no Salvar/Enviar (rede lenta). Trava de reentrada em `almReqSalvar`/`almReqEnviar` + helper `btnBusy` (botão desabilita na hora, vira “Salvando…/Enviando…” com spinner, restaura ao fim/erro). Aplicado aos botões de ação da Requisição e ao Registrar entrada. **+ Anti-duplo-clique GLOBAL**: rede única em fase de captura ignora repique no mesmo botão em 600ms (todo o sistema; exceto `.btn-sm`/`data-fastclick`). Sem SQL, sem deploy. HOMOLOGAÇÃO. |
