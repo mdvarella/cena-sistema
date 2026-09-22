@@ -21,23 +21,64 @@ AS $$
   SELECT upper(regexp_replace(btrim(regexp_replace(coalesce(p_uid, ''), E'[\\n\\r\\t]+', '', 'g')), '[\s\-]+', '', 'g'));
 $$;
 
--- Cadastro/bloqueio/substituição/reativação: admin, diretoria, dp, rh, gestor.
--- NÃO supervisor / portaria / almoxarife / equipe.
-CREATE OR REPLACE FUNCTION public.cena_rfid_pode_cadastrar()
-RETURNS boolean
-LANGUAGE sql
+-- Usuário da sessão Auth: 1º por auth_user_id; senão e-mail do JWT (login dual / vínculo pendente).
+CREATE OR REPLACE FUNCTION public.cena_rfid_usuario_sessao()
+RETURNS public.usuarios_sistema
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  SELECT EXISTS (
-    SELECT 1
-    FROM public.usuarios_sistema us
-    WHERE us.auth_user_id = auth.uid()
-      AND us.ativo IS TRUE
-      AND us.deleted_at IS NULL
-      AND lower(btrim(us.perfil)) IN ('admin','diretoria','dp','rh','gestor')
-  );
+DECLARE
+  v_us public.usuarios_sistema%ROWTYPE;
+  v_email text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT * INTO v_us
+  FROM public.usuarios_sistema us
+  WHERE us.auth_user_id = auth.uid()
+    AND us.ativo IS TRUE
+    AND us.deleted_at IS NULL
+  LIMIT 1;
+  IF v_us.id IS NOT NULL THEN
+    RETURN v_us;
+  END IF;
+
+  v_email := lower(btrim(coalesce(auth.jwt() ->> 'email', '')));
+  IF v_email = '' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT * INTO v_us
+  FROM public.usuarios_sistema us
+  WHERE lower(btrim(us.email)) = v_email
+    AND us.ativo IS TRUE
+    AND us.deleted_at IS NULL
+  ORDER BY CASE WHEN us.auth_user_id = auth.uid() THEN 0 WHEN us.auth_user_id IS NULL THEN 1 ELSE 2 END
+  LIMIT 1;
+  RETURN v_us;
+END;
+$$;
+
+-- Cadastro/bloqueio/substituição/reativação: admin, diretoria, dp, rh, gestor.
+-- NÃO supervisor / portaria / almoxarife / equipe.
+CREATE OR REPLACE FUNCTION public.cena_rfid_pode_cadastrar()
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_us public.usuarios_sistema%ROWTYPE;
+BEGIN
+  v_us := public.cena_rfid_usuario_sessao();
+  RETURN v_us.id IS NOT NULL
+    AND lower(btrim(coalesce(v_us.perfil, ''))) IN ('admin','diretoria','dp','rh','gestor');
+END;
 $$;
 
 -- Auditoria obrigatória na MESMA transação da RPC.
@@ -61,12 +102,7 @@ BEGIN
       USING ERRCODE = '22023', HINT = 'RFID_AUDIT_ACAO';
   END IF;
 
-  SELECT * INTO v_us
-  FROM public.usuarios_sistema
-  WHERE auth_user_id = auth.uid()
-    AND ativo IS TRUE
-    AND deleted_at IS NULL
-  LIMIT 1;
+  v_us := public.cena_rfid_usuario_sessao();
 
   INSERT INTO public.audit_log (
     acao,
@@ -85,7 +121,7 @@ BEGIN
     coalesce(v_us.id::text, auth.uid()::text, ''),
     coalesce(v_us.nome, ''),
     coalesce(v_us.perfil, ''),
-    jsonb_strip_nulls(coalesce(p_dados_extra, '{}'::jsonb))::text,
+    jsonb_strip_nulls(coalesce(p_dados_extra, '{}'::jsonb)),
     now(),
     coalesce(p_sessao_id, 'rpc:rfid')
   );
@@ -226,6 +262,7 @@ CREATE POLICY colaborador_credenciais_select_admin
   USING (public.cena_rfid_pode_cadastrar());
 
 REVOKE ALL ON FUNCTION public.cena_rfid_normalizar_uid(text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.cena_rfid_usuario_sessao() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.cena_rfid_pode_cadastrar() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.cena_rfid_audit_registrar(text, text, jsonb, text) FROM PUBLIC, anon, authenticated;
 
@@ -359,10 +396,7 @@ BEGIN
       USING ERRCODE = 'P0002', HINT = 'RFID_COLAB_NAO_ENCONTRADO';
   END IF;
 
-  SELECT nome INTO v_usr
-  FROM public.usuarios_sistema
-  WHERE auth_user_id = auth.uid() AND ativo IS TRUE AND deleted_at IS NULL
-  LIMIT 1;
+  SELECT (public.cena_rfid_usuario_sessao()).nome INTO v_usr;
 
   SELECT * INTO v_exist
   FROM public.colaborador_credenciais
@@ -445,10 +479,7 @@ BEGIN
       USING ERRCODE = 'P0002', HINT = 'RFID_COLAB_NAO_ENCONTRADO';
   END IF;
 
-  SELECT nome INTO v_usr
-  FROM public.usuarios_sistema
-  WHERE auth_user_id = auth.uid() AND ativo IS TRUE AND deleted_at IS NULL
-  LIMIT 1;
+  SELECT (public.cena_rfid_usuario_sessao()).nome INTO v_usr;
 
   SELECT * INTO v_ativo
   FROM public.colaborador_credenciais
@@ -609,10 +640,7 @@ BEGIN
       USING ERRCODE = 'P0002', HINT = 'RFID_COLAB_NAO_ENCONTRADO';
   END IF;
 
-  SELECT nome INTO v_usr
-  FROM public.usuarios_sistema
-  WHERE auth_user_id = auth.uid() AND ativo IS TRUE AND deleted_at IS NULL
-  LIMIT 1;
+  SELECT (public.cena_rfid_usuario_sessao()).nome INTO v_usr;
 
   SELECT * INTO v_atual
   FROM public.colaborador_credenciais
