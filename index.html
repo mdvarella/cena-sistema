@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.106"></script>
+<script src="portaria-offline.js?v=8.1.109"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7834,6 +7834,38 @@ async function sbRpc(fn, params){
 var _cenaRfidSessao = null;
 var _cenaRfidWedgeBound = false;
 var _cenaRfidDemoCreds = [];
+var _cenaRfidIndice = {ok:false, loading:null, byColab:{}, byUid:{}};
+
+function cenaRfidIndiceInvalidar(){
+  _cenaRfidIndice.ok=false;
+  _cenaRfidIndice.loading=null;
+}
+function cenaRfidIndiceGarantir(){
+  if(_cenaRfidIndice.ok) return Promise.resolve(_cenaRfidIndice);
+  if(_cenaRfidIndice.loading) return _cenaRfidIndice.loading;
+  _cenaRfidIndice.loading = sbFetch('colaborador_credenciais', {
+    select: 'colaborador_id,uid_normalizado,status',
+    filters: ['tipo=eq.RFID'],
+    limit: 8000
+  }).then(function(rows){
+    var byColab={}, byUid={};
+    (rows||[]).forEach(function(r){
+      var uid=cenaRfidNormalizarUid(r.uid_normalizado);
+      if(!uid || !r.colaborador_id) return;
+      byUid[uid]=r.colaborador_id;
+      var slot=byColab[r.colaborador_id]||{ativo:'', uids:[]};
+      if(slot.uids.indexOf(uid)<0) slot.uids.push(uid);
+      if(r.status==='ATIVO') slot.ativo=uid;
+      byColab[r.colaborador_id]=slot;
+    });
+    _cenaRfidIndice={ok:true, loading:null, byColab:byColab, byUid:byUid};
+    return _cenaRfidIndice;
+  }).catch(function(){
+    _cenaRfidIndice.loading=null;
+    return _cenaRfidIndice;
+  });
+  return _cenaRfidIndice.loading;
+}
 
 function cenaRfidNormalizarUid(valor){
   return String(valor==null?'':valor)
@@ -8151,6 +8183,7 @@ async function cenaRfidConfirmarVinculo(){
     return;
   }
   cenaRfidCancelarLeitura();
+  if(typeof cenaRfidIndiceInvalidar==='function') cenaRfidIndiceInvalidar();
   if(typeof progShowToast==='function') progShowToast(sess.modo==='substituir'?'✅ Crachá substituído.':'✅ Crachá vinculado.');
   var col = (colaboradores||[]).find(function(c){ return c.id===sess.colaboradorId; }) || {id:sess.colaboradorId, nome:sess.colaboradorNome, re:sess.colaboradorRe};
   cenaRfidMontarSecao(sess.colaboradorId, col);
@@ -16750,10 +16783,10 @@ function renderConteudoCadastro(id){
       +'<select class="inp" id="fil-col-cargo" style="width:180px" onchange="renderColsVis()"><option value="">Todos os cargos</option></select>'
       +'<select class="inp" id="fil-col-equipe" style="width:180px" onchange="renderColsVis()"><option value="">Todas as equipes</option></select>'
       +'<select class="inp" id="fil-col-cor" style="width:150px" onchange="renderColsVis()"><option value="">Todas as cores</option><option value="amarelo">🟡 Amarelo</option><option value="azul">🔵 Azul</option><option value="verde">🟢 Verde</option><option value="indefinido">⚪ Indefinido</option></select>'
-      +'<input class="inp" id="fil-col-busca" placeholder="Buscar RE ou nome..." style="width:190px" oninput="renderColsVis()"/>'
+      +'<input class="inp" id="fil-col-busca" placeholder="Buscar nome, RE ou crachá RFID..." style="width:230px" oninput="renderColsVis()"/>'
       +'<span id="fil-col-count" style="font-size:11px;color:#888;align-self:center"></span>'
       +'</div>'
-      +'<div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>RE</th><th>Nome</th><th>Cargo</th><th>Tipo</th><th>Equipe</th><th>CNH</th><th>Situação</th><th></th></tr></thead><tbody id="tbody-cols-vis"></tbody></table></div></div>',
+      +'<div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>RE</th><th>Nome</th><th>Crachá</th><th>Cargo</th><th>Tipo</th><th>Equipe</th><th>CNH</th><th>Situação</th><th></th></tr></thead><tbody id="tbody-cols-vis"></tbody></table></div></div>',
     'tipos-eq':'<div class="card"><div class="ch"><span class="ct">🚗 Tipos de equipe</span><button class="btn btn-pri" onclick="openNovoTipoEquipe()">+ Novo tipo</button></div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Tipo</th><th>Meta horas/mês</th><th></th></tr></thead><tbody id="tbody-tipos-eq-vis"></tbody></table></div></div>',
     'equipes-disp':'<div class="card"><div class="ch"><span class="ct">⚡ Equipes de disponibilidade</span><div style="display:flex;gap:6px"><select class="inp" id="fil-eqd-cont-vis" style="width:160px" onchange="renderEqDispVis()"><option value="">Todos</option></select><select class="inp" id="fil-eqd-status-vis" style="width:110px" onchange="eqdCarregarStatus()"><option value="Ativo">Ativas</option><option value="Inativo">Inativas</option><option value="">Todas</option></select><button class="btn btn-pri" onclick="openNovaEquipeDisp()">+ Nova</button></div></div><div style="overflow-x:auto"><table class="tbl tbl-responsive"><thead><tr><th>Código</th><th>Base</th><th>Tipo</th><th>Contrato</th><th>Status</th><th></th></tr></thead><tbody id="tbody-eqd-vis"></tbody></table></div></div>',
     'causas-codx':'<div class="card"><div class="ch"><span class="ct">⚠️ Causas COD X</span><button class="btn btn-pri" onclick="openNovaCausaCodX()">+ Nova causa</button></div><div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Causa</th><th>Ativa</th><th></th></tr></thead><tbody id="tbody-causas-codx-vis"></tbody></table></div></div>',
@@ -17605,6 +17638,11 @@ function openGerenciarSupervisorNome(nome){
 var _historicoDispensas = [];
 
 function renderColsVis(){
+  if(!_cenaRfidIndice.ok && !_cenaRfidIndice.loading && typeof cenaRfidIndiceGarantir==='function'){
+    cenaRfidIndiceGarantir().then(function(){
+      if(document.getElementById('tbody-cols-vis')) renderColsVis();
+    });
+  }
   var sel=document.getElementById('fil-col-cont-vis');
   if(sel&&sel.options.length<=1){
     sel.innerHTML='<option value="">Selecione contrato</option>'
@@ -17636,6 +17674,7 @@ function renderColsVis(){
   var equipe   = (document.getElementById('fil-col-equipe')||{}).value||'';
   var cor      = (document.getElementById('fil-col-cor')||{}).value||'';
   var busca    = ((document.getElementById('fil-col-busca')||{}).value||'').trim().toLowerCase();
+  var buscaUid = typeof cenaRfidNormalizarUid==='function' ? cenaRfidNormalizarUid(busca) : String(busca||'').toUpperCase().replace(/[\s\-]+/g,'');
   var el=document.getElementById('fil-col-cont');if(el)el.value=cid;
 
   // Popular select de cargos dinamicamente pelo contrato selecionado
@@ -17701,7 +17740,14 @@ function renderColsVis(){
     if(busca){
       var re   = String(c.re||'').toLowerCase();
       var nome = (c.nome||'').toLowerCase();
-      if(re.indexOf(busca)<0 && nome.indexOf(busca)<0) return false;
+      var rfidInfo=(_cenaRfidIndice.byColab||{})[c.id];
+      var uids=(rfidInfo&&rfidInfo.uids?rfidInfo.uids:[]).join(' ').toLowerCase();
+      var uidHit=buscaUid && (
+        (rfidInfo&&rfidInfo.ativo&&String(rfidInfo.ativo).indexOf(buscaUid)>=0)
+        || uids.indexOf(buscaUid.toLowerCase())>=0
+        || ((_cenaRfidIndice.byUid||{})[buscaUid]===c.id)
+      );
+      if(re.indexOf(busca)<0 && nome.indexOf(busca)<0 && !uidHit) return false;
     }
     return true;
   });
@@ -17711,7 +17757,7 @@ function renderColsVis(){
   if(cnt) cnt.textContent = rows.length+' colaborador(es)';
 
   if(!rows.length){
-    tb.innerHTML='<tr><td colspan="8" style="padding:1.5rem;text-align:center;color:#aaa">'
+    tb.innerHTML='<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">'
       +(cid?'Nenhum colaborador encontrado com esses filtros.':'Selecione um contrato para ver os colaboradores.')
       +'</td></tr>';
     return;
@@ -17749,9 +17795,16 @@ function renderColsVis(){
       var cs = corSt[c.cor_escala];
       if(cs) corLabel = ' <span style="background:'+cs.bg+';color:'+cs.cl+';border-radius:50%;width:12px;height:12px;display:inline-block;vertical-align:middle" title="Escala: '+c.cor_escala+'"></span>';
     }
+    var rfidInfo=(_cenaRfidIndice.byColab||{})[c.id];
+    var rfidCel=rfidInfo&&rfidInfo.ativo
+      ? '<span style="font-family:monospace;font-size:11px;color:#185FA5" title="Crachá RFID ativo">'+escHtml(rfidInfo.ativo)+'</span>'
+      : (rfidInfo&&rfidInfo.uids&&rfidInfo.uids.length
+        ? '<span style="font-size:11px;color:#854F0B" title="Crachá sem status ATIVO">'+escHtml(rfidInfo.uids[0])+'</span>'
+        : '<span style="color:#ccc">—</span>');
     return '<tr style="'+(c.dispensado?'opacity:.7;background:#fffafa':'')+';">'
       +'<td data-label="RE" style="font-size:12px;color:#888">'+(c.re||'-')+'</td>'
       +'<td data-label="Nome" style="font-weight:500">'+c.nome+dispensaInfo+corLabel+'</td>'
+      +'<td data-label="Crachá">'+rfidCel+'</td>'
       +'<td data-label="Cargo" style="font-size:12px">'+(c.cargo||'-')+'</td>'
       +'<td data-label="Tipo">'+tipoCelula+'</td>'
       +'<td data-label="Equipe" style="font-size:12px">'+eqLabel+'</td>'
@@ -19376,7 +19429,7 @@ function cadCarregarCargos(cb, force){
 }
 function _cargosAtivosOrdenados(){
   return _cad_cargos.filter(function(c){return c.ativo!==false;})
-    .sort(function(a,b){ return (a.categoria||'~').localeCompare(b.categoria||'~','pt-BR')||a.nome.localeCompare(b.nome,'pt-BR'); });
+    .sort(function(a,b){ return (a.categoria||'~').localeCompare(b.categoria||'~','pt-BR')||String(a.nome||'').localeCompare(String(b.nome||''),'pt-BR'); });
 }
 // <select> de cargo agrupado por categoria. Inclui o valor atual mesmo se não cadastrado (não perde legado).
 function _cargosParaSelect(){
@@ -19407,10 +19460,72 @@ function cargoSelectHtml(selected, attrs){
   if(!ativos.length && !selected) html+='<option value="" disabled>(nenhum cargo cadastrado)</option>';
   return html+'</select>';
 }
-/** Select do Cargo Mestre com value = id (RH-1C). Sem match automático por nome no reload. */
+function rhCargoNormNome(s){
+  return String(s||'').trim().replace(/\s+/g,' ').toLowerCase();
+}
+function rhCargoPorNomeHistorico(nome){
+  var n=rhCargoNormNome(nome);
+  if(!n) return null;
+  var hits=(_cad_cargos||[]).filter(function(c){
+    return c && c.id && c.ativo!==false && rhCargoNormNome(c.nome)===n;
+  });
+  if(hits.length===1) return hits[0];
+  var exatos=hits.filter(function(c){ return String(c.nome||'').trim()===String(nome||'').trim(); });
+  return exatos.length===1?exatos[0]:null;
+}
+/** Texto histórico (colaboradores.cargo) prevalece se o cargo_id apontar para outro nome. */
+function rhCargoResolverHistorico(cargoId, cargoNome){
+  cargoId=cargoId!=null&&cargoId!==''?String(cargoId):'';
+  if(cargoId==='__hist__') cargoId='';
+  cargoNome=String(cargoNome||'').trim();
+  var porId=cargoId?(_cad_cargos||[]).find(function(c){ return String(c.id)===cargoId; }):null;
+  var porNome=rhCargoPorNomeHistorico(cargoNome);
+  if(cargoNome && porNome){
+    if(!porId || rhCargoNormNome(porId.nome)!==rhCargoNormNome(cargoNome)){
+      return {id:String(porNome.id), nome:String(porNome.nome||cargoNome).trim()};
+    }
+  }
+  if(porId) return {id:String(porId.id), nome:String(porId.nome||cargoNome).trim()};
+  if(cargoId) return {id:cargoId, nome:cargoNome||cargoId};
+  return {id:'', nome:cargoNome};
+}
+function rhCargoAplicarSelectNc(cargoId, cargoNome){
+  var el=document.getElementById('nc-cargo');
+  if(!el) return null;
+  if(cargoId!=null) el.setAttribute('data-cargo-hist-id', String(cargoId||''));
+  if(cargoNome!=null) el.setAttribute('data-cargo-hist-nome', String(cargoNome||''));
+  var r=rhCargoResolverHistorico(cargoId, cargoNome);
+  if(r.id){
+    el.value=r.id;
+    if(el.value!==r.id){
+      var opt=document.createElement('option');
+      opt.value=r.id;
+      opt.textContent=r.nome||r.id;
+      el.appendChild(opt);
+      el.value=r.id;
+    }
+    return r;
+  }
+  if(r.nome){
+    var histOpt=null;
+    Array.from(el.options).forEach(function(o){ if(o.value==='__hist__') histOpt=o; });
+    if(!histOpt){
+      histOpt=document.createElement('option');
+      histOpt.value='__hist__';
+      el.insertBefore(histOpt, el.options[1]||null);
+    }
+    histOpt.textContent=r.nome;
+    el.value='__hist__';
+  }
+  return r;
+}
+/** Select do Cargo Mestre com value = id. Na edição, o nome histórico prevalece sobre cargo_id divergente. */
 function cargoSelectHtmlPorId(selectedId, selectedNome, attrs){
-  selectedId=selectedId!=null&&selectedId!==''?String(selectedId):'';
-  selectedNome=String(selectedNome||'').trim();
+  var origId=selectedId!=null&&selectedId!==''?String(selectedId):'';
+  var origNome=String(selectedNome||'').trim();
+  var resolved=rhCargoResolverHistorico(origId, origNome);
+  selectedId=resolved.id;
+  selectedNome=resolved.nome;
   var ativos=_cargosAtivosOrdenados();
   var byCat={};
   ativos.forEach(function(c){
@@ -19418,14 +19533,16 @@ function cargoSelectHtmlPorId(selectedId, selectedNome, attrs){
     (byCat[c.categoria||'Outros']=byCat[c.categoria||'Outros']||[]).push(c);
   });
   var existe=ativos.some(function(c){ return String(c.id)===selectedId; });
-  var html='<select '+(attrs||'')+' data-cargo-modo="id"><option value="">— Selecione o cargo —</option>';
+  attrs=String(attrs||'');
+  if(!/\bdata-nosort\b/.test(attrs)) attrs+=' data-nosort="1"';
+  var html='<select '+attrs+' data-cargo-modo="id" data-cargo-hist-id="'+escHtml(origId)+'" data-cargo-hist-nome="'+escHtml(origNome)+'"><option value="">— Selecione o cargo —</option>';
   if(selectedId && !existe){
     html+='<optgroup label="Atual (id sem cadastro ativo)"><option value="'+escHtml(selectedId)+'" selected>'
       +escHtml(selectedNome||selectedId)+'</option></optgroup>';
   }
   if(!selectedId && selectedNome){
-    html+='<optgroup label="Legado (só texto — selecione o Cargo Mestre)"><option value="" selected disabled>'
-      +escHtml(selectedNome)+' — sem cargo_id</option></optgroup>';
+    html+='<optgroup label="Salvo no cadastro"><option value="__hist__" selected>'
+      +escHtml(selectedNome)+'</option></optgroup>';
   }
   Object.keys(byCat).sort().forEach(function(cat){
     html+='<optgroup label="'+escHtml(cat)+'">'+byCat[cat].map(function(c){
@@ -19435,22 +19552,28 @@ function cargoSelectHtmlPorId(selectedId, selectedNome, attrs){
   if(!ativos.length && !selectedId) html+='<option value="" disabled>(nenhum cargo cadastrado)</option>';
   return html+'</select>';
 }
-/** Lê #nc-cargo (modo id) → {cargo_id, cargo}. Não inventa id a partir do nome. */
+/** Lê #nc-cargo. Vazio/__hist__ devolve o cargo histórico salvo. */
 function rhCargoLerSelectNc(){
   var el=document.getElementById('nc-cargo');
   if(!el) return {cargo_id:null, cargo:''};
   var raw=String(el.value||'').trim();
+  var histId=String(el.getAttribute('data-cargo-hist-id')||'').trim();
+  var histNome=String(el.getAttribute('data-cargo-hist-nome')||'').trim();
   var modo=(el.getAttribute('data-cargo-modo')||'')==='id';
-  if(!raw) return {cargo_id:null, cargo:''};
+  if(!raw || raw==='__hist__'){
+    if(histId||histNome){
+      var resolved=rhCargoResolverHistorico(histId, histNome);
+      return {cargo_id:resolved.id||histId||null, cargo:resolved.nome||histNome||''};
+    }
+    return {cargo_id:null, cargo:''};
+  }
   if(modo){
     var obj=(_cad_cargos||[]).find(function(c){ return String(c.id)===raw; });
     if(obj) return {cargo_id:String(obj.id), cargo:String(obj.nome||'').trim()};
-    // id selecionado mas não está no cache — mantém id; nome da option
     var opt=el.options[el.selectedIndex];
     var label=opt?String(opt.text||'').trim():'';
     return {cargo_id:raw, cargo:label||''};
   }
-  // Legado (value=nome): só preenche texto; cargo_id só se houver exatamente 1 no master
   var hits=(_cad_cargos||[]).filter(function(x){ return String(x.nome||'').trim()===raw; });
   return {cargo_id:hits.length===1?String(hits[0].id):null, cargo:raw};
 }
@@ -43735,12 +43858,23 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.106',
+  numero: '8.1.109',
   data:   '22/09/2026',
-  build:  '20260922-0100',
+  build:  '20260922-0857',
   log: [
-    {v:'8.1.106', d:'22/09/2026', itens:[
+    {v:'8.1.109', d:'22/09/2026', itens:[
       'Cadastro de Usuários: o botão Editar não abria (espera de filiais/depósitos sem fallback, contrato_id não-texto e aspas no nome quebravam o modal). Agora abre na hora. Sem SQL. HOMOLOGAÇÃO.',
+      'Recoloca o que a 107/108 já tinham e tinha sumido do código: busca de colaborador por nome/RE/crachá RFID + coluna Crachá; edição de colaborador restaura o cargo salvo (não troca para VIABILIZADOR). Sem SQL. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.108', d:'22/09/2026', itens:[
+      'Cadastro Colaboradores — editar: o campo Cargo abria como VIABILIZADOR para todos. Agora restaura o cargo salvo (texto histórico prevalece se o cargo_id estiver errado); o select não é reordenado pelo modal. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.107', d:'21/09/2026', itens:[
+      'Cadastro de Colaboradores: busca por nome, RE e crachá RFID; coluna Crachá na lista. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.106', d:'21/09/2026', itens:[
+      'RFID — 403 RFID_SEM_PERMISSAO ao vincular: a RPC só achava o usuário por auth_user_id. Agora casa também o e-mail do JWT com usuarios_sistema (login dual). SQL manual sql_colaborador_credenciais_rfid_core_1_fix_permissao.sql. HOMOLOGAÇÃO.',
+      'RFID — 400 42804 ao gravar audit_log: dados_extra é jsonb e a função mandava text. Remove o ::text. Reaplicar o mesmo SQL de hotfix. HOMOLOGAÇÃO.',
     ]},
     {v:'8.1.105', d:'21/09/2026', itens:[
       'RFID-CORE-1 — Cadastro mestre de crachá RFID no colaborador: seção no Editar, leitor USB tipo teclado só em sessão, RPCs vincular/bloquear/substituir/testar. Sem portão/Portaria/estoque/ponto. SQL manual já aplicado. HOMOLOGAÇÃO.',
@@ -60202,7 +60336,8 @@ function openEditarColaborador(cid){
     +'<div class="fg"><label>RE / Matrícula</label><input id="nc-re" value="'+(c.re||'')+'" style="width:100%"/></div>'
     +'<div class="fg"><label>Cargo</label>'+(typeof cargoSelectHtmlPorId==='function'
       ? cargoSelectHtmlPorId(c.cargo_id||'', c.cargo||'', 'id="nc-cargo" class="inp" style="width:100%"')
-      : cargoSelectHtml(c.cargo||'','id="nc-cargo" class="inp" style="width:100%"'))+'</div>'
+      : cargoSelectHtml(c.cargo||'','id="nc-cargo" class="inp" style="width:100%"'))
+    +(c.cargo?'<div style="font-size:11px;color:#185FA5;margin-top:3px">Salvo: <b>'+escHtml(c.cargo)+'</b></div>':'')+'</div>'
     +'</div>'
     +'<div class="fg" style="margin:.4rem 0 .6rem;padding:8px 10px;background:#F8FAFC;border-radius:8px;border:.5px solid #e0dfd8">'
     +'<label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin:0">'
@@ -60292,6 +60427,7 @@ function openEditarColaborador(cid){
     if(selEquipe) selEquipe.value = c.equipe_id||'';
     var selArea = document.getElementById('nc-area');
     if(selArea) selArea.value = c.area||'';
+    if(typeof rhCargoAplicarSelectNc==='function') rhCargoAplicarSelectNc(c.cargo_id, c.cargo);
     // Forçar escala — buscar valor atual do banco para garantir
     var selEscala = document.getElementById('nc-escala-id');
     if(selEscala && c.escala_id) selEscala.value = c.escala_id;
@@ -60299,6 +60435,22 @@ function openEditarColaborador(cid){
     sbFetch('colaboradores', {filters:['id=eq.'+cid], limit:1}).then(function(rows){
       if(!(rows && rows[0])) return;
       var fresco = rows[0];
+      var memCargo=String(c.cargo||'').trim();
+      var frescoCargo=fresco.cargo!=null?String(fresco.cargo).trim():'';
+      if(fresco.cargo_id!=null && fresco.cargo_id!=='') c.cargo_id=fresco.cargo_id;
+      var nomeDoId='';
+      if(c.cargo_id){
+        var cargoObj=(_cad_cargos||[]).find(function(x){ return String(x.id)===String(c.cargo_id); });
+        if(cargoObj) nomeDoId=String(cargoObj.nome||'').trim();
+      }
+      if(memCargo && nomeDoId && typeof rhCargoNormNome==='function' && rhCargoNormNome(memCargo)!==rhCargoNormNome(nomeDoId)){
+        c.cargo=memCargo;
+      } else if(frescoCargo){
+        c.cargo=frescoCargo;
+      } else if(memCargo){
+        c.cargo=memCargo;
+      }
+      if(typeof rhCargoAplicarSelectNc==='function') rhCargoAplicarSelectNc(c.cargo_id, c.cargo);
       if(fresco.escala_id){
         c.escala_id = fresco.escala_id;
         var sel = document.getElementById('nc-escala-id');
@@ -60368,10 +60520,17 @@ function openEditarColaborador(cid){
 
       c.nome=nome;
       c.re=(document.getElementById('nc-re')||{}).value.trim()||c.re;
+      var cargoHistId=c.cargo_id||null;
+      var cargoHistNome=c.cargo||null;
       var cargoSel=typeof rhCargoLerSelectNc==='function'?rhCargoLerSelectNc():{cargo_id:null,cargo:(document.getElementById('nc-cargo')||{}).value.trim()||c.cargo};
-      c.cargo_id=cargoSel.cargo_id||null;
-      c.cargo=cargoSel.cargo||(c.cargo_id?c.cargo:'')||null;
-      if(!c.cargo_id) c.cargo=cargoSel.cargo||null;
+      if(cargoSel && (cargoSel.cargo_id||cargoSel.cargo)){
+        c.cargo_id=cargoSel.cargo_id||null;
+        c.cargo=cargoSel.cargo||(c.cargo_id?c.cargo:'')||null;
+        if(!c.cargo_id) c.cargo=cargoSel.cargo||null;
+      } else {
+        c.cargo_id=cargoHistId;
+        c.cargo=cargoHistNome;
+      }
       c.bro=(document.getElementById('nc-bro')||{}).value.trim()||null;
       c.vinculo=(document.getElementById('nc-vinculo')||{}).value||c.vinculo||'campo';
       c.ativo=(document.getElementById('nc-ativo')||{}).value!=='false';
@@ -150108,179 +150267,4 @@ async function almRegistrarEntregaPatrimonio(opts){
         filId:linhaEst.filial_id, depId:linhaEst.deposito_id,
         nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
       });
-      return {ok:false, msg:itemCat.nome+': falha ao registrar entrega (saldo revertido)'};
-    }
-    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
-  }
-  return {ok:true, nome:itemCat.nome, qtd:qtd, estoque_id:linhaEst.id};
-}
-
-function almDevolucaoRetornaEstoque(cond){
-  return ['Bom estado','Com desgaste','Necessita manutenção','Danificado','Quebrado'].indexOf(cond)>=0;
-}
-
-async function almRegistrarDevolucaoPatrimonio(opts){
-  var movId = opts.movimentacao_origem_id;
-  var movOrig = (movimentacoes_itens||[]).find(function(m){ return String(m.id)===String(movId); });
-  if(!movOrig) return {ok:false, msg:'Entrega de origem não encontrada'};
-  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(movOrig.item_id); });
-  var qtd = Number(opts.quantidade||movOrig.quantidade)||0;
-  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
-  var depDest = opts.deposito_destino_id || movOrig.deposito_id;
-  if(!depDest) return {ok:false, msg:'Selecione o depósito de entrada (destino)'};
-  var depDestObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depDest); });
-  var filDest = depDestObj ? depDestObj.filial_id : movOrig.filial_id;
-  var cond = opts.condicao||'Bom estado';
-  var novoStatus = (cond==='Bom estado'||cond==='Com desgaste') ? 'Disponível'
-    : (cond==='Necessita manutenção') ? 'Em manutenção' : 'Fora de uso';
-
-  var uidReg = usuarioLogado?usuarioLogado.id:null;
-  var colabOrig = movOrig.colaborador_id||almColaboradorIdFromMov(movOrig);
-  var payload = {
-    item_id: movOrig.item_id,
-    tipo_mov: 'devolucao',
-    quantidade: qtd,
-    deposito_id: depDest,
-    filial_id: filDest||null,
-    contrato_id: movOrig.contrato_id||null,
-    destino_tipo: 'deposito',
-    destino_id: depDest,
-    movimentacao_origem_id: movId,
-    colaborador_id: colabOrig||null,
-    equipe_id: movOrig.equipe_id||null,
-    veiculo_id: movOrig.veiculo_id||null,
-    projeto_id: movOrig.projeto_id||null,
-    previsao_devolucao: movOrig.previsao_devolucao||null,
-    condicao: cond,
-    data_mov: opts.data_mov||dataHoje(),
-    obs: almJuntarObs(opts.obs, almObsMetaEntrega({
-      colaborador_id: colabOrig,
-      equipe_id: movOrig.equipe_id||null
-    }), almAnexarObsOrigem('', 'contrato', movOrig.contrato_id||null)),
-    registrado_por_id: uidReg,
-    responsavel_id: uidReg,
-    status: novoStatus
-  };
-
-  if(DEMO){
-    movOrig.status = 'Devolvido';
-    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
-  } else {
-    var okOrig = await sbUpdate('movimentacoes_itens', {status:'Devolvido'}, 'id=eq.'+movId);
-    if(!okOrig) return {ok:false, msg:'Falha ao atualizar entrega de origem'};
-    movOrig.status = 'Devolvido';
-    var insMov = await sbInsert('movimentacoes_itens', payload);
-    if(!insMov) return {ok:false, msg:'Falha ao registrar devolução'};
-    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
-  }
-
-  if(almDevolucaoRetornaEstoque(cond) && itemCat){
-    var estId = null;
-    var obsOrig = movOrig.obs||'';
-    var mEst = obsOrig.match(/estoque_id:([^\s|]+)/);
-    if(mEst) estId = mEst[1];
-    var saldo = await almAtualizarSaldoEstoquePatrimonio({
-      itemCat:itemCat, qtd:qtd,
-      filId:filDest, depId:depDest,
-      estoqueId:estId
-    });
-    if(!saldo.ok) return {ok:false, msg:saldo.msg||'Devolução registrada mas falha ao repor estoque'};
-    await almConsolidarEstoqueItemDeposito(itemCat, depDest, filDest);
-  }
-  return {ok:true, nome:itemCat?itemCat.nome:'Item', cond:cond, deposito_destino:depDest};
-}
-
-async function almRegistrarTransferenciaPatrimonio(opts){
-  var itemId = opts.item_id;
-  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
-  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
-  var qtd = Number(opts.quantidade)||0;
-  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
-  var depOrig = opts.deposito_origem_id;
-  var depDest = opts.deposito_destino_id;
-  if(!depOrig) return {ok:false, msg:'Selecione o local de saída (depósito origem)'};
-  if(!depDest) return {ok:false, msg:'Selecione o local de entrada (depósito destino)'};
-  if(String(depOrig)===String(depDest)) return {ok:false, msg:'Depósitos de saída e entrada devem ser diferentes'};
-
-  var depOrigObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depOrig); });
-  var depDestObj = (typeof depositos!=='undefined'?depositos:[]).find(function(d){ return String(d.id)===String(depDest); });
-  var filOrig = depOrigObj ? depOrigObj.filial_id : null;
-  var filDest = depDestObj ? depDestObj.filial_id : null;
-
-  await almConsolidarEstoqueItemDeposito(itemCat, depOrig, filOrig);
-  await almReconciliarEstoqueItem(itemCat, depOrig, {filial_id:filOrig, permitirAcrescentar:false});
-
-  var linhaEst = almResolverLinhaEstoqueItem(itemCat, {qtd:qtd, depId:depOrig, filId:filOrig});
-  if(!linhaEst){
-    var saldoDep = almSaldoEstoqueItem(itemCat, depOrig);
-    return {ok:false, msg:itemCat.nome+': sem saldo no depósito de saída ('+saldoDep+')'};
-  }
-
-  var baixa = await almBaixarSaldoEstoquePatrimonio({row:linhaEst, qtd:qtd, itemCat:itemCat});
-  if(!baixa.ok) return baixa;
-
-  var credito = await almAtualizarSaldoEstoquePatrimonio({
-    itemCat:itemCat, qtd:qtd, filId:filDest, depId:depDest
-  });
-  if(!credito.ok){
-    await almAtualizarSaldoEstoquePatrimonio({
-      itemCat:itemCat, qtd:qtd, filId:filOrig, depId:depOrig,
-      nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
-    });
-    return {ok:false, msg:credito.msg||'Falha ao creditar depósito destino (saldo revertido na origem)'};
-  }
-
-  var payload = {
-    item_id: itemId,
-    tipo_mov: 'transferencia',
-    quantidade: qtd,
-    deposito_id: depOrig,
-    filial_id: filOrig||null,
-    data_mov: opts.data_mov||dataHoje(),
-    motivo: 'Transferência entre depósitos',
-    obs: almJuntarObs(opts.obs, 'dest_dep:'+depDest),
-    responsavel_id: usuarioLogado?usuarioLogado.id:null,
-    status: 'Disponível'
-  };
-
-  if(DEMO){
-    movimentacoes_itens.push(Object.assign({id:'mov'+Date.now()}, payload));
-  } else {
-    var insMov = await sbInsert('movimentacoes_itens', payload);
-    if(!insMov){
-      await almAtualizarSaldoEstoquePatrimonio({
-        itemCat:itemCat, qtd:qtd, filId:filOrig, depId:depOrig,
-        nome:linhaEst.nome, codigo:linhaEst.codigo, tipo:linhaEst.tipo
-      });
-      await almBaixarSaldoEstoquePatrimonio({row:credito.row, qtd:qtd, itemCat:itemCat});
-      return {ok:false, msg:itemCat.nome+': falha ao registrar transferência (saldo revertido)'};
-    }
-    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
-  }
-
-  await almConsolidarEstoqueItemDeposito(itemCat, depDest, filDest);
-  return {ok:true, nome:itemCat.nome, qtd:qtd, deposito_origem:depOrig, deposito_destino:depDest};
-}
-
-function almAjusteEhEntrada(tipoAj){
-  return ['Inventário positivo','Retorno de manutenção'].indexOf(tipoAj)>=0;
-}
-
-async function almRegistrarAjustePatrimonio(opts){
-  var itemId = opts.item_id;
-  var itemCat = (itens_catalogo||[]).find(function(x){ return String(x.id)===String(itemId); });
-  if(!itemCat) return {ok:false, msg:'Item não encontrado no catálogo'};
-  var qtd = Number(opts.quantidade)||0;
-  if(qtd<=0) return {ok:false, msg:'Quantidade inválida'};
-  var tipoAj = opts.tipo_ajuste||'Correção administrativa';
-  var payload = {
-    item_id: itemId,
-    tipo_mov: 'ajuste',
-    tipo_ajuste: tipoAj,
-    quantidade: qtd,
-    deposito_id: opts.deposito_id||null,
-    filial_id: opts.filial_id||null,
-    contrato_id: opts.contrato_id||null,
-    data_mov: opts.data_mov||dataHoje(),
-    motivo: opts.motivo||tipoAj,
-    responsavel_id: usuarioLogado?usuarioLogado.id:
+      return {ok:false, msg:itemCat.nome+': falha ao registrar
