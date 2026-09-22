@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.113"></script>
-<script src="sesmt-alm-shell.js?v=8.1.113"></script>
-<script src="prog-projetos-shell.js?v=8.1.113"></script>
+<script src="portaria-offline.js?v=8.1.114"></script>
+<script src="sesmt-alm-shell.js?v=8.1.114"></script>
+<script src="prog-projetos-shell.js?v=8.1.114"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43860,10 +43860,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.113',
+  numero: '8.1.114',
   data:   '22/09/2026',
-  build:  '20260922-1540',
+  build:  '20260922-1615',
   log: [
+    {v:'8.1.114', d:'22/09/2026', itens:[
+      'Requisição CENA: quantidades pedidas duplicavam por dentro — almReqCarregar e almReqGarantirListaSilent buscavam ao mesmo tempo e empilhavam os itens duas vezes (reserva = 2×). Uma carga só, itens/lista sem duplicata. Sem SQL. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.113', d:'22/09/2026', itens:[
       'Programação de Equipes (#sn-programacao-projetos): a tela pg-programacao-projetos não existia no HTML, então o clique não abria o quadro. Recria o casco (abas, filtros, contrato e quadro). Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -100414,6 +100417,60 @@ var _almReq = {
   filtros:{numero:'',status:[],solicitante:'',contrato:'',base:'',deposito:'',tipo:'',colaborador:'',prioridade:'',data:'',item:''},
   draft:null, carregando:false, corrigindoInfo:false, corrSnapshot:null
 };
+var _almReqLoadPromise=null;
+function almReqDedupLista(rows){
+  var out=[], seen={};
+  (rows||[]).forEach(function(r){
+    if(!r) return;
+    var k=r.id!=null?String(r.id):(r.numero||'');
+    if(k && seen[k]) return;
+    if(k) seen[k]=1;
+    out.push(r);
+  });
+  return out;
+}
+function almReqIndexarItens(itens){
+  var map={};
+  (itens||[]).forEach(function(it){
+    if(!it||!it.requisicao_id) return;
+    var rid=String(it.requisicao_id);
+    if(!map[rid]) map[rid]=[];
+    if(it.id && map[rid].some(function(x){ return String(x.id)===String(it.id); })) return;
+    map[rid].push(it);
+  });
+  return map;
+}
+function almReqIndexarEventos(evs){
+  var map={};
+  (evs||[]).forEach(function(ev){
+    if(!ev||!ev.requisicao_id) return;
+    var rid=String(ev.requisicao_id);
+    if(!map[rid]) map[rid]=[];
+    if(ev.id && map[rid].some(function(x){ return String(x.id)===String(ev.id); })) return;
+    map[rid].push(ev);
+  });
+  return map;
+}
+function almReqCarregarDados(opts){
+  opts=opts||{};
+  if(DEMO) return Promise.resolve();
+  if(_almReqLoadPromise && !opts.force) return _almReqLoadPromise;
+  _almReqLoadPromise=(async function(){
+    var rows=await sbFetch('alm_requisicoes',{order:'criado_em.desc',limit:500})||[];
+    var itens=[], evs=[];
+    if(rows.length){
+      itens=await sbFetch('alm_requisicao_itens',{order:'criado_em.asc',limit:5000})||[];
+      evs=await sbFetch('alm_requisicao_eventos',{order:'criado_em.desc',limit:5000})||[];
+    }
+    _almReq.lista=almReqDedupLista(rows);
+    _almReq.itens=almReqIndexarItens(itens);
+    _almReq.eventos=almReqIndexarEventos(evs);
+    _almReq.filaStale=false;
+    _almReq._estoqueReqOk=true;
+  })();
+  _almReqLoadPromise.then(function(){ _almReqLoadPromise=null; }, function(){ _almReqLoadPromise=null; });
+  return _almReqLoadPromise;
+}
 function almReqTipos(){
   return [
     {codigo:'EPI', label:'EPI'},
@@ -100567,14 +100624,22 @@ function almReqReserva(itemId, codigo, depId, nome){
 /** Reserva da grade: aprovada/separação ainda aberta. Nunca reserva item já atendido. Nunca negativa. */
 function almReqReservaEstoque(itemId, codigo, depId, nome){
   var tot=0, cid=String(itemId||''), cod=String(codigo||'').toLowerCase(), nom=String(nome||'').trim().toLowerCase();
-  (_almReq.lista||[]).forEach(function(r){
+  var seenReq={}, seenIt={};
+  almReqDedupLista(_almReq.lista||[]).forEach(function(r){
+    if(!r||!r.id) return;
+    var rid=String(r.id);
+    if(seenReq[rid]) return;
+    seenReq[rid]=1;
     if(!almReqStEhReservaAberta(r.status)) return;
     if(depId && String(r.deposito_id||'')!==String(depId)) return;
     (_almReq.itens[r.id]||[]).forEach(function(it){
+      var kid=it&&it.id!=null?String(it.id):'';
+      if(kid && seenIt[kid]) return;
       var ok=(cid && String(it.item_id||'')===cid)
         || (cod && String(it.item_codigo||'').toLowerCase()===cod)
         || (nom && String(it.item_descricao||'').toLowerCase()===nom);
       if(!ok) return;
+      if(kid) seenIt[kid]=1;
       tot+=almReqItemQtdReservada(it);
     });
   });
@@ -101064,22 +101129,7 @@ async function almReqCarregar(){
     _almReq.carregando=false; almReqRender(); return;
   }
   try{
-    var rows=await sbFetch('alm_requisicoes',{order:'criado_em.desc',limit:500})||[];
-    _almReq.lista=rows;
-    var ids=rows.map(function(r){ return r.id; }).filter(Boolean);
-    _almReq.itens={}; _almReq.eventos={};
-    if(ids.length){
-      var itens=await sbFetch('alm_requisicao_itens',{order:'criado_em.asc',limit:5000})||[];
-      itens.forEach(function(it){
-        if(!_almReq.itens[it.requisicao_id]) _almReq.itens[it.requisicao_id]=[];
-        _almReq.itens[it.requisicao_id].push(it);
-      });
-      var evs=await sbFetch('alm_requisicao_eventos',{order:'criado_em.desc',limit:5000})||[];
-      evs.forEach(function(ev){
-        if(!_almReq.eventos[ev.requisicao_id]) _almReq.eventos[ev.requisicao_id]=[];
-        _almReq.eventos[ev.requisicao_id].push(ev);
-      });
-    }
+    await almReqCarregarDados();
     await almReqCarregarTreinoMap();
   }catch(e){ console.error('almReqCarregar',e); }
   _almReq.carregando=false;
@@ -102672,18 +102722,7 @@ async function almReqGarantirListaSilent(){
   if(DEMO) return;
   if((_almReq.lista||[]).length && !_almReq.filaStale) return;
   try{
-    var rows=await sbFetch('alm_requisicoes',{order:'criado_em.desc',limit:500})||[];
-    _almReq.lista=rows;
-    _almReq.itens=_almReq.itens||{};
-    _almReq.eventos=_almReq.eventos||{};
-    if(rows.length){
-      var itens=await sbFetch('alm_requisicao_itens',{order:'criado_em.asc',limit:5000})||[];
-      _almReq.itens={};
-      itens.forEach(function(it){
-        if(!_almReq.itens[it.requisicao_id]) _almReq.itens[it.requisicao_id]=[];
-        _almReq.itens[it.requisicao_id].push(it);
-      });
-    }
+    await almReqCarregarDados();
   }catch(e){ console.error('almReqGarantirListaSilent', e); }
   _almReq.filaStale=false;
 }
