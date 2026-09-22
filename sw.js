@@ -1,11 +1,11 @@
 // ══════════════════════════════════════════════════════════════
-// CENA ERP — Service Worker v8.1.107 (RFID-CORE-1)
+// CENA ERP — Service Worker v8.1.106
 // App shell cache (network-first no HTML e nos scripts do app).
 // NÃO cacheia API Supabase / Azure / Nexus.
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.108';
+const SW_VERSION   = 'cena-8.1.106';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
