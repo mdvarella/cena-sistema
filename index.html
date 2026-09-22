@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.114"></script>
-<script src="sesmt-alm-shell.js?v=8.1.114"></script>
-<script src="prog-projetos-shell.js?v=8.1.114"></script>
+<script src="portaria-offline.js?v=8.1.115"></script>
+<script src="sesmt-alm-shell.js?v=8.1.115"></script>
+<script src="prog-projetos-shell.js?v=8.1.115"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -2107,7 +2107,7 @@ body.insp-campo-ativo #app-content-area {
       </div>
       <form onsubmit="fazerLogin();return false;" autocomplete="on">
       <div class="fg"><label>E-mail</label><input id="login-email" type="email" autocomplete="email" placeholder="seu@email.com.br"/></div>
-      <div class="fg"><label>Senha</label><input id="login-senha" type="password" autocomplete="current-password" placeholder="••••••••"/></div>
+      <div class="fg"><label>Senha</label><input id="login-senha" type="password" autocomplete="current-password" placeholder="••••••••"/><div style="font-size:11px;color:#888;margin-top:4px">E-mail so com numeros (RE): a senha pode ser o RE com 6 digitos, ex. 000490.</div></div>
       <div id="login-err" class="hidden" style="background:#FCEBEB;border-radius:8px;padding:.65rem;font-size:12px;color:#A32D2D;margin-bottom:.75rem"></div>
       <button type="submit" class="btn btn-pri" style="width:100%;padding:8px">Entrar</button>
       </form>
@@ -6712,7 +6712,6 @@ function authNormalizarEmailRe(email){
   return { email:emailCanon, emailAnterior:raw, senhaRe:senha, mudou:emailCanon!==raw };
 }
 
-/** Variantes de e-mail RE para login Auth (com e sem zeros à esquerda). */
 function authEmailsLoginVariantes(email){
   var raw=String(email||'').trim().toLowerCase();
   var out=[];
@@ -6722,11 +6721,72 @@ function authEmailsLoginVariantes(email){
   if(n && n.senhaRe){
     add(n.email);
     var at=raw.indexOf('@');
-    if(at>0) add(n.senhaRe+'@'+raw.slice(at+1));
+    var dom=at>0?raw.slice(at+1):'';
+    if(dom){
+      var re=raw.slice(0,at).replace(/^0+/,'')||'0';
+      add(n.senhaRe+'@'+dom);
+      for(var len=re.length; len<=6; len++){
+        add(('000000'+re).slice(-len)+'@'+dom);
+      }
+    }
   }
   return out;
 }
 
+function authSenhasLoginVariantes(email, senhaDigitada){
+  var out=[];
+  function add(s){
+    s=String(s||'');
+    if(!s || out.indexOf(s)>=0) return;
+    out.push(s);
+  }
+  add(senhaDigitada);
+  var n=authNormalizarEmailRe(email);
+  if(n && n.senhaRe){
+    add(n.senhaRe);
+    var local=String(email||'').split('@')[0]||'';
+    var re=local.replace(/^0+/,'')||'0';
+    add(re);
+    if(re.length<6) add(('000000'+re).slice(-6));
+  }
+  return out;
+}
+
+async function sbFetchLoginUsuarios(email, hash){
+  if(!SB || !SB.url || !SB.key) return [];
+  var url=SB.url+'/rest/v1/usuarios_sistema?select=*&email=eq.'+encodeURIComponent(email)+'&senha_hash=eq.'+encodeURIComponent(hash)+'&ativo=eq.true&limit=1';
+  try{
+    var r=await fetch(url,{headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}});
+    if(!r.ok) return [];
+    var j=await r.json();
+    return Array.isArray(j)?j:[];
+  }catch(e){
+    console.warn('[Login] fetch MD5 falhou:', e);
+    return [];
+  }
+}
+
+async function sbFetchLoginUsuariosPorEmail(email){
+  if(!SB || !SB.url || !SB.key) return [];
+  var url=SB.url+'/rest/v1/usuarios_sistema?select=*&email=eq.'+encodeURIComponent(email)+'&ativo=eq.true&limit=1';
+  try{
+    var r=await fetch(url,{headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}});
+    if(!r.ok) return [];
+    var j=await r.json();
+    return Array.isArray(j)?j:[];
+  }catch(e){ return []; }
+}
+
+async function sbFetchLoginUsuariosPorAuthUid(authUid){
+  if(!SB || !SB.url || !SB.key || !authUid) return [];
+  var url=SB.url+'/rest/v1/usuarios_sistema?select=*&auth_user_id=eq.'+encodeURIComponent(authUid)+'&ativo=eq.true&limit=1';
+  try{
+    var r=await fetch(url,{headers:{'apikey':SB.key,'Authorization':'Bearer '+SB.key}});
+    if(!r.ok) return [];
+    var j=await r.json();
+    return Array.isArray(j)?j:[];
+  }catch(e){ return []; }
+}
 /** API CenaBR via proxy — Bearer só no servidor. Retorna corpo upstream. */
 async function chamarApiCenaSegura(payload){
   if(!_sbAuthToken){
@@ -43860,10 +43920,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.114',
+  numero: '8.1.115',
   data:   '22/09/2026',
-  build:  '20260922-1615',
+  build:  '20260922-1620',
   log: [
+    {v:'8.1.115', d:'22/09/2026', itens:[
+      'Login: usuarios RE nao conseguiam entrar apos a migracao Auth (e-mail sem zeros / senha 000490). Agora tenta todas as variantes de e-mail e senha, nao reescreve e-mail no login e o MD5 usa chave anon. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.114', d:'22/09/2026', itens:[
       'Requisição CENA: quantidades pedidas duplicavam por dentro — almReqCarregar e almReqGarantirListaSilent buscavam ao mesmo tempo e empilhavam os itens duas vezes (reserva = 2×). Uma carga só, itens/lista sem duplicata. Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -77381,11 +77444,15 @@ async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
   if(!supabaseClient || !userRow || !userRow.id) return {ok:false, motivo:'no_client'};
   try{
     var variantes=authEmailsLoginVariantes(email);
+    var senhasUp=authSenhasLoginVariantes(email, senha);
     var signIn=null;
-    for(var vi=0;vi<variantes.length;vi++){
-      signIn = await supabaseClient.auth.signInWithPassword({email:variantes[vi], password:senha});
-      if(!signIn.error && signIn.data && signIn.data.session) break;
-      signIn=null;
+    for(var vi=0;vi<variantes.length && !signIn;vi++){
+      for(var su=0;su<senhasUp.length;su++){
+        if(String(senhasUp[su]||'').length<6) continue;
+        signIn = await supabaseClient.auth.signInWithPassword({email:variantes[vi], password:senhasUp[su]});
+        if(!signIn.error && signIn.data && signIn.data.session) break;
+        signIn=null;
+      }
     }
     if(!signIn || signIn.error || !(signIn.data && signIn.data.session)){
       var emailSignUp=(authNormalizarEmailRe(email).email||email);
@@ -77428,8 +77495,6 @@ async function _loginUpgradeMd5ParaAuth(email, senha, userRow){
     var authUid = signIn.data.session.user && signIn.data.session.user.id;
     var patch={};
     if(authUid && userRow.auth_user_id !== authUid) patch.auth_user_id=authUid;
-    var emailCanon=authNormalizarEmailRe(userRow.email||email).email;
-    if(emailCanon && userRow.email !== emailCanon) patch.email=emailCanon;
     if(Object.keys(patch).length){
       await sbUpdate('usuarios_sistema',patch,'id=eq.'+userRow.id);
       Object.assign(userRow, patch);
@@ -77461,63 +77526,77 @@ async function fazerLogin(){
     else{
       // ── 1ª tentativa: Supabase Auth (tenta variantes RE com/sem zeros) ──
       var authErrMsg='';
+      var senhaAuthOk=senha;
       if(supabaseClient){
         try{
           var variantesLogin=authEmailsLoginVariantes(email);
+          var senhasLogin=authSenhasLoginVariantes(email, senha);
           var authRes=null, emailAuthOk=null;
-          for(var li=0;li<variantesLogin.length;li++){
-            authRes = await supabaseClient.auth.signInWithPassword({email:variantesLogin[li],password:senha});
-            if(!authRes.error && authRes.data && authRes.data.session){ emailAuthOk=variantesLogin[li]; break; }
+          var li, si;
+          for(li=0;li<variantesLogin.length && !emailAuthOk;li++){
+            for(si=0;si<senhasLogin.length;si++){
+              if(String(senhasLogin[si]||'').length<6) continue;
+              authRes = await supabaseClient.auth.signInWithPassword({email:variantesLogin[li],password:senhasLogin[si]});
+              if(!authRes.error && authRes.data && authRes.data.session){
+                emailAuthOk=variantesLogin[li];
+                senhaAuthOk=senhasLogin[si];
+                break;
+              }
+            }
           }
           if(emailAuthOk && authRes && !authRes.error && authRes.data && authRes.data.session){
             _sbAuthToken = authRes.data.session.access_token;
             var authUid = authRes.data.session.user && authRes.data.session.user.id;
-            // Busca usuário ERP pelo e-mail digitado OU pela variante canônica
             var emailsBusca=variantesLogin.slice();
             var uRes=null;
             for(var bi=0;bi<emailsBusca.length && !(uRes&&uRes.length);bi++){
-              uRes = await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(emailsBusca[bi]),'ativo=eq.true']});
+              uRes = await sbFetchLoginUsuariosPorEmail(emailsBusca[bi]);
             }
             if(!(uRes&&uRes.length) && authUid){
-              uRes = await sbFetch('usuarios_sistema',{filters:['auth_user_id=eq.'+authUid,'ativo=eq.true']});
+              uRes = await sbFetchLoginUsuariosPorAuthUid(authUid);
             }
             if(uRes&&uRes.length){
               user = uRes[0];
               loginVia='auth';
-              var emailCanon = authNormalizarEmailRe(user.email||email).email || user.email;
               var patchLogin={};
               if(authUid && !user.auth_user_id) patchLogin.auth_user_id=authUid;
-              if(emailCanon && user.email !== emailCanon) patchLogin.email=emailCanon;
               if(Object.keys(patchLogin).length){
                 try{
                   await sbUpdate('usuarios_sistema',patchLogin,'id=eq.'+user.id);
                   Object.assign(user, patchLogin);
-                  console.log('[Auth] auto-ajuste', patchLogin);
-                }catch(eLink){ console.warn('[Auth] auto-ajuste falhou:', eLink); }
+                  console.log('[Auth] vinculou auth_user_id', patchLogin);
+                }catch(eLink){ console.warn('[Auth] vinculo falhou:', eLink); }
               }
             } else {
               await supabaseClient.auth.signOut().catch(function(){});
               _sbAuthToken=null;
-              document.getElementById('login-err').textContent='Conta Auth existe, mas não há usuário ativo no ERP com este e-mail.';
-              document.getElementById('login-err').classList.remove('hidden');
-              return;
+              console.warn('[Auth] sessao Auth sem linha ERP - tentando MD5');
             }
           } else if(authRes && authRes.error){
             authErrMsg = authRes.error.message||'';
             if(!/invalid login credentials/i.test(authErrMsg))
               console.warn('[Auth] signIn:', authErrMsg);
             else
-              console.log('[Auth] sem sessão Auth — tentando MD5/upgrade…');
+              console.log('[Auth] sem sessao Auth - tentando MD5/upgrade');
           }
         }catch(e){ console.warn('[Auth] signInWithPassword falhou:',e); authErrMsg=String(e&&e.message||e); }
       }
-      // ── Auth falhou: ponte MD5 + upgrade (mesmo se já tiver auth_user_id) ──
       if(!user){
-        var hash=md5js(senha);
-        var res=await sbFetch('usuarios_sistema',{filters:['email=eq.'+encodeURIComponent(email),'senha_hash=eq.'+hash,'ativo=eq.true']});
-        if(res&&res.length>0){
-          user=res[0];
-          var up = await _loginUpgradeMd5ParaAuth(email, senha, user);
+        var senhasMd5=authSenhasLoginVariantes(email, senha);
+        var emailsMd5=authEmailsLoginVariantes(email);
+        var senhaMd5Ok=senha;
+        for(var ei=0;ei<emailsMd5.length && !user;ei++){
+          for(var pi=0;pi<senhasMd5.length && !user;pi++){
+            var hash=md5js(senhasMd5[pi]);
+            var res=await sbFetchLoginUsuarios(emailsMd5[ei], hash);
+            if(res&&res.length>0){
+              user=res[0];
+              senhaMd5Ok=senhasMd5[pi];
+            }
+          }
+        }
+        if(user){
+          var up = await _loginUpgradeMd5ParaAuth(user.email||email, senhaMd5Ok, user);
           if(up && up.ok){
             loginVia='auth-upgrade';
           } else {
@@ -77525,16 +77604,8 @@ async function fazerLogin(){
             loginVia='md5';
             var motivo = up && up.motivo;
             console.warn('[Auth] permaneceu em MD5', motivo||'', up&&up.mensagem||'');
-            // Conta Auth com senha diferente: avisa e não deixa “falso Auth”
-            if(motivo==='auth_senha_divergente' || motivo==='confirm_email'){
-              document.getElementById('login-err').textContent=(up&&up.mensagem)||'Não foi possível ativar Auth.';
-              document.getElementById('login-err').classList.remove('hidden');
-              // ainda entra via MD5 (user já setado) — só aviso visual no erro; limpa após 8s
-              setTimeout(function(){
-                var el=document.getElementById('login-err');
-                if(el && !document.getElementById('pg-login').classList.contains('hidden')===false){ /* app aberta */ }
-              }, 50);
-              if(typeof progShowToast==='function') progShowToast('⚠ Login MD5 OK, Auth pendente: '+(up.mensagem||motivo),'erro');
+            if((motivo==='auth_senha_divergente' || motivo==='confirm_email') && typeof progShowToast==='function'){
+              progShowToast('Login OK. Auth pendente - pode seguir normalmente.','ok');
             }
           }
         }
