@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.115"></script>
-<script src="sesmt-alm-shell.js?v=8.1.115"></script>
-<script src="prog-projetos-shell.js?v=8.1.115"></script>
+<script src="portaria-offline.js?v=8.1.117"></script>
+<script src="sesmt-alm-shell.js?v=8.1.117"></script>
+<script src="prog-projetos-shell.js?v=8.1.117"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43920,10 +43920,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.115',
+  numero: '8.1.117',
   data:   '22/09/2026',
-  build:  '20260922-1620',
+  build:  '20260922-1915',
   log: [
+    {v:'8.1.117', d:'22/09/2026', itens:[
+      'Em Campo: Equipes em Campo com contrato (nome), login/logoff, tempo, status fiel ao diario (OS, a caminho/cheguei/encerrado, almoco), QTD OS, placa e celular. Diario recolhe sem encerramento em alerta piscante (abrir/encerrar) e lista logadas + dias anteriores com almoco e filtro De/Ate. Sem SQL. HOMOLOGACAO.',
+    ]},
+    {v:'8.1.116', d:'22/09/2026', itens:[
+      'Operacional > Execucao em Campo: a tela abria vazia porque o render lia enc-campo-wrap (id inexistente) e carregava o modulo diario em vez de obras. Agora preenche enc-exec-wrap com filtros + lista de projetos. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.115', d:'22/09/2026', itens:[
       'Login: usuarios RE nao conseguiam entrar apos a migracao Auth (e-mail sem zeros / senha 000490). Agora tenta todas as variantes de e-mail e senha, nao reescreve e-mail no login e o MD5 usa chave anon. Sem SQL. HOMOLOGACAO.',
     ]},
@@ -56767,113 +56773,185 @@ function renderCampoEquipes(){
   _renderCampoEquipesLista(hoje, cidFil, eqFil);
 }
 
+function _campoMergeById(dest, rows){
+  if(!dest) dest=[];
+  (rows||[]).forEach(function(r){
+    if(!r||!r.id) return;
+    var i=dest.findIndex(function(x){return x.id===r.id;});
+    if(i>=0) dest[i]=r; else dest.push(r);
+  });
+  return dest;
+}
+
+function _campoFmtHora(ts){
+  if(!ts) return '—';
+  var d=new Date(Number(ts)||ts);
+  if(isNaN(d.getTime())) return '—';
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+
+function _campoTempoLoginLogoff(login, logout){
+  if(!login) return '—';
+  var ini=new Date(Number(login)||login).getTime();
+  if(isNaN(ini)) return '—';
+  var fim=logout?new Date(Number(logout)||logout).getTime():Date.now();
+  if(isNaN(fim)||fim<ini) return '—';
+  var m=Math.round((fim-ini)/60000);
+  return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'m';
+}
+
+function _campoOsStatusFiel(st){
+  st=String(st||'').toLowerCase();
+  if(st==='a_caminho') return {l:'A caminho', c:'#185FA5', bg:'#E6F1FB'};
+  if(st==='no_local'||st==='em_andamento'||st==='encerrando') return {l:'Cheguei', c:'#854F0B', bg:'#FEF3E2'};
+  if(st==='encerrada'||st==='executada'||st==='executado') return {l:'Encerrado', c:'#3B6D11', bg:'#EAF3DE'};
+  return null;
+}
+
+function _campoStatusDiario(s, ordens){
+  ordens=ordens||[];
+  var emAlmoco=!!(s&&s.almoco_ts&&!s.retorno_ts);
+  var osAtiva=ordens.find(function(o){
+    return ['a_caminho','no_local','em_andamento','encerrando'].indexOf(o.status)>=0;
+  })||null;
+  var qtdOs=ordens.length;
+  var stOs=osAtiva?_campoOsStatusFiel(osAtiva.status):(s&&s.logout_ts?{l:'Encerrado',c:'#3B6D11',bg:'#EAF3DE'}:null);
+  var osNum=osAtiva?(osAtiva.numero_ordem||osAtiva.numero||'—'):'';
+  var html='';
+  if(emAlmoco){
+    html+='<span style="background:#FEF3E2;color:#854F0B;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:700;display:inline-block;margin:1px">🍽 Almoço desde '+_campoFmtHora(s.almoco_ts)+'</span> ';
+  } else if(s&&s.retorno_ts){
+    html+='<span style="background:#EAF3DE;color:#3B6D11;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:600;display:inline-block;margin:1px">↩ Fim almoço '+_campoFmtHora(s.retorno_ts)+'</span> ';
+  }
+  if(osAtiva){
+    html+='<span style="background:#E6F1FB;color:#185FA5;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:700;display:inline-block;margin:1px">OS '+escHtml(String(osNum))+'</span> ';
+  }
+  if(stOs){
+    html+='<span style="background:'+stOs.bg+';color:'+stOs.c+';border-radius:10px;padding:2px 7px;font-size:10px;font-weight:700;display:inline-block;margin:1px">'+stOs.l+'</span>';
+  } else if(s&&!s.logout_ts&&!emAlmoco){
+    html+='<span style="background:#FCEBEB;color:#A32D2D;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:700;display:inline-block;margin:1px">Logado</span>';
+  }
+  if(!html) html='<span style="color:#aaa;font-size:11px">—</span>';
+  return {html:html, emAlmoco:emAlmoco, osAtiva:osAtiva, osNum:osNum, qtdOs:qtdOs, stOs:stOs};
+}
+
+function _campoPlacaSessao(s, eqId, data){
+  if(s&&s.placa) return s.placa;
+  var turno=(typeof turnos_abertos!=='undefined'?turnos_abertos:[]).find(function(t){
+    return t.equipe_id===eqId && (t.data||'')===(data||'');
+  });
+  if(turno&&turno.placa) return turno.placa;
+  return '—';
+}
+
+function _campoCelularSessao(eq, data){
+  var comp=null;
+  if(typeof _findComposicaoEquipe==='function'){
+    comp=_findComposicaoEquipe(eq&&eq.id, data) || _findComposicaoEquipe(eq&&eq.id, null);
+  }
+  if(typeof tmaTelefoneEquipe==='function'){
+    return tmaTelefoneEquipe(eq, comp)||'—';
+  }
+  return (eq&&(eq.telefone||eq.celular))||'—';
+}
+
+function verificarSessoesAbertas(){
+  return (sessoes_disp||[]).filter(function(s){ return s && s.login_ts && !s.logout_ts; });
+}
+
+var _dbAlertaAberto=false;
+function _dbToggleAlertaSemEnc(){
+  _dbAlertaAberto=!_dbAlertaAberto;
+  var p=document.getElementById('db-alerta-pend-lista');
+  if(p) p.style.display=_dbAlertaAberto?'flex':'none';
+}
+
 function _renderCampoEquipesLista(hoje, cidFil, eqFil){
 
-  // Popular selects
   var selCont = document.getElementById('ceq-fil-cont');
   if(selCont && selCont.options.length<=1){
     contratos.sort(function(a,b){return(a.codigo||'').localeCompare(b.codigo||'');}).forEach(function(c){
-      var o=document.createElement('option'); o.value=c.id; o.textContent=c.nome;
+      var o=document.createElement('option'); o.value=c.id; o.textContent=c.nome||c.codigo||c.id;
       selCont.appendChild(o);
     });
   }
 
-  // Sessões em campo: login sem logout (qualquer data — equipes ainda ativas)
-  var sessHoje = sessoes_disp.filter(function(s){
-    return s.login_ts && !s.logout_ts;
+  var sessHoje = sessoes_disp.filter(function(s){ return s.login_ts && !s.logout_ts; });
+  var sessHojeDia = sessoes_disp.filter(function(s){
+    return (s.data||'').split('T')[0]===hoje && s.login_ts;
   });
-  // Fallback: se não houver sessões sem logout, mostrar apenas hoje
-  if(!sessHoje.length){
-    sessHoje = sessoes_disp.filter(function(s){
-      return (s.data||'').split('T')[0]===hoje && s.login_ts;
-    });
-  }
+  var porId={};
+  sessHoje.concat(sessHojeDia).forEach(function(s){ porId[s.id]=s; });
+  sessHoje=Object.keys(porId).map(function(k){return porId[k];});
 
-  // Enriquecer com dados da equipe e contrato
   var emCampo = sessHoje.map(function(s){
-    // Buscar em equipes_disp (TMA) E equipes (PLPT)
     var eq  = equipes_disp.find(function(e){return e.id===s.equipe_id;})
            || equipes.find(function(e){return e.id===s.equipe_id;})
            || {};
     var cont= contratos.find(function(c){return c.id===eq.contrato_id;})||{};
+    var dataS=(s.data||hoje||'').split('T')[0];
     var comp=_findComposicaoEquipe(s.equipe_id, hoje)
-      || _findComposicaoEquipe(s.equipe_id, s.data);
+      || _findComposicaoEquipe(s.equipe_id, dataS);
     var colabIds = comp ? parseColabIds(comp.colaborador_ids) : [];
     var colabs = colabIds.map(function(id){
       return colaboradores.find(function(c){return c.id===id;})||null;
     }).filter(Boolean);
-    var minutos = s.minutos_faturados||0;
-    if(!minutos && s.login_ts){
-      minutos = Math.round((new Date()-new Date(s.login_ts))/60000);
-    }
     var logOut = !!s.logout_ts;
-
-    // Última OS da equipe hoje
     var ordensEq = ordens_db.filter(function(o){
-      return o.equipe_id===s.equipe_id && (o.data||'').split('T')[0]===hoje;
+      return o.equipe_id===s.equipe_id && (o.data||'').split('T')[0]===dataS;
     }).sort(function(a,b){
-      return (b.criado_em||b.id||'').localeCompare(a.criado_em||a.id||'');
+      return String(b.criado_em||b.id||'').localeCompare(String(a.criado_em||a.id||''));
     });
-    var ultimaOS = ordensEq[0] || null;
-
-    // Status de campo da equipe (baseado na última OS)
-    var statusCampo = null;
-    if(ultimaOS){
-      var STATUS_LABELS = {
-        'a_caminho':   {l:'🚗 A caminho',    c:'#185FA5', bg:'#E6F1FB'},
-        'no_local':    {l:'📍 No local',      c:'#854F0B', bg:'#FEF3E2'},
-        'em_andamento':{l:'⚙ Em execução',   c:'#3B6D11', bg:'#EAF3DE'},
-        'encerrando':  {l:'🔄 Encerrando',   c:'#533AB7', bg:'#F0EEFF'},
-        'executada':   {l:'✅ Executada',     c:'#3B6D11', bg:'#EAF3DE'},
-        'pendente':    {l:'⏳ Pendente',      c:'#888',    bg:'#f5f5f3'},
-      };
-      statusCampo = STATUS_LABELS[ultimaOS.status] || {l: ultimaOS.status||'—', c:'#888', bg:'#f5f5f3'};
-    }
-
-    return {sess:s, eq:eq, cont:cont, colabs:colabs, minutos:minutos, logOut:logOut,
-            ultimaOS:ultimaOS, statusCampo:statusCampo};
+    var st=_campoStatusDiario(s, ordensEq);
+    return {
+      sess:s, eq:eq, cont:cont, colabs:colabs, logOut:logOut,
+      tempo:_campoTempoLoginLogoff(s.login_ts, s.logout_ts),
+      loginHr:_campoFmtHora(s.login_ts),
+      logoffHr:_campoFmtHora(s.logout_ts),
+      st:st,
+      placa:_campoPlacaSessao(s, s.equipe_id, dataS),
+      celular:_campoCelularSessao(eq, dataS)
+    };
   }).filter(function(x){ return x.eq && x.eq.id; });
 
-  // Aplicar filtros
   var filtradas = emCampo.filter(function(x){
     if(cidFil && x.cont.id!==cidFil) return false;
     if(eqFil  && x.eq.id!==eqFil)   return false;
     return true;
   });
 
-  // Popular select de equipes (baseado no filtro de contrato)
   var selEq = document.getElementById('ceq-fil-equipe');
   if(selEq){
     var eqsDisp = emCampo.filter(function(x){return !cidFil||x.cont.id===cidFil;}).map(function(x){return x.eq;});
     var eqAtual = selEq.value;
     selEq.innerHTML='<option value="">Todas as equipes</option>';
     eqsDisp.forEach(function(e){
-      var o=document.createElement('option'); o.value=e.id; o.textContent=e.codigo||e.nome||e.id;
+      var o=document.createElement('option'); o.value=e.id; o.textContent=e.codigo||e.nome||e.nome_equipe||e.id;
       if(e.id===eqAtual) o.selected=true;
       selEq.appendChild(o);
     });
   }
 
-  // Resumo
   var resumo = document.getElementById('ceq-resumo');
   if(resumo){
     var nCont = new Set(filtradas.map(function(x){return x.cont.id;})).size;
     var nColabs = filtradas.reduce(function(s,x){return s+x.colabs.length;},0);
     var nLogOut = filtradas.filter(function(x){return x.logOut;}).length;
+    var nAlmoco = filtradas.filter(function(x){return x.st.emAlmoco;}).length;
     function chip(icon,label,val,cor,bg){
       return '<div style="background:'+(bg||'#f5f5f3')+';border-radius:8px;padding:5px 12px;display:flex;align-items:center;gap:6px">'
         +'<span style="font-size:16px">'+icon+'</span>'
         +'<div><div style="font-size:16px;font-weight:700;color:'+(cor||'#555')+'">'+val+'</div>'
         +'<div style="font-size:10px;color:#888">'+label+'</div></div></div>';
     }
-    resumo.innerHTML=chip('🚌','Equipes em campo',filtradas.length,'#185FA5','#E6F1FB')
+    resumo.innerHTML=chip('🚌','Equipes',filtradas.length,'#185FA5','#E6F1FB')
       +chip('🏢','Contratos',nCont,'#533AB7','#F0EEFF')
       +chip('👷','Colaboradores',nColabs,'#3B6D11','#EAF3DE')
-      +chip('✅','Retornaram',nLogOut,'#555','#f5f5f3')
-      +chip('🔴','Ainda em campo',filtradas.length-nLogOut,'#A32D2D','#FCEBEB');
+      +chip('🍽','Em almoço',nAlmoco,'#854F0B','#FEF3E2')
+      +chip('✅','Encerradas',nLogOut,'#555','#f5f5f3')
+      +chip('🔴','Sem encerramento',filtradas.length-nLogOut,'#A32D2D','#FCEBEB');
   }
 
-  // Lista
   var lista = document.getElementById('ceq-lista');
   if(!lista) return;
   if(!filtradas.length){
@@ -56881,43 +56959,45 @@ function _renderCampoEquipesLista(hoje, cidFil, eqFil){
     return;
   }
 
-  function fmtMin(m){ return Math.floor(m/60)+'h'+String(m%60).padStart(2,'0')+'m'; }
-
-  lista.innerHTML='<table style="width:100%;border-collapse:collapse;font-size:12px">'
+  lista.innerHTML='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:1100px">'
     +'<thead><tr style="background:#1a1a18">'
     +'<th style="color:#fff;text-align:left;padding:8px 12px">Equipe</th>'
-    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Contrato</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:left">Contrato</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:center">Login</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Logoff</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:center">Tempo</th>'
-    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Status</th>'
-    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Última OS</th>'
-    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Status campo</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:left">Status</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">QTD OS</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Placa</th>'
+    +'<th style="color:#ccc;padding:8px 8px;text-align:center">Celular</th>'
     +'<th style="color:#ccc;padding:8px 8px;text-align:left">Colaboradores</th>'
     +'</tr></thead><tbody>'
     +filtradas.map(function(x,i){
       var bg = i%2===0?'#fff':'#fafaf8';
-      var loginHr = x.sess.login_ts ? new Date(x.sess.login_ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '—';
-      var status  = x.logOut
-        ? '<span style="background:#EAF3DE;color:#3B6D11;border-radius:12px;padding:2px 8px;font-size:10px;font-weight:600">✅ Retornou</span>'
-        : '<span style="background:#FCEBEB;color:#A32D2D;border-radius:12px;padding:2px 8px;font-size:10px;font-weight:600">🔴 Em campo</span>';
       var colabsHtml = x.colabs.map(function(c){
         var cnh = c.cnh_categoria && c.cnh_categoria!=='Não'
           ? '<span style="background:#185FA5;color:#fff;border-radius:3px;padding:0 3px;font-size:8px;font-weight:700">'+c.cnh_categoria+'</span> ' : '';
         return '<span style="background:#f5f5f3;border-radius:4px;padding:1px 5px;margin:1px;display:inline-block;font-size:10px">'+cnh+escHtml(nomeAbrev(c.nome))+'</span>';
       }).join('');
-      return '<tr style="background:'+bg+';border-bottom:.5px solid #f0efe8" '
+      var nomeCont=x.cont.nome||x.cont.codigo||'—';
+      return '<tr style="background:'+bg+';border-bottom:.5px solid #f0efe8;cursor:pointer" '
+        +'onclick="_abrirDetalheDiarioEquipe(\''+x.sess.id+'\',\''+((x.sess.data||hoje)+'').split('T')[0]+'\')" '
         +'onmouseenter="this.style.background=\'#F0F4FF\'" onmouseleave="this.style.background=\''+bg+'\'">'
-        +'<td style="padding:8px 12px;font-weight:700;font-size:12px;border-left:3px solid '+(x.logOut?'#3B6D11':'#A32D2D')+'">'+escHtml(x.eq.codigo||x.eq.nome||'—')+'</td>'
-        +'<td style="text-align:center;padding:8px;font-size:11px;color:#555">'+escHtml(x.cont.codigo||'—')+'</td>'
-        +'<td style="text-align:center;padding:8px;font-size:11px">'+loginHr+'</td>'
-        +'<td style="text-align:center;padding:8px;font-weight:600;color:#185FA5">'+fmtMin(x.minutos)+'</td>'
-        +'<td style="text-align:center;padding:8px">'+status+'</td>'
-        +'<td style="text-align:center;padding:8px;font-family:monospace;font-size:11px;font-weight:700">'+(x.ultimaOS?escHtml(x.ultimaOS.numero_ordem||'—'):'<span style=\'color:#aaa\'>—</span>')+'</td>'        +'<td style="text-align:center;padding:8px">'+(x.statusCampo?'<span style="background:'+x.statusCampo.bg+';color:'+x.statusCampo.c+';border-radius:10px;padding:2px 8px;font-size:10px;font-weight:600">'+x.statusCampo.l+'</span>':'<span style="color:#aaa;font-size:11px">—</span>')+'</td>'        +'<td style="padding:8px;max-width:280px">'+colabsHtml+'</td>'
+        +'<td style="padding:8px 12px;font-weight:700;font-size:12px;border-left:3px solid '+(x.logOut?'#3B6D11':(x.st.emAlmoco?'#854F0B':'#A32D2D'))+'">'+escHtml(x.eq.codigo||x.eq.nome||x.eq.nome_equipe||'—')+'</td>'
+        +'<td style="padding:8px;font-size:11px;color:#555">'+escHtml(nomeCont)+'</td>'
+        +'<td style="text-align:center;padding:8px;font-size:11px">'+x.loginHr+'</td>'
+        +'<td style="text-align:center;padding:8px;font-size:11px">'+(x.logOut?x.logoffHr:'—')+'</td>'
+        +'<td style="text-align:center;padding:8px;font-weight:600;color:#185FA5">'+x.tempo+'</td>'
+        +'<td style="padding:8px;min-width:180px">'+x.st.html+'</td>'
+        +'<td style="text-align:center;padding:8px;font-weight:700">'+(x.st.qtdOs||0)+'</td>'
+        +'<td style="text-align:center;padding:8px;font-family:monospace;font-size:11px;font-weight:700">'+escHtml(x.placa||'—')+'</td>'
+        +'<td style="text-align:center;padding:8px;font-size:11px">'+escHtml(x.celular||'—')+'</td>'
+        +'<td style="padding:8px;max-width:220px">'+colabsHtml+'</td>'
         +'</tr>';
     }).join('')
-    +'</tbody></table>';
-}
-
+    +'</tbody></table></div>';
+}
+
 function renderProgEquipes(){
   var lista = document.getElementById('prog-equipes-lista'); if(!lista) return;
 
@@ -59683,45 +59763,45 @@ function _renderDiarioAdmin(){
   if(!pgDiario)return;
   var hoje=dataHoje();
 
-  var filtData=document.getElementById('db-admin-data');
+  var filtIni=document.getElementById('db-admin-ini');
+  var filtFim=document.getElementById('db-admin-fim');
   var filtEq=document.getElementById('db-admin-eq');
   var filtCid=document.getElementById('db-admin-cid');
-  var dataFiltro=(filtData&&filtData.value)||hoje;
+  var iniFiltro=(filtIni&&filtIni.value)||hoje;
+  var fimFiltro=(filtFim&&filtFim.value)||hoje;
   var eqFiltro=(filtEq&&filtEq.value)||'';
   var cidFiltro=(filtCid&&filtCid.value)||'';
 
-  // Opções de contrato
   var cidOpts='<option value="">Todos os contratos</option>'
     +contratos.filter(function(c){return c.status!=='Cancelado';}).map(function(c){
-      return '<option value="'+c.id+'"'+(c.id===cidFiltro?' selected':'')+'>'+c.nome+'</option>';
+      return '<option value="'+c.id+'"'+(c.id===cidFiltro?' selected':'')+'>'+escHtml(c.nome||c.codigo||c.id)+'</option>';
     }).join('');
 
-  // Opções de equipe — TMA (equipes_disp) + PLPT/Obras (equipes)
   var todasEqs = equipes_disp.map(function(e){return {id:e.id,label:(e.codigo||'')+(e.nome?' — '+e.nome:''),cid:e.contrato_id};})
     .concat(equipes.filter(function(e){return e.nome_equipe;}).map(function(e){return {id:e.id,label:e.nome_equipe+(e.cargo?' ('+e.cargo+')':''),cid:e.contrato_id};}));
   var eqsFiltradas = cidFiltro ? todasEqs.filter(function(e){return e.cid===cidFiltro;}) : todasEqs;
   var eqOpts='<option value="">Todas as equipes</option>'
     +eqsFiltradas.map(function(e){
-      return '<option value="'+e.id+'"'+(e.id===eqFiltro?' selected':'')+'>'+e.label+'</option>';
+      return '<option value="'+e.id+'"'+(e.id===eqFiltro?' selected':'')+'>'+escHtml(e.label)+'</option>';
     }).join('');
 
   pgDiario.innerHTML='<div style="padding:1rem">'
-    // Cabeçalho com voltar
     +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem">'
     +'<button onclick="showMain(\'operacional\')" style="background:none;border:none;font-size:22px;cursor:pointer;color:#555;padding:0">◀</button>'
     +'<div style="flex:1">'
     +'<div style="font-weight:700;font-size:16px">📱 Diário de Bordo</div>'
-    +'<div style="font-size:11px;color:#888">Visão geral das equipes</div>'
+    +'<div style="font-size:11px;color:#888">Visão geral das equipes — status, almoço e encerramento</div>'
     +'</div>'
     +'<button id="btn-db-admin-buscar" style="background:#185FA5;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;cursor:pointer;white-space:nowrap;font-weight:600">🔍 Buscar</button>'
     +'</div>'
-    // Filtros
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem">'
-    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Data</label>'
-    +'<input type="date" id="db-admin-data" value="'+dataFiltro+'" style="width:100%;padding:6px;border:.5px solid #e0dfd8;border-radius:6px"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">De</label>'
+    +'<input type="date" id="db-admin-ini" value="'+iniFiltro+'" style="width:100%;padding:6px;border:.5px solid #e0dfd8;border-radius:6px"/></div>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Até</label>'
+    +'<input type="date" id="db-admin-fim" value="'+fimFiltro+'" style="width:100%;padding:6px;border:.5px solid #e0dfd8;border-radius:6px"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Contrato</label>'
     +'<select id="db-admin-cid" onchange="_renderDiarioAdmin()" style="width:100%;padding:6px;border:.5px solid #e0dfd8;border-radius:6px;font-size:12px">'+cidOpts+'</select></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Equipe</label>'
+    +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Equipe</label>'
     +'<select id="db-admin-eq" style="width:100%;padding:6px;border:.5px solid #e0dfd8;border-radius:6px;font-size:12px">'+eqOpts+'</select></div>'
     +'</div>'
     +'<div id="db-admin-resultado">'
@@ -59732,17 +59812,16 @@ function _renderDiarioAdmin(){
   setTimeout(function(){
     var btn=document.getElementById('btn-db-admin-buscar');
     if(btn) btn.onclick=_buscarDiarioAdmin;
-    if(dataFiltro===hoje) _buscarDiarioAdmin();
-    if(!DEMO){
-      var wrap2=document.getElementById('db-admin-resultado');
-      if(wrap2) _renderAlertasTurno(wrap2);
-    }
+    _buscarDiarioAdmin();
   },50);
-}
-
+}
+
 async function _buscarDiarioAdmin(){
   var btn=document.getElementById('btn-db-admin-buscar');
-  var data=(document.getElementById('db-admin-data')||{}).value||dataHojeLocal();
+  var hoje=dataHoje();
+  var ini=(document.getElementById('db-admin-ini')||{}).value||hoje;
+  var fim=(document.getElementById('db-admin-fim')||{}).value||hoje;
+  if(ini>fim){ var tmp=ini; ini=fim; fim=tmp; }
   var eqId=(document.getElementById('db-admin-eq')||{}).value||'';
   var cidFilt=(document.getElementById('db-admin-cid')||{}).value||'';
   var wrap=document.getElementById('db-admin-resultado');
@@ -59753,38 +59832,50 @@ async function _buscarDiarioAdmin(){
 
   if(!DEMO){
     try{
-      var filters=['data=eq.'+data];
-      if(eqId) filters.push('equipe_id=eq.'+eqId);
       var res=await Promise.all([
-        sbFetch('sessoes_disponibilidade',{filters:filters,order:'login_ts.desc'}),
-        sbFetch('turnos_abertos',{filters:filters}),
-        sbFetch('ordens_diario',{filters:filters,order:'criado_em.asc'}),
+        sbFetch('sessoes_disponibilidade',{filters:['data=gte.'+ini,'data=lte.'+fim],order:'login_ts.desc',limit:800}),
+        sbFetch('sessoes_disponibilidade',{filters:['login_ts=not.is.null','logout_ts=is.null'],order:'login_ts.desc',limit:300}),
+        sbFetch('turnos_abertos',{filters:['data=gte.'+ini],limit:500}),
+        sbFetch('ordens_diario',{filters:['data=gte.'+ini],order:'criado_em.asc',limit:1000}),
+        (_celulares&&_celulares.length)?Promise.resolve(_celulares):sbFetch('celulares_empresa',{order:'numero',limit:3000}).catch(function(){return [];}),
+        sbFetch('composicao_dia',{filters:['data=gte.'+ini],limit:800}).catch(function(){return [];})
       ]);
-      if(res[0]&&res[0].length) res[0].forEach(function(s){
-        s.eventos=parseJsonField(s.eventos,[]);
-        s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0;
-        var i=sessoes_disp.findIndex(function(x){return x.id===s.id;});
-        if(i>=0) sessoes_disp[i]=s; else sessoes_disp.push(s);
-      });
-      if(res[1]&&res[1].length) res[1].forEach(function(t){
-        t.respostas_epi=parseJsonField(t.respostas_epi,[]);
-        t.respostas_vei=parseJsonField(t.respostas_vei,[]);
+      function mergeSess(rows){
+        (rows||[]).forEach(function(s){
+          s.eventos=parseJsonField(s.eventos,[]);
+          s.placa=s.placa||''; s.km_inicial=s.km_inicial||0; s.km_final=s.km_final||0;
+          var i=sessoes_disp.findIndex(function(x){return x.id===s.id;});
+          if(i>=0) sessoes_disp[i]=s; else sessoes_disp.push(s);
+        });
+      }
+      mergeSess(res[0]); mergeSess(res[1]);
+      (res[2]||[]).forEach(function(t){
         var i=turnos_abertos.findIndex(function(x){return x.id===t.id;});
         if(i>=0) turnos_abertos[i]=t; else turnos_abertos.push(t);
       });
-      if(res[2]&&res[2].length) res[2].forEach(function(o){
+      (res[3]||[]).forEach(function(o){
         o.eventos=parseJsonField(o.eventos,[]);
-        o.eventos.forEach(function(ev){
-          if(ev.foto&&ev.foto.indexOf('blob:')===0) ev.foto=null;
-        });
         if(!ordens_db.find(function(x){return x.id===o.id;})) ordens_db.push(o);
       });
+      if(res[4]&&res[4].length && !(_celulares&&_celulares.length)) _celulares=res[4];
+      if(res[5]&&res[5].length && typeof _mergeComposicaoDia==='function'){
+        res[5].forEach(function(c){ _mergeComposicaoDia(c); });
+      } else if(res[5]&&res[5].length){
+        res[5].forEach(function(c){
+          var i=composicao_dia.findIndex(function(x){return x.id===c.id;});
+          if(i>=0) composicao_dia[i]=c; else composicao_dia.push(c);
+        });
+      }
     }catch(e){console.error('Erro ao buscar diário:',e);}
   }
   if(btn){btn.textContent='🔍 Buscar';btn.disabled=false;}
 
   var sessoes=sessoes_disp.filter(function(s){
-    if(s.data!==data)return false;
+    if(!s.login_ts) return false;
+    var d=(s.data||'').split('T')[0];
+    var noPeriodo=d>=ini && d<=fim;
+    var abertaAnterior=!s.logout_ts && d && d<ini;
+    if(!noPeriodo && !abertaAnterior) return false;
     if(eqId&&s.equipe_id!==eqId)return false;
     if(cidFilt){
       var eq=equipes_disp.find(function(e){return e.id===s.equipe_id;})
@@ -59792,53 +59883,58 @@ async function _buscarDiarioAdmin(){
       if(!eq||eq.contrato_id!==cidFilt) return false;
     }
     return true;
+  }).sort(function(a,b){
+    var ao=a.logout_ts?1:0, bo=b.logout_ts?1:0;
+    if(ao!==bo) return ao-bo;
+    return String(b.login_ts||'').localeCompare(String(a.login_ts||''));
   });
 
+  var htmlAlerta=_dbHtmlAlertaSemEnc(sessoes);
   if(!sessoes.length){
-    wrap.innerHTML='<div style="background:#f9f9f7;border:.5px solid #e0dfd8;border-radius:10px;padding:2rem;text-align:center;color:#aaa;font-size:13px">'
-      +'Nenhuma equipe registrou atividade em <b>'+fmtD(data)+'</b>'+(eqId?' para a equipe selecionada':'')+'.</div>';
+    wrap.innerHTML=htmlAlerta
+      +'<div style="background:#f9f9f7;border:.5px solid #e0dfd8;border-radius:10px;padding:2rem;text-align:center;color:#aaa;font-size:13px">'
+      +'Nenhuma equipe registrou atividade de <b>'+fmtD(ini)+'</b> a <b>'+fmtD(fim)+'</b>'+(eqId?' para a equipe selecionada':'')+'.</div>';
+    _dbBindAlertaSemEnc();
     return;
   }
 
-  function fmtTs(ts){
-    if(!ts)return '—';
-    var d=new Date(ts);
-    return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-  }
-
-  wrap.innerHTML='<div style="display:flex;flex-direction:column;gap:6px">'
+  wrap.innerHTML=htmlAlerta
+    +'<div style="font-size:12px;font-weight:700;margin:0 0 .5rem">Equipes logadas e que logaram no período</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px">'
     +sessoes.map(function(s){
       var eq=equipes_disp.find(function(e){return e.id===s.equipe_id;})
             ||equipes.find(function(e){return e.id===s.equipe_id;});
       var nomeEq=eq?((eq.codigo||eq.nome_equipe||'')+(eq.nome?' — '+eq.nome:'')):'Equipe';
-      var turno=turnos_abertos.find(function(t){return t.equipe_id===s.equipe_id&&t.data===data;});
-      var ordens=ordens_db.filter(function(o){return o.equipe_id===s.equipe_id&&o.data===data;});
-      var nEnc=ordens.filter(function(o){return o.status==='encerrada';}).length;
-      var placa=(turno&&turno.placa)||(s.placa)||'—';
-      var minFat=s.minutos_faturados||0;
-      var hFat=Math.floor(minFat/60); var mFat=minFat%60;
-      var epiOk=turno&&turno.checklist_epi_ok;
-      var veiOk=turno&&turno.checklist_vei_ok;
-      var ativa=!s.logout_ts;
+      var dataS=(s.data||'').split('T')[0];
       var cont=contratos.find(function(c){return c.id===(eq&&eq.contrato_id);});
+      var nomeCont=cont?(cont.nome||cont.codigo):'—';
+      var ordens=ordens_db.filter(function(o){return o.equipe_id===s.equipe_id&&(o.data||'')===dataS;});
+      var st=_campoStatusDiario(s, ordens);
+      var placa=_campoPlacaSessao(s, s.equipe_id, dataS);
+      var cel=_campoCelularSessao(eq||{}, dataS);
+      var tempo=_campoTempoLoginLogoff(s.login_ts, s.logout_ts);
+      var anterior=dataS && dataS<hoje;
       return '<div id="db-eq-row-'+s.id+'" style="'
-        +'display:flex;justify-content:space-between;align-items:center;'
+        +'display:flex;justify-content:space-between;align-items:flex-start;'
         +'padding:.75rem 1rem;background:#fff;border:.5px solid #e0dfd8;'
         +'border-radius:12px;cursor:pointer;gap:8px" '
         +'onmouseover="this.style.background=\'#f9f9f7\'" onmouseout="this.style.background=\'#fff\'">'
         +'<div style="flex:1;min-width:0">'
-        +'<div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+nomeEq+'</div>'
-        +'<div style="display:flex;gap:6px;margin-top:3px;flex-wrap:wrap;align-items:center">'
-        +(cont?'<span style="font-size:10px;color:#185FA5;font-weight:600">'+cont.codigo+'</span>':'')
-        +(fmtTs(s.login_ts)!=='—'?'<span style="font-size:10px;color:#555">⏰ '+fmtTs(s.login_ts)+' → '+fmtTs(s.logout_ts)+'</span>':'')
-        +(minFat?'<span style="font-size:10px;color:#185FA5;font-weight:600">'+String(hFat).padStart(2,'0')+':'+String(mFat).padStart(2,'0')+'h</span>':'')
-        +(ordens.length?'<span style="font-size:10px;color:#555">'+nEnc+'/'+ordens.length+' OS</span>':'')
-        +(placa!=='—'?'<span style="font-size:10px;color:#888">🚗 '+placa+'</span>':'')
-        +(turno&&epiOk!==undefined?'<span style="font-size:10px;color:'+(epiOk?'#3B6D11':'#A32D2D')+';">'+(epiOk?'✓':'✗')+' EPI</span>':'')
-        +(turno&&veiOk!==undefined?'<span style="font-size:10px;color:'+(veiOk?'#3B6D11':'#A32D2D')+';">'+(veiOk?'✓':'✗')+' Vei</span>':'')
-        +'</div></div>'
-        +'<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
-        +'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:'+(ativa?'#EAF3DE':'#EBF4FD')+';color:'+(ativa?'#3B6D11':'#185FA5')+'">'+(ativa?'Em campo':'Encerrado')+'</span>'
+        +'<div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(nomeEq)
+        +(anterior?' <span style="font-size:10px;background:#FEF3E2;color:#854F0B;border-radius:4px;padding:1px 6px">login '+fmtD(dataS)+'</span>':'')
+        +'</div>'
+        +'<div style="font-size:11px;color:#555;margin-top:2px">'+escHtml(nomeCont)+'</div>'
+        +'<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:center">'
+        +'<span style="font-size:10px;color:#555">⏰ '+_campoFmtHora(s.login_ts)+' → '+_campoFmtHora(s.logout_ts)+'</span>'
+        +'<span style="font-size:10px;color:#185FA5;font-weight:600">'+tempo+'</span>'
+        +'<span style="font-size:10px;color:#555">OS '+st.qtdOs+'</span>'
+        +(placa!=='—'?'<span style="font-size:10px;color:#888">🚗 '+escHtml(placa)+'</span>':'')
+        +(cel!=='—'?'<span style="font-size:10px;color:#888">📱 '+escHtml(cel)+'</span>':'')
+        +'</div>'
+        +'<div style="margin-top:5px">'+st.html+'</div>'
+        +'</div>'
+        +'<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">'
+        +'<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:4px;background:'+(!s.logout_ts?'#FCEBEB':'#EBF4FD')+';color:'+(!s.logout_ts?'#A32D2D':'#185FA5')+'">'+(!s.logout_ts?'Sem encerramento':'Encerrado')+'</span>'
         +'<span style="color:#aaa;font-size:18px">›</span>'
         +'</div></div>';
     }).join('')
@@ -59846,12 +59942,63 @@ async function _buscarDiarioAdmin(){
 
   sessoes.forEach(function(s){
     var row=document.getElementById('db-eq-row-'+s.id);
-    if(row) row.onclick=function(){ _abrirDetalheDiarioEquipe(s.id, data); };
+    if(row) row.onclick=function(){ _abrirDetalheDiarioEquipe(s.id, (s.data||ini).split('T')[0]); };
   });
-
-  _renderAlertasTurno(wrap);
+  _dbBindAlertaSemEnc();
+}
+
+function _dbHtmlAlertaSemEnc(sessoesFiltro){
+  var pendentes=verificarSessoesAbertas();
+  if(sessoesFiltro){
+    var ids={};
+    sessoesFiltro.forEach(function(s){ ids[s.id]=1; });
+    var extra=pendentes.filter(function(s){ return !ids[s.id]; });
+    pendentes=sessoesFiltro.filter(function(s){return !s.logout_ts;}).concat(extra);
+  }
+  var seen={};
+  pendentes=pendentes.filter(function(s){ if(seen[s.id]) return false; seen[s.id]=1; return true; });
+  if(!pendentes.length) return '';
+  var display=_dbAlertaAberto?'flex':'none';
+  return '<style>@keyframes _dbPisca{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(163,45,45,.35)}50%{opacity:.7;box-shadow:0 0 10px 2px rgba(163,45,45,.45)}}._db-pisca{animation:_dbPisca 1.1s ease-in-out infinite}</style>'
+    +'<div id="alerta-turnos-wrap" class="_db-pisca" style="background:#FCEBEB;border:.5px solid #A32D2D;border-radius:12px;padding:.85rem 1rem;margin-bottom:1rem;cursor:pointer" onclick="_dbToggleAlertaSemEnc()">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">'
+    +'<div style="display:flex;align-items:center;gap:8px">'
+    +'<span style="font-size:18px">⚠️</span>'
+    +'<div>'
+    +'<div style="font-weight:800;font-size:13px;color:#A32D2D">'+pendentes.length+' equipe'+(pendentes.length>1?'s':'')+' sem encerramento</div>'
+    +'<div style="font-size:11px;color:#854F0B">Clique para abrir, ver o diário e encerrar o turno</div>'
+    +'</div></div>'
+    +'<span style="font-size:18px;color:#A32D2D">'+( _dbAlertaAberto?'▾':'▸')+'</span>'
+    +'</div>'
+    +'<div id="db-alerta-pend-lista" style="display:'+display+';flex-direction:column;gap:6px;margin-top:.75rem">'
+    +pendentes.map(function(s){
+      var eq=equipes_disp.find(function(e){return e.id===s.equipe_id;})
+            ||equipes.find(function(e){return e.id===s.equipe_id;});
+      var dataS=(s.data||'').split('T')[0];
+      var ordens=ordens_db.filter(function(o){return o.equipe_id===s.equipe_id&&(o.data||'')===dataS;});
+      var st=_campoStatusDiario(s, ordens);
+      return '<div style="display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:8px;padding:.6rem .85rem;border:.5px solid #F0B4B4;gap:8px" onclick="event.stopPropagation()">'
+        +'<div style="flex:1;cursor:pointer" id="db-alerta-row-'+s.id+'">'
+        +'<div style="font-weight:600;font-size:13px">'+(eq?escHtml((eq.codigo||'')+(eq.nome?' — '+eq.nome:(eq.nome_equipe?' — '+eq.nome_equipe:''))):'Equipe')+'</div>'
+        +'<div style="font-size:11px;color:#888">'+fmtD(s.data)+' | Login '+_campoFmtHora(s.login_ts)+' | '+_campoTempoLoginLogoff(s.login_ts,null)+'</div>'
+        +'<div style="margin-top:4px">'+st.html+'</div>'
+        +'</div>'
+        +'<button class="btn btn-sm" id="btn-enc-forcado-'+s.id+'" style="border-color:#854F0B;color:#854F0B;font-size:11px;flex-shrink:0">Encerrar</button>'
+        +'</div>';
+    }).join('')
+    +'</div></div>';
 }
 
+function _dbBindAlertaSemEnc(){
+  var pendentes=verificarSessoesAbertas();
+  pendentes.forEach(function(s){
+    var btn=document.getElementById('btn-enc-forcado-'+s.id);
+    if(btn) btn.onclick=function(ev){ ev.stopPropagation(); abrirEncerrarTurnoForcado(s.id); };
+    var row=document.getElementById('db-alerta-row-'+s.id);
+    if(row) row.onclick=function(ev){ ev.stopPropagation(); _abrirDetalheDiarioEquipe(s.id, (s.data||dataHoje()).split('T')[0]); };
+  });
+}
+
 function _abrirDetalheDiarioEquipe(sessaoId, data){
   var s=sessoes_disp.find(function(x){return x.id===sessaoId;});
   if(!s) return;
@@ -60085,6 +60232,7 @@ function _abrirDetalheDiarioEquipe(sessaoId, data){
 
     +'<div style="margin-top:.75rem;display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +(ativa?'<button class="btn" onclick="closeModal();abrirEncerrarTurnoForcado(\''+sessaoId+'\')" style="flex:1;border-color:#854F0B;color:#854F0B">Encerrar turno</button>':'')
     +'<button class="btn" onclick="_dbGerarPDF(\''+sessaoId+'\',\''+data+'\')" style="flex:1;background:#185FA5;color:#fff;border-color:#185FA5;font-weight:600">🖨 Gerar PDF</button>'
     +'</div>'
     +'</div></div>';
@@ -61454,54 +61602,26 @@ function verificarTurnosSemEncerramento(){
 }
 
 function _renderAlertasTurno(wrap){
-  var pendentes = verificarTurnosSemEncerramento();
-  if(!pendentes.length) return;
-
-  var agora = Date.now();
-  var html = '<div style="background:#FFF3E0;border:.5px solid #EF9F27;border-radius:12px;padding:1rem;margin-bottom:1rem">'
-    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.75rem">'
-    +'<span style="font-size:18px">⚠️</span>'
-    +'<div>'
-    +'<div style="font-weight:700;font-size:13px;color:#854F0B">'+pendentes.length+' turno(s) sem encerramento</div>'
-    +'<div style="font-size:11px;color:#854F0B;opacity:.8">Equipes com mais de '+LIMITE_HORAS_TURNO+'h ativas ou de dias anteriores</div>'
-    +'</div>'
-    +'</div>'
-    +'<div style="display:flex;flex-direction:column;gap:6px">'
-    +pendentes.map(function(s){
-      var eq=equipes_disp.find(function(e){return e.id===s.equipe_id;});
-      var horasAtivo=Math.floor((agora-s.login_ts)/3600000);
-      var minAtivo=Math.floor(((agora-s.login_ts)%3600000)/60000);
-      var d=new Date(s.login_ts);
-      var horaIni=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
-      return '<div style="display:flex;justify-content:space-between;align-items:center;'
-        +'background:#fff;border-radius:8px;padding:.6rem .85rem;border:.5px solid #EF9F27">'
-        +'<div>'
-        +'<div style="font-weight:600;font-size:13px">'+(eq?eq.codigo+' — '+eq.nome:'Equipe')+'</div>'
-        +'<div style="font-size:11px;color:#888">'+fmtD(s.data)+' | Início: '+horaIni
-        +' | Ativo há: <b style="color:#854F0B">'+horasAtivo+'h '+minAtivo+'min</b></div>'
-        +'</div>'
-        +'<button class="btn btn-sm" id="btn-enc-forcado-'+s.id+'" '
-        +'style="border-color:#854F0B;color:#854F0B;font-size:11px">Encerrar</button>'
-        +'</div>';
-    }).join('')
-    +'</div>'
-    +'</div>';
-
-  var alertaDiv = document.getElementById('alerta-turnos-wrap');
-  if(!alertaDiv){
-    alertaDiv = document.createElement('div');
-    alertaDiv.id = 'alerta-turnos-wrap';
-    if(wrap) wrap.insertBefore(alertaDiv, wrap.firstChild);
+  if(!wrap) wrap=document.getElementById('db-admin-resultado');
+  if(!wrap) return;
+  var html=_dbHtmlAlertaSemEnc();
+  var alertaDiv=document.getElementById('alerta-turnos-wrap');
+  if(!html){
+    if(alertaDiv) alertaDiv.remove();
+    return;
   }
-  alertaDiv.innerHTML = html;
-
-  // Vincular botões de encerramento forçado
-  pendentes.forEach(function(s){
-    var btn = document.getElementById('btn-enc-forcado-'+s.id);
-    if(btn) btn.onclick = function(){ abrirEncerrarTurnoForcado(s.id); };
-  });
-}
-
+  if(!alertaDiv){
+    var holder=document.createElement('div');
+    holder.innerHTML=html;
+    wrap.insertBefore(holder.firstChild, wrap.firstChild);
+  } else {
+    var holder2=document.createElement('div');
+    holder2.innerHTML=html;
+    alertaDiv.parentNode.replaceChild(holder2.firstChild, alertaDiv);
+  }
+  _dbBindAlertaSemEnc();
+}
+
 function abrirEncerrarTurnoForcado(sessaoId){
   var s=sessoes_disp.find(function(x){return x.id===sessaoId;});
   if(!s)return;
@@ -61576,18 +61696,22 @@ function abrirEncerrarTurnoForcado(sessaoId){
 
     closeModal();
     var wrap=document.getElementById('db-admin-resultado');
-    if(wrap) _renderAlertasTurno(wrap);
+    if(wrap && typeof _buscarDiarioAdmin==='function') _buscarDiarioAdmin();
+    else if(wrap) _renderAlertasTurno(wrap);
     var toast=document.createElement('div');
     toast.style.cssText='position:fixed;bottom:16px;right:16px;background:#3B6D11;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.15)';
     toast.textContent='✓ Turno encerrado às '+horaE+' | '+Math.floor(minFat/60)+'h'+String(minFat%60).padStart(2,'0')+'min faturáveis';
     document.body.appendChild(toast);
     setTimeout(function(){if(toast.parentNode)toast.remove();},5000);
   };
-}
-
-
+}
+
 function renderCampoEncarregado(){
-  var wrap=document.getElementById('enc-campo-wrap');
+  var wrap=document.getElementById('enc-exec-wrap')||document.getElementById('enc-campo-wrap');
+  if(!wrap){
+    var pgEx=document.getElementById('pg-campo-execucao-field');
+    if(pgEx){ wrap=document.createElement('div'); wrap.id='enc-exec-wrap'; wrap.style.padding='1rem'; pgEx.appendChild(wrap); }
+  }
   if(!wrap)return;
 
   var isAdm=usuarioLogado&&(usuarioLogado.perfil==='admin'||usuarioLogado.perfil==='gestor'||usuarioLogado.perfil==='supervisor'||usuarioLogado.perfil==='coordenador'||usuarioLogado.perfil==='supervisor_tma'||usuarioLogado.perfil==='coordenador_tma'||usuarioLogado.perfil==='escritorio');
@@ -61704,9 +61828,8 @@ function renderCampoEncarregado(){
       }
     };
   });
-}
-
-
+}
+
 function _toggleCnhVenc(val){
   var w=document.getElementById('nc-cnh-wrap');
   if(w) w.style.display=val?'block':'none';
@@ -76448,10 +76571,10 @@ function showPage(pageId){
     renderAPRs();
   }
   else if(pageId==='campo-execucao-field'){
-    _precisaModulo('diario',function(){
+    _precisaModulo('obras',function(){
       var pgEx=document.getElementById('pg-campo-execucao-field');
-      if(pgEx) pgEx.classList.remove('hidden');
-      renderCampoEncarregado();
+      if(pgEx){ pgEx.classList.remove('hidden'); pgEx.style.display=''; }
+      if(typeof renderCampoEncarregado==='function') renderCampoEncarregado();
     });
   }
   else if(pageId==='obras-requisicao'){_precisaModulo('obras',function(){renderRequisicaoObras();});}
