@@ -1980,7 +1980,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.103"></script>
+<script src="portaria-offline.js?v=8.1.105"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7538,6 +7538,7 @@ async function sbInsert(table,data,opts){
       'colaborador_id','colaborador_re','colaborador_nome','colaborador_cpf','equipe_id','equipe_nome','veiculo_id',
       'contrato_id','deposito_id','status','observacao'],
     'alm_requisicao_eventos':['id','requisicao_id','evento','descricao','usuario','dados_json'],
+    'colaborador_credenciais':['id','colaborador_id','tipo','uid','uid_normalizado','status','emitido_em','ativado_em','bloqueado_em','bloqueado_por','motivo_bloqueio','substitui_credencial_id','origem_leitura','criado_por','criado_em','atualizado_em'],
     'rh_colaborador_contrato_hist':['colaborador_id','vigencia_inicio','snapshot','motivo','alterado_por'],
     'rh_colaborador_eventos':['colaborador_id','vinculo_ref','tipo','situacao','inicio','fim','cargo','funcao',
       'contrato_id','base_id','equipe_id','motivo','fonte','origem_modulo','origem_ref','payload',
@@ -7825,6 +7826,531 @@ async function sbRpc(fn, params){
   }catch(e){ console.error('sbRpc',fn,e); return null; }
 }
 
+// ══════════════════════════════════════════════════════════════
+// RFID-CORE-1 — identidade RFID do colaborador (fase 1)
+// Cadastro mestre. Sem portão, estoque, Portaria, ponto ou Frotas.
+// Escrita só via RPC. Auditoria no banco. Leitura wedge só em sessão.
+// ══════════════════════════════════════════════════════════════
+var _cenaRfidSessao = null;
+var _cenaRfidWedgeBound = false;
+var _cenaRfidDemoCreds = [];
+
+function cenaRfidNormalizarUid(valor){
+  return String(valor==null?'':valor)
+    .replace(/[\n\r\t]+/g,'')
+    .replace(/[\s\-]+/g,'')
+    .trim()
+    .toUpperCase();
+}
+
+function cenaRfidPodeCadastrar(){
+  if(typeof perfilAcessoTotal==='function' && perfilAcessoTotal()) return true;
+  var p = String((usuarioLogado && usuarioLogado.perfil) || '').toLowerCase();
+  return p==='admin' || p==='diretoria' || p==='dp' || p==='rh' || p==='gestor';
+}
+
+function cenaRfidFmtTs(iso){
+  if(!iso) return '—';
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return '—';
+  function p(n){ return String(n).padStart(2,'0'); }
+  return p(d.getDate())+'/'+p(d.getMonth()+1)+'/'+d.getFullYear()+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+
+function cenaRfidEsc(s){
+  if(typeof escHtml==='function') return escHtml(String(s==null?'':s));
+  return String(s==null?'':s).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+
+function cenaRfidParseErro(txt, status){
+  var msg = 'Erro RFID ('+status+')';
+  try{
+    var j = JSON.parse(txt);
+    msg = j.message || j.details || j.hint || msg;
+    if(String(j.hint||'')==='RFID_UID_HISTORICO' || /já vinculado/i.test(msg)){
+      if(msg.indexOf('⛔')!==0) msg = '⛔ '+msg;
+    }
+  }catch(e){
+    if(txt) msg = String(txt).slice(0, 280);
+  }
+  return msg;
+}
+
+async function cenaRfidRpc(fn, params){
+  if(DEMO) return {ok:false, error:'DEMO_USE_LOCAL'};
+  var tok = null;
+  try{
+    tok = await cenaAuthGetValidToken({requireAuth:true, forceLogin:false, reason:'rfid:'+fn});
+  }catch(e){ tok = null; }
+  if(!tok || tok==='demo' || (typeof sbAuthJwtIsAuthenticated==='function' && !sbAuthJwtIsAuthenticated(tok))){
+    return {ok:false, error:'Sessão Auth obrigatória para RFID. Faça login autenticado (não MD5).'};
+  }
+  try{
+    var r = await fetch(SB.url+'/rest/v1/rpc/'+fn, {
+      method:'POST',
+      headers:{
+        'apikey': SB.key,
+        'Authorization': 'Bearer '+tok,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(params||{})
+    });
+    var txt = await r.text();
+    var data = null;
+    try{ data = txt ? JSON.parse(txt) : null; }catch(e1){ data = null; }
+    if(!r.ok){
+      console.error('cenaRfidRpc', fn, r.status, txt);
+      return {ok:false, error: cenaRfidParseErro(txt, r.status), status:r.status, raw:data};
+    }
+    return {ok:true, data:data};
+  }catch(e){
+    console.error('cenaRfidRpc', fn, e);
+    return {ok:false, error: String(e && e.message || e)};
+  }
+}
+
+function cenaRfidDemoAtiva(colabId){
+  return _cenaRfidDemoCreds.filter(function(x){
+    return x.colaborador_id===colabId && x.tipo==='RFID' && x.status==='ATIVO';
+  })[0] || null;
+}
+
+async function cenaRfidCarregarCredencial(colabId){
+  if(DEMO){
+    var lista = _cenaRfidDemoCreds.filter(function(x){ return x.colaborador_id===colabId && x.tipo==='RFID'; });
+    var at = lista.filter(function(x){ return x.status==='ATIVO'; })[0];
+    var bl = lista.filter(function(x){ return x.status==='BLOQUEADO'; })
+      .sort(function(a,b){ return String(b.bloqueado_em||'').localeCompare(String(a.bloqueado_em||'')); })[0];
+    return at || bl || lista[0] || null;
+  }
+  var rows = await sbFetch('colaborador_credenciais', {
+    requireAuth: true,
+    select: 'id,colaborador_id,tipo,uid_normalizado,status,ativado_em,criado_em,bloqueado_em,motivo_bloqueio',
+    filters: ['colaborador_id=eq.'+colabId, 'tipo=eq.RFID'],
+    order: 'criado_em.desc',
+    limit: 20
+  });
+  if(!rows) return null;
+  var at = rows.filter(function(x){ return x.status==='ATIVO'; })[0];
+  var bl = rows.filter(function(x){ return x.status==='BLOQUEADO'; })[0];
+  return at || bl || rows[0] || null;
+}
+
+async function cenaRfidResolverColaborador(uid){
+  var n = cenaRfidNormalizarUid(uid);
+  if(!n) return {ok:false, encontrado:false, autenticavel:false, motivo:'UID_VAZIO', credencial:null, colaborador:null};
+  if(DEMO){
+    var cred = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    if(!cred) return {ok:true, encontrado:false, autenticavel:false, motivo:'NAO_CADASTRADO', credencial:null, colaborador:null};
+    var col = (colaboradores||[]).find(function(c){ return c.id===cred.colaborador_id; }) || {};
+    var aut = cred.status==='ATIVO' && col.ativo!==false && !col.deleted_at;
+    return {
+      ok:true, encontrado:true, autenticavel:!!aut,
+      motivo: aut ? 'ATIVO' : (cred.status||'BLOQUEADO'),
+      credencial:{id:cred.id, status:cred.status},
+      colaborador:{id:col.id||cred.colaborador_id, nome:col.nome||'—', re:col.re||'—'}
+    };
+  }
+  var rpc = await cenaRfidRpc('fn_rfid_resolver', {p_uid: uid});
+  if(!rpc.ok) return {ok:false, encontrado:false, autenticavel:false, motivo:'ERRO', error:rpc.error, credencial:null, colaborador:null};
+  return rpc.data || {ok:true, encontrado:false, autenticavel:false, motivo:'NAO_CADASTRADO', credencial:null, colaborador:null};
+}
+
+function cenaRfidProcessarEntrada(valor, origem){
+  if(!_cenaRfidSessao) return;
+  var n = cenaRfidNormalizarUid(valor);
+  if(!n){
+    if(typeof progShowToast==='function') progShowToast('UID RFID vazio.','erro');
+    return;
+  }
+  var sess = _cenaRfidSessao;
+  sess.uidBruto = String(valor||'').trim();
+  sess.uidNorm = n;
+  sess.origem = origem || 'keyboard_wedge';
+  document.removeEventListener('keydown', cenaRfidWedgeKey, true);
+  _cenaRfidSessao._listening = false;
+  if(sess.modo==='testar'){
+    cenaRfidResolverColaborador(n).then(function(r){
+      cenaRfidOverlayResultadoTeste(n, r);
+    });
+    return;
+  }
+  cenaRfidOverlayDetectado(sess);
+}
+
+function cenaRfidWedgeKey(ev){
+  if(!_cenaRfidSessao || !_cenaRfidSessao._listening) return;
+  if(ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  var t = ev.target;
+  var tag = (t && t.tagName) ? t.tagName.toLowerCase() : '';
+  if(tag==='textarea') return;
+  if(tag==='input' && t && t.id==='cena-rfid-motivo') return;
+  var key = ev.key;
+  if(key==='Escape'){
+    ev.preventDefault();
+    cenaRfidCancelarLeitura();
+    return;
+  }
+  if(key==='Enter'){
+    ev.preventDefault();
+    ev.stopPropagation();
+    var raw = _cenaRfidSessao.buffer || '';
+    var inp = document.getElementById('cena-rfid-wedge-input');
+    if(inp && inp.value) raw = inp.value;
+    _cenaRfidSessao.buffer = '';
+    if(inp) inp.value = '';
+    if(raw) cenaRfidProcessarEntrada(raw, 'keyboard_wedge');
+    return;
+  }
+  if(key && key.length===1){
+    ev.preventDefault();
+    var now = Date.now();
+    if(_cenaRfidSessao.lastTs && (now - _cenaRfidSessao.lastTs) > 700){
+      _cenaRfidSessao.buffer = '';
+    }
+    _cenaRfidSessao.lastTs = now;
+    _cenaRfidSessao.buffer += key;
+    if(_cenaRfidSessao.timer) clearTimeout(_cenaRfidSessao.timer);
+    _cenaRfidSessao.timer = setTimeout(function(){
+      if(_cenaRfidSessao) _cenaRfidSessao.buffer = '';
+    }, 900);
+    var vis = document.getElementById('cena-rfid-wedge-input');
+    if(vis) vis.value = _cenaRfidSessao.buffer;
+  }
+}
+
+function cenaRfidCancelarLeitura(){
+  if(_cenaRfidSessao && _cenaRfidSessao.timer) clearTimeout(_cenaRfidSessao.timer);
+  document.removeEventListener('keydown', cenaRfidWedgeKey, true);
+  _cenaRfidSessao = null;
+  var ov = document.getElementById('cena-rfid-overlay');
+  if(ov && ov.parentNode) ov.parentNode.removeChild(ov);
+}
+
+function cenaRfidIniciarLeitura(opts){
+  cenaRfidCancelarLeitura();
+  opts = opts || {};
+  _cenaRfidSessao = {
+    modo: opts.modo || 'vincular',
+    colaboradorId: opts.colaboradorId,
+    colaboradorNome: opts.colaboradorNome || '',
+    colaboradorRe: opts.colaboradorRe || '',
+    buffer: '',
+    lastTs: 0,
+    timer: null,
+    _listening: true
+  };
+  document.addEventListener('keydown', cenaRfidWedgeKey, true);
+  cenaRfidOverlayAguardando();
+}
+
+function cenaRfidOverlayHost(){
+  var ov = document.getElementById('cena-rfid-overlay');
+  if(ov) return ov;
+  ov = document.createElement('div');
+  ov.id = 'cena-rfid-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20000;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.addEventListener('click', function(ev){
+    if(ev.target===ov) cenaRfidCancelarLeitura();
+  });
+  document.body.appendChild(ov);
+  return ov;
+}
+
+function cenaRfidOverlayAguardando(){
+  var ov = cenaRfidOverlayHost();
+  var sess = _cenaRfidSessao || {};
+  var titulo = sess.modo==='testar' ? '🔍 Testar crachá' : (sess.modo==='substituir' ? '🔄 Substituir crachá' : '📡 Ler crachá');
+  ov.innerHTML = '<div class="modal" style="max-width:420px;width:100%;background:#fff;border-radius:12px;padding:1.1rem 1.2rem">'
+    +'<h3 style="margin:0 0 8px">'+titulo+'</h3>'
+    +'<div style="font-size:22px;font-weight:700;color:#185FA5;margin:8px 0 4px">Aguardando crachá...</div>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:10px">Aproxime o cartão do leitor.</div>'
+    +'<input id="cena-rfid-wedge-input" autocomplete="off" autocapitalize="off" spellcheck="false" '
+    +'placeholder="O leitor digita o UID aqui"'
+    +' style="width:100%;padding:10px 12px;border:1px solid #c5d8ea;border-radius:8px;font-size:15px;letter-spacing:.04em"/>'
+    +'<div style="font-size:11px;color:#888;margin-top:6px">USB tipo teclado: o leitor envia o UID e Enter. Nada é gravado até confirmar.</div>'
+    +'<div class="ma" style="margin-top:14px"><button class="btn" type="button" onclick="cenaRfidCancelarLeitura()">Cancelar</button></div>'
+    +'</div>';
+  setTimeout(function(){
+    var inp = document.getElementById('cena-rfid-wedge-input');
+    if(inp){
+      inp.focus();
+      inp.addEventListener('keydown', function(ev){
+        if(ev.key==='Enter'){
+          ev.preventDefault();
+          ev.stopPropagation();
+          var v = inp.value;
+          inp.value = '';
+          if(v) cenaRfidProcessarEntrada(v, 'keyboard_wedge');
+        }
+      });
+    }
+  }, 40);
+}
+
+function cenaRfidOverlayDetectado(sess){
+  var ov = cenaRfidOverlayHost();
+  var acao = sess.modo==='substituir' ? 'Substituir crachá' : 'Vincular crachá';
+  ov.innerHTML = '<div class="modal" style="max-width:420px;width:100%;background:#fff;border-radius:12px;padding:1.1rem 1.2rem">'
+    +'<h3 style="margin:0 0 8px">Crachá detectado</h3>'
+    +'<div style="font-size:12px;color:#888">UID</div>'
+    +'<div style="font-size:18px;font-weight:700;letter-spacing:.04em;margin-bottom:10px">'+cenaRfidEsc(sess.uidNorm)+'</div>'
+    +'<div style="font-size:12px;color:#888">Colaborador</div>'
+    +'<div style="font-weight:700">'+cenaRfidEsc(sess.colaboradorNome)+'</div>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:12px">RE: '+cenaRfidEsc(sess.colaboradorRe||'—')+'</div>'
+    +'<div class="ma"><button class="btn" type="button" onclick="cenaRfidCancelarLeitura()">Cancelar</button>'
+    +'<button class="btn btn-pri" type="button" onclick="cenaRfidConfirmarVinculo()">'+cenaRfidEsc(acao)+'</button></div>'
+    +'</div>';
+}
+
+function cenaRfidOverlayResultadoTeste(uid, r){
+  var ov = cenaRfidOverlayHost();
+  var body;
+  if(!r || r.ok===false){
+    body = '<div style="color:#A32D2D">Falha ao testar: '+cenaRfidEsc((r&&r.error)||'erro')+'</div>';
+  } else if(!r.encontrado){
+    body = '<div style="font-size:12px;color:#888">UID</div>'
+      +'<div style="font-size:18px;font-weight:700;letter-spacing:.04em;margin-bottom:8px">'+cenaRfidEsc(uid)+'</div>'
+      +'<div style="color:#854F0B;font-weight:700">⚠ Crachá não cadastrado</div>';
+  } else {
+    var aut = r.autenticavel ? '✅ Crachá identificado' : ('⚠ Crachá '+cenaRfidEsc(r.motivo||''));
+    var col = r.colaborador || {};
+    body = '<div style="font-size:12px;color:#888">UID</div>'
+      +'<div style="font-size:18px;font-weight:700;letter-spacing:.04em;margin-bottom:8px">'+cenaRfidEsc(uid)+'</div>'
+      +'<div style="font-weight:700;margin-bottom:4px">'+aut+'</div>'
+      +'<div>'+cenaRfidEsc(col.nome||'—')+'</div>'
+      +'<div style="font-size:13px;color:#555">RE '+cenaRfidEsc(col.re||'—')+'</div>'
+      +(r.autenticavel?'':'<div style="font-size:12px;color:#A32D2D;margin-top:6px">Não autentica ação (fase 1 só identifica).</div>');
+  }
+  ov.innerHTML = '<div class="modal" style="max-width:420px;width:100%;background:#fff;border-radius:12px;padding:1.1rem 1.2rem">'
+    +'<h3 style="margin:0 0 8px">🔍 Testar crachá</h3>'
+    +body
+    +'<div class="ma" style="margin-top:14px"><button class="btn btn-pri" type="button" onclick="cenaRfidCancelarLeitura()">Fechar</button></div>'
+    +'</div>';
+  _cenaRfidSessao = null;
+}
+
+async function cenaRfidConfirmarVinculo(){
+  var sess = _cenaRfidSessao;
+  if(!sess || !sess.uidNorm || !sess.colaboradorId) return;
+  if(!cenaRfidPodeCadastrar()){
+    if(typeof progShowToast==='function') progShowToast('Sem permissão para cadastrar RFID.','erro');
+    return;
+  }
+  var r;
+  if(sess.modo==='substituir'){
+    r = await cenaRfidExecSubstituir(sess.colaboradorId, sess.uidBruto || sess.uidNorm);
+  } else {
+    r = await cenaRfidExecVincular(sess.colaboradorId, sess.uidBruto || sess.uidNorm);
+  }
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha RFID','erro');
+    else alert(r.error||'Falha RFID');
+    return;
+  }
+  cenaRfidCancelarLeitura();
+  if(typeof progShowToast==='function') progShowToast(sess.modo==='substituir'?'✅ Crachá substituído.':'✅ Crachá vinculado.');
+  var col = (colaboradores||[]).find(function(c){ return c.id===sess.colaboradorId; }) || {id:sess.colaboradorId, nome:sess.colaboradorNome, re:sess.colaboradorRe};
+  cenaRfidMontarSecao(sess.colaboradorId, col);
+}
+
+async function cenaRfidExecVincular(colabId, uid){
+  var n = cenaRfidNormalizarUid(uid);
+  if(DEMO){
+    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    if(hit){
+      var c = (colaboradores||[]).find(function(x){ return x.id===hit.colaborador_id; }) || {};
+      return {ok:false, error:'⛔ Crachá já vinculado a '+(c.nome||'?')+' — RE '+(c.re||'—')+'.'};
+    }
+    if(cenaRfidDemoAtiva(colabId)) return {ok:false, error:'Colaborador já possui RFID ATIVO. Use substituição.'};
+    var row = {id:'demo-'+Date.now(), colaborador_id:colabId, tipo:'RFID', uid_normalizado:n, status:'ATIVO', ativado_em:new Date().toISOString(), criado_em:new Date().toISOString()};
+    _cenaRfidDemoCreds.push(row);
+    return {ok:true, data:{acao:'RFID_VINCULADO'}};
+  }
+  return cenaRfidRpc('fn_rfid_vincular', {p_colaborador_id:colabId, p_uid:uid, p_origem_leitura:'keyboard_wedge'});
+}
+
+async function cenaRfidExecSubstituir(colabId, uid){
+  if(DEMO){
+    var n = cenaRfidNormalizarUid(uid);
+    var atual = cenaRfidDemoAtiva(colabId);
+    if(!atual) return {ok:false, error:'Colaborador não possui RFID ATIVO para substituir.'};
+    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    if(hit && hit.colaborador_id!==colabId){
+      var c = (colaboradores||[]).find(function(x){ return x.id===hit.colaborador_id; }) || {};
+      return {ok:false, error:'⛔ Crachá já vinculado a '+(c.nome||'?')+' — RE '+(c.re||'—')+'.'};
+    }
+    atual.status = 'SUBSTITUIDO';
+    if(hit && hit.colaborador_id===colabId){
+      hit.status = 'ATIVO';
+      hit.ativado_em = new Date().toISOString();
+    } else {
+      _cenaRfidDemoCreds.push({id:'demo-'+Date.now(), colaborador_id:colabId, tipo:'RFID', uid_normalizado:n, status:'ATIVO', ativado_em:new Date().toISOString(), criado_em:new Date().toISOString(), substitui_credencial_id:atual.id});
+    }
+    return {ok:true, data:{acao:'RFID_SUBSTITUIDO'}};
+  }
+  return cenaRfidRpc('fn_rfid_substituir', {p_colaborador_id:colabId, p_uid:uid, p_origem_leitura:'keyboard_wedge', p_motivo:null});
+}
+
+async function cenaRfidExecBloquear(colabId, motivo){
+  if(DEMO){
+    var atual = cenaRfidDemoAtiva(colabId);
+    if(!atual) return {ok:false, error:'Colaborador não possui RFID ATIVO para bloquear'};
+    atual.status = 'BLOQUEADO';
+    atual.bloqueado_em = new Date().toISOString();
+    atual.motivo_bloqueio = motivo;
+    return {ok:true, data:{acao:'RFID_BLOQUEADO'}};
+  }
+  return cenaRfidRpc('fn_rfid_bloquear', {p_colaborador_id:colabId, p_motivo:motivo});
+}
+
+async function cenaRfidExecReativar(colabId){
+  if(DEMO){
+    if(cenaRfidDemoAtiva(colabId)) return {ok:false, error:'Colaborador já possui RFID ATIVO.'};
+    var bl = _cenaRfidDemoCreds.filter(function(x){ return x.colaborador_id===colabId && x.status==='BLOQUEADO'; })[0];
+    if(!bl) return {ok:false, error:'Não há crachá BLOQUEADO deste colaborador para reativar'};
+    bl.status = 'ATIVO';
+    bl.ativado_em = new Date().toISOString();
+    bl.bloqueado_em = null;
+    bl.motivo_bloqueio = null;
+    return {ok:true, data:{acao:'RFID_REATIVADO'}};
+  }
+  return cenaRfidRpc('fn_rfid_reativar', {p_colaborador_id:colabId});
+}
+
+function cenaRfidSecaoHtml(cid, colab, cred){
+  var pode = cenaRfidPodeCadastrar();
+  var nome = (colab && colab.nome) || '';
+  var re = (colab && colab.re) || '';
+  var st = cred && cred.status;
+  var corpo;
+  var btns = '';
+  if(!cred){
+    corpo = '<div style="font-size:13px;color:#666">Status: <b>Sem crachá</b></div>';
+    if(pode) btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoLer(\''+cid+'\')">📡 Ler crachá</button>';
+    btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoTestar(\''+cid+'\')">🔍 Testar leitura</button>';
+  } else if(st==='ATIVO'){
+    corpo = '<div style="font-size:13px">UID: <b style="letter-spacing:.03em">'+cenaRfidEsc(cred.uid_normalizado||'—')+'</b></div>'
+      +'<div style="font-size:13px;margin-top:2px">Status: 🟢 <b>Ativo</b></div>'
+      +'<div style="font-size:12px;color:#666">Cadastrado em: '+cenaRfidFmtTs(cred.ativado_em||cred.criado_em)+'</div>';
+    btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoTestar(\''+cid+'\')">🔍 Testar leitura</button>';
+    if(pode){
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoSubstituir(\''+cid+'\')">🔄 Substituir crachá</button>';
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoBloquear(\''+cid+'\')" style="color:#A32D2D;border-color:#A32D2D">⛔ Bloquear</button>';
+    }
+  } else if(st==='BLOQUEADO'){
+    corpo = '<div style="font-size:13px">UID: <b style="letter-spacing:.03em">'+cenaRfidEsc(cred.uid_normalizado||'—')+'</b></div>'
+      +'<div style="font-size:13px;margin-top:2px">Status: ⛔ <b>Bloqueado</b></div>'
+      +'<div style="font-size:12px;color:#666">Em: '+cenaRfidFmtTs(cred.bloqueado_em)+'</div>'
+      +(cred.motivo_bloqueio?'<div style="font-size:12px;color:#854F0B">Motivo: '+cenaRfidEsc(cred.motivo_bloqueio)+'</div>':'')
+      +'<div style="font-size:12px;color:#A32D2D;margin-top:4px">Este UID não autentica nenhuma ação.</div>';
+    btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoTestar(\''+cid+'\')">🔍 Testar leitura</button>';
+    if(pode){
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoReativar(\''+cid+'\')">🔓 Reativar</button>';
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoLer(\''+cid+'\')">📡 Ler crachá novo</button>';
+    }
+  } else {
+    corpo = '<div style="font-size:13px;color:#666">Sem crachá ATIVO (último: '+cenaRfidEsc(st)+').</div>';
+    if(pode) btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoLer(\''+cid+'\')">📡 Ler crachá</button>';
+    btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoTestar(\''+cid+'\')">🔍 Testar leitura</button>';
+  }
+  return '<div style="margin:12px 0 4px;padding:12px;background:#F4F8FC;border:1px solid #c5d8ea;border-radius:10px">'
+    +'<div style="font-weight:700;margin-bottom:6px">🪪 Crachá RFID</div>'
+    +corpo
+    +(pode?'':'<div style="font-size:11px;color:#888;margin-top:6px">Somente RH / DP / Gestor / Admin cadastram ou bloqueiam.</div>')
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">'+btns+'</div>'
+    +'</div>';
+}
+
+function cenaRfidMontarSecao(cid, colab){
+  var el = document.getElementById('cena-rfid-secao');
+  if(!el) return;
+  el.innerHTML = '<div style="margin:12px 0;padding:12px;background:#F4F8FC;border-radius:10px;font-size:12px;color:#888">Carregando crachá RFID…</div>';
+  cenaRfidCarregarCredencial(cid).then(function(cred){
+    var box = document.getElementById('cena-rfid-secao');
+    if(!box) return;
+    box.innerHTML = cenaRfidSecaoHtml(cid, colab, cred);
+  }).catch(function(){
+    var box = document.getElementById('cena-rfid-secao');
+    if(box) box.innerHTML = cenaRfidSecaoHtml(cid, colab, null);
+  });
+}
+
+function cenaRfidDadosColab(cid){
+  var c = (colaboradores||[]).find(function(x){ return x.id===cid; }) || {};
+  var nomeEl = document.getElementById('nc-nome');
+  var reEl = document.getElementById('nc-re');
+  return {
+    id: cid,
+    nome: (nomeEl && nomeEl.value) || c.nome || '',
+    re: (reEl && reEl.value) || c.re || ''
+  };
+}
+
+function cenaRfidAcaoLer(cid){
+  if(!cenaRfidPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para cadastrar RFID.','erro'); return; }
+  var c = cenaRfidDadosColab(cid);
+  cenaRfidIniciarLeitura({modo:'vincular', colaboradorId:cid, colaboradorNome:c.nome, colaboradorRe:c.re});
+}
+
+function cenaRfidAcaoSubstituir(cid){
+  if(!cenaRfidPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para substituir RFID.','erro'); return; }
+  var c = cenaRfidDadosColab(cid);
+  cenaRfidIniciarLeitura({modo:'substituir', colaboradorId:cid, colaboradorNome:c.nome, colaboradorRe:c.re});
+}
+
+function cenaRfidAcaoTestar(cid){
+  var c = cenaRfidDadosColab(cid);
+  cenaRfidIniciarLeitura({modo:'testar', colaboradorId:cid, colaboradorNome:c.nome, colaboradorRe:c.re});
+}
+
+function cenaRfidAcaoBloquear(cid){
+  if(!cenaRfidPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para bloquear RFID.','erro'); return; }
+  var ov = cenaRfidOverlayHost();
+  _cenaRfidSessao = {modo:'bloquear', colaboradorId:cid, _listening:false};
+  ov.innerHTML = '<div class="modal" style="max-width:420px;width:100%;background:#fff;border-radius:12px;padding:1.1rem 1.2rem">'
+    +'<h3 style="margin:0 0 8px">⛔ Bloquear crachá</h3>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:8px">Motivo obrigatório. O UID bloqueado não autentica nenhuma ação futura.</div>'
+    +'<textarea id="cena-rfid-motivo" rows="3" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px" placeholder="Motivo do bloqueio"></textarea>'
+    +'<div class="ma" style="margin-top:12px"><button class="btn" type="button" onclick="cenaRfidCancelarLeitura()">Cancelar</button>'
+    +'<button class="btn btn-pri" type="button" onclick="cenaRfidConfirmarBloqueio()">Bloquear</button></div>'
+    +'</div>';
+  setTimeout(function(){ var t=document.getElementById('cena-rfid-motivo'); if(t) t.focus(); }, 40);
+}
+
+async function cenaRfidConfirmarBloqueio(){
+  var sess = _cenaRfidSessao;
+  if(!sess || !sess.colaboradorId) return;
+  var motivo = ((document.getElementById('cena-rfid-motivo')||{}).value||'').trim();
+  if(!motivo){ alert('Informe o motivo do bloqueio.'); return; }
+  var r = await cenaRfidExecBloquear(sess.colaboradorId, motivo);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao bloquear','erro');
+    else alert(r.error||'Falha ao bloquear');
+    return;
+  }
+  var cid = sess.colaboradorId;
+  cenaRfidCancelarLeitura();
+  if(typeof progShowToast==='function') progShowToast('⛔ Crachá bloqueado.');
+  cenaRfidMontarSecao(cid, cenaRfidDadosColab(cid));
+}
+
+async function cenaRfidAcaoReativar(cid){
+  if(!cenaRfidPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para reativar RFID.','erro'); return; }
+  if(!confirm('Reativar o crachá bloqueado deste colaborador?')) return;
+  var r = await cenaRfidExecReativar(cid);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao reativar','erro');
+    else alert(r.error||'Falha ao reativar');
+    return;
+  }
+  if(typeof progShowToast==='function') progShowToast('✅ Crachá reativado.');
+  cenaRfidMontarSecao(cid, cenaRfidDadosColab(cid));
+}
+
+
 function todayStr(){return new Date().toLocaleDateString('pt-BR');}
 function fmtD(iso){
   if(iso==null||iso==='') return '—';
@@ -7997,6 +8523,7 @@ function setModal(html){
   }
 }
 function closeModal(){
+  if(typeof cenaRfidCancelarLeitura==='function') cenaRfidCancelarLeitura();
   _modalBackdropDown = null;
   var ma=document.getElementById('modal-area');
   if(!ma) return;
@@ -17747,6 +18274,7 @@ function openNovoColaborador(){
     +'</select>'
     +'<div style="font-size:11px;color:#888;margin-top:3px">Tipo de turno ao qual o colaborador pertence</div>'
     +'</div>'
+    +'<div style="margin:.6rem 0;padding:10px;background:#F4F8FC;border-radius:8px;border:.5px solid #c5d8ea;font-size:12px;color:#185FA5">🪪 Crachá RFID: vincule após salvar, na edição do colaborador.</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" id="btn-salvar-col">Salvar</button></div>'
     +'</div></div>';
@@ -43164,10 +43692,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.103',
+  numero: '8.1.105',
   data:   '21/09/2026',
-  build:  '20260921-1910',
+  build:  '20260921-2140',
   log: [
+    {v:'8.1.105', d:'21/09/2026', itens:[
+      'RFID-CORE-1 — Cadastro mestre de crachá RFID no colaborador: seção no Editar, leitor USB tipo teclado só em sessão, RPCs vincular/bloquear/substituir/testar. Sem portão/Portaria/estoque/ponto. SQL manual já aplicado. HOMOLOGAÇÃO.',
+    ]},
+    {v:'8.1.104', d:'21/09/2026', itens:[
+      'ALM-REQ-UX-1 — Requisições CENA: histórico e criação com data+hora; colaborador 🟣 Em treinamento (prog_status_diario + turma ativa); Nova Requisição sem Centro de custo/Finalidade; Base Destino=dest_base_id e Depósito Origem vazios e obrigatórios; filtro por item em lote. Sem SQL, sem estoque. HOMOLOGAÇÃO.',
+    ]},
     {v:'8.1.103', d:'21/09/2026', itens:[
       'Portaria Registros: some duplicata de saída/retorno (cópia local + servidor, ou retorno em um e Em campo no clone). Junta placa+equipe+minuto, mantém o Retornado e oculta o clone (soft-delete). Sem SQL. HOMOLOGAÇÃO.',
     ]},
@@ -59690,11 +60224,13 @@ function openEditarColaborador(cid){
     +'<input type="hidden" id="nc-cor-escala" value="'+(c.cor_escala||'')+'"/>'
     +'<div style="font-size:11px;color:#888;margin-top:4px">Define quando o colaborador está de folga com base no calendário</div>'
     +'</div>'
+    +'<div id="cena-rfid-secao"></div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" id="btn-ed-col">Salvar</button></div>'
     +'</div></div>';
 
   setModal(html);
+  if(typeof cenaRfidMontarSecao==='function') cenaRfidMontarSecao(cid, c);
   setTimeout(function(){
     var selCnh=document.getElementById('nc-cnh');
     // ── Setar TODOS os selects via JS — mais confiável que o atributo selected no innerHTML ──
@@ -74777,6 +75313,7 @@ var _AUDIT_MODULO_TABELA = {
   lancamentos:'financeiro', fin_faturamentos:'financeiro', adiantamentos:'financeiro',
   acord_negociacoes:'financeiro', acord_parcelas:'financeiro', acord_titulos:'financeiro', acord_fornecedores:'financeiro',
   colaboradores:'sesmt', treinamentos:'sesmt', epis:'sesmt', funcionarios:'sesmt', verificar_tratamentos:'operacional',
+  colaborador_credenciais:'rh',
   rh_colaborador_documentos:'rh',
   rh_documentos_obrigatorios:'rh',
   rh_contratacoes:'rh',
@@ -99613,8 +100150,8 @@ async function desmobProcessar(){
 // Camada anterior ao estoque. NÃO grava estoque, movimentacoes_itens,
 // epis, ferramentas, alm_movimentos nem sol_materiais.
 var _almReq = {
-  lista:[], itens:{}, eventos:{},
-  filtros:{numero:'',status:[],solicitante:'',contrato:'',base:'',deposito:'',tipo:'',colaborador:'',prioridade:'',data:''},
+  lista:[], itens:{}, eventos:{}, treinoIds:{},
+  filtros:{numero:'',status:[],solicitante:'',contrato:'',base:'',deposito:'',tipo:'',colaborador:'',prioridade:'',data:'',item:''},
   draft:null, carregando:false, corrigindoInfo:false, corrSnapshot:null
 };
 function almReqTipos(){
@@ -99986,10 +100523,152 @@ function almReqColabLabel(it){
 }
 function almReqDestCellHtml(it, idx){
   var label=_escapeHtml(almReqColabLabel(it));
+  var st=almReqColabStatusHtml(it&&it.colaborador_id);
+  if(st) label+=' '+st;
   if(!almReqPodeEditarColab()) return label;
   return '<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
     +'<span>'+label+'</span>'
     +'<button type="button" class="btn btn-sm" onclick="almReqEditarColabItem('+idx+')" title="Alterar colaborador">👤</button></div>';
+}
+function almReqFmtTs(iso){
+  if(iso==null||iso==='') return '';
+  var s=String(iso).trim();
+  if(!s) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return fmtD(s);
+  if(/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return s;
+  var hasTime=/T\d{2}:\d{2}/.test(s) || /[ T]\d{2}:\d{2}/.test(s);
+  if(!hasTime) return fmtD(s);
+  var d=new Date(s);
+  if(isNaN(d.getTime())) return fmtD(s);
+  var dd=String(d.getDate()).padStart(2,'0');
+  var mm=String(d.getMonth()+1).padStart(2,'0');
+  var yyyy=d.getFullYear();
+  var hh=String(d.getHours()).padStart(2,'0');
+  var mi=String(d.getMinutes()).padStart(2,'0');
+  return dd+'/'+mm+'/'+yyyy+' · '+hh+':'+mi;
+}
+function almReqEventoTs(e){
+  if(!e) return '';
+  var dj=e.dados_json;
+  if(typeof dj==='string'){ try{ dj=JSON.parse(dj); }catch(x){ dj=null; } }
+  if(dj && dj.data_hora) return dj.data_hora;
+  return e.criado_em||e.created_at||e.data_hora||'';
+}
+function almReqCriadoTs(r){
+  if(!r) return '';
+  return r.criado_em||r.created_at||r.data_hora||'';
+}
+function almReqStatusTreinamentoLinhaAtiva(r, hoje){
+  if(!r || r.deleted_at) return false;
+  if(String(r.status||'').toLowerCase()!=='treinamento') return false;
+  var dia=hoje||(typeof dataHoje==='function'?dataHoje():'');
+  var ini=String(r.data||'').slice(0,10);
+  if(ini && dia && ini>dia) return false;
+  if(typeof progRetornoExpirouNoDia==='function' && progRetornoExpirouNoDia(r.data_retorno, dia)) return false;
+  if(typeof progRetornoAindaFora==='function' && !progRetornoAindaFora(r.data_retorno, dia)) return false;
+  return true;
+}
+function almReqColabEmTreinamento(colabId){
+  if(colabId==null||colabId==='') return false;
+  var id=String(colabId);
+  if(_almReq.treinoIds && _almReq.treinoIds[id]) return true;
+  var st=String((_progStatus&&_progStatus[id])||'').toLowerCase();
+  if(st==='treinamento'){
+    var info=(_progStatusInfo&&_progStatusInfo[id])||{};
+    var hoje=typeof dataHoje==='function'?dataHoje():'';
+    if(typeof progRetornoExpirouNoDia==='function' && progRetornoExpirouNoDia(info.retorno, hoje)) return false;
+    return true;
+  }
+  var c=(typeof colaboradores!=='undefined'?colaboradores:[]).find(function(x){ return String(x.id)===id; });
+  if(!c || !c.turma_ativa_id) return false;
+  var t=(typeof _sesmtTurmas!=='undefined'?_sesmtTurmas:[]).find(function(x){ return String(x.id)===String(c.turma_ativa_id); });
+  if(!t) return false;
+  if(['Concluído','Cancelado'].indexOf(t.status)>=0) return false;
+  var hoje=typeof dataHoje==='function'?dataHoje():'';
+  var ini=String(t.data_inicio||'').slice(0,10);
+  var fim=String(t.data_fim||t.data_inicio||'').slice(0,10);
+  if(hoje && ini && hoje<ini) return false;
+  if(hoje && fim && hoje>fim) return false;
+  return true;
+}
+function almReqColabStatusHtml(colabId, compacto){
+  if(!almReqColabEmTreinamento(colabId)) return '';
+  if(compacto) return '<span style="font-size:10px;color:#533AB7;white-space:nowrap">🟣 Treinamento</span>';
+  return '<span style="display:inline-block;font-size:10px;color:#533AB7;font-weight:600">🟣 Em treinamento</span>';
+}
+function almReqItemTextoBusca(it){
+  if(!it) return '';
+  var parts=[it.item_descricao, it.item_codigo, it.item_sku, it.sku, it.ca, it.tipo_item];
+  var cid=it.item_id||it.item_codigo;
+  if(cid && typeof itens_catalogo!=='undefined'){
+    var cat=(itens_catalogo||[]).find(function(x){
+      return String(x.id)===String(it.item_id||'') || (it.item_codigo && String(x.codigo||'').toLowerCase()===String(it.item_codigo).toLowerCase());
+    });
+    if(cat) parts.push(cat.nome, cat.codigo, cat.sku, cat.ca, cat.descricao);
+  }
+  return parts.filter(Boolean).join(' ').toLowerCase();
+}
+function almReqSyncBaseOrigemDoDeposito(){
+  var d=_almReq.draft; if(!d||!d.deposito_id) return;
+  var dep=(typeof depositos!=='undefined'?depositos:[]).find(function(x){ return String(x.id)===String(d.deposito_id); });
+  if(!dep) return;
+  if(dep.filial_id){
+    d.base_id=dep.filial_id;
+    d.base_nome=almReqNomePorId(typeof filiais!=='undefined'?filiais:[], d.base_id, d.base_nome||dep.filial_nome||'');
+  }
+}
+function almReqOnDepOrigem(){
+  almReqLerCabecalho();
+  _almReq._depOrigemEscolhido=!!(_almReq.draft&&_almReq.draft.deposito_id);
+  almReqSyncBaseOrigemDoDeposito();
+  almReqAtualizaSaldo();
+}
+function almReqValidarCabecalho(){
+  almReqLerCabecalho();
+  almReqSyncBaseOrigemDoDeposito();
+  var d=_almReq.draft||{};
+  var nova=!d.id;
+  if(!d.contrato_id) return {ok:false, campo:'arq-cont', msg:'⚠ Selecione o Contrato.'};
+  if(!d.dest_base_id || (nova && !_almReq._destBaseEscolhido))
+    return {ok:false, campo:'arq-dest-base', msg:'⚠ Selecione a Base Destino.'};
+  if(!d.deposito_id || (nova && !_almReq._depOrigemEscolhido))
+    return {ok:false, campo:'arq-dep', msg:'⚠ Selecione o Depósito Origem.'};
+  return {ok:true};
+}
+function almReqFocoCampoCab(v){
+  if(!v||v.ok) return;
+  var el=document.getElementById(v.campo);
+  if(typeof almReqFocoEl==='function') almReqFocoEl(el, v.msg);
+  else if(v.msg && typeof progShowToast==='function') progShowToast(v.msg,'erro');
+}
+async function almReqCarregarTreinoMap(){
+  _almReq.treinoIds={};
+  var hoje=typeof dataHoje==='function'?dataHoje():'';
+  function marcar(map){ Object.keys(map||{}).forEach(function(id){ _almReq.treinoIds[String(id)]=true; }); }
+  if(typeof _progStatus!=='undefined' && _progStatus){
+    Object.keys(_progStatus).forEach(function(id){
+      if(String(_progStatus[id]||'').toLowerCase()==='treinamento'){
+        var info=(_progStatusInfo&&_progStatusInfo[id])||{};
+        if(typeof progRetornoExpirouNoDia==='function' && progRetornoExpirouNoDia(info.retorno, hoje)) return;
+        _almReq.treinoIds[String(id)]=true;
+      }
+    });
+  }
+  (typeof colaboradores!=='undefined'?colaboradores:[]).forEach(function(c){
+    if(c && c.turma_ativa_id && almReqColabEmTreinamento(c.id)) _almReq.treinoIds[String(c.id)]=true;
+  });
+  if(DEMO) return;
+  try{
+    var rows=await sbFetch('prog_status_diario',{
+      select:'colaborador_id,status,data,data_retorno,deleted_at',
+      filters:['status=eq.treinamento','data=lte.'+hoje,'deleted_at=is.null'],
+      limit:5000
+    })||[];
+    rows.forEach(function(r){
+      if(almReqStatusTreinamentoLinhaAtiva(r, hoje) && r.colaborador_id)
+        _almReq.treinoIds[String(r.colaborador_id)]=true;
+    });
+  }catch(e){ console.warn('almReqCarregarTreinoMap', e); }
 }
 function almReqResolverColab(id){
   if(id==null||id==='') return null;
@@ -100053,9 +100732,9 @@ function almReqSnapshotCab(d){
     dest_deposito_id:d.dest_deposito_id||'', dest_deposito_nome:d.dest_deposito_nome||''
   };
 }
-function almReqSelectOpts(lista, atualId, atualLabel, nomeFn){
+function almReqSelectOpts(lista, atualId, atualLabel, nomeFn, placeholder){
   var seen=false;
-  var html='<option value="">Selecione…</option>'+(lista||[]).map(function(x){
+  var html='<option value=""'+(atualId?'':' selected')+'>'+(placeholder||'Selecione…')+'</option>'+(lista||[]).map(function(x){
     var id=String(x.id||'');
     if(atualId && id===String(atualId)) seen=true;
     var nome=nomeFn?nomeFn(x):(x.nome||x.codigo||'');
@@ -100118,6 +100797,7 @@ function almReqInit(){
 async function almReqCarregar(){
   _almReq.carregando=true; almReqRender();
   if(DEMO){
+    await almReqCarregarTreinoMap();
     _almReq.carregando=false; almReqRender(); return;
   }
   try{
@@ -100137,6 +100817,7 @@ async function almReqCarregar(){
         _almReq.eventos[ev.requisicao_id].push(ev);
       });
     }
+    await almReqCarregarTreinoMap();
   }catch(e){ console.error('almReqCarregar',e); }
   _almReq.carregando=false;
   almReqSyncFiltros();
@@ -100164,7 +100845,8 @@ function almReqSyncFiltros(){
   _almReq.filtros={
     numero:v('alm-req-f-num'), status:almReqFiltroStatusArr(), solicitante:v('alm-req-f-sol'),
     contrato:v('alm-req-f-cont'), base:v('alm-req-f-base'), deposito:v('alm-req-f-dep'),
-    tipo:v('alm-req-f-tipo'), colaborador:v('alm-req-f-colab'), prioridade:v('alm-req-f-pri'), data:v('alm-req-f-data')
+    tipo:v('alm-req-f-tipo'), colaborador:v('alm-req-f-colab'), prioridade:v('alm-req-f-pri'), data:v('alm-req-f-data'),
+    item:v('alm-req-f-item')
   };
 }
 function almReqOnFiltro(){ almReqSyncFiltros(); almReqRender(); }
@@ -100192,6 +100874,10 @@ function almReqFiltradas(){
           || String(it.colaborador_re||'').toLowerCase().indexOf(q)>=0
           || String(it.colaborador_cpf||'').indexOf(q)>=0;
       })) return false;
+    }
+    if(f.item){
+      var qi=String(f.item).toLowerCase().trim();
+      if(qi && !itens.some(function(it){ return almReqItemTextoBusca(it).indexOf(qi)>=0; })) return false;
     }
     return true;
   });
@@ -100238,7 +100924,7 @@ function almReqRender(){
   else corpo=rows.map(function(r){
     return '<tr>'
       +'<td style="font-size:11px;font-weight:600">'+_escapeHtml(r.numero||'—')+'</td>'
-      +'<td style="font-size:11px">'+fmtD(r.data)+'</td>'
+      +'<td style="font-size:11px">'+(almReqFmtTs(almReqCriadoTs(r))||fmtD(r.data))+'</td>'
       +'<td>'+_escapeHtml(r.solicitante_nome||'—')+'</td>'
       +'<td style="font-size:11px">'+_escapeHtml(r.contrato_nome||'—')+'</td>'
       +'<td style="font-size:11px">'+_escapeHtml(r.deposito_nome||'—')+'</td>'
@@ -100281,6 +100967,7 @@ function almReqRender(){
     +'<select class="inp" id="alm-req-f-tipo" style="width:160px" onchange="almReqOnFiltro()">'+tipoOpts+'</select>'
     +'<input class="inp" id="alm-req-f-sol" placeholder="Solicitante" style="width:130px" value="'+_escapeHtml(f.solicitante||'')+'" oninput="almReqOnFiltro()">'
     +'<input class="inp" id="alm-req-f-colab" placeholder="Colaborador / RE / CPF" style="width:160px" value="'+_escapeHtml(f.colaborador||'')+'" oninput="almReqOnFiltro()">'
+    +'<input class="inp" id="alm-req-f-item" placeholder="🔍 Item / código / descrição" style="width:190px" value="'+_escapeHtml(f.item||'')+'" oninput="almReqOnFiltro()">'
     +'<button class="btn" onclick="almReqExportCsv()">CSV</button>'
     +'<input class="inp" id="alm-rel1-ini" type="date" title="Período Relatório 1 — início" style="width:130px" value="'+_escapeHtml(_almReq.rel1Ini||'')+'" onchange="_almReq.rel1Ini=this.value">'
     +'<input class="inp" id="alm-rel1-fim" type="date" title="Período Relatório 1 — fim" style="width:130px" value="'+_escapeHtml(_almReq.rel1Fim||'')+'" onchange="_almReq.rel1Fim=this.value">'
@@ -100311,6 +100998,7 @@ function almReqNova(){
   _almReq.corrigindoInfo=false; _almReq.corrSnapshot=null;
   _almReq.draft=almReqDraftVazio();
   _almReq.cabAberto=almReqSnapshotCab(_almReq.draft);
+  _almReq._destBaseEscolhido=false; _almReq._depOrigemEscolhido=false; _almReq._contratoEscolhido=false;
   _almReq.pickItem=null; _almReq.pickColab=null;
   almReqGarantirLocais().then(function(){ almReqModal(); });
 }
@@ -100342,6 +101030,7 @@ function almReqLerCabecalho(){
   d.base_nome=almReqNomePorId(filiais, d.base_id, d.base_nome);
   d.deposito_id=almReqLerCampoSel('arq-dep', d.deposito_id);
   d.deposito_nome=almReqNomePorId(depositos, d.deposito_id, d.deposito_nome);
+  almReqSyncBaseOrigemDoDeposito();
   if(document.getElementById('arq-dest-base')){
     d.dest_base_id=almReqLerCampoSel('arq-dest-base', d.dest_base_id);
     d.dest_base_nome=almReqNomePorId(filiais, d.dest_base_id, d.dest_base_nome);
@@ -100430,9 +101119,9 @@ function almReqModal(){
   var ro=!almReqStatusEditavel(d.status) && !corrigindo;
   var roItens=!almReqStatusEditavel(d.status);
   var dis=ro?' disabled':'';
-  var contOpts=almReqSelectOpts(contratos||[], d.contrato_id, d.contrato_nome, function(c){ return c.nome||c.codigo||''; });
-  var baseOpts=almReqSelectOpts(almReqListaFiliais(), d.base_id, d.base_nome, function(b){ return b.nome||''; });
-  var depOpts=almReqSelectOpts(almReqListaDepositos(d.base_id), d.deposito_id, d.deposito_nome, function(x){ return x.nome||''; });
+  var contOpts=almReqSelectOpts(contratos||[], d.contrato_id, d.contrato_nome, function(c){ return c.nome||c.codigo||''; }, 'Selecione o contrato...');
+  var destBaseOptsCab=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; }, 'Selecione a base...');
+  var depOpts=almReqSelectOpts(almReqListaDepositos(d.base_id), d.deposito_id, d.deposito_nome, function(x){ return x.nome||''; }, 'Selecione o depósito...');
   var priOpts=['baixa','normal','alta','urgente'].map(function(p){
     return '<option value="'+p+'"'+(d.prioridade===p?' selected':'')+'>'+almReqPriLabel(p)+'</option>';
   }).join('');
@@ -100489,7 +101178,8 @@ function almReqModal(){
     }).join('')+'</tbody></table>';
   var evs=d.id?(_almReq.eventos[d.id]||[]):[];
   var hist=evs.length?('<div style="margin-top:.75rem;font-size:11px;color:#555"><b>Histórico</b>'+evs.map(function(e){
-    return '<div style="padding:3px 0;border-bottom:.5px solid #f0efe8">'+fmtD(e.criado_em)+' · '+_escapeHtml(e.evento)+' — '+_escapeHtml(e.descricao||'')+' · '+_escapeHtml(e.usuario||'')+'</div>';
+    var ts=almReqFmtTs(almReqEventoTs(e));
+    return '<div style="padding:3px 0;border-bottom:.5px solid #f0efe8">'+(ts?ts+'<br>':'')+_escapeHtml(e.descricao||e.evento||'')+' · '+_escapeHtml(e.usuario||'')+'</div>';
   }).join('')+'</div>'):'';
   var acoes='';
   var corrRodape='';
@@ -100576,32 +101266,39 @@ function almReqModal(){
     +almReqGuiaHtml(d)
     +(corrigindo?'<div style="margin:0 0 .75rem;padding:10px 12px;border-radius:8px;border:1px solid #85B7EB;background:#E6F1FB;color:#185FA5;font-size:12px;line-height:1.45">Editando informações da requisição. Todos os campos abaixo estão liberados. Salve com justificativa — <b>o estoque não muda</b>.</div>':'')
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
-    +'<div><label style="font-size:11px;font-weight:600">Data</label><input class="inp" id="arq-data" type="date" style="width:100%" value="'+_escapeHtml(d.data||dataHoje())+'"'+dis+'></div>'
+    +'<div><label style="font-size:11px;font-weight:600">Data</label><input class="inp" id="arq-data" type="date" style="width:100%" value="'+_escapeHtml(d.data||dataHoje())+'"'+dis+'>'
+    +(almReqFmtTs(almReqCriadoTs(d))?'<div style="font-size:10px;color:#666;margin-top:3px">Criada em '+_escapeHtml(almReqFmtTs(almReqCriadoTs(d)))+'</div>':'')+'</div>'
     +'<div><label style="font-size:11px;font-weight:600">Prioridade</label><select class="inp" id="arq-pri" style="width:100%"'+dis+'>'+priOpts+'</select></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Solicitante</label><input class="inp" id="arq-sol" style="width:100%" value="'+_escapeHtml(d.solicitante_nome||'')+'"'+dis+'></div>'
     +'<div><label style="font-size:11px;font-weight:600">Área solicitante</label><input class="inp" id="arq-area" style="width:100%" value="'+_escapeHtml(d.area_solicitante||'')+'"'+dis+'></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Centro de custo</label><input class="inp" id="arq-cc" style="width:100%" value="'+_escapeHtml(d.centro_custo||'')+'"'+dis+'></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Contrato</label><select class="inp" id="arq-cont" style="width:100%"'+dis+'>'+contOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Base / filial origem</label><select class="inp" id="arq-base" style="width:100%" onchange="almReqOnBaseFilial()"'+dis+'>'+baseOpts+'</select></div>'
-    +'<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqLerCabecalho();almReqAtualizaSaldo()"'+dis+'>'+depOpts+'</select></div>'
+    +(String(d.centro_custo||'').trim()?'<div><label style="font-size:11px;font-weight:600">Centro de custo</label><input class="inp" id="arq-cc" style="width:100%" value="'+_escapeHtml(d.centro_custo||'')+'"'+dis+'></div>':'')
+    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Contrato *</label><select class="inp" id="arq-cont" style="width:100%" onchange="_almReq._contratoEscolhido=!!this.value;almReqLerCabecalho()" autocomplete="off"'+dis+'>'+contOpts+'</select></div>'
     +(function(){
           var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
-          var destJaEscolhido=!!(d.dest_deposito_id||d.dest_base_id);
-          var showDest=stAvancado || destJaEscolhido || corrigindo;
+          var destJaEscolhido=!!d.dest_deposito_id;
+          var showDest=stAvancado || destJaEscolhido || (corrigindo && stAvancado);
+          if(showDest) return '<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqOnDepOrigem()"'+dis+'>'+depOpts+'</select></div>';
+          return '<div><label style="font-size:11px;font-weight:600">Base Destino *</label><select class="inp" id="arq-dest-base" style="width:100%" onchange="almReqOnDestBase()" autocomplete="off"'+dis+'>'+destBaseOptsCab+'</select></div>'
+            +'<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqOnDepOrigem()" autocomplete="off"'+dis+'>'+depOpts+'</select></div>';
+        })()
+    +(function(){
+          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
+          var destJaEscolhido=!!d.dest_deposito_id;
+          var showDest=stAvancado || destJaEscolhido || (corrigindo && stAvancado);
           if(!showDest) return '';
           var destFaltando=!d.dest_base_id||!d.dest_deposito_id;
           var destRo='';
           if(corrigindo || almReqStatusEditavel(d.status)) destRo='';
           else if(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando)) destRo=' disabled';
           var destHl=!corrigindo && destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
-          var destBaseOpts=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; });
-          var destDepOpts=almReqSelectOpts(d.dest_base_id?almReqListaDepositos(d.dest_base_id):[], d.dest_deposito_id, d.dest_deposito_nome, function(x){ return x.nome||''; });
+          var destBaseOpts=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; }, 'Selecione a base...');
+          var destDepOpts=almReqSelectOpts(d.dest_base_id?almReqListaDepositos(d.dest_base_id):[], d.dest_deposito_id, d.dest_deposito_nome, function(x){ return x.nome||''; }, 'Selecione o depósito...');
           return '<div id="arq-dest-wrap" style="grid-column:span 2;display:grid;grid-template-columns:1fr 1fr;gap:.6rem;padding:10px;border-radius:8px;border:2px solid '+(destHl?'#E8B931':'#d8d6ce')+';background:'+(destHl?'#FEF3E2':'#fafaf8')+'">'
             +'<div style="grid-column:span 2;font-size:12px;font-weight:700;color:'+(destHl?'#854F0B':'#555')+'">'+(destHl?'Preencha para confirmar o recebimento — base e depósito destino *':'Destino da transferência')+'</div>'
             +'<div><label style="font-size:11px;font-weight:600">Base destino *</label><select class="inp" id="arq-dest-base" style="width:100%" onchange="almReqOnDestBase()"'+destRo+'>'+destBaseOpts+'</select></div>'
             +'<div><label style="font-size:11px;font-weight:600">Depósito destino *</label><select class="inp" id="arq-dest-dep" style="width:100%" onchange="almReqOnDestDep()"'+destRo+'>'+destDepOpts+'</select></div></div>';
         })()
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Finalidade</label><input class="inp" id="arq-fin" style="width:100%" value="'+_escapeHtml(d.finalidade||'')+'"'+dis+'></div>'
+    +(String(d.finalidade||'').trim()?'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Finalidade</label><input class="inp" id="arq-fin" style="width:100%" value="'+_escapeHtml(d.finalidade||'')+'"'+dis+'></div>':'')
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Observação</label><textarea class="inp" id="arq-obs" style="width:100%;min-height:52px"'+dis+'>'+_escapeHtml(d.observacao||'')+'</textarea></div>'
     +(d.motivo_recusa?'<div style="grid-column:span 2;font-size:12px;color:#A32D2D">Motivo da recusa: '+_escapeHtml(d.motivo_recusa)+'</div>':'')
     +'</div>'
@@ -100611,7 +101308,14 @@ function almReqModal(){
     +(corrigindo?'':'<button class="btn" onclick="closeModal()">Fechar</button>')+'</div>'
     +'</div></div>');
   almReqOnTipoItem();
-  if(!corrigindo) setTimeout(function(){ almReqDirigirPasso(); }, 80);
+  if(!d.dest_base_id){ var db=document.getElementById('arq-dest-base'); if(db){ db.value=''; db.selectedIndex=0; } }
+  if(!d.deposito_id){ var dp=document.getElementById('arq-dep'); if(dp){ dp.value=''; dp.selectedIndex=0; } }
+  if(!d.contrato_id){ var ct=document.getElementById('arq-cont'); if(ct){ ct.value=''; ct.selectedIndex=0; } }
+  if(!corrigindo) setTimeout(function(){
+    if(_almReq.draft && !_almReq.draft.dest_base_id){ var db2=document.getElementById('arq-dest-base'); if(db2 && !_almReq._destBaseEscolhido){ db2.value=''; db2.selectedIndex=0; } }
+    if(_almReq.draft && !_almReq.draft.deposito_id){ var dp2=document.getElementById('arq-dep'); if(dp2 && !_almReq._depOrigemEscolhido){ dp2.value=''; dp2.selectedIndex=0; } }
+    almReqDirigirPasso();
+  }, 80);
 }
 function almReqPersistCabLocais(){
   var d=_almReq.draft; if(!d||!d.id||DEMO) return;
@@ -100639,6 +101343,7 @@ function almReqOnBaseFilial(){
 }
 function almReqOnDestBase(){
   almReqLerCabecalho();
+  _almReq._destBaseEscolhido=!!(_almReq.draft&&_almReq.draft.dest_base_id);
   var d=_almReq.draft||{};
   var sel=document.getElementById('arq-dest-dep'); if(!sel) return;
   var atual=d.dest_deposito_id||'';
@@ -100863,6 +101568,8 @@ async function almReqSalvar(){
   almReqLerCabecalho();
   var d=_almReq.draft; if(!d) return;
   if(d.status && !almReqStatusEditavel(d.status)){ progShowToast('Retroaja o status para salvar alterações.','erro'); return; }
+  var cabVal=almReqValidarCabecalho();
+  if(!cabVal.ok){ almReqFocoCampoCab(cabVal); return; }
   var stManter=d.status==='solicitada'?'solicitada':'rascunho';
   var stItem=stManter==='solicitada'?'solicitado':'rascunho';
   d.status=stManter;
@@ -100901,9 +101608,10 @@ async function almReqSalvar(){
 
 function almReqValidarEnvio(){
   almReqLerCabecalho();
+  var cab=almReqValidarCabecalho();
   var d=_almReq.draft||{};
   var erros=[];
-  if(!d.deposito_id) erros.push('Informe o depósito origem.');
+  if(!cab.ok) erros.push(cab.msg);
   if(!(d.itens||[]).length) erros.push('Inclua ao menos um item.');
   (d.itens||[]).forEach(function(it,i){
     if(!(Number(it.quantidade_solicitada)>0)) erros.push('Item '+(i+1)+': quantidade inválida.');
@@ -100918,7 +101626,12 @@ async function almReqEnviar(){
   _almReq._enviando=true;
   try{
   var v=almReqValidarEnvio();
-  if(!v.ok){ progShowToast(v.erros[0],'erro'); return; }
+  if(!v.ok){
+    var cab=almReqValidarCabecalho();
+    if(!cab.ok) almReqFocoCampoCab(cab);
+    else progShowToast(v.erros[0],'erro');
+    return;
+  }
   var d=_almReq.draft;
   if(!d.id){
     await almReqSalvarRascunhoSilencioso();
@@ -101373,10 +102086,13 @@ function almReqResumoColabsHtml(r){
     var n=String(it.colaborador_nome||'').trim();
     if(!n || seen[n]) return;
     seen[n]=1;
-    nomes.push(n+(it.colaborador_re?' · RE '+it.colaborador_re:''));
+    nomes.push({txt:n+(it.colaborador_re?' · RE '+it.colaborador_re:''), id:it.colaborador_id});
   });
   if(!nomes.length) return '<span style="color:#aaa">—</span>';
-  return '<div style="font-size:11px;line-height:1.35;max-width:220px">'+nomes.slice(0,3).map(function(n){ return _escapeHtml(n); }).join('<br>')
+  return '<div style="font-size:11px;line-height:1.35;max-width:220px">'+nomes.slice(0,3).map(function(o){
+    var st=almReqColabStatusHtml(o.id, true);
+    return _escapeHtml(o.txt)+(st?' · '+st:'');
+  }).join('<br>')
     +(nomes.length>3?'<br><span style="color:#888">+'+(nomes.length-3)+'</span>':'')+'</div>';
 }
 function almReqToggleStPanel(ev){

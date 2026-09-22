@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 21/09/2026  
-**Versão atual do sistema:** `8.1.103` (21/09/2026, build `20260921-1910`)  
+**Versão atual do sistema:** `8.1.105` (21/09/2026, build `20260921-2140`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -36,6 +36,7 @@ homologação do ERP CENA.
   DOC-SESMT     Orquestração Dossiê↔SESMT↔Evolução    🟠 HOMOLOGAÇÃO
   RH-DOC-NOM    Nomenclatura oficial dos documentos   🟠 HOMOLOGAÇÃO
   RH-DOC-UX     Validar / Resumo / Evolução / Fila IA 🟠 HOMOLOGAÇÃO
+  RFID-CORE-1   Cadastro mestre crachá RFID           🟠 HOMOLOGAÇÃO
 
 # 2. RH --- Cargos e Requisitos
 
@@ -334,6 +335,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
   ALM-1D   Requisição obrigatória               🔴 NÃO INICIADO
   ALM-1E   Material aplicado/retorno campo      🔴 NÃO INICIADO
   ALM-REL  Relatórios estoque / requisição      🟠 HOMOLOGAÇÃO
+  ALM-REQ-UX-1 Requisições CENA (data+hora, treinamento, Base Destino, filtro item)  🟠 HOMOLOGAÇÃO
   ATV-1A   Inventário de Ativos                 🔴 NÃO INICIADO
   ATV-1B   Movimentação de ativos               🔴 NÃO INICIADO
   ATV-1C   Inventário físico                    🔴 NÃO INICIADO
@@ -456,6 +458,8 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 21/09/2026 | 8.1.105 | RFID-CORE-1: cadastro mestre de crachá RFID no colaborador (seção Editar, leitor USB teclado só em sessão, RPCs vincular/bloquear/substituir/testar). Sem portão/Portaria/estoque/ponto. SQL manual `sql_colaborador_credenciais_rfid_core_1.sql`. HOMOLOGAÇÃO. |
+| 21/09/2026 | 8.1.104 | ALM-REQ-UX-1: Requisições CENA — histórico/criação com data+hora; 🟣 Em treinamento (prog_status_diario + turma ativa); Nova Requisição sem Centro de custo/Finalidade; Base Destino=`dest_base_id` e Depósito Origem vazios e obrigatórios; filtro por item em lote. Sem SQL, sem estoque. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.103 | Portaria Registros: some duplicata de saída/retorno (cópia local + servidor; retorno em um e Em campo no clone). Junta placa+equipe+minuto, mantém o Retornado e oculta o clone (soft-delete). Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.102 | Frotas Combustível: converte nomes de contrato nos lançamentos de ago/2026 (Equatorial PLPT→PLPT TERESINA, TMA→TMA OESTE, Obra/CENA OBRAS→OBRAS PARTICULARES, HV ETD→ETD, BTZERO→BT0, COMGAS→COMGAS CAMPINAS, SOT OBRAS OESTE→SOT OBRAS) e vincula ao cadastro. Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.101 | Frotas: filtro de contrato (cadastro do veículo) em Multas, Manutenções e Avarias; Multas também filtra por motorista; Avarias ganha placa e motorista. Sem SQL. HOMOLOGAÇÃO. |
