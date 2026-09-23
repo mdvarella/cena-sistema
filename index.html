@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.120"></script>
-<script src="sesmt-alm-shell.js?v=8.1.120"></script>
-<script src="prog-projetos-shell.js?v=8.1.120"></script>
+<script src="portaria-offline.js?v=8.1.121"></script>
+<script src="sesmt-alm-shell.js?v=8.1.121"></script>
+<script src="prog-projetos-shell.js?v=8.1.121"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7914,6 +7914,7 @@ function cenaRfidIndiceGarantir(){
     (rows||[]).forEach(function(r){
       var uid=cenaRfidNormalizarUid(r.uid_normalizado);
       if(!uid || !r.colaborador_id) return;
+      if(r.status==='DESCADASTRADO') return;
       byUid[uid]=r.colaborador_id;
       var slot=byColab[r.colaborador_id]||{ativo:'', uids:[]};
       if(slot.uids.indexOf(uid)<0) slot.uids.push(uid);
@@ -8017,7 +8018,8 @@ async function cenaRfidCarregarCredencial(colabId){
     var at = lista.filter(function(x){ return x.status==='ATIVO'; })[0];
     var bl = lista.filter(function(x){ return x.status==='BLOQUEADO'; })
       .sort(function(a,b){ return String(b.bloqueado_em||'').localeCompare(String(a.bloqueado_em||'')); })[0];
-    return at || bl || lista[0] || null;
+    var lastD=lista.filter(function(x){ return x.status!=='DESCADASTRADO'; })[0];
+    return at || bl || lastD || null;
   }
   var rows = await sbFetch('colaborador_credenciais', {
     requireAuth: true,
@@ -8029,14 +8031,15 @@ async function cenaRfidCarregarCredencial(colabId){
   if(!rows) return null;
   var at = rows.filter(function(x){ return x.status==='ATIVO'; })[0];
   var bl = rows.filter(function(x){ return x.status==='BLOQUEADO'; })[0];
-  return at || bl || rows[0] || null;
+  var lastR=rows.filter(function(x){ return x.status!=='DESCADASTRADO'; })[0];
+  return at || bl || lastR || null;
 }
 
 async function cenaRfidResolverColaborador(uid){
   var n = cenaRfidNormalizarUid(uid);
   if(!n) return {ok:false, encontrado:false, autenticavel:false, motivo:'UID_VAZIO', credencial:null, colaborador:null};
   if(DEMO){
-    var cred = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    var cred = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n && x.status!=='DESCADASTRADO'; })[0];
     if(!cred) return {ok:true, encontrado:false, autenticavel:false, motivo:'NAO_CADASTRADO', credencial:null, colaborador:null};
     var col = (colaboradores||[]).find(function(c){ return c.id===cred.colaborador_id; }) || {};
     var aut = cred.status==='ATIVO' && col.ativo!==false && !col.deleted_at;
@@ -8254,7 +8257,7 @@ async function cenaRfidConfirmarVinculo(){
 async function cenaRfidExecVincular(colabId, uid){
   var n = cenaRfidNormalizarUid(uid);
   if(DEMO){
-    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n && x.status!=='DESCADASTRADO'; })[0];
     if(hit){
       var c = (colaboradores||[]).find(function(x){ return x.id===hit.colaborador_id; }) || {};
       return {ok:false, error:'⛔ Crachá já vinculado a '+(c.nome||'?')+' — RE '+(c.re||'—')+'.'};
@@ -8272,7 +8275,7 @@ async function cenaRfidExecSubstituir(colabId, uid){
     var n = cenaRfidNormalizarUid(uid);
     var atual = cenaRfidDemoAtiva(colabId);
     if(!atual) return {ok:false, error:'Colaborador não possui RFID ATIVO para substituir.'};
-    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n; })[0];
+    var hit = _cenaRfidDemoCreds.filter(function(x){ return x.tipo==='RFID' && x.uid_normalizado===n && x.status!=='DESCADASTRADO'; })[0];
     if(hit && hit.colaborador_id!==colabId){
       var c = (colaboradores||[]).find(function(x){ return x.id===hit.colaborador_id; }) || {};
       return {ok:false, error:'⛔ Crachá já vinculado a '+(c.nome||'?')+' — RE '+(c.re||'—')+'.'};
@@ -8334,6 +8337,7 @@ function cenaRfidSecaoHtml(cid, colab, cred){
     if(pode){
       btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoSubstituir(\''+cid+'\')">🔄 Substituir crachá</button>';
       btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoBloquear(\''+cid+'\')" style="color:#A32D2D;border-color:#A32D2D">⛔ Bloquear</button>';
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoDescadastrar(\''+cid+'\')" style="color:#854F0B;border-color:#C97A1F">Descadastrar</button>';
     }
   } else if(st==='BLOQUEADO'){
     corpo = '<div style="font-size:13px">UID: <b style="letter-spacing:.03em">'+cenaRfidEsc(cred.uid_normalizado||'—')+'</b></div>'
@@ -8344,6 +8348,7 @@ function cenaRfidSecaoHtml(cid, colab, cred){
     btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoTestar(\''+cid+'\')">🔍 Testar leitura</button>';
     if(pode){
       btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoReativar(\''+cid+'\')">🔓 Reativar</button>';
+      btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoDescadastrar(\''+cid+'\')" style="color:#854F0B;border-color:#C97A1F">Descadastrar</button>';
       btns += '<button class="btn btn-sm" type="button" onclick="cenaRfidAcaoLer(\''+cid+'\')">📡 Ler crachá novo</button>';
     }
   } else {
@@ -8445,6 +8450,52 @@ async function cenaRfidAcaoReativar(cid){
   cenaRfidMontarSecao(cid, cenaRfidDadosColab(cid));
 }
 
+
+async function cenaRfidExecDescadastrar(colabId, motivo){
+  if(DEMO){
+    var atual = cenaRfidDemoAtiva(colabId) || _cenaRfidDemoCreds.filter(function(x){
+      return x.colaborador_id===colabId && x.tipo==='RFID' && x.status==='BLOQUEADO';
+    })[0];
+    if(!atual) return {ok:false, error:'Colaborador não possui crachá ATIVO ou BLOQUEADO para descadastrar'};
+    atual.status = 'DESCADASTRADO';
+    atual.bloqueado_em = new Date().toISOString();
+    atual.motivo_bloqueio = motivo;
+    return {ok:true, data:{acao:'RFID_DESCADASTRADO', uid_liberado:true}};
+  }
+  return cenaRfidRpc('fn_rfid_descadastrar', {p_colaborador_id:colabId, p_motivo:motivo});
+}
+
+function cenaRfidAcaoDescadastrar(cid){
+  if(!cenaRfidPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para descadastrar RFID.','erro'); return; }
+  var ov = cenaRfidOverlayHost();
+  _cenaRfidSessao = {modo:'descadastrar', colaboradorId:cid, _listening:false};
+  ov.innerHTML = '<div class="modal" style="max-width:420px;width:100%;background:#fff;border-radius:12px;padding:1.1rem 1.2rem">'
+    +'<h3 style="margin:0 0 8px">↩ Descadastrar crachá</h3>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:8px">Use só em cadastro equivocado. O UID é <b>liberado</b> e pode ser gravado de novo em qualquer colaborador. Motivo obrigatório.</div>'
+    +'<textarea id="cena-rfid-motivo" rows="3" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px" placeholder="Ex.: RE 108 cadastrado em duplicidade / crachá no registro errado"></textarea>'
+    +'<div class="ma" style="margin-top:12px"><button class="btn" type="button" onclick="cenaRfidCancelarLeitura()">Cancelar</button>'
+    +'<button class="btn btn-pri" type="button" onclick="cenaRfidConfirmarDescadastro()">Descadastrar e liberar UID</button></div>'
+    +'</div>';
+  setTimeout(function(){ var t=document.getElementById('cena-rfid-motivo'); if(t) t.focus(); }, 40);
+}
+
+async function cenaRfidConfirmarDescadastro(){
+  var sess = _cenaRfidSessao;
+  if(!sess || !sess.colaboradorId) return;
+  var motivo = ((document.getElementById('cena-rfid-motivo')||{}).value||'').trim();
+  if(!motivo){ alert('Informe o motivo do descadastro.'); return; }
+  var r = await cenaRfidExecDescadastrar(sess.colaboradorId, motivo);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao descadastrar','erro');
+    else alert(r.error||'Falha ao descadastrar');
+    return;
+  }
+  var cid = sess.colaboradorId;
+  cenaRfidCancelarLeitura();
+  if(typeof cenaRfidIndiceInvalidar==='function') cenaRfidIndiceInvalidar();
+  if(typeof progShowToast==='function') progShowToast('Crachá descadastrado. UID liberado para novo vínculo.');
+  cenaRfidMontarSecao(cid, cenaRfidDadosColab(cid));
+}
 
 function todayStr(){return new Date().toLocaleDateString('pt-BR');}
 function fmtD(iso){
@@ -43920,10 +43971,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.120',
+  numero: '8.1.121',
   data:   '23/09/2026',
-  build:  '20260923-1755',
+  build:  '20260923-1905',
   log: [
+    {v:'8.1.121', d:'23/09/2026', itens:[
+      'RH RFID: Descadastrar cracha em cadastro equivocado libera o UID para gravar de novo (RE 108 duplicado). Bloqueio/substituicao continuam reservando a tag. Requer SQL sql_colaborador_credenciais_rfid_descadastro.sql. HOMOLOGACAO.',
+    ]},
     {v:'8.1.120', d:'23/09/2026', itens:[
       'Portaria: some de novo a duplicata de saida/retorno (copia local+servidor ou Em campo + Retornado). Junta placa+horario+equipe, ignora KM na chave e oculta o clone. Sem SQL. HOMOLOGACAO.',
     ]},
