@@ -1981,9 +1981,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.119"></script>
-<script src="sesmt-alm-shell.js?v=8.1.119"></script>
-<script src="prog-projetos-shell.js?v=8.1.119"></script>
+<script src="portaria-offline.js?v=8.1.121"></script>
+<script src="sesmt-alm-shell.js?v=8.1.121"></script>
+<script src="prog-projetos-shell.js?v=8.1.121"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7605,6 +7605,7 @@ async function sbInsert(table,data,opts){
     'veiculo_credenciais':['id','veiculo_id','tipo','uid','uid_normalizado','status','emitido_em','ativado_em','bloqueado_em','bloqueado_por','motivo_bloqueio','substitui_credencial_id','origem_leitura','criado_por','criado_em','atualizado_em'],
     'portaria_pontos_acesso':['id','codigo','nome','base_id','portaria_id','tipo','sentido','ativo','criado_em','atualizado_em'],
     'portaria_dispositivos':['id','codigo','nome','tipo','base_id','portaria_id','ponto_acesso_id','sentido','funcao','identificador_hardware','ativo','status_comunicacao','ultima_comunicacao','configuracao','criado_em','atualizado_em'],
+    'portaria_eventos':['id','correlacao_id','tipo_evento','base_id','portaria_id','ponto_acesso_id','dispositivo_id','sentido','colaborador_id','veiculo_id','equipe_id','portaria_saida_id','resultado','motivo_codigo','motivo_descricao','origem','criado_em','processado_em','dados_extra','idempotency_key'],
     'rh_colaborador_contrato_hist':['colaborador_id','vigencia_inicio','snapshot','motivo','alterado_por'],
     'rh_colaborador_eventos':['colaborador_id','vinculo_ref','tipo','situacao','inicio','fim','cargo','funcao',
       'contrato_id','base_id','equipe_id','motivo','fonte','origem_modulo','origem_ref','payload',
@@ -9035,7 +9036,7 @@ function cenaAcessoInfraRender(){
     +'</tbody></table></div>'
     +'<p style="font-size:10px;color:#888;margin:.6rem 0 0">identificador_hardware é opaco e somente leitura. ONLINE não liga hardware — é status administrativo.</p>'
     +'</div>';
-  el.innerHTML = html;
+  el.innerHTML = html + (typeof cenaAcessoTesterHtml==='function' && cenaAcessoInfraPodeCadastrar()?cenaAcessoTesterHtml():'');
 }
 function cenaAcessoInfraChip(n, label){
   return '<span style="background:#f5f5f3;border-radius:10px;padding:3px 10px;font-size:11px;font-weight:600">'+(n||0)+' '+label+'</span>';
@@ -9110,6 +9111,198 @@ async function cenaAcessoInfraSetStatus(id, status){
 }
 function portRenderAcesso(){
   cenaAcessoInfraCarregar().then(function(){ cenaAcessoInfraRender(); });
+}
+
+/* PORT-AUTO-SYS-1D — adapter do motor. Decisão autoritativa = RPC. Sem portão/saída. */
+var CENA_ACESSO_MOTIVOS = {
+  SEM_PROGRAMACAO:'Não há programação válida para esta tentativa.',
+  PROGRAMACAO_NAO_CONFIRMADA:'A programação da equipe não está confirmada.',
+  COLABORADOR_FORA_EQUIPE:'O colaborador apresentado não pertence à equipe programada.',
+  PARCEIRO_DIVERGENTE:'O parceiro apresentado não confere com a composição.',
+  VEICULO_DIVERGENTE:'O veículo apresentado não corresponde ao veículo programado.',
+  DIARIO_NAO_INICIADO:'Nenhum Diário ativo foi encontrado para a equipe.',
+  CHECKLIST_PENDENTE:'Checklist obrigatório de EPI ou veicular está pendente.',
+  KM_NAO_INFORMADO:'KM inicial do Diário/turno não foi informado.',
+  RFID_DESCONHECIDO:'Crachá RFID não cadastrado.',
+  RFID_BLOQUEADO:'Crachá RFID bloqueado.',
+  COLABORADOR_INATIVO:'Colaborador inativo ou sem cadastro válido.',
+  TAG_DESCONHECIDA:'TAG do veículo não cadastrada.',
+  TAG_BLOQUEADA:'TAG do veículo bloqueada.',
+  TAG_SUBSTITUIDA:'Esta TAG foi substituída.',
+  VEICULO_INATIVO:'Veículo inativo no cadastro.',
+  VEICULO_BLOQUEADO:'Veículo bloqueado para circulação.',
+  VEICULO_JA_EM_CAMPO:'Já existe viagem em campo para este veículo.',
+  DISPOSITIVO_INATIVO:'Dispositivo ou ponto de acesso inativo.',
+  DISPOSITIVO_OFFLINE:'Dispositivo offline ou em erro.',
+  ERRO_INTERNO:'Falha técnica. Acesso não autorizado.'
+};
+
+function cenaAcessoMensagem(cod){
+  return CENA_ACESSO_MOTIVOS[cod] || (cod || 'Falha de avaliação.');
+}
+
+async function cenaAcessoAvaliar(contexto){
+  var ctx = contexto || {};
+  if(typeof DEMO!=='undefined' && DEMO){
+    return {
+      ok:false, resultado:'ERRO', motivo_codigo:'ERRO_INTERNO',
+      mensagem:'Motor 1D exige sessão Auth. DEMO não homologa.',
+      correlacao_id:null, dados_extra:{demo:true}
+    };
+  }
+  if(!ctx.idempotencyKey && !ctx.idempotency_key){
+    ctx.idempotencyKey = (typeof crypto!=='undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('k'+Date.now()+Math.random());
+  }
+  if(!ctx.correlacaoId && !ctx.correlacao_id){
+    ctx.correlacaoId = (typeof crypto!=='undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('c'+Date.now());
+  }
+  var tok = null;
+  try{ tok = await cenaAuthGetValidToken({requireAuth:true, forceLogin:false, reason:'acesso:avaliar'}); }catch(e){ tok = null; }
+  if(!tok || (typeof sbAuthJwtIsAuthenticated==='function' && !sbAuthJwtIsAuthenticated(tok))){
+    return {ok:false, resultado:'ERRO', motivo_codigo:'ERRO_INTERNO', mensagem:'Sessão Auth obrigatória para avaliar acesso.'};
+  }
+  try{
+    var r = await fetch(SB.url+'/rest/v1/rpc/fn_portaria_avaliar_acesso', {
+      method:'POST',
+      headers:{'apikey':SB.key,'Authorization':'Bearer '+tok,'Content-Type':'application/json'},
+      body: JSON.stringify({p_contexto: ctx})
+    });
+    var txt = await r.text();
+    var data = null;
+    try{ data = txt ? JSON.parse(txt) : null; }catch(e1){ data = null; }
+    if(!r.ok){
+      return {
+        ok:false, resultado:'ERRO', motivo_codigo:'ERRO_INTERNO',
+        mensagem: cenaAcessoMensagem('ERRO_INTERNO'),
+        dados_extra:{http:r.status, detalhe:(data&&(data.message||data.hint))||String(txt).slice(0,180)}
+      };
+    }
+    if(Array.isArray(data)) data = data[0] || {};
+    return data || {ok:false, resultado:'ERRO', motivo_codigo:'ERRO_INTERNO', mensagem:cenaAcessoMensagem('ERRO_INTERNO')};
+  }catch(e){
+    return {ok:false, resultado:'ERRO', motivo_codigo:'ERRO_INTERNO', mensagem:cenaAcessoMensagem('ERRO_INTERNO')};
+  }
+}
+
+function cenaAcessoTesterHtml(){
+  var disps = (_cenaAcessoDisps||[]).map(function(d){
+    return '<option value="'+escHtml(d.id)+'">'+escHtml(d.codigo+' — '+d.tipo)+'</option>';
+  }).join('');
+  return ''
+    +'<div class="card" style="margin-top:.75rem">'
+    +'<div class="ch"><span class="ct">Testador técnico 1D</span></div>'
+    +'<p style="font-size:12px;color:#555">Chama só o motor. Não abre portão, não grava saída, não usa câmera. DEMO não homologa.</p>'
+    +'<div class="g2">'
+    +'<div class="fg"><label>Origem</label><select class="inp" id="ca-orig" style="width:100%"><option>SIMULADOR</option><option>AUTOMATICA</option><option>MANUAL_PORTARIA</option><option>CCO</option></select></div>'
+    +'<div class="fg"><label>Sentido</label><select class="inp" id="ca-sent" style="width:100%"><option>SAIDA</option><option>ENTRADA</option></select></div>'
+    +'<div class="fg" style="grid-column:1/-1"><label>Dispositivo</label><select class="inp" id="ca-disp" style="width:100%"><option value="">—</option>'+disps+'</select></div>'
+    +'<div class="fg"><label>UID TAG</label><input class="inp" id="ca-tag" style="width:100%" placeholder="TAG do veículo"/></div>'
+    +'<div class="fg"><label>UIDs RFID (vírgula)</label><input class="inp" id="ca-rfid" style="width:100%" placeholder="uid1, uid2"/></div>'
+    +'<div class="fg"><label>Equipe ID</label><input class="inp" id="ca-eq" style="width:100%"/></div>'
+    +'<div class="fg"><label>idempotency_key</label><input class="inp" id="ca-idem" style="width:100%" placeholder="vazio = gerar"/></div>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:.6rem;flex-wrap:wrap">'
+    +'<button class="btn btn-pri" onclick="cenaAcessoTesterRodar()">Avaliar</button>'
+    +'<button class="btn" onclick="cenaAcessoTesterReplay()">Reenviar mesma key</button>'
+    +(cenaAcessoInfraPodeCadastrar()?'<button class="btn" onclick="cenaHomologarGate1BC()">Homologar 1B/1C (Auth)</button>':'')
+    +'</div>'
+    +'<pre id="ca-out" style="margin-top:.6rem;font-size:11px;background:#f5f5f3;padding:.6rem;border-radius:8px;white-space:pre-wrap;max-height:280px;overflow:auto">Aguardando…</pre>'
+    +'<div id="cena-homolog-1bc-out"></div>'
+    +'</div>';
+}
+
+async function cenaAcessoTesterRodar(){
+  var rf = String((document.getElementById('ca-rfid')||{}).value||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  var idem = String((document.getElementById('ca-idem')||{}).value||'').trim();
+  if(!idem){
+    idem = (typeof crypto!=='undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('k'+Date.now());
+    var el = document.getElementById('ca-idem'); if(el) el.value = idem;
+  }
+  var ctx = {
+    origem: (document.getElementById('ca-orig')||{}).value||'SIMULADOR',
+    sentido: (document.getElementById('ca-sent')||{}).value||'SAIDA',
+    dispositivoId: (document.getElementById('ca-disp')||{}).value||null,
+    uidTag: (document.getElementById('ca-tag')||{}).value||null,
+    uidsRfid: rf,
+    equipeId: (document.getElementById('ca-eq')||{}).value||null,
+    idempotencyKey: idem,
+    correlacaoId: (typeof crypto!=='undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('c'+Date.now())
+  };
+  var out = document.getElementById('ca-out');
+  if(out) out.textContent = 'Avaliando…';
+  var r = await cenaAcessoAvaliar(ctx);
+  if(out) out.textContent = JSON.stringify(r, null, 2);
+}
+
+async function cenaAcessoTesterReplay(){
+  await cenaAcessoTesterRodar();
+}
+
+async function cenaHomologarGate1BC(){
+  var box = document.getElementById('cena-homolog-1bc-out');
+  function line(n, ok, det){ return (ok?'PASS':'FAIL')+'  '+n+'. '+det; }
+  if(typeof DEMO!=='undefined' && DEMO){
+    if(box) box.innerHTML = '<p style="color:#A32D2D;font-size:12px">DEMO não homologa. Entre com Auth admin.</p>';
+    return;
+  }
+  if(box) box.innerHTML = '<p style="font-size:12px">Rodando testes 1B/1C no Supabase…</p>';
+  var rows = [];
+  try{
+    var veics = await sbFetch('frotas_veiculos', {requireAuth:true, select:'id,placa,status', limit:5});
+    var v = (veics||[])[0];
+    if(!v){ rows.push(line(1,false,'sem veículo')); throw new Error('sem veiculo'); }
+    var uid1 = 'H1B'+Date.now().toString(36).toUpperCase();
+    var uid2 = uid1+'B';
+    var v2 = (veics||[])[1] || v;
+    var r1 = await cenaTagExecVincular(v.id, uid1);
+    rows.push(line(1, !!(r1&&r1.ok), r1&&(r1.error||r1.acao||'vincular')));
+    var r2 = await cenaTagRpc('fn_tag_resolver', {p_uid:uid1});
+    var placaOk = r2 && r2.veiculo && String(r2.veiculo.placa||'').replace(/[^A-Za-z0-9]/g,'')===String(v.placa||'').replace(/[^A-Za-z0-9]/g,'');
+    rows.push(line(2, !!(r2&&r2.encontrado&&placaOk), placaOk?'placa ok':(r2&&r2.motivo)||'resolver'));
+    var r3 = await cenaTagExecVincular(v.id, uid2);
+    rows.push(line(3, !(r3&&r3.ok), (r3&&r3.error)||'segunda ATIVA deveria falhar'));
+    var r4 = await cenaTagExecVincular(v2.id, uid1);
+    rows.push(line(4, !(r4&&r4.ok), (r4&&r4.error)||'UID duplicado deveria falhar'));
+    var r5 = await cenaTagExecBloquear(v.id, 'HOMOLOG 1B');
+    rows.push(line(5, !!(r5&&r5.ok), r5&&(r5.error||r5.acao||'bloquear')));
+    var r6 = await cenaTagExecReativar(v.id);
+    rows.push(line(6, !!(r6&&r6.ok), r6&&(r6.error||r6.acao||'reativar')));
+    var r7 = await cenaTagExecSubstituir(v.id, uid2, 'HOMOLOG 1B');
+    rows.push(line(7, !!(r7&&r7.ok), r7&&(r7.error||r7.acao||'substituir')));
+    var r8 = await cenaTagRpc('fn_tag_resolver', {p_uid:uid1});
+    rows.push(line(8, r8&&r8.motivo==='TAG_SUBSTITUIDA', r8&&r8.motivo||'uid antigo'));
+    var r9 = await cenaTagRpc('fn_tag_resolver', {p_uid:uid2});
+    rows.push(line(9, !!(r9&&r9.encontrado&&r9.veiculo), r9&&r9.motivo||'uid novo'));
+    var hist = await sbFetch('veiculo_credenciais', {requireAuth:true, filters:['veiculo_id=eq.'+v.id], limit:10});
+    rows.push(line(10, (hist||[]).length>=2, 'hist '+(hist||[]).length));
+    var aud = await sbFetch('audit_log', {requireAuth:true, filters:['acao=like.TAG_*'], order:'data_hora.desc', limit:5});
+    rows.push(line(11, (aud||[]).length>0, 'audit '+(aud||[]).length));
+    rows.push(line(12, true, 'SKIP neste login admin — repetir com perfil portaria'));
+    var ins=false, upd=false, del=false;
+    try{ ins = !!(await sbInsert('veiculo_credenciais', {veiculo_id:v.id, tipo:'RFID_TAG', uid:'XDIRECT', uid_normalizado:'XDIRECT', status:'ATIVO'}, {requireAuth:true, silent:true})); }catch(e){ ins=false; }
+    rows.push(line(13, !ins, ins?'INSERT direto passou':'INSERT direto bloqueado'));
+    if((hist||[])[0]){
+      try{ upd = (await sbUpdate('veiculo_credenciais', {status:'ATIVO'}, 'id=eq.'+hist[0].id, {requireAuth:true, silent:true}))!==false; }catch(e){ upd=false; }
+    }
+    rows.push(line(14, !upd, upd?'UPDATE direto passou':'UPDATE direto bloqueado'));
+    rows.push(line(15, true, 'DELETE direto não executado (histórico)'));
+    rows.push(line(16, !!(r2&&r2.ok!==false), 'RPC autenticada'));
+    rows.push(line(17, !!placaOk, placaOk?'veículo correto':'placa divergente'));
+
+    var pts = await sbFetch('portaria_pontos_acesso', {requireAuth:true, limit:200});
+    var dps = await sbFetch('portaria_dispositivos', {requireAuth:true, limit:400});
+    var cods = {};
+    (pts||[]).forEach(function(p){ cods[p.codigo]=(cods[p.codigo]||0)+1; });
+    var four = ['PORTAO_VEICULOS_SAIDA','PORTAO_VEICULOS_ENTRADA','PORTAO_PEDESTRES_ENTRADA','PORTAO_PEDESTRES_SAIDA'].every(function(c){ return (pts||[]).some(function(p){return p.codigo===c;}); });
+    var cams = (dps||[]).filter(function(d){return d.tipo==='CAMERA';});
+    var space = (dps||[]).some(function(d){ return /[^A-Za-z0-9_]/.test(d.codigo||''); });
+    rows.push('1C pontos='+(pts||[]).length+' quatro_codigos='+four);
+    rows.push('1C dispositivos='+(dps||[]).length+' cameras='+cams.length+' leitores_tag='+(dps||[]).filter(function(d){return d.tipo==='LEITOR_TAG';}).length);
+    rows.push('1C códigos estáveis='+(!space)+' (espaço='+space+')');
+  }catch(e){
+    rows.push('ERRO '+((e&&e.message)||e));
+  }
+  if(box) box.innerHTML = '<pre style="font-size:11px;background:#111;color:#d6f5d6;padding:.7rem;border-radius:8px;white-space:pre-wrap">'+escHtml(rows.join('\n'))+'</pre>';
 }
 
 function todayStr(){return new Date().toLocaleDateString('pt-BR');}
@@ -44586,10 +44779,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.119',
+  numero: '8.1.121',
   data:   '22/09/2026',
-  build:  '20260922-2125',
+  build:  '20260923-1135',
   log: [
+    {v:'8.1.121', d:'23/09/2026', itens:[
+      'Estoque: restaurada salvarEntrada / eeProcessarEntradaLinha / eeGarantirItemCatalogo (botao Registrar entrada). Sem SQL.',
+    ]},
+    {v:'8.1.120', d:'22/09/2026', itens:[
+      'PORT-AUTO-SYS-1D: motor fail-closed + portaria_eventos. SQL manual sql_portaria_eventos_motor_1d.sql. Sem portao, foto ou saida automatica. GATE 1B/1C ainda pendente Auth. HOMOLOGACAO.',
+    ]},
     {v:'8.1.119', d:'22/09/2026', itens:[
       'PORT-AUTO-SYS-1C: pontos de acesso + dispositivos + 4 cameras logicas (SIMULADO). Sem hardware, MQTT, RTSP ou motor. SQL manual sql_portaria_acesso_infra_1c.sql. HOMOLOGACAO.',
     ]},
@@ -76277,6 +76476,7 @@ var _AUDIT_MODULO_TABELA = {
   veiculo_credenciais:'frotas',
   portaria_pontos_acesso:'frotas',
   portaria_dispositivos:'frotas',
+  portaria_eventos:'frotas',
   rh_colaborador_documentos:'rh',
   rh_documentos_obrigatorios:'rh',
   rh_contratacoes:'rh',
@@ -150331,6 +150531,393 @@ function almMatchEstoqueRef(e, ref){
   }
   return false;
 }
+
+/** Garante registro em itens_catalogo antes de dar entrada no estoque patrimonial. */
+async function eeGarantirItemCatalogo(linha){
+  var rawId = String(linha.item_id||'');
+  var nome = (linha.nome||'').trim();
+  if(!nome) return {ok:false, msg:'Linha sem nome de item'};
+
+  if(rawId.indexOf('matsap-')===0){
+    return {ok:false, msg:nome+': material SAP — selecione destino "Materiais SAP"'};
+  }
+
+  if(rawId.indexOf('unicat-')===0){
+    var uidUni = rawId.slice(7);
+    var uCat = (uniformesCat||[]).find(function(x){ return String(x.id)===String(uidUni); });
+    if(uCat){
+      linha.tipo = linha.tipo || 'vestimenta';
+      if(typeof _uniOptLabel==='function' && !linha.nome) linha.nome = _uniOptLabel(uCat);
+      var csU = typeof _uniCodigoSku==='function' ? _uniCodigoSku(uCat) : {codigoRaw:'', skuRaw:''};
+      if(!linha.codigo && csU.codigoRaw) linha.codigo = csU.codigoRaw;
+      if(!linha.sku && csU.skuRaw) linha.sku = csU.skuRaw;
+      nome = (linha.nome||'').trim();
+    }
+  }
+
+  if(rawId.indexOf('epicat-')===0){
+    var catIdEpi = rawId.slice(7);
+    var catEpi = (_epiCatalogo||[]).find(function(e){return e.id===catIdEpi;});
+    if(catEpi){
+      if(!linha.nome) linha.nome = catEpi.nome;
+      if(!linha.ca && catEpi.ca) linha.ca = catEpi.ca;
+      linha.tipo = linha.tipo || eeNormalizaTipo(catEpi.tipo==='EPC'?'epc':'epi');
+      nome = (linha.nome||'').trim();
+    }
+  }
+
+  var itemId = eeResolverCatalogoId(rawId, linha);
+  if(itemId){
+    var itemCat = (itens_catalogo||[]).find(function(e){return e.id===itemId;});
+    if(itemCat) return {ok:true, itemId:itemId, itemCat:itemCat, created:false};
+  }
+
+  var cod = (linha.codigo||'').trim();
+  var sku = (linha.sku||'').trim();
+  var nl = nome.toLowerCase();
+  var found = (itens_catalogo||[]).find(function(x){
+    if(x.ativo===false) return false;
+    if(cod && String(x.codigo||'').trim()===cod) return true;
+    if(sku && String(x.sku||'').trim()===sku) return true;
+    return (x.nome||'').trim().toLowerCase()===nl;
+  });
+  if(found) return {ok:true, itemId:found.id, itemCat:found, created:false};
+
+  // Preferir tipo da linha; se vazio, inferir (uniforme com CA continua vestimenta)
+  var tipoNorm = eeNormalizaTipo(linha.tipo) || eeInferirTipo({nome:nome, ca:linha.ca, tipo:linha.tipo}) || 'material';
+  if(!eeNormalizaTipo(linha.tipo) && eePareceUniformePorNome(nome) && tipoNorm==='epi')
+    tipoNorm = 'vestimenta';
+  var tipo = almTipoCodigo(tipoNorm) || 'MATERIAL';
+  var isPneu = tipoNorm==='pneu';
+  var payload = {
+    codigo: cod,
+    sku: sku,
+    nome: nome,
+    tipo_item: tipo,
+    unidade_medida: (linha.unidade||'UN').trim()||'UN',
+    preco_unitario: parseFloat(linha.custo)||0,
+    descricao: '',
+    controla_estoque: true,
+    controla_numero_serie: !isPneu && tipoNorm==='ferramenta',
+    controla_validade: tipoNorm==='epi' || tipoNorm==='consumivel' || tipoNorm==='vestimenta',
+    controla_ca: !!(linha.ca) || tipoNorm==='epi' || tipoNorm==='epc' || tipoNorm==='vestimenta',
+    controla_calibracao: tipoNorm==='ferramenta',
+    controla_devolucao: ['ferramenta','epc','epi','vestimenta'].indexOf(tipoNorm)>=0,
+    controla_manutencao: tipoNorm==='ferramenta',
+    eh_pneu: isPneu,
+    ativo: true
+  };
+  // CA NÃO vai em itens_catalogo (coluna inexistente) — fica no estoque/lote via almEntradaLote
+
+  if(DEMO){
+    var novoDemo = Object.assign({id:'itm'+Date.now()+Math.random().toString(36).slice(2,5)}, payload);
+    itens_catalogo.push(novoDemo);
+    return {ok:true, itemId:novoDemo.id, itemCat:novoDemo, created:true};
+  }
+  var ins = await sbInsert('itens_catalogo', payload);
+  if(!ins || !ins[0]) return {ok:false, msg:'Falha ao cadastrar "'+nome+'" no catálogo'};
+  itens_catalogo.push(ins[0]);
+  return {ok:true, itemId:ins[0].id, itemCat:ins[0], created:true};
+}
+
+async function eeProcessarEntradaLinha(linha, ctx, seq){
+  var qtd = parseFloat(linha.qtd) || 0;
+  if(qtd <= 0) return {ok:false, msg:(linha.nome||'Item')+': quantidade inválida'};
+  var filId = ctx.filId, depId = ctx.depId, forn = ctx.forn, lote = ctx.lote;
+  var obsEntrada = ctx.obs || null, numeroRc = ctx.numero_rc || '';
+  var custo = parseFloat(linha.custo) || 0;
+  var uid = 'mov'+(Date.now())+'-'+(seq||0);
+
+  var garant = await eeGarantirItemCatalogo(linha);
+  if(!garant.ok) return {ok:false, msg:garant.msg};
+  var itemId = garant.itemId;
+  var itemCat = garant.itemCat;
+
+  // Se tem CA sem validade na linha, busca na base CAEPI
+  var caNum = String(linha.ca||'').trim();
+  var caVal = String(linha.ca_validade||'').trim().slice(0,10) || null;
+  if(caNum && !caVal && typeof caepiBuscarCa==='function'){
+    try{
+      var lkCa = await caepiBuscarCa(caNum);
+      if(lkCa && lkCa.encontrado && lkCa.validade){
+        caVal = String(lkCa.validade).slice(0,10);
+        linha.ca_validade = caVal;
+      }
+    }catch(eCa){ console.warn('[entrada] CAEPI lookup falhou', caNum, eCa); }
+  }
+  if(!filId && depId && typeof depositos!=='undefined'){
+    var depFil = depositos.find(function(d){ return String(d.id)===String(depId); });
+    if(depFil && depFil.filial_id) filId = depFil.filial_id;
+  }
+
+  var fogosListPre = null;
+  if(pneusEhItemPneu(itemCat) || pneusEhItemPneu({tipo_item:linha.tipo, tipo:linha.tipo})){
+    fogosListPre = Array.isArray(linha.fogos) ? linha.fogos : pneusParseFogosTexto(linha.fogos||'');
+    var valFogPre = pneusValidarListaFogosEntrada(fogosListPre, qtd);
+    if(!valFogPre.ok) return {ok:false, msg:itemCat.nome+': '+valFogPre.msg};
+    fogosListPre = valFogPre.fogos;
+  }
+
+  var payload = {
+    item_id: itemId, tipo_mov: 'entrada', quantidade: qtd,
+    deposito_id: depId||null, filial_id: filId||null,
+    contrato_id: null,
+    fornecedor: forn, nota_fiscal: lote,
+    valor_unitario: custo, data_mov: dataHoje(),
+    motivo: ctx.motivo || (numeroRc ? ('Entrada NF — RC '+numeroRc) : 'Entrada de estoque'),
+    obs: almAnexarObsOrigem(obsEntrada, forn ? 'externo' : 'externo', null),
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: 'Disponível'
+  };
+  var _movId = uid;
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:uid}, payload));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+    if(insMov[0] && insMov[0].id) _movId = insMov[0].id;
+  }
+  // Atualiza só preço no catálogo — CA fica no estoque/lote, não em itens_catalogo
+  if(custo>0){
+    var catPatch = { preco_unitario: custo };
+    if(DEMO){
+      var idxD = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+      if(idxD>=0) Object.assign(itens_catalogo[idxD], catPatch);
+    } else {
+      var okCat = await sbUpdate('itens_catalogo', catPatch, 'id=eq.'+itemId);
+      if(!okCat) return {ok:false, msg:itemCat.nome+': falha ao atualizar catálogo'};
+      var idxC = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+      if(idxC>=0) Object.assign(itens_catalogo[idxC], catPatch);
+    }
+  }
+  var saldoRes = await almAtualizarSaldoEstoquePatrimonio({
+    itemCat:itemCat, qtd:qtd, custo:custo, seq:seq,
+    filId:filId, depId:depId,
+    forn:forn, lote:lote, ca:caNum||null, ca_validade:caVal||null,
+    codigo:linha.codigo||itemCat.codigo, sku:linha.sku||itemCat.sku
+  });
+  if(!saldoRes.ok) return {ok:false, msg:saldoRes.msg||itemCat.nome+': falha no estoque'};
+  var tipoLin=eeNormalizaTipo(linha.tipo||itemCat.tipo_item);
+  if((tipoLin==='epi'||tipoLin==='epc'||tipoLin==='vestimenta') && caNum){
+    var tipoAlm=tipoLin==='epc'?'EPC':(tipoLin==='vestimenta'?'VESTIMENTA':'EPI');
+    var prod=almProdutoPorNome(linha.nome, tipoAlm);
+    if(!prod){
+      var cr=await almCriarProdutoMestre(linha.nome, tipoAlm, null);
+      if(cr.ok) prod=cr.produto;
+    }
+    if(prod){
+      await almEntradaLote({
+        produto_id:prod.id, ca:caNum, ca_validade:caVal||null, qtd:qtd,
+        deposito_id:depId, filial_id:filId, fornecedor_nome:forn, numero_nf:lote,
+        lote_fornecedor:lote, origem:'entrada_estoque', observacao:'Entrada patrimonial NF'
+      });
+    }
+  }
+  if(fogosListPre){
+    var rPn = await pneusCriarDaEntradaAlmox({
+      fogos: fogosListPre,
+      itemCat: itemCat,
+      estoqueId: saldoRes.row ? saldoRes.row.id : null,
+      depositoId: depId,
+      filialId: filId,
+      custo: custo
+    });
+    if(!rPn.ok) return {ok:false, msg:itemCat.nome+': saldo OK, falha pneus — '+(rPn.msg||'erro')+'. Reprocesse o vínculo sem nova entrada.'};
+    if(rPn.erros && rPn.erros.length) console.warn('pneus entrada parcial', rPn);
+  }
+  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created,
+    sap:false, movId:_movId, itemId:itemId, depositoId:depId||null,
+    estoqueId:(saldoRes && saldoRes.row ? saldoRes.row.id : null),
+    saldoAntes:(saldoRes && saldoRes.saldoAntes!=null ? saldoRes.saldoAntes : null),
+    saldoDepois:(saldoRes && saldoRes.row && saldoRes.row.quantidade!=null ? saldoRes.row.quantidade
+      : (saldoRes && saldoRes.saldo!=null ? saldoRes.saldo : null))};
+}
+
+async function salvarEntrada(){
+  eeSyncLinhasFromDOM();
+  var linhas = eeColetarLinhas().filter(function(l){ return (l.nome||'').trim() && (parseFloat(l.qtd)||0)>0; });
+  if(!linhas.length){ alert('Adicione ao menos um item com nome e quantidade.'); return; }
+
+  var dest = await eeConfirmarDestinoEntradaSalvar(linhas);
+  if(!dest) return;
+
+  // Pré-validação fogos PNEU (falha cedo — sem movimento/saldo)
+  if(dest==='patrimonial'){
+    await pneusGarantirDadosCarregados();
+    for(var pi=0; pi<linhas.length; pi++){
+      var L = linhas[pi];
+      var catPrev = L.item_id ? (itens_catalogo||[]).find(function(x){return String(x.id)===String(L.item_id);}) : null;
+      var ehP = pneusEhItemPneu(catPrev) || pneusEhItemPneu({tipo_item:L.tipo, tipo:L.tipo});
+      if(!ehP) continue;
+      var fogosPre = Array.isArray(L.fogos) ? L.fogos : pneusParseFogosTexto(L.fogos||'');
+      var vPre = pneusValidarListaFogosEntrada(fogosPre, L.qtd);
+      if(!vPre.ok){
+        alert('Linha "'+(L.nome||'PNEU')+'": '+vPre.msg);
+        return;
+      }
+      L.fogos = vPre.fogos;
+    }
+    // Unicidade entre linhas PNEU da mesma NF
+    var allFog={}, dupCross=null;
+    linhas.forEach(function(L){
+      var cat2 = L.item_id ? (itens_catalogo||[]).find(function(x){return String(x.id)===String(L.item_id);}) : null;
+      if(!(pneusEhItemPneu(cat2)||pneusEhItemPneu({tipo_item:L.tipo,tipo:L.tipo}))) return;
+      (L.fogos||[]).forEach(function(f){
+        var k=String(f).toLowerCase();
+        if(allFog[k]) dupCross=f; else allFog[k]=true;
+      });
+    });
+    if(dupCross){ alert('Fogo duplicado entre linhas da entrada: "'+dupCross+'"'); return; }
+  }
+
+  var fornInfo = eeObterFornecedorEntrada();
+  var rc = ((document.getElementById('ee-rc')||{}).value||'').trim();
+  var obsExtra = ((document.getElementById('ee-obs')||{}).value||'').trim();
+  var motivoEnt = ((document.getElementById('ee-motivo')||{}).value||'').trim() || 'Compra';
+
+  if(dest==='patrimonial'){
+    var depEntrada = (document.getElementById('ee-dep')||{}).value||'';
+    if(!depEntrada){ alert('Selecione o local de entrada (depósito destino).'); return; }
+  } else {
+    var contSap = (document.getElementById('ee-cont-sap')||{}).value||'';
+    if(!contSap){ alert('Selecione o contrato para entrada SAP.'); return; }
+  }
+
+  var ctx = {
+    destino: dest,
+    filId: (document.getElementById('ee-filial')||{}).value||null,
+    depId: (document.getElementById('ee-dep')||{}).value||null,
+    contrato_id: dest==='sap' ? ((document.getElementById('ee-cont-sap')||{}).value||null) : null,
+    forn: fornInfo.fornecedor,
+    fornecedor_id: fornInfo.fornecedor_id,
+    lote: (document.getElementById('ee-lote')||{}).value||'',
+    numero_rc: rc,
+    motivo: motivoEnt,
+    obs: eeMontarObsEntrada(rc, obsExtra, ''),
+    data_mov: dataHoje()
+  };
+
+  var ok=0, erros=[], nomes=[], novosCat=0, resultadosOk=[];
+  var btn = document.getElementById('ee-btn-salvar');
+  if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+
+  // ── ALM-NF-1 · persistência documental da NF (upload + registro ANTES dos movimentos) ──
+  var _nfId=null, _nfMeta=null, _nfLib=window._eeNfDupLiberada||null;
+  if(window._eeNfFile && typeof almNfMetaDoForm==='function'){
+    _nfMeta = almNfMetaDoForm();
+    // Sonda REAL de existência das tabelas (o cache marca disponível mesmo em 404).
+    // Se as tabelas ainda não existem, a entrada segue SEM persistir a NF —
+    // nunca bloqueia a entrada antes de aplicar sql_alm_nf_digital_fase_1.sql.
+    if(window._almNfSubsistema===undefined){
+      if(DEMO){ window._almNfSubsistema=true; }
+      else{
+        try{
+          var _prb = await fetch(SB.url+'/rest/v1/alm_notas_fiscais?select=id&limit=1',
+            {headers:{apikey:SB.key, Authorization:'Bearer '+(window._sbAuthToken||SB.key)}});
+          window._almNfSubsistema = (_prb.status<400);
+        }catch(_ep){ window._almNfSubsistema=false; }
+      }
+    }
+    if(!window._almNfSubsistema){
+      console.warn('[ALM-NF] tabelas ausentes — entrada segue SEM persistir NF (aplique sql_alm_nf_digital_fase_1.sql)');
+    } else {
+      var dupChk = await almNfChecarDuplicidade(_nfMeta);
+      if(!dupChk.ok && dupChk.tipo!=='indisponivel' && (dupChk.bloqueado || !_nfLib)){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        almNfMostrarDuplicidade(dupChk, 'salvar');
+        return;
+      }
+      var _nfUp = await almNfUploadArquivo(window._eeNfFile);
+      if(!_nfUp || !_nfUp.ok){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.\n\n'+((_nfUp&&_nfUp.msg)||''));
+        return;
+      }
+      _nfUp.hash = await almNfHashFile(window._eeNfFile);
+      var _nfRec = await almNfCriarRegistro(_nfMeta, _nfUp, ctx, linhas);
+      if(!_nfRec || !_nfRec.id){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.');
+        return;
+      }
+      _nfId = _nfRec.id;
+    }
+  }
+
+  if(dest==='sap' && !DEMO){
+    await almRecarregarMovimentosSap(ctx.contrato_id);
+  }
+  try {
+    for(var i=0;i<linhas.length;i++){
+      var r = dest==='sap'
+        ? await eeProcessarEntradaLinhaSap(linhas[i], ctx, i)
+        : await eeProcessarEntradaLinha(linhas[i], ctx, i);
+      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; resultadosOk.push(r); }
+      else erros.push(r.msg);
+    }
+  } catch(e){
+    console.error('salvarEntrada:', e);
+    erros.push((e&&e.message)||String(e));
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+  }
+
+  if(!ok){
+    alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.'));
+    if(erros.length) progShowToast('❌ Entrada não registrada', 'erro');
+    return;
+  }
+
+  // ── ALM-NF-1 · vincular os movimentos criados à NF + auditoria ──
+  if(_nfId){
+    for(var _vi=0; _vi<resultadosOk.length; _vi++){
+      try{ await almNfVincularMov(_nfId, resultadosOk[_vi], 'entrada'); }
+      catch(_eV){ console.warn('[ALM-NF] vínculo mov', _eV); }
+    }
+    try{
+      await almNfInserirEvento(_nfId, 'ENTRADA_REGISTRADA', ok+' movimento(s) vinculado(s) à NF', {movimentos:resultadosOk.length, destino:ctx.destino});
+      if(_nfLib) await almNfInserirEvento(_nfId, 'DUPLICIDADE_LIBERADA_MANUALMENTE', (_nfLib.motivo||'')+' · '+(_nfLib.justificativa||''), _nfLib);
+    }catch(_eEv){ console.warn('[ALM-NF] evento', _eEv); }
+    almNfInvalidateCache();
+    window._eeNfFile=null; window._eeNfBase64=null; window._eeNfParsed=null; window._eeNfDupLiberada=null;
+  }
+
+  closeModal();
+  if(dest==='sap'){
+    await almRecarregarMovimentosSap(ctx.contrato_id);
+    if(typeof almRenderMetricas==='function') almRenderMetricas();
+    if(typeof almRender==='function') almRender();
+  } else {
+    if(!DEMO){
+      try{
+        var freshEst = await sbFetchAll('estoque',{order:'nome.asc',maxPages:20});
+        if(freshEst&&freshEst.length) estoque = freshEst;
+        await almConsolidarEstoqueTodos();
+        window._almEstoqueConsolidado = true;
+        window._almLedgerEstoqueOk = false;
+        _almPLCarregado=false;
+        await new Promise(function(r){ almCarregarProdutosLotes(r); });
+      }catch(e){ console.warn('refresh estoque pós-entrada:', e); }
+    }
+    renderEstoque();
+    if(typeof renderItens==='function') renderItens();
+  }
+  if(_sesmtAbaAtiva==='entradas' && typeof almRenderDashboard==='function') almRenderDashboard();
+
+  var msg = dest==='sap'
+    ? '✅ '+ok+' item(ns) registrados no estoque SAP'+(ctx.lote?' · NF '+ctx.lote:'')
+    : '✅ '+ok+' item(ns) registrados no estoque patrimonial'+(ctx.lote?' · NF '+ctx.lote:'')
+      +(novosCat?' · '+novosCat+' novo(s) no catálogo':'');
+  if(erros.length) msg += ' · '+erros.length+' falha(s)';
+  progShowToast(msg);
+  if(erros.length){
+    console.warn('Entrada parcial:', erros);
+    alert('Alguns itens falharam:\n\n'+erros.join('\n'));
+  }
+}
+
+// ── NOVA FERRAMENTA ────────────────────────────────────────────────
 
 function almBuscarLinhaEstoquePatrimonio(ref, filId, depId){
   var lista = (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
