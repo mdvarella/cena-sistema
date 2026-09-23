@@ -136,6 +136,11 @@
   }
   function htmlLoc(){
     return hdr('🏗 Locações')
+      +'<div id="loc-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem">'
+      +'<button class="btn btn-sm" id="loc-tab-lista" onclick="if(typeof locShowTab===\'function\')locShowTab(\'lista\')">📋 Lista</button>'
+      +'<button class="btn btn-sm" id="loc-tab-relatorio" onclick="if(typeof locShowTab===\'function\')locShowTab(\'relatorio\')">📊 Relatórios</button>'
+      +'</div>'
+      +'<div id="loc-view-lista">'
       +'<div id="loc-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:.75rem">'
       +'<div class="card" style="padding:.6rem;text-align:center"><div style="font-size:11px;color:#888">Total</div><div id="loc-total" style="font-size:20px;font-weight:700">0</div></div>'
       +'<div class="card" style="padding:.6rem;text-align:center"><div style="font-size:11px;color:#888">Em uso</div><div id="loc-uso" style="font-size:20px;font-weight:700">0</div></div>'
@@ -150,7 +155,8 @@
       +'<input class="inp" id="fil-loc-q" placeholder="Equipamento" style="width:160px" oninput="if(typeof renderLocacoes===\'function\')renderLocacoes()">'
       +'<label style="font-size:11px"><input type="checkbox" id="fil-loc-resumo-todos" onchange="if(typeof renderLocacoes===\'function\')renderLocacoes()"> Resumo todos</label>'
       +'<label style="font-size:11px"><input type="checkbox" id="fil-loc-resumo-empresa" onchange="if(typeof renderLocacoes===\'function\')renderLocacoes()"> Por empresa</label>'
-      +'</div><div id="loc-lista-cards"></div>';
+      +'</div><div id="loc-lista-cards"></div></div>'
+      +'<div id="loc-view-relatorio" class="hidden"><div id="loc-rel-builder"></div><div id="loc-rel-resultado"></div></div>';
   }
   function htmlFiliais(){
     return hdr('🏢 Filiais / Depósitos','<button class="btn btn-pri" onclick="if(typeof openFilial===\'function\')openFilial();else if(typeof openCadastro===\'function\')openCadastro(\'filiais\')">+ Filial</button>')

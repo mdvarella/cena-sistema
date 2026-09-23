@@ -1981,9 +1981,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.121"></script>
-<script src="sesmt-alm-shell.js?v=8.1.121"></script>
-<script src="prog-projetos-shell.js?v=8.1.121"></script>
+<script src="portaria-offline.js?v=8.1.124"></script>
+<script src="sesmt-alm-shell.js?v=8.1.124"></script>
+<script src="prog-projetos-shell.js?v=8.1.124"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -9834,6 +9834,11 @@ function _precisaModulo(modName,cb){
   var carregado={'financeiro':function(){return _modFinanceiro;},'obras':function(){return _modObras;},'diario':function(){return _modDiario;},'sesmt':function(){return _modSESMT;},'viabilidade':function(){return _modViabilidade;}};
   var loader={'financeiro':carregarModuloFinanceiro,'obras':carregarModuloObras,'diario':carregarModuloDiario,'sesmt':carregarModuloSESMT,'viabilidade':carregarModuloViabilidade};
   if(carregado[modName]()){cb();return;}
+  if(modName==='sesmt'){
+    Promise.resolve(loader[modName]()).catch(function(e){ console.warn('modulo sesmt', e); });
+    try{ cb(); }catch(eCb){ console.error('Erro callback modulo',modName,eCb); }
+    return;
+  }
   var spinId='_spin_mod_'+Date.now();
   var spinEl=document.createElement('div');
   spinEl.id=spinId;spinEl.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a18;color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;z-index:9999;opacity:.9';
@@ -44779,10 +44784,19 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.121',
-  data:   '22/09/2026',
-  build:  '20260923-1135',
+  numero: '8.1.124',
+  data:   '23/09/2026',
+  build:  '20260923-1440',
   log: [
+    {v:'8.1.124', d:'23/09/2026', itens:[
+      'Locacoes: aba Relatorios com colunas e filtros (contrato, locadora ou os dois juntos). Sem SQL.',
+    ]},
+    {v:'8.1.123', d:'23/09/2026', itens:[
+      'Estoque: nome/codigo/SKU do catalogo passam a atualizar a linha de saldo ao editar o item. Sem SQL.',
+    ]},
+    {v:'8.1.122', d:'23/09/2026', itens:[
+      'Almoxarifado/recebimento: abas e Registrar entrada sem esperar consolidacao total do estoque nem refetch completo. Sem SQL.',
+    ]},
     {v:'8.1.121', d:'23/09/2026', itens:[
       'Estoque: restaurada salvarEntrada / eeProcessarEntradaLinha / eeGarantirItemCatalogo (botao Registrar entrada). Sem SQL.',
     ]},
@@ -104200,11 +104214,16 @@ async function almCorrReloadLinha(estoqueId, itemId, codigo, depId){
 }
 async function almCorrCarregarSolicitacoes(){
   if(DEMO){ almCorrRefreshBadge(); return _almCorr.lista; }
+  if(_almCorr._cacheTs && (Date.now()-_almCorr._cacheTs)<45000 && _almCorr.lista){
+    almCorrRefreshBadge();
+    return _almCorr.lista;
+  }
   try{
     var rows=await sbFetch('alm_correcao_item_solicitacoes',{order:'solicitado_em.desc',limit:300});
     if(rows==null){ _almCorr.tableOk=false; return []; }
     _almCorr.tableOk=true;
     _almCorr.lista=rows;
+    _almCorr._cacheTs=Date.now();
   }catch(e){
     _almCorr.tableOk=false;
     console.warn('almCorrCarregarSolicitacoes', e);
@@ -135915,6 +135934,7 @@ function openNovaMobilizacao(){
 // Variáveis exclusivas SESMT (não conflitam com ERP CENA)
 var _sesmtAbaAtiva = 'entradas';
 var _sesmtCarregado = false;
+var _sesmtDadosProntos = false;
 
 // Bridge: funcs = colaboradores do ERP CENA filtrados como ativos
 var funcs = [];
@@ -136921,12 +136941,16 @@ function almRenderDashboard(){
   }
 
   if(tbody){
+    var catById={};
+    (itens_catalogo||[]).forEach(function(i){ if(i&&i.id!=null) catById[String(i.id)]=i; });
     var recentes = [];
-    (movimentacoes_itens||[]).filter(function(m){return m.tipo_mov==='entrada';}).forEach(function(m){
-      var it = (itens_catalogo||[]).find(function(i){return i.id===m.item_id;});
+    (movimentacoes_itens||[]).forEach(function(m){
+      if(!m||m.tipo_mov!=='entrada') return;
+      var it = catById[String(m.item_id||'')];
       recentes.push({data:(m.data_mov||'').slice(0,10), nome:it?it.nome:(m.motivo||'Item'), tipo:it?it.tipo_item:'—', qtd:m.quantidade||0, origem:'Patrimônio', ts:m.data_mov||''});
     });
-    (typeof alm_movimentos!=='undefined'?alm_movimentos:[]).filter(function(m){return m.tipo==='entrada';}).forEach(function(m){
+    (typeof alm_movimentos!=='undefined'?alm_movimentos:[]).forEach(function(m){
+      if(!m||m.tipo!=='entrada') return;
       recentes.push({data:(m.data||'').slice(0,10), nome:m.material_desc||'Material SAP', tipo:'SAP', qtd:m.qtd||0, origem:'SAP/Obra', ts:m.criado_em||m.data||''});
     });
     recentes.sort(function(a,b){ return (b.ts||'').localeCompare(a.ts||''); });
@@ -136999,6 +137023,7 @@ function _almShowAbaInterna(aba){
     else if(aba==='lavagem')     { window._almUniTabPending='lavagem'; if(typeof _almShowAbaInterna==='function') _almShowAbaInterna('uniformes'); }
     else if(aba==='ferramentas') { if(typeof renderFer==='function')                renderFer(); }
     else if(aba==='locacoes')    {
+      if(typeof locGarantirRelatorioUi==='function') locGarantirRelatorioUi();
       if(typeof renderLocacoes==='function') renderLocacoes();
       if(typeof lcCarregarVeiculosFrotas==='function'){
         lcCarregarVeiculosFrotas(function(){ if(typeof renderLocacoes==='function') renderLocacoes(); });
@@ -137020,15 +137045,20 @@ function _almShowAbaInterna(aba){
     else if(aba==='kits-veiculo'){ if(typeof almInitKitsVeiculo==='function') almInitKitsVeiculo(); }
   };
 
-  if(!_sesmtCarregado){
+  render();
+  if(!_sesmtDadosPromise && typeof sesmtCarregarDados==='function'){
     _sesmtCarregado = true;
-    if(typeof sesmtCarregarDados==='function'){
-      Promise.resolve(sesmtCarregarDados())
-        .then(render)
-        .catch(function(e){ console.warn('Almoxarifado:', e); render(); });
-    } else { render(); }
-  } else {
-    render();
+    _sesmtDadosPromise = Promise.resolve(sesmtCarregarDados()).catch(function(e){
+      console.warn('Almoxarifado:', e);
+    });
+  } else if(!_sesmtCarregado){
+    _sesmtCarregado = true;
+  }
+  if(_sesmtDadosPromise && !_sesmtDadosProntos){
+    var abaNow = aba;
+    _sesmtDadosPromise.then(function(){
+      if(_sesmtAbaAtiva===abaNow) render();
+    });
   }
 }
 
@@ -137261,11 +137291,10 @@ async function sesmtCarregarDados(){
     filiais=res[13]||[];depositos=res[14]||[];locacoes=res[15]||[];
   }
   try{ await almTiposItemLoad(); }catch(e){ console.warn('Tipos materiais:', e); }
-  window._almEstoqueConsolidado = false;
-  try{
-    await almConsolidarEstoqueTodos();
-    window._almEstoqueConsolidado = true;
-  }catch(e){ console.warn('Consolidação estoque:', e); }
+  _sesmtDadosProntos = true;
+  if(typeof almGarantirEstoqueConsolidado==='function'){
+    try{ almGarantirEstoqueConsolidado(); }catch(e){ console.warn('Consolidacao estoque:', e); }
+  }
   try{ if(typeof atualizarMetricas==='function') atualizarMetricas(); }catch(e){ console.warn('atualizarMetricas erro:',e); }
   try{ if(typeof popularSelectFuncs==='function') popularSelectFuncs(); }catch(e){}
   try{ if(typeof renderSeletorFilial==='function') renderSeletorFilial(); }catch(e){}
@@ -138446,8 +138475,18 @@ function openCadastroItem(idOuTipo){
 
     if(isEdit){
       var idx = itens_catalogo.findIndex(function(x){return x.id===idOuTipo;});
+      var antes = idx>=0 ? Object.assign({}, itens_catalogo[idx]) : {id:idOuTipo};
       if(idx>=0) Object.assign(itens_catalogo[idx], payload);
-      if(!DEMO) sbUpdate('itens_catalogo', payload, 'id=eq.'+idOuTipo);
+      Promise.resolve(!DEMO ? sbUpdate('itens_catalogo', payload, 'id=eq.'+idOuTipo) : true).then(function(ok){
+        if(ok===false){ progShowToast('Falha ao salvar o item.','erro'); return; }
+        var depois = Object.assign({id:idOuTipo}, payload);
+        return (typeof almPropagarCatalogoNoEstoque==='function')
+          ? almPropagarCatalogoNoEstoque(antes, depois) : 0;
+      }).then(function(){
+        if(typeof renderItens==='function') renderItens();
+        if(typeof renderFer==='function') renderFer();
+        if(typeof renderEstoque==='function') renderEstoque();
+      }).catch(function(eSync){ console.warn('sync catalogo estoque', eSync); });
       progShowToast('✅ Item atualizado.');
     } else {
       var novo = Object.assign({id:'itm'+Date.now()}, payload);
@@ -139192,6 +139231,10 @@ function saldoItem(itemId){
 }
 
 function iniciarAbaItens(){
+  if((itens_catalogo||[]).length && (DEMO || window._almItensAbaOk || _sesmtDadosProntos)){
+    if(typeof renderItens==='function') renderItens();
+    return;
+  }
   var carregar = DEMO
     ? Promise.resolve(almTiposItemAplicarLista(TIPOS_ITEM_DEFAULT))
     : almTiposItemLoad();
@@ -139209,6 +139252,7 @@ function iniciarAbaItens(){
             ? almMergeMovimentacoes([movimentacoes_itens, res[1]])
             : res[1];
         }
+        window._almItensAbaOk=true;
       });
     }
   }).then(function(){ renderItens(); }).catch(function(){ popularFiltroTiposItens(); renderItens(); });
@@ -140303,6 +140347,399 @@ function locLimparFiltros(){
   renderLocacoes();
 }
 
+function locGarantirRelatorioUi(){
+  var pg=document.getElementById('pg-sesmt-locacoes');
+  if(!pg) return;
+  if(!document.getElementById('loc-view-relatorio')){
+    var tabs=document.createElement('div');
+    tabs.id='loc-tabs';
+    tabs.style.cssText='display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem';
+    tabs.innerHTML='<button class="btn btn-sm" id="loc-tab-lista" onclick="locShowTab(\'lista\')">📋 Lista</button>'
+      +'<button class="btn btn-sm" id="loc-tab-relatorio" onclick="locShowTab(\'relatorio\')">📊 Relatórios</button>';
+    var wrap=document.createElement('div');
+    wrap.id='loc-view-lista';
+    while(pg.firstChild) wrap.appendChild(pg.firstChild);
+    var rel=document.createElement('div');
+    rel.id='loc-view-relatorio';
+    rel.className='hidden';
+    rel.innerHTML='<div id="loc-rel-builder"></div><div id="loc-rel-resultado"></div>';
+    pg.appendChild(tabs);
+    pg.appendChild(wrap);
+    pg.appendChild(rel);
+  }
+  if(typeof locRelMontarBuilder==='function') locRelMontarBuilder();
+}
+function locShowTab(aba){
+  locGarantirRelatorioUi();
+  var lista=document.getElementById('loc-view-lista');
+  var rel=document.getElementById('loc-view-relatorio');
+  if(lista) lista.classList[aba==='relatorio'?'add':'remove']('hidden');
+  if(rel) rel.classList[aba==='relatorio'?'remove':'add']('hidden');
+  ['lista','relatorio'].forEach(function(a){
+    var b=document.getElementById('loc-tab-'+a);
+    if(!b) return;
+    b.style.background=a===aba?'#1a1a18':'';
+    b.style.color=a===aba?'#fff':'';
+    b.style.borderColor=a===aba?'#1a1a18':'';
+  });
+  if(aba==='lista' && typeof renderLocacoes==='function') renderLocacoes();
+  if(aba==='relatorio') locRelMontarBuilder();
+}
+
+var LOC_REL_COLS=[
+  {id:'equipamento',lbl:'Equipamento',def:true},
+  {id:'tipo',lbl:'Tipo',def:true},
+  {id:'qtd',lbl:'Qtd',def:true},
+  {id:'locadora',lbl:'Locadora',def:true},
+  {id:'numContrato',lbl:'Nº contrato locadora',def:false},
+  {id:'contrato',lbl:'Contrato CENA',def:true},
+  {id:'responsavel',lbl:'Responsável',def:true},
+  {id:'filial',lbl:'Filial',def:false},
+  {id:'deposito',lbl:'Depósito',def:false},
+  {id:'status',lbl:'Status',def:true},
+  {id:'inicio',lbl:'Início',def:false},
+  {id:'termino',lbl:'Término',def:true},
+  {id:'prazo',lbl:'Prazo',def:false},
+  {id:'vUnit',lbl:'Valor unit.',def:false,num:true},
+  {id:'vTotal',lbl:'Valor total',def:true,num:true},
+  {id:'seguro',lbl:'Seguro',def:false}
+];
+
+function locRelColsAtivas(){
+  var saved=null;
+  try{ saved=JSON.parse(localStorage.getItem('cena_loc_rel_cols')||'null'); }catch(e){}
+  return LOC_REL_COLS.filter(function(c){
+    if(saved && Object.prototype.hasOwnProperty.call(saved,c.id)) return !!saved[c.id];
+    return !!c.def;
+  });
+}
+function locRelSalvarCols(){
+  var map={};
+  LOC_REL_COLS.forEach(function(c){
+    var el=document.getElementById('loc-rel-col-'+c.id);
+    map[c.id]=el?!!el.checked:!!c.def;
+  });
+  try{ localStorage.setItem('cena_loc_rel_cols', JSON.stringify(map)); }catch(e){}
+}
+
+function locRelMontarBuilder(){
+  var box=document.getElementById('loc-rel-builder');
+  if(!box) return;
+  if(box.getAttribute('data-ready')==='1'){
+    locRelPopularFiltros();
+    return;
+  }
+  var saved=null;
+  try{ saved=JSON.parse(localStorage.getItem('cena_loc_rel_cols')||'null'); }catch(e){}
+  var colsHtml=LOC_REL_COLS.map(function(c){
+    var on=saved&&Object.prototype.hasOwnProperty.call(saved,c.id)?!!saved[c.id]:!!c.def;
+    return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;background:#fff;border:.5px solid #e0dfd8;border-radius:6px;padding:3px 8px;cursor:pointer">'
+      +'<input type="checkbox" id="loc-rel-col-'+c.id+'" '+(on?'checked':'')+' onchange="locRelSalvarCols()"/> '+escHtml(c.lbl)+'</label>';
+  }).join('');
+  box.innerHTML='<div class="card" style="padding:.85rem;margin-bottom:.75rem">'
+    +'<div style="font-size:13px;font-weight:700;margin-bottom:.55rem">📊 Relatório de equipamentos em locação</div>'
+    +'<div style="font-size:11px;color:#666;margin-bottom:.65rem">Escolha o agrupamento, os filtros e as colunas. Depois clique em <b>Gerar</b>.</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:.65rem">'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Agrupar</label>'
+    +'<select class="inp" id="loc-rel-grupo" style="width:100%">'
+    +'<option value="detalhe">Lista detalhada</option>'
+    +'<option value="contrato">Por contrato CENA</option>'
+    +'<option value="locadora">Por locadora</option>'
+    +'<option value="juntos">Contratos e locadoras juntos</option>'
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Contrato CENA</label>'
+    +'<select class="inp" id="loc-rel-contrato" style="width:100%"><option value="">Todos</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Locadora</label>'
+    +'<select class="inp" id="loc-rel-locadora" style="width:100%"><option value="">Todas</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Responsável</label>'
+    +'<select class="inp" id="loc-rel-resp" style="width:100%"><option value="">Todos</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Status</label>'
+    +'<select class="inp" id="loc-rel-status" style="width:100%">'
+    +'<option value="">Todos</option><option>Em uso</option><option>Disponível</option>'
+    +'<option>Em manutenção</option><option>Devolvido</option><option>Extraviado</option>'
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Prazo</label>'
+    +'<select class="inp" id="loc-rel-prazo" style="width:100%">'
+    +'<option value="">Todos</option><option value="vigente">Vigente</option>'
+    +'<option value="vencer">A vencer (30 dias)</option><option value="vencido">Vencido</option>'
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Filial</label>'
+    +'<select class="inp" id="loc-rel-filial" style="width:100%"><option value="">Todas</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Equipamento</label>'
+    +'<input class="inp" id="loc-rel-q" style="width:100%" placeholder="Nome do equipamento"/></div>'
+    +'</div>'
+    +'<div style="font-size:11px;font-weight:600;margin-bottom:4px">Colunas</div>'
+    +'<div id="loc-rel-cols" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:.75rem">'+colsHtml+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    +'<button class="btn btn-pri" onclick="locRelGerar()">🔍 Gerar relatório</button>'
+    +'<button class="btn" onclick="locRelExportar()">📥 Excel</button>'
+    +'<button class="btn" onclick="locRelImprimir()">🖨 Imprimir</button>'
+    +'</div></div>';
+  box.setAttribute('data-ready','1');
+  locRelPopularFiltros();
+}
+
+function locRelPopularFiltros(){
+  function fill(id, opts, first){
+    var el=document.getElementById(id); if(!el) return;
+    var prev=el.value;
+    el.innerHTML=first+opts.map(function(o){ return '<option value="'+escHtml(o.v)+'">'+escHtml(o.l)+'</option>'; }).join('');
+    if(prev) el.value=prev;
+  }
+  var forn=[], fset={};
+  (locacoes||[]).forEach(function(l){
+    var v=(l.locadora||'').trim();
+    if(v&&!fset[v]){ fset[v]=1; forn.push({v:v,l:v}); }
+  });
+  forn.sort(function(a,b){ return a.l.localeCompare(b.l,'pt-BR'); });
+  fill('loc-rel-locadora', forn, '<option value="">Todas</option>');
+  var resps=[], rset={};
+  (locacoes||[]).forEach(function(l){
+    var v=_lcRespTexto(l);
+    if(v&&v!=='—'&&!rset[v.toLowerCase()]){ rset[v.toLowerCase()]=1; resps.push({v:v,l:v}); }
+  });
+  resps.sort(function(a,b){ return a.l.localeCompare(b.l,'pt-BR'); });
+  fill('loc-rel-resp', resps, '<option value="">Todos</option>');
+  var conts=(_lcContratosLista?_lcContratosLista():(contratos||[])).map(function(c){
+    return {v:c.id,l:c.nome||c.codigo||c.id};
+  });
+  fill('loc-rel-contrato', conts, '<option value="">Todos</option>');
+  var fils=(filiais||[]).filter(function(f){ return f.ativa!==false; }).map(function(f){
+    return {v:f.id,l:(f.codigo?f.codigo+' — ':'')+(f.nome||'')};
+  });
+  fill('loc-rel-filial', fils, '<option value="">Todas</option>');
+}
+
+function locRelContratoNome(cid){
+  if(!cid) return '(Sem contrato CENA)';
+  var c=(contratos||[]).find(function(x){ return String(x.id)===String(cid); });
+  return c?(c.nome||c.codigo||cid):String(cid);
+}
+function locRelStatusTexto(l){
+  if(typeof lcDispHasStatus==='function'){
+    if(lcDispHasStatus(l.disponibilidade,'Em uso')) return 'Em uso';
+    if(lcDispHasStatus(l.disponibilidade,'Em manutenção')) return 'Em manutenção';
+    if(lcDispHasStatus(l.disponibilidade,'Devolvido')) return 'Devolvido';
+    if(lcDispHasStatus(l.disponibilidade,'Extraviado')) return 'Extraviado';
+    if(lcDispHasStatus(l.disponibilidade,'Disponível')) return 'Disponível';
+  }
+  return l.disponibilidade||'—';
+}
+function locRelPrazoDias(l){
+  if(!l||!l.termino) return null;
+  return Math.round((new Date(l.termino+'T00:00:00')-new Date())/86400000);
+}
+function locRelPrazoLbl(l){
+  var d=locRelPrazoDias(l);
+  if(d===null) return '—';
+  if(d<0) return 'Vencido '+Math.abs(d)+'d';
+  if(d===0) return 'Hoje';
+  return d+' dias';
+}
+function locRelMoney(v){
+  return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+}
+function locRelExpandir(l){
+  var cq=typeof _lcParseContratoQtds==='function'?_lcParseContratoQtds(l.contrato_qtds):null;
+  var loc=typeof _lcLocadoraKey==='function'?_lcLocadoraKey(l):(l.locadora||'(Sem locadora)');
+  if(cq){
+    var keys=Object.keys(cq).filter(function(cid){ return Number(cq[cid])>0; });
+    if(keys.length){
+      return keys.map(function(cid){ return {l:l, contratoId:cid, qtd:Number(cq[cid]), locadora:loc}; });
+    }
+  }
+  return [{l:l, contratoId:l.contrato_id||'', qtd:Number(l.quantidade||1), locadora:loc}];
+}
+function locRelFiltrarBase(){
+  var qContr=(document.getElementById('loc-rel-contrato')||{}).value||'';
+  var qLoc=(document.getElementById('loc-rel-locadora')||{}).value||'';
+  var qResp=(document.getElementById('loc-rel-resp')||{}).value||'';
+  var qSt=(document.getElementById('loc-rel-status')||{}).value||'';
+  var qPz=(document.getElementById('loc-rel-prazo')||{}).value||'';
+  var qFil=(document.getElementById('loc-rel-filial')||{}).value||'';
+  var q=((document.getElementById('loc-rel-q')||{}).value||'').toLowerCase().trim();
+  var base=typeof filtrarFilial==='function'?filtrarFilial(locacoes||[]):(locacoes||[]);
+  return base.filter(function(l){
+    if(qLoc && (l.locadora||'')!==qLoc) return false;
+    if(qResp && _lcRespTexto(l).toLowerCase()!==qResp.toLowerCase()) return false;
+    if(qSt && !lcDispHasStatus(l.disponibilidade,qSt)) return false;
+    if(qFil){
+      if(l.filial_id){ if(String(l.filial_id)!==String(qFil)) return false; }
+      else return false;
+    }
+    if(q && (l.nome||'').toLowerCase().indexOf(q)<0) return false;
+    if(qContr){
+      var cq=_lcParseContratoQtds(l.contrato_qtds);
+      if(l.contrato_id!==qContr && !(cq&&cq.hasOwnProperty(qContr))) return false;
+    }
+    if(qPz){
+      var d=locRelPrazoDias(l);
+      if(qPz==='vencido' && !(d!==null && d<0)) return false;
+      if(qPz==='vencer' && !(d!==null && d>=0 && d<=30)) return false;
+      if(qPz==='vigente' && !(d===null || d>=0)) return false;
+    }
+    return true;
+  });
+}
+function locRelLinhas(){
+  var grupo=(document.getElementById('loc-rel-grupo')||{}).value||'detalhe';
+  var rows=[];
+  locRelFiltrarBase().forEach(function(l){
+    if(grupo==='detalhe'){
+      var cids=typeof _lcContratosFromLoc==='function'?_lcContratosFromLoc(l):[];
+      rows.push({
+        l:l,
+        contratoId:cids[0]||l.contrato_id||'',
+        contratoLbl:cids.length?cids.map(locRelContratoNome).join(' · '):locRelContratoNome(l.contrato_id||''),
+        qtd:Number(l.quantidade||1),
+        locadora:typeof _lcLocadoraKey==='function'?_lcLocadoraKey(l):(l.locadora||'(Sem locadora)')
+      });
+    } else {
+      locRelExpandir(l).forEach(function(r){
+        r.contratoLbl=locRelContratoNome(r.contratoId);
+        rows.push(r);
+      });
+    }
+  });
+  var qContr=(document.getElementById('loc-rel-contrato')||{}).value||'';
+  if(qContr && grupo!=='detalhe'){
+    rows=rows.filter(function(r){ return String(r.contratoId)===String(qContr); });
+  }
+  return {grupo:grupo, rows:rows};
+}
+function locRelValor(col, r){
+  var l=r.l||{};
+  switch(col){
+    case 'equipamento': return l.nome||'—';
+    case 'tipo': return l.tipo||'—';
+    case 'qtd': return r.qtd;
+    case 'locadora': return r.locadora||'—';
+    case 'numContrato': return l.numero_contrato||'—';
+    case 'contrato': return r.contratoLbl||locRelContratoNome(r.contratoId);
+    case 'responsavel': return _lcRespTexto(l);
+    case 'filial': return _lcFilialNome(l.filial_id)||'—';
+    case 'deposito': return _lcDepositoNome(l.deposito_id)||'—';
+    case 'status': return locRelStatusTexto(l);
+    case 'inicio': return l.inicio?(typeof fmtD==='function'?fmtD(l.inicio):l.inicio):'—';
+    case 'termino': return l.termino?(typeof fmtD==='function'?fmtD(l.termino):l.termino):'—';
+    case 'prazo': return locRelPrazoLbl(l);
+    case 'vUnit': return Number(l.valor_unitario||0);
+    case 'vTotal': return (Number(r.qtd)||0)*(Number(l.valor_unitario||0)) || Number(l.valor_locacao||0);
+    case 'seguro': return l.tem_seguro?'Sim':'Não';
+    default: return '';
+  }
+}
+function locRelFmt(col, val){
+  var def=LOC_REL_COLS.find(function(c){ return c.id===col; });
+  if(def&&def.num) return locRelMoney(val);
+  return val==null||val===''?'—':val;
+}
+function locRelAgrupar(rows, grupo){
+  var map={}, ordem=[];
+  rows.forEach(function(r){
+    var k;
+    if(grupo==='contrato') k=r.contratoLbl||locRelContratoNome(r.contratoId);
+    else if(grupo==='locadora') k=r.locadora||'(Sem locadora)';
+    else if(grupo==='juntos') k=(r.contratoLbl||locRelContratoNome(r.contratoId))+'||'+(r.locadora||'(Sem locadora)');
+    else k='__all__';
+    if(!map[k]){ map[k]=[]; ordem.push(k); }
+    map[k].push(r);
+  });
+  return ordem.map(function(k){
+    var parts=k.split('||');
+    return {
+      key:k,
+      titulo:grupo==='juntos' ? ('Contrato: '+parts[0]+'  ·  Locadora: '+parts[1]) : (k==='__all__'?'Detalhe':k),
+      rows:map[k]
+    };
+  });
+}
+
+var _locRelCache=null;
+function locRelGerar(){
+  locRelSalvarCols();
+  var data=locRelLinhas();
+  var cols=locRelColsAtivas();
+  if(!cols.length){ progShowToast('Marque ao menos uma coluna.','erro'); return; }
+  var grupos=locRelAgrupar(data.rows, data.grupo);
+  _locRelCache={cols:cols, grupos:grupos, grupo:data.grupo, rows:data.rows};
+  var box=document.getElementById('loc-rel-resultado');
+  if(!box) return;
+  if(!data.rows.length){
+    box.innerHTML='<div class="card" style="padding:1.5rem;text-align:center;color:#888">Nenhum equipamento para os filtros escolhidos.</div>';
+    return;
+  }
+  var th=cols.map(function(c){ return '<th style="padding:6px 8px;text-align:'+(c.num?'right':'left')+'">'+escHtml(c.lbl)+'</th>'; }).join('');
+  var html='<div class="card" style="padding:.85rem">'
+    +'<div style="font-size:12px;font-weight:700;margin-bottom:.6rem">'
+    +data.rows.length+' linha(s) · '+grupos.length+' grupo(s)</div>';
+  grupos.forEach(function(g){
+    var tQ=0, tV=0;
+    g.rows.forEach(function(r){ tQ+=Number(r.qtd)||0; tV+=Number(locRelValor('vTotal',r))||0; });
+    if(data.grupo!=='detalhe'){
+      html+='<div style="background:#EEF6EE;border:.5px solid #C8E6C9;border-radius:8px;padding:6px 10px;margin:8px 0 4px;font-size:12px;font-weight:700;color:#1B5E20">'
+        +escHtml(g.titulo)+' <span style="font-weight:500;color:#555"> · '+g.rows.length+' item(ns) · '+tQ+' un. · '+locRelMoney(tV)+'</span></div>';
+    }
+    html+='<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr>'+th+'</tr></thead><tbody>';
+    g.rows.forEach(function(r){
+      html+='<tr>'+cols.map(function(c){
+        var v=locRelValor(c.id,r);
+        var align=c.num?'right':'left';
+        return '<td style="padding:5px 8px;text-align:'+align+'">'+escHtml(String(locRelFmt(c.id,v)))+'</td>';
+      }).join('')+'</tr>';
+    });
+    html+='</tbody></table></div>';
+  });
+  var gQ=0,gV=0;
+  data.rows.forEach(function(r){ gQ+=Number(r.qtd)||0; gV+=Number(locRelValor('vTotal',r))||0; });
+  html+='<div style="margin-top:.75rem;font-size:12px;font-weight:700;text-align:right">Total geral: '+gQ+' un. · '+locRelMoney(gV)+'</div></div>';
+  box.innerHTML=html;
+}
+
+function locRelExportar(){
+  if(!_locRelCache||!_locRelCache.rows.length){
+    locRelGerar();
+    if(!_locRelCache||!_locRelCache.rows.length){ progShowToast('Nada para exportar.'); return; }
+  }
+  var cols=_locRelCache.cols;
+  var cab=cols.map(function(c){ return c.lbl; });
+  if(_locRelCache.grupo!=='detalhe') cab=['Grupo'].concat(cab);
+  var linhas=[];
+  _locRelCache.grupos.forEach(function(g){
+    g.rows.forEach(function(r){
+      var cells=cols.map(function(c){
+        var v=locRelValor(c.id,r);
+        return (c.num && typeof v==='number') ? Number(v).toFixed(2) : locRelFmt(c.id,v);
+      });
+      if(_locRelCache.grupo!=='detalhe') cells=[g.titulo].concat(cells);
+      linhas.push(cells);
+    });
+  });
+  if(typeof exportarXLS==='function'){
+    exportarXLS('locacoes_'+dataHoje(), cab, linhas, 'Equipamentos em locação');
+  }
+}
+
+function locRelImprimir(){
+  var el=document.getElementById('loc-rel-resultado');
+  if(!el||!el.innerHTML.trim()||el.innerText.indexOf('Nenhum equipamento')>=0){
+    progShowToast('Gere o relatório primeiro.'); return;
+  }
+  var w=window.open('','_blank');
+  if(!w){ progShowToast('Permita pop-up para imprimir.'); return; }
+  w.document.write('<html><head><title>Relatório de locações</title><style>'
+    +'body{font-family:Arial,sans-serif;font-size:12px;padding:16px}'
+    +'table{border-collapse:collapse;width:100%;margin-bottom:10px}'
+    +'th,td{border:1px solid #ccc;padding:4px 6px}'
+    +'th{background:#1a1a18;color:#fff;text-align:left}'
+    +'.card{border:none;padding:0}'
+    +'</style></head><body><h3>Equipamentos em locação</h3>'+el.innerHTML+'</body></html>');
+  w.document.close();
+  w.focus();
+  w.print();
+}
+
+
 
 function lcAtualizarDepositos(selectId, valorPreservar){
   var filSel  = document.getElementById('lc-fil');
@@ -141061,19 +141498,65 @@ function lcExcluirLocacao(lid){
   renderLocacoes();
   progShowToast('🗑 Equipamento removido da locação');
 }
-function _estoqueCodigoSku(e){
+function almCatalogoDaLinhaEstoque(e){
+  if(!e) return null;
+  var list = (typeof itens_catalogo!=='undefined'?itens_catalogo:[])||[];
+  if(e.item_id){
+    var byId = list.find(function(i){ return i && String(i.id)===String(e.item_id); });
+    if(byId) return byId;
+  }
   var cod = String(e.codigo||'').trim();
   var sku = String(e.sku||'').trim();
-  if((!cod||!sku) && typeof itens_catalogo!=='undefined'){
-    var ic = null;
-    if(e.item_id) ic = itens_catalogo.find(function(i){ return i.id===e.item_id; });
-    if(!ic && e.nome) ic = itens_catalogo.find(function(i){ return (i.nome||'').toLowerCase()===(e.nome||'').toLowerCase(); });
-    if(ic){
-      if(!cod) cod = String(ic.codigo||'').trim();
-      if(!sku) sku = String(ic.sku||'').trim();
-    }
+  if(cod){
+    var byCod = list.find(function(i){ return i && String(i.codigo||'').trim()===cod; });
+    if(byCod) return byCod;
   }
-  return {codigo:cod||'—', sku:sku||'—', codigoRaw:cod, skuRaw:sku};
+  if(sku){
+    var bySku = list.find(function(i){ return i && String(i.sku||'').trim()===sku; });
+    if(bySku) return bySku;
+  }
+  var nl = String(e.nome||'').trim().toLowerCase();
+  if(!nl) return null;
+  return list.find(function(i){ return i && String(i.nome||'').trim().toLowerCase()===nl; })||null;
+}
+async function almPropagarCatalogoNoEstoque(antes, depois){
+  if(!depois) return 0;
+  var patch = {};
+  if(depois.nome!=null) patch.nome = depois.nome;
+  if(depois.codigo!=null) patch.codigo = depois.codigo;
+  if(depois.sku!=null) patch.sku = depois.sku;
+  if(depois.tipo_item!=null) patch.tipo = depois.tipo_item;
+  if(depois.unidade_medida!=null) patch.unidade_medida = depois.unidade_medida;
+  var rows = (typeof estoque!=='undefined'?estoque:[]).filter(function(e){
+    if(!e) return false;
+    if(depois.id && String(e.item_id||'')===String(depois.id)) return true;
+    if(typeof almMatchEstoqueRef==='function'){
+      if(antes && almMatchEstoqueRef(e, antes)) return true;
+      if(almMatchEstoqueRef(e, depois)) return true;
+    }
+    return false;
+  });
+  var jobs = [];
+  rows.forEach(function(e){
+    Object.assign(e, patch);
+    if(!DEMO && e.id) jobs.push(sbUpdate('estoque', patch, 'id=eq.'+e.id));
+  });
+  if(jobs.length){
+    await Promise.all(jobs.map(function(p){
+      return Promise.resolve(p).catch(function(err){ console.warn('[catalogo→estoque]', err); });
+    }));
+  }
+  return rows.length;
+}
+function _estoqueCodigoSku(e){
+  var cat = typeof almCatalogoDaLinhaEstoque==='function' ? almCatalogoDaLinhaEstoque(e) : null;
+  var cod = String(e.codigo||'').trim();
+  var sku = String(e.sku||'').trim();
+  if(cat){
+    if(!cod) cod = String(cat.codigo||'').trim();
+    if(!sku) sku = String(cat.sku||'').trim();
+  }
+  return {codigo:cod||'—', sku:sku||'—', codigoRaw:cod, skuRaw:sku, cat:cat};
 }
 
 function estPeriodoPadrao(){
@@ -141552,7 +142035,8 @@ function estLinhaCalc(e, filtIni, filtFim){
     saldoAnt:saldoAnt, entradas:entradas, saidas:saidas, saldoAtual:saldoAtual,
     reserva:reserva, disponivel:disponivel, sMin:sMin, st:st, temMov:temMov,
     ghost:Number(res.ghost)||0,
-    un:e.unidade_medida||e.unidade||'UN',
+    un:(cs.cat&&cs.cat.unidade_medida)||e.unidade_medida||e.unidade||'UN',
+    nomeExib:(cs.cat&&cs.cat.nome)||e.nome||'',
     ultima:estUltimaMovData(e)
   };
 }
@@ -141571,7 +142055,9 @@ function estColetarLinhas(filtros){
     if(f.deposito && e.deposito_id!==f.deposito) return false;
     if(f.busca){
       var cs = _estoqueCodigoSku(e);
+      var nomeCat = (cs.cat&&cs.cat.nome)||'';
       if(!(e.nome||'').toLowerCase().includes(f.busca)
+        && !nomeCat.toLowerCase().includes(f.busca)
         && !cs.codigoRaw.toLowerCase().includes(f.busca)
         && !cs.skuRaw.toLowerCase().includes(f.busca)) return false;
     }
@@ -141696,7 +142182,7 @@ function renderEstoque(){
     return '<tr>'
       +'<td><span class="bdg info" style="font-size:10px">'+escHtml(tipoItemLabel?tipoItemLabel(e.tipo||''):(e.tipo||'—'))+'</span></td>'
       +'<td style="font-size:11px;color:#666;font-family:monospace">'+escHtml(row.cs.codigo)+'</td>'
-      +'<td style="font-weight:600">'+escHtml(e.nome||'')+'</td>'
+      +'<td style="font-weight:600">'+escHtml(row.nomeExib||e.nome||'')+'</td>'
       +'<td style="font-size:11px;color:#888">'+escHtml(row.un)+'</td>'
       +'<td style="font-size:11px">'+escHtml(row.localLabel)+'</td>'
       +'<td style="text-align:right;color:'+corAnt+'">'+row.saldoAnt+'</td>'
@@ -150492,13 +150978,15 @@ function openEntradaEstoque(tipoPre){
       : sbFetch('catalogo_materiais',{order:'descricao'}).then(function(r){
           if(r&&r.length) catalogo_materiais=r;
         }).catch(function(){}));
+  montarModal();
   if(cargas.length){
-    Promise.all(cargas).then(montarModal).catch(function(){ montarModal(); });
-  } else {
-    montarModal();
+    Promise.all(cargas).then(function(){
+      if(!document.getElementById('ee-btn-salvar')) return;
+      if(typeof almAtualizarDepEntrada==='function') almAtualizarDepEntrada();
+      if(typeof eeFiltrarItensAdd==='function') eeFiltrarItensAdd();
+    }).catch(function(){});
   }
 }
-
 function almAtualizarDepEntrada(){
   var fid = (document.getElementById('ee-filial')||{}).value||'';
   var sel = document.getElementById('ee-dep'); if(!sel) return;
@@ -150891,13 +151379,20 @@ async function salvarEntrada(){
   } else {
     if(!DEMO){
       try{
-        var freshEst = await sbFetchAll('estoque',{order:'nome.asc',maxPages:20});
-        if(freshEst&&freshEst.length) estoque = freshEst;
-        await almConsolidarEstoqueTodos();
-        window._almEstoqueConsolidado = true;
-        window._almLedgerEstoqueOk = false;
-        _almPLCarregado=false;
-        await new Promise(function(r){ almCarregarProdutosLotes(r); });
+        var precisaLote=false;
+        for(var _ci=0; _ci<resultadosOk.length; _ci++){
+          var _rr=resultadosOk[_ci];
+          var _it=(itens_catalogo||[]).find(function(x){ return String(x.id)===String(_rr.itemId||''); });
+          if(_it && typeof almConsolidarEstoqueItemDeposito==='function'){
+            await almConsolidarEstoqueItemDeposito(_it, _rr.depositoId||ctx.depId, ctx.filId);
+          }
+          var _tn=typeof eeNormalizaTipo==='function'?eeNormalizaTipo((_it&&_it.tipo_item)||''):'';
+          if(_tn==='epi'||_tn==='epc'||_tn==='vestimenta') precisaLote=true;
+        }
+        if(precisaLote){
+          _almPLCarregado=false;
+          await new Promise(function(r){ almCarregarProdutosLotes(r); });
+        }
       }catch(e){ console.warn('refresh estoque pós-entrada:', e); }
     }
     renderEstoque();
@@ -151201,7 +151696,15 @@ async function almConsolidarEstoqueItemDeposito(itemCat, depId, filId){
   return {ok:true, merged:merged};
 }
 
-async function almConsolidarEstoqueTodos(){
+async function almConsolidarEstoqueTodos(opts){
+  opts = opts || {};
+  var porChave = {};
+  (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){
+    var k = String(e.codigo||e.nome||'').toLowerCase();
+    if(!k) return;
+    if(!porChave[k]) porChave[k]=[];
+    porChave[k].push(e);
+  });
   var refs = {};
   (typeof itens_catalogo!=='undefined'?itens_catalogo:[]).forEach(function(it){
     var k = String(it.codigo||it.nome||it.id).toLowerCase();
@@ -151212,13 +151715,17 @@ async function almConsolidarEstoqueTodos(){
     if(k && !refs[k]) refs[k] = {nome:e.nome, codigo:e.codigo};
   });
   var keys = Object.keys(refs);
-  for(var i=0;i<keys.length;i++){
+  for(var i=0; i<keys.length; i++){
     var it = refs[keys[i]];
+    var kEst = String((it&&(it.codigo||it.nome))||keys[i]).toLowerCase();
+    var rows = porChave[kEst]||[];
+    var precisa = rows.length>1 || rows.some(function(e){ return !e.deposito_id; });
+    if(!precisa && !opts.reconciliar) continue;
     await almConsolidarEstoqueItemDeposito(it, null);
-    if(it.id){
+    if(opts.reconciliar && it.id){
       var depMap = almDepositosComSaldoItem(it);
       var depKeys = Object.keys(depMap);
-      for(var j=0;j<depKeys.length;j++){
+      for(var j=0; j<depKeys.length; j++){
         if(depKeys[j]==='__sem__') continue;
         await almReconciliarEstoqueItem(it, depKeys[j], {permitirAcrescentar:false, permitirReduzir:false});
       }
