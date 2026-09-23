@@ -1981,9 +1981,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.123"></script>
-<script src="sesmt-alm-shell.js?v=8.1.123"></script>
-<script src="prog-projetos-shell.js?v=8.1.123"></script>
+<script src="portaria-offline.js?v=8.1.124"></script>
+<script src="sesmt-alm-shell.js?v=8.1.124"></script>
+<script src="prog-projetos-shell.js?v=8.1.124"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -44632,10 +44632,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.123',
+  numero: '8.1.124',
   data:   '23/09/2026',
   build:  '20260923-1935',
   log: [
+    {v:'8.1.124', d:'23/09/2026', itens:[
+      'Estoque: restaura salvarEntrada / eeProcessarEntradaLinha / eeGarantirItemCatalogo (botao Registrar entrada). Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.123', d:'23/09/2026', itens:[
       'Almoxarifado: entrada/pesquisa de itens deixa de remontar o catalogo a cada tecla (cache + indice + debounce). Sem SQL. HOMOLOGACAO.',
     ]},
@@ -149217,6 +149220,393 @@ async function eeProcessarEntradaLinhaSap(linha, ctx, seq){
     movId:mov.id, itemId:mat.material_id||null, depositoId:null, estoqueId:null,
     saldoAntes:null, saldoDepois:null};
 }
+/** Garante registro em itens_catalogo antes de dar entrada no estoque patrimonial. */
+async function eeGarantirItemCatalogo(linha){
+  var rawId = String(linha.item_id||'');
+  var nome = (linha.nome||'').trim();
+  if(!nome) return {ok:false, msg:'Linha sem nome de item'};
+
+  if(rawId.indexOf('matsap-')===0){
+    return {ok:false, msg:nome+': material SAP — selecione destino "Materiais SAP"'};
+  }
+
+  if(rawId.indexOf('unicat-')===0){
+    var uidUni = rawId.slice(7);
+    var uCat = (uniformesCat||[]).find(function(x){ return String(x.id)===String(uidUni); });
+    if(uCat){
+      linha.tipo = linha.tipo || 'vestimenta';
+      if(typeof _uniOptLabel==='function' && !linha.nome) linha.nome = _uniOptLabel(uCat);
+      var csU = typeof _uniCodigoSku==='function' ? _uniCodigoSku(uCat) : {codigoRaw:'', skuRaw:''};
+      if(!linha.codigo && csU.codigoRaw) linha.codigo = csU.codigoRaw;
+      if(!linha.sku && csU.skuRaw) linha.sku = csU.skuRaw;
+      nome = (linha.nome||'').trim();
+    }
+  }
+
+  if(rawId.indexOf('epicat-')===0){
+    var catIdEpi = rawId.slice(7);
+    var catEpi = (_epiCatalogo||[]).find(function(e){return e.id===catIdEpi;});
+    if(catEpi){
+      if(!linha.nome) linha.nome = catEpi.nome;
+      if(!linha.ca && catEpi.ca) linha.ca = catEpi.ca;
+      linha.tipo = linha.tipo || eeNormalizaTipo(catEpi.tipo==='EPC'?'epc':'epi');
+      nome = (linha.nome||'').trim();
+    }
+  }
+
+  var itemId = eeResolverCatalogoId(rawId, linha);
+  if(itemId){
+    var itemCat = (itens_catalogo||[]).find(function(e){return e.id===itemId;});
+    if(itemCat) return {ok:true, itemId:itemId, itemCat:itemCat, created:false};
+  }
+
+  var cod = (linha.codigo||'').trim();
+  var sku = (linha.sku||'').trim();
+  var nl = nome.toLowerCase();
+  var found = (itens_catalogo||[]).find(function(x){
+    if(x.ativo===false) return false;
+    if(cod && String(x.codigo||'').trim()===cod) return true;
+    if(sku && String(x.sku||'').trim()===sku) return true;
+    return (x.nome||'').trim().toLowerCase()===nl;
+  });
+  if(found) return {ok:true, itemId:found.id, itemCat:found, created:false};
+
+  // Preferir tipo da linha; se vazio, inferir (uniforme com CA continua vestimenta)
+  var tipoNorm = eeNormalizaTipo(linha.tipo) || eeInferirTipo({nome:nome, ca:linha.ca, tipo:linha.tipo}) || 'material';
+  if(!eeNormalizaTipo(linha.tipo) && eePareceUniformePorNome(nome) && tipoNorm==='epi')
+    tipoNorm = 'vestimenta';
+  var tipo = almTipoCodigo(tipoNorm) || 'MATERIAL';
+  var isPneu = tipoNorm==='pneu';
+  var payload = {
+    codigo: cod,
+    sku: sku,
+    nome: nome,
+    tipo_item: tipo,
+    unidade_medida: (linha.unidade||'UN').trim()||'UN',
+    preco_unitario: parseFloat(linha.custo)||0,
+    descricao: '',
+    controla_estoque: true,
+    controla_numero_serie: !isPneu && tipoNorm==='ferramenta',
+    controla_validade: tipoNorm==='epi' || tipoNorm==='consumivel' || tipoNorm==='vestimenta',
+    controla_ca: !!(linha.ca) || tipoNorm==='epi' || tipoNorm==='epc' || tipoNorm==='vestimenta',
+    controla_calibracao: tipoNorm==='ferramenta',
+    controla_devolucao: ['ferramenta','epc','epi','vestimenta'].indexOf(tipoNorm)>=0,
+    controla_manutencao: tipoNorm==='ferramenta',
+    eh_pneu: isPneu,
+    ativo: true
+  };
+  // CA NÃO vai em itens_catalogo (coluna inexistente) — fica no estoque/lote via almEntradaLote
+
+  if(DEMO){
+    var novoDemo = Object.assign({id:'itm'+Date.now()+Math.random().toString(36).slice(2,5)}, payload);
+    itens_catalogo.push(novoDemo);
+    return {ok:true, itemId:novoDemo.id, itemCat:novoDemo, created:true};
+  }
+  var ins = await sbInsert('itens_catalogo', payload);
+  if(!ins || !ins[0]) return {ok:false, msg:'Falha ao cadastrar "'+nome+'" no catálogo'};
+  itens_catalogo.push(ins[0]);
+  return {ok:true, itemId:ins[0].id, itemCat:ins[0], created:true};
+}
+
+async function eeProcessarEntradaLinha(linha, ctx, seq){
+  var qtd = parseFloat(linha.qtd) || 0;
+  if(qtd <= 0) return {ok:false, msg:(linha.nome||'Item')+': quantidade inválida'};
+  var filId = ctx.filId, depId = ctx.depId, forn = ctx.forn, lote = ctx.lote;
+  var obsEntrada = ctx.obs || null, numeroRc = ctx.numero_rc || '';
+  var custo = parseFloat(linha.custo) || 0;
+  var uid = 'mov'+(Date.now())+'-'+(seq||0);
+
+  var garant = await eeGarantirItemCatalogo(linha);
+  if(!garant.ok) return {ok:false, msg:garant.msg};
+  var itemId = garant.itemId;
+  var itemCat = garant.itemCat;
+
+  // Se tem CA sem validade na linha, busca na base CAEPI
+  var caNum = String(linha.ca||'').trim();
+  var caVal = String(linha.ca_validade||'').trim().slice(0,10) || null;
+  if(caNum && !caVal && typeof caepiBuscarCa==='function'){
+    try{
+      var lkCa = await caepiBuscarCa(caNum);
+      if(lkCa && lkCa.encontrado && lkCa.validade){
+        caVal = String(lkCa.validade).slice(0,10);
+        linha.ca_validade = caVal;
+      }
+    }catch(eCa){ console.warn('[entrada] CAEPI lookup falhou', caNum, eCa); }
+  }
+  if(!filId && depId && typeof depositos!=='undefined'){
+    var depFil = depositos.find(function(d){ return String(d.id)===String(depId); });
+    if(depFil && depFil.filial_id) filId = depFil.filial_id;
+  }
+
+  var fogosListPre = null;
+  if(pneusEhItemPneu(itemCat) || pneusEhItemPneu({tipo_item:linha.tipo, tipo:linha.tipo})){
+    fogosListPre = Array.isArray(linha.fogos) ? linha.fogos : pneusParseFogosTexto(linha.fogos||'');
+    var valFogPre = pneusValidarListaFogosEntrada(fogosListPre, qtd);
+    if(!valFogPre.ok) return {ok:false, msg:itemCat.nome+': '+valFogPre.msg};
+    fogosListPre = valFogPre.fogos;
+  }
+
+  var payload = {
+    item_id: itemId, tipo_mov: 'entrada', quantidade: qtd,
+    deposito_id: depId||null, filial_id: filId||null,
+    contrato_id: null,
+    fornecedor: forn, nota_fiscal: lote,
+    valor_unitario: custo, data_mov: dataHoje(),
+    motivo: ctx.motivo || (numeroRc ? ('Entrada NF — RC '+numeroRc) : 'Entrada de estoque'),
+    obs: almAnexarObsOrigem(obsEntrada, forn ? 'externo' : 'externo', null),
+    responsavel_id: usuarioLogado?usuarioLogado.id:null,
+    status: 'Disponível'
+  };
+  var _movId = uid;
+  if(DEMO){
+    movimentacoes_itens.push(Object.assign({id:uid}, payload));
+  } else {
+    var insMov = await sbInsert('movimentacoes_itens', payload);
+    if(!insMov) return {ok:false, msg:itemCat.nome+': falha ao registrar movimento'};
+    movimentacoes_itens.push(Object.assign({}, payload, insMov[0]));
+    if(insMov[0] && insMov[0].id) _movId = insMov[0].id;
+  }
+  // Atualiza só preço no catálogo — CA fica no estoque/lote, não em itens_catalogo
+  if(custo>0){
+    var catPatch = { preco_unitario: custo };
+    if(DEMO){
+      var idxD = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+      if(idxD>=0) Object.assign(itens_catalogo[idxD], catPatch);
+    } else {
+      var okCat = await sbUpdate('itens_catalogo', catPatch, 'id=eq.'+itemId);
+      if(!okCat) return {ok:false, msg:itemCat.nome+': falha ao atualizar catálogo'};
+      var idxC = itens_catalogo.findIndex(function(x){return x.id===itemId;});
+      if(idxC>=0) Object.assign(itens_catalogo[idxC], catPatch);
+    }
+  }
+  var saldoRes = await almAtualizarSaldoEstoquePatrimonio({
+    itemCat:itemCat, qtd:qtd, custo:custo, seq:seq,
+    filId:filId, depId:depId,
+    forn:forn, lote:lote, ca:caNum||null, ca_validade:caVal||null,
+    codigo:linha.codigo||itemCat.codigo, sku:linha.sku||itemCat.sku
+  });
+  if(!saldoRes.ok) return {ok:false, msg:saldoRes.msg||itemCat.nome+': falha no estoque'};
+  var tipoLin=eeNormalizaTipo(linha.tipo||itemCat.tipo_item);
+  if((tipoLin==='epi'||tipoLin==='epc'||tipoLin==='vestimenta') && caNum){
+    var tipoAlm=tipoLin==='epc'?'EPC':(tipoLin==='vestimenta'?'VESTIMENTA':'EPI');
+    var prod=almProdutoPorNome(linha.nome, tipoAlm);
+    if(!prod){
+      var cr=await almCriarProdutoMestre(linha.nome, tipoAlm, null);
+      if(cr.ok) prod=cr.produto;
+    }
+    if(prod){
+      await almEntradaLote({
+        produto_id:prod.id, ca:caNum, ca_validade:caVal||null, qtd:qtd,
+        deposito_id:depId, filial_id:filId, fornecedor_nome:forn, numero_nf:lote,
+        lote_fornecedor:lote, origem:'entrada_estoque', observacao:'Entrada patrimonial NF'
+      });
+    }
+  }
+  if(fogosListPre){
+    var rPn = await pneusCriarDaEntradaAlmox({
+      fogos: fogosListPre,
+      itemCat: itemCat,
+      estoqueId: saldoRes.row ? saldoRes.row.id : null,
+      depositoId: depId,
+      filialId: filId,
+      custo: custo
+    });
+    if(!rPn.ok) return {ok:false, msg:itemCat.nome+': saldo OK, falha pneus — '+(rPn.msg||'erro')+'. Reprocesse o vínculo sem nova entrada.'};
+    if(rPn.erros && rPn.erros.length) console.warn('pneus entrada parcial', rPn);
+  }
+  return {ok:true, nome:itemCat.nome, qtd:qtd, novo:garant.created,
+    sap:false, movId:_movId, itemId:itemId, depositoId:depId||null,
+    estoqueId:(saldoRes && saldoRes.row ? saldoRes.row.id : null),
+    saldoAntes:(saldoRes && saldoRes.saldoAntes!=null ? saldoRes.saldoAntes : null),
+    saldoDepois:(saldoRes && saldoRes.row && saldoRes.row.quantidade!=null ? saldoRes.row.quantidade
+      : (saldoRes && saldoRes.saldo!=null ? saldoRes.saldo : null))};
+}
+
+async function salvarEntrada(){
+  eeSyncLinhasFromDOM();
+  var linhas = eeColetarLinhas().filter(function(l){ return (l.nome||'').trim() && (parseFloat(l.qtd)||0)>0; });
+  if(!linhas.length){ alert('Adicione ao menos um item com nome e quantidade.'); return; }
+
+  var dest = await eeConfirmarDestinoEntradaSalvar(linhas);
+  if(!dest) return;
+
+  // Pré-validação fogos PNEU (falha cedo — sem movimento/saldo)
+  if(dest==='patrimonial'){
+    await pneusGarantirDadosCarregados();
+    for(var pi=0; pi<linhas.length; pi++){
+      var L = linhas[pi];
+      var catPrev = L.item_id ? (itens_catalogo||[]).find(function(x){return String(x.id)===String(L.item_id);}) : null;
+      var ehP = pneusEhItemPneu(catPrev) || pneusEhItemPneu({tipo_item:L.tipo, tipo:L.tipo});
+      if(!ehP) continue;
+      var fogosPre = Array.isArray(L.fogos) ? L.fogos : pneusParseFogosTexto(L.fogos||'');
+      var vPre = pneusValidarListaFogosEntrada(fogosPre, L.qtd);
+      if(!vPre.ok){
+        alert('Linha "'+(L.nome||'PNEU')+'": '+vPre.msg);
+        return;
+      }
+      L.fogos = vPre.fogos;
+    }
+    // Unicidade entre linhas PNEU da mesma NF
+    var allFog={}, dupCross=null;
+    linhas.forEach(function(L){
+      var cat2 = L.item_id ? (itens_catalogo||[]).find(function(x){return String(x.id)===String(L.item_id);}) : null;
+      if(!(pneusEhItemPneu(cat2)||pneusEhItemPneu({tipo_item:L.tipo,tipo:L.tipo}))) return;
+      (L.fogos||[]).forEach(function(f){
+        var k=String(f).toLowerCase();
+        if(allFog[k]) dupCross=f; else allFog[k]=true;
+      });
+    });
+    if(dupCross){ alert('Fogo duplicado entre linhas da entrada: "'+dupCross+'"'); return; }
+  }
+
+  var fornInfo = eeObterFornecedorEntrada();
+  var rc = ((document.getElementById('ee-rc')||{}).value||'').trim();
+  var obsExtra = ((document.getElementById('ee-obs')||{}).value||'').trim();
+  var motivoEnt = ((document.getElementById('ee-motivo')||{}).value||'').trim() || 'Compra';
+
+  if(dest==='patrimonial'){
+    var depEntrada = (document.getElementById('ee-dep')||{}).value||'';
+    if(!depEntrada){ alert('Selecione o local de entrada (depósito destino).'); return; }
+  } else {
+    var contSap = (document.getElementById('ee-cont-sap')||{}).value||'';
+    if(!contSap){ alert('Selecione o contrato para entrada SAP.'); return; }
+  }
+
+  var ctx = {
+    destino: dest,
+    filId: (document.getElementById('ee-filial')||{}).value||null,
+    depId: (document.getElementById('ee-dep')||{}).value||null,
+    contrato_id: dest==='sap' ? ((document.getElementById('ee-cont-sap')||{}).value||null) : null,
+    forn: fornInfo.fornecedor,
+    fornecedor_id: fornInfo.fornecedor_id,
+    lote: (document.getElementById('ee-lote')||{}).value||'',
+    numero_rc: rc,
+    motivo: motivoEnt,
+    obs: eeMontarObsEntrada(rc, obsExtra, ''),
+    data_mov: dataHoje()
+  };
+
+  var ok=0, erros=[], nomes=[], novosCat=0, resultadosOk=[];
+  var btn = document.getElementById('ee-btn-salvar');
+  if(btn){ btn.disabled=true; btn.textContent='Salvando...'; }
+
+  // ── ALM-NF-1 · persistência documental da NF (upload + registro ANTES dos movimentos) ──
+  var _nfId=null, _nfMeta=null, _nfLib=window._eeNfDupLiberada||null;
+  if(window._eeNfFile && typeof almNfMetaDoForm==='function'){
+    _nfMeta = almNfMetaDoForm();
+    // Sonda REAL de existência das tabelas (o cache marca disponível mesmo em 404).
+    // Se as tabelas ainda não existem, a entrada segue SEM persistir a NF —
+    // nunca bloqueia a entrada antes de aplicar sql_alm_nf_digital_fase_1.sql.
+    if(window._almNfSubsistema===undefined){
+      if(DEMO){ window._almNfSubsistema=true; }
+      else{
+        try{
+          var _prb = await fetch(SB.url+'/rest/v1/alm_notas_fiscais?select=id&limit=1',
+            {headers:{apikey:SB.key, Authorization:'Bearer '+(window._sbAuthToken||SB.key)}});
+          window._almNfSubsistema = (_prb.status<400);
+        }catch(_ep){ window._almNfSubsistema=false; }
+      }
+    }
+    if(!window._almNfSubsistema){
+      console.warn('[ALM-NF] tabelas ausentes — entrada segue SEM persistir NF (aplique sql_alm_nf_digital_fase_1.sql)');
+    } else {
+      var dupChk = await almNfChecarDuplicidade(_nfMeta);
+      if(!dupChk.ok && dupChk.tipo!=='indisponivel' && (dupChk.bloqueado || !_nfLib)){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        almNfMostrarDuplicidade(dupChk, 'salvar');
+        return;
+      }
+      var _nfUp = await almNfUploadArquivo(window._eeNfFile);
+      if(!_nfUp || !_nfUp.ok){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.\n\n'+((_nfUp&&_nfUp.msg)||''));
+        return;
+      }
+      _nfUp.hash = await almNfHashFile(window._eeNfFile);
+      var _nfRec = await almNfCriarRegistro(_nfMeta, _nfUp, ctx, linhas);
+      if(!_nfRec || !_nfRec.id){
+        if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+        alert('Não foi possível salvar a NF. A entrada não foi concluída.');
+        return;
+      }
+      _nfId = _nfRec.id;
+    }
+  }
+
+  if(dest==='sap' && !DEMO){
+    await almRecarregarMovimentosSap(ctx.contrato_id);
+  }
+  try {
+    for(var i=0;i<linhas.length;i++){
+      var r = dest==='sap'
+        ? await eeProcessarEntradaLinhaSap(linhas[i], ctx, i)
+        : await eeProcessarEntradaLinha(linhas[i], ctx, i);
+      if(r.ok){ ok++; nomes.push(r.qtd+'x '+r.nome); if(r.novo) novosCat++; resultadosOk.push(r); }
+      else erros.push(r.msg);
+    }
+  } catch(e){
+    console.error('salvarEntrada:', e);
+    erros.push((e&&e.message)||String(e));
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent='📥 Registrar entrada'; }
+  }
+
+  if(!ok){
+    alert('Nenhum item registrado.\n\n'+(erros.join('\n')||'Verifique os dados.'));
+    if(erros.length) progShowToast('❌ Entrada não registrada', 'erro');
+    return;
+  }
+
+  // ── ALM-NF-1 · vincular os movimentos criados à NF + auditoria ──
+  if(_nfId){
+    for(var _vi=0; _vi<resultadosOk.length; _vi++){
+      try{ await almNfVincularMov(_nfId, resultadosOk[_vi], 'entrada'); }
+      catch(_eV){ console.warn('[ALM-NF] vínculo mov', _eV); }
+    }
+    try{
+      await almNfInserirEvento(_nfId, 'ENTRADA_REGISTRADA', ok+' movimento(s) vinculado(s) à NF', {movimentos:resultadosOk.length, destino:ctx.destino});
+      if(_nfLib) await almNfInserirEvento(_nfId, 'DUPLICIDADE_LIBERADA_MANUALMENTE', (_nfLib.motivo||'')+' · '+(_nfLib.justificativa||''), _nfLib);
+    }catch(_eEv){ console.warn('[ALM-NF] evento', _eEv); }
+    almNfInvalidateCache();
+    window._eeNfFile=null; window._eeNfBase64=null; window._eeNfParsed=null; window._eeNfDupLiberada=null;
+  }
+
+  closeModal();
+  if(dest==='sap'){
+    await almRecarregarMovimentosSap(ctx.contrato_id);
+    if(typeof almRenderMetricas==='function') almRenderMetricas();
+    if(typeof almRender==='function') almRender();
+  } else {
+    if(!DEMO){
+      try{
+        var freshEst = await sbFetchAll('estoque',{order:'nome.asc',maxPages:20});
+        if(freshEst&&freshEst.length) estoque = freshEst;
+        await almConsolidarEstoqueTodos();
+        window._almEstoqueConsolidado = true;
+        window._almLedgerEstoqueOk = false;
+        _almPLCarregado=false;
+        await new Promise(function(r){ almCarregarProdutosLotes(r); });
+      }catch(e){ console.warn('refresh estoque pós-entrada:', e); }
+    }
+    renderEstoque();
+    if(typeof renderItens==='function') renderItens();
+  }
+  if(_sesmtAbaAtiva==='entradas' && typeof almRenderDashboard==='function') almRenderDashboard();
+
+  var msg = dest==='sap'
+    ? '✅ '+ok+' item(ns) registrados no estoque SAP'+(ctx.lote?' · NF '+ctx.lote:'')
+    : '✅ '+ok+' item(ns) registrados no estoque patrimonial'+(ctx.lote?' · NF '+ctx.lote:'')
+      +(novosCat?' · '+novosCat+' novo(s) no catálogo':'');
+  if(erros.length) msg += ' · '+erros.length+' falha(s)';
+  progShowToast(msg);
+  if(erros.length){
+    console.warn('Entrada parcial:', erros);
+    alert('Alguns itens falharam:\n\n'+erros.join('\n'));
+  }
+}
+
+// ── NOVA FERRAMENTA ────────────────────────────────────────────────
+
 var _eeCatBuscaCache = {key:'', lista:null};
 function eeInvalidarCatalogoBusca(){ _eeCatBuscaCache = {key:'', lista:null}; }
 function eeCatalogoBuscaCacheKey(){
