@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.119"></script>
-<script src="sesmt-alm-shell.js?v=8.1.119"></script>
-<script src="prog-projetos-shell.js?v=8.1.119"></script>
+<script src="portaria-offline.js?v=8.1.120"></script>
+<script src="sesmt-alm-shell.js?v=8.1.120"></script>
+<script src="prog-projetos-shell.js?v=8.1.120"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43920,10 +43920,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.119',
+  numero: '8.1.120',
   data:   '23/09/2026',
-  build:  '20260923-1725',
+  build:  '20260923-1755',
   log: [
+    {v:'8.1.120', d:'23/09/2026', itens:[
+      'Portaria: some de novo a duplicata de saida/retorno (copia local+servidor ou Em campo + Retornado). Junta placa+horario+equipe, ignora KM na chave e oculta o clone. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.119', d:'23/09/2026', itens:[
       'Portaria: apos Ajustar KM, o valor corrigido vira a base das proximas saidas (odometro do veiculo + ultimo registro). Clone/data sem T nao volta o KM antigo. Sem SQL. HOMOLOGACAO.',
     ]},
@@ -83941,6 +83944,7 @@ function portRenderRetorno(){
     }
   }
 
+  if(typeof portDedupSaidasMemoria==='function') portDedupSaidasMemoria();
   var quadro = portQuadroEquipesTurno(data, cid, filId);
   var idsCampo = {};
   var placasCampo = {};
@@ -83962,6 +83966,10 @@ function portRenderRetorno(){
     if(idsCampo[String(r.id||'')]) return;
     var pl=portNormPlaca(r.placa);
     if(pl && placasCampo[pl]) return;
+    var cloneRet=(frt_portaria||[]).some(function(x){
+      return x && x.status==='Retornado' && !x.deleted_at && portNormPlaca(x.placa)===pl && typeof portSaidaMesmoMinuto==='function' && portSaidaMesmoMinuto(x,r);
+    });
+    if(cloneRet) return;
     var ds=portDiaLocal(r.data_saida);
     if(ds!==data && !portEhViradaNoite(r, data)) return;
     var eq=portResolverEquipeSaida(r, data);
@@ -83988,6 +83996,15 @@ function portRenderRetorno(){
   }).map(function(r){
     var eq=portResolverEquipeSaida(r, data);
     return {eq:eq, saida:r, comp:portCompDaEquipeSaida(eq, r, data)};
+  });
+  var seenRet={};
+  retornaram=retornaram.filter(function(item){
+    var r=item&&item.saida?item.saida:item;
+    var k=(typeof portSaidaChaveDedup==='function'&&portSaidaChaveDedup(r))||(typeof portSaidaChavePlacaMinuto==='function'&&portSaidaChavePlacaMinuto(r))||String(r&&r.id||'');
+    if(!k) return true;
+    if(seenRet[k]) return false;
+    seenRet[k]=true;
+    return true;
   });
 
   function chipRet(item, tipo){
@@ -84912,9 +84929,30 @@ function portSaidaChaveDedup(p){
   if(!pl) return '';
   var min=portSaidaMinutoLocal(p);
   if(!min) return '';
-  var km=p.km_saida;
-  if(km!=null && km!=='') return pl+'|'+min+'|km:'+String(km);
   return pl+'|'+min+'|'+portEquipeChaveSaida(p);
+}
+function portSaidaChavePlacaMinuto(p){
+  if(!p) return '';
+  var pl=typeof portNormPlaca==='function'?portNormPlaca(p.placa):String(p.placa||'').toUpperCase();
+  var min=portSaidaMinutoLocal(p);
+  if(!pl||!min) return '';
+  return pl+'|'+min;
+}
+function portSaidaMesmoMinuto(a,b){
+  if(!a||!b) return false;
+  var ma=portSaidaMinutoLocal(a), mb=portSaidaMinutoLocal(b);
+  if(ma && mb && ma===mb) return true;
+  var ta=typeof portKmParseTs==='function'?portKmParseTs(a.data_saida):new Date(a.data_saida||'').getTime();
+  var tb=typeof portKmParseTs==='function'?portKmParseTs(b.data_saida):new Date(b.data_saida||'').getTime();
+  if(ta && tb && !isNaN(ta) && !isNaN(tb) && Math.abs(ta-tb)<=120000) return true;
+  var sa=String(a.data_saida||'').replace(' ','T');
+  var sb=String(b.data_saida||'').replace(' ','T');
+  var rawA=sa.slice(11,16), rawB=sb.slice(11,16);
+  var locA=ma?ma.slice(11,16):'', locB=mb?mb.slice(11,16):'';
+  if(rawA && locA && rawA===locB) return true;
+  if(rawB && locB && rawB===locA) return true;
+  if(rawA && rawB && rawA===rawB && sa.slice(0,10) && sa.slice(0,10)===sb.slice(0,10)) return true;
+  return false;
 }
 function portFotoScoreSaida(v){
   var s=typeof portFotoSrcValido==='function'?portFotoSrcValido(v):'';
@@ -85004,33 +85042,56 @@ function portSuprimirCloneSaida(p){
 }
 function portDedupSaidasMemoria(){
   if(!frt_portaria||!frt_portaria.length) return;
-  var byId={}, byKey={}, keep=[], losers=[];
+  var byId={}, byKey={}, byPm={}, keep=[], losers=[];
+  function keepWinner(prev, p, storeKey, store){
+    var w=portFundirSaidas(prev, p);
+    var ix=keep.indexOf(prev);
+    if(ix>=0) keep[ix]=w;
+    if(w.id) byId[String(w.id)]=w;
+    var k0=portSaidaChaveDedup(w); if(k0) byKey[k0]=w;
+    var pm0=portSaidaChavePlacaMinuto(w); if(pm0) byPm[pm0]=w;
+    var l2=String(prev.id||'')!==String(w.id||'')?prev:(String(p.id||'')!==String(w.id||'')?p:null);
+    if(l2 && l2!==w && String(l2.id||'') && String(l2.id)!==String(w.id||'')) losers.push(l2);
+    if(store && storeKey) store[storeKey]=w;
+    return w;
+  }
   frt_portaria.forEach(function(p){
-    if(!p) return;
+    if(!p || p.deleted_at) return;
     if(p.id && byId[String(p.id)]){
-      var prev=byId[String(p.id)];
-      var w=portFundirSaidas(prev, p);
-      var ix=keep.indexOf(prev);
-      if(ix>=0) keep[ix]=w;
-      byId[String(w.id||p.id)]=w;
-      var k0=portSaidaChaveDedup(w); if(k0) byKey[k0]=w;
+      keepWinner(byId[String(p.id)], p);
       return;
     }
     var k=portSaidaChaveDedup(p);
     if(k && byKey[k]){
-      var prev2=byKey[k];
-      var w2=portFundirSaidas(prev2, p);
-      var ix2=keep.indexOf(prev2);
-      if(ix2>=0) keep[ix2]=w2;
-      byKey[k]=w2;
-      if(w2.id) byId[String(w2.id)]=w2;
-      var l2=String(prev2.id||'')!==String(w2.id||'')?prev2:(String(p.id||'')!==String(w2.id||'')?p:null);
-      if(l2 && l2!==w2 && String(l2.id||'') && String(l2.id)!==String(w2.id||'')) losers.push(l2);
+      keepWinner(byKey[k], p, k, byKey);
+      return;
+    }
+    var pm=portSaidaChavePlacaMinuto(p);
+    if(pm && byPm[pm]){
+      var prevPm=byPm[pm];
+      var ea=portEquipeChaveSaida(prevPm), eb=portEquipeChaveSaida(p);
+      if(!ea || !eb || ea===eb){
+        keepWinner(prevPm, p, pm, byPm);
+        return;
+      }
+    }
+    var clone=null;
+    for(var i=0;i<keep.length;i++){
+      var q=keep[i];
+      if(!q || portNormPlaca(q.placa)!==portNormPlaca(p.placa)) continue;
+      if(!portSaidaMesmoMinuto(q,p)) continue;
+      var eqa=portEquipeChaveSaida(q), eqb=portEquipeChaveSaida(p);
+      if(eqa && eqb && eqa!==eqb) continue;
+      clone=q; break;
+    }
+    if(clone){
+      keepWinner(clone, p);
       return;
     }
     keep.push(p);
     if(p.id) byId[String(p.id)]=p;
     if(k) byKey[k]=p;
+    if(pm) byPm[pm]=p;
   });
   frt_portaria=keep;
   losers.forEach(portSuprimirCloneSaida);
@@ -85056,13 +85117,12 @@ function portMesclarSaidas(rows){
     if(ix<0 && r.placa){
       ix=frt_portaria.findIndex(function(p){
         if(!p || p.deleted_at) return false;
-        var local=!p.id || (typeof isUUID==='function' && !isUUID(String(p.id)));
-        if(!local) return false;
         if(portNormPlaca(p.placa)!==portNormPlaca(r.placa)) return false;
-        if(portSaidaMinutoLocal(p)!==portSaidaMinutoLocal(r) && portDiaLocal(p.data_saida)!==portDiaLocal(r.data_saida)) return false;
+        var mesmo=typeof portSaidaMesmoMinuto==='function'?portSaidaMesmoMinuto(p,r):(portSaidaMinutoLocal(p)===portSaidaMinutoLocal(r));
+        if(!mesmo) return false;
         var ea=portEquipeChaveSaida(p), eb=portEquipeChaveSaida(r);
         if(ea && eb) return ea===eb;
-        return String(p.km_saida||'')===String(r.km_saida||'') && p.km_saida!=null && p.km_saida!=='';
+        return true;
       });
     }
     if(ix<0){ frt_portaria.push(portAplicarFotosPacote(r)); return; }
@@ -85293,6 +85353,7 @@ function portRenderEquipesDia(){
   }
 
   // Só equipes com escala SALVA (confirmada). Rascunho — 1 pessoa, só placa ou vazio — não entra.
+  if(typeof portDedupSaidasMemoria==='function') portDedupSaidasMemoria();
   var quadro=portQuadroEquipesTurno(data, cid, filId);
   var eqsFil=quadro.eqsFil;
   var eqsEmCampo=quadro.eqsEmCampo;
@@ -88274,6 +88335,14 @@ function frtPortariaRender(){
     if(filtCont && !portContratoMatch(p.contrato_id, filtCont, p.equipe_id||p.equipe) && !(p.contrato_nome||'').toLowerCase().includes(filtCont.toLowerCase())) return false;
     return true;
   }).sort(function(a,b){ return (b.data_saida||'') > (a.data_saida||'') ? 1 : -1; });
+  var seenReg={};
+  rows=rows.filter(function(p){
+    var k=(typeof portSaidaChaveDedup==='function'&&portSaidaChaveDedup(p))||(typeof portSaidaChavePlacaMinuto==='function'&&portSaidaChavePlacaMinuto(p))||String(p&&p.id||'');
+    if(!k) return true;
+    if(seenReg[k]) return false;
+    seenReg[k]=true;
+    return true;
+  });
 
   var m = els.metricas;
   if(m){
