@@ -1,4 +1,4 @@
-﻿﻿<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
@@ -1980,9 +1980,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.117"></script>
-<script src="sesmt-alm-shell.js?v=8.1.117"></script>
-<script src="prog-projetos-shell.js?v=8.1.117"></script>
+<script src="portaria-offline.js?v=8.1.118"></script>
+<script src="sesmt-alm-shell.js?v=8.1.118"></script>
+<script src="prog-projetos-shell.js?v=8.1.118"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -43920,10 +43920,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.117',
-  data:   '22/09/2026',
-  build:  '20260922-1915',
+  numero: '8.1.118',
+  data:   '23/09/2026',
+  build:  '20260923-1645',
   log: [
+    {v:'8.1.118', d:'23/09/2026', itens:[
+      'RH Entrada Inteligente: captura de documento permite escolher qualidade/resolucao e JPEG por equipamento (scanner de mesa ou webcam). A escolha fica salva neste computador. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.117', d:'22/09/2026', itens:[
       'Em Campo: Equipes em Campo com contrato (nome), login/logoff, tempo, status fiel ao diario (OS, a caminho/cheguei/encerrado, almoco), QTD OS, placa e celular. Diario recolhe sem encerramento em alerta piscante (abrir/encerrar) e lista logadas + dias anteriores com almoco e filtro De/Ate. Sem SQL. HOMOLOGACAO.',
     ]},
@@ -127055,6 +127058,142 @@ var _rhIaCam = {
   contexto:'dossie', opts:{}, mode:'unico', // unico | frente_verso | multipagina
   pages:[], previewBlob:null, previewUrl:null, waitingConfirm:false
 };
+var RH_IA_CAP_LS = 'cena_rh_ia_cap';
+var RH_IA_CAP_PRESETS = {
+  rapida: {id:'rapida', label:'Rápida (1280×720)', w:1280, h:720, jpeg:0.82},
+  padrao: {id:'padrao', label:'Padrão (1920×1080)', w:1920, h:1080, jpeg:0.90},
+  alta:   {id:'alta',   label:'Alta — documento (2560×1920)', w:2560, h:1920, jpeg:0.93},
+  max:    {id:'max',    label:'Máxima do equipamento (4096×3072)', w:4096, h:3072, jpeg:0.95}
+};
+function rhIaCapLoad(){
+  try{
+    var raw = localStorage.getItem(RH_IA_CAP_LS);
+    var o = raw ? JSON.parse(raw) : {};
+    if(!o || typeof o!=='object') o = {};
+    if(!o.perDevice || typeof o.perDevice!=='object') o.perDevice = {};
+    return o;
+  }catch(e){ return {perDevice:{}}; }
+}
+function rhIaCapSave(o){
+  try{ localStorage.setItem(RH_IA_CAP_LS, JSON.stringify(o||{perDevice:{}})); }catch(e){}
+}
+function rhIaCapDevice(){
+  return (_rhIaCam.devices && _rhIaCam.devices[_rhIaCam.deviceIdx]) || null;
+}
+function rhIaCapDeviceId(){
+  var d = rhIaCapDevice();
+  return d && d.deviceId ? String(d.deviceId) : '';
+}
+function rhIaCapDeviceLabel(){
+  var d = rhIaCapDevice();
+  return d && d.label ? String(d.label) : '';
+}
+function rhIaCapEhScanner(label){
+  return /scan|scanner|document|twain|wia|epson|brother|canon|cânon|fujitsu|plustek|iris|xerox|kodak|hp\s*scan|kp-im|im610|uvis|hovercam|ipevo|czur|eloam|doc.?cam/i.test(String(label||''));
+}
+function rhIaCapCfg(){
+  var all = rhIaCapLoad();
+  var dev = rhIaCapDeviceId();
+  var over = (dev && all.perDevice[dev]) || {};
+  var padraoAuto = rhIaCapEhScanner(rhIaCapDeviceLabel()) ? 'max' : 'alta';
+  var presetId = over.preset || all.preset || padraoAuto;
+  var p = RH_IA_CAP_PRESETS[presetId] || RH_IA_CAP_PRESETS.alta;
+  var jpeg = (over.jpeg!=null ? over.jpeg : (all.jpeg!=null ? all.jpeg : p.jpeg));
+  jpeg = Math.max(0.6, Math.min(0.99, Number(jpeg)||p.jpeg));
+  return {preset:p.id, w:p.w, h:p.h, jpeg:jpeg, label:p.label};
+}
+function rhIaCapPersistir(presetId, jpeg){
+  var all = rhIaCapLoad();
+  var p = RH_IA_CAP_PRESETS[presetId] || RH_IA_CAP_PRESETS.alta;
+  all.preset = p.id;
+  if(jpeg!=null && jpeg==jpeg) all.jpeg = Number(jpeg);
+  var dev = rhIaCapDeviceId();
+  if(dev){
+    all.perDevice[dev] = {preset:p.id, jpeg: (all.jpeg!=null ? all.jpeg : p.jpeg)};
+    all.lastDeviceId = dev;
+  }
+  rhIaCapSave(all);
+}
+function rhIaCapEscolherDevice(){
+  var list = _rhIaCam.devices || [];
+  if(!list.length) return;
+  var all = rhIaCapLoad();
+  var idx = -1;
+  if(all.lastDeviceId){
+    for(var i=0;i<list.length;i++){
+      if(list[i].deviceId===all.lastDeviceId){ idx=i; break; }
+    }
+  }
+  if(idx<0){
+    for(var j=0;j<list.length;j++){
+      if(rhIaCapEhScanner(list[j].label)){ idx=j; break; }
+    }
+  }
+  if(idx>=0) _rhIaCam.deviceIdx = idx;
+}
+function rhIaCapOptsHtml(){
+  var cfg = rhIaCapCfg();
+  var html = '';
+  Object.keys(RH_IA_CAP_PRESETS).forEach(function(k){
+    var p = RH_IA_CAP_PRESETS[k];
+    html += '<option value="'+p.id+'"'+(cfg.preset===p.id?' selected':'')+'>'+p.label+'</option>';
+  });
+  var jopts = [0.80,0.85,0.90,0.93,0.95,0.98];
+  var jhtml = '';
+  var hit = false;
+  jopts.forEach(function(j){
+    var sel = Math.abs(j-cfg.jpeg)<0.011;
+    if(sel) hit = true;
+    jhtml += '<option value="'+j+'"'+(sel?' selected':'')+'>'+Math.round(j*100)+'%</option>';
+  });
+  if(!hit) jhtml = '<option value="'+cfg.jpeg+'" selected>'+Math.round(cfg.jpeg*100)+'%</option>'+jhtml;
+  return {presets:html, jpeg:jhtml, cfg:cfg};
+}
+function rhIaCapSincronizarSelects(){
+  var opts = rhIaCapOptsHtml();
+  var selP = document.getElementById('rh-ia-cap-preset');
+  var selJ = document.getElementById('rh-ia-cap-jpeg');
+  if(selP) selP.innerHTML = opts.presets;
+  if(selJ) selJ.innerHTML = opts.jpeg;
+}
+function rhIaCapOnChange(){
+  var selP = document.getElementById('rh-ia-cap-preset');
+  var selJ = document.getElementById('rh-ia-cap-jpeg');
+  var preset = selP ? selP.value : 'alta';
+  var jpeg = selJ ? Number(selJ.value) : null;
+  rhIaCapPersistir(preset, jpeg);
+  rhIaIniciarStream().catch(function(){
+    progShowToast('Não foi possível aplicar esta qualidade neste equipamento.','erro');
+  });
+}
+function rhIaCapAtualizarInfo(){
+  var v = document.getElementById('rh-ia-cam-video');
+  var info = document.getElementById('rh-ia-cam-res');
+  var cfg = rhIaCapCfg();
+  function paint(){
+    info = document.getElementById('rh-ia-cam-res');
+    if(!info) return;
+    var w = v && v.videoWidth, h = v && v.videoHeight;
+    if(w && h){
+      info.textContent = 'Resolução real: '+w+'×'+h+' · JPEG '+Math.round(cfg.jpeg*100)+'% · pedido: '+cfg.w+'×'+cfg.h;
+      if(Math.min(w,h) < RH_IA_MIN_PX){
+        info.textContent += ' — baixa para leitura; use Máxima ou outro aparelho.';
+        info.style.color = '#b45309';
+      } else {
+        info.style.color = '#666';
+      }
+    } else {
+      info.textContent = 'Aguardando imagem do equipamento…';
+      info.style.color = '#888';
+    }
+  }
+  paint();
+  if(v){
+    v.onloadedmetadata = function(){ paint(); };
+    v.onresize = function(){ paint(); };
+  }
+}
+
 var _rhIaContextoPadrao = {origem_entrada:'upload', contexto_origem:'dossie', colaborador_id_contexto:null, contratacao_id:null, candidatura_id:null, vaga_id:null, cargo_id:null};
 function rhIaContextoEhProcesso(ctx){
   ctx = ctx || _rhIaContextoPadrao || {};
@@ -132610,13 +132749,15 @@ async function rhIaRevisaoSalvar(itemId, limpar){
 }
 
 /* ── Câmera reutilizável ─────────────────────────────────────────────── */
-function rhIaPararCamera(){
+function rhIaPararCamera(opts){
+  opts = opts || {};
   try{
     if(_rhIaCam.stream){
       _rhIaCam.stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} });
     }
   }catch(e){}
   _rhIaCam.stream=null;
+  if(opts.keepPreview) return;
   if(_rhIaCam.previewUrl){ try{ URL.revokeObjectURL(_rhIaCam.previewUrl);}catch(e){} }
   _rhIaCam.previewUrl=null; _rhIaCam.previewBlob=null; _rhIaCam.waitingConfirm=false;
 }
@@ -132659,19 +132800,28 @@ function rhIaAbrirCapturaCamera(contexto, opts){
 }
 async function rhIaListarCameras(){
   try{
-    var tmp = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+    var tmp = await navigator.mediaDevices.getUserMedia({audio:false, video:{width:{ideal:((typeof rhIaCapCfg==='function'&&rhIaCapCfg().w)||2560)}, height:{ideal:((typeof rhIaCapCfg==='function'&&rhIaCapCfg().h)||1920)}}});
     tmp.getTracks().forEach(function(t){t.stop();});
   }catch(e){}
   var all = await navigator.mediaDevices.enumerateDevices();
   _rhIaCam.devices = (all||[]).filter(function(d){ return d.kind==='videoinput'; });
+  rhIaCapEscolherDevice();
 }
 async function rhIaIniciarStream(){
-  rhIaPararCamera();
-  var constraints = {audio:false, video:{facingMode:{ideal:_rhIaCam.facing}}};
+  rhIaPararCamera({keepPreview:true});
+  var cfg = rhIaCapCfg();
+  var video = {width:{ideal:cfg.w}, height:{ideal:cfg.h}};
   if(_rhIaCam.devices.length && _rhIaCam.devices[_rhIaCam.deviceIdx]){
-    constraints.video = {deviceId:{exact: _rhIaCam.devices[_rhIaCam.deviceIdx].deviceId}};
+    video.deviceId = {exact: _rhIaCam.devices[_rhIaCam.deviceIdx].deviceId};
+  } else {
+    video.facingMode = {ideal:_rhIaCam.facing};
   }
-  _rhIaCam.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  try{
+    _rhIaCam.stream = await navigator.mediaDevices.getUserMedia({audio:false, video:video});
+  }catch(e1){
+    var simple = video.deviceId ? {deviceId:video.deviceId} : {facingMode:{ideal:_rhIaCam.facing}};
+    _rhIaCam.stream = await navigator.mediaDevices.getUserMedia({audio:false, video:simple});
+  }
   var v = document.getElementById('rh-ia-cam-video');
   if(v){ v.srcObject = _rhIaCam.stream; v.play().catch(function(){}); }
   var lab = document.getElementById('rh-ia-cam-device-lab');
@@ -132679,21 +132829,39 @@ async function rhIaIniciarStream(){
     var d = _rhIaCam.devices[_rhIaCam.deviceIdx];
     lab.textContent = d && d.label ? d.label : ('Câmera '+(_rhIaCam.deviceIdx+1));
   }
+  var all = rhIaCapLoad();
+  var dev = rhIaCapDeviceId();
+  if(dev && all.lastDeviceId!==dev){ all.lastDeviceId = dev; rhIaCapSave(all); }
+  rhIaCapSincronizarSelects();
+  rhIaCapAtualizarInfo();
 }
 function rhIaRenderModalCamera(){
   var passo = _rhIaCam.mode==='frente_verso'
     ? (_rhIaCam.pages.length===0?'Capturar FRENTE':(_rhIaCam.pages.length===1?'Capturar VERSO':'Conjunto'))
     : (_rhIaCam.mode==='multipagina' ? ('Página '+(_rhIaCam.pages.length+1)) : 'Capturar documento');
-  setModal('<div class="modal-bg"><div class="modal" style="max-width:640px">'
+  var capOpts = rhIaCapOptsHtml();
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:720px">'
     +'<h3>📷 Capturar documento</h3>'
     +'<div style="font-size:12px;color:#666;margin-bottom:8px">Contexto: <b>'+rhEsc(_rhIaCam.contexto)+'</b> · '+rhEsc(passo)
     +(_rhIaCam.opts.colaborador_id?' · colaborador contexto definido':'')+'</div>'
     +'<div id="rh-ia-cam-live">'
-    +'<video id="rh-ia-cam-video" autoplay playsinline muted style="width:100%;max-height:360px;background:#111;border-radius:10px"></video>'
+    +'<video id="rh-ia-cam-video" autoplay playsinline muted style="width:100%;max-height:420px;background:#111;border-radius:10px"></video>'
     +'<div style="font-size:11px;color:#888;margin-top:4px" id="rh-ia-cam-device-lab">—</div>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0">'
+    +'<label style="font-size:11px;color:#555">Qualidade do equipamento<br>'
+    +'<select id="rh-ia-cap-preset" onchange="rhIaCapOnChange()" style="min-width:240px;margin-top:3px">'
+    +capOpts.presets
+    +'</select></label>'
+    +'<label style="font-size:11px;color:#555">JPEG<br>'
+    +'<select id="rh-ia-cap-jpeg" onchange="rhIaCapOnChange()" style="margin-top:3px">'
+    +capOpts.jpeg
+    +'</select></label>'
+    +'</div>'
+    +'<div id="rh-ia-cam-res" style="font-size:11px;color:#666;margin-bottom:4px">Aguardando imagem do equipamento…</div>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:8px">A prévia pode parecer pequena; a foto usa a resolução real do scanner/câmera. A escolha fica salva neste computador, por equipamento.</div>'
     +'</div>'
     +'<div id="rh-ia-cam-preview" style="display:none">'
-    +'<img id="rh-ia-cam-preview-img" style="width:100%;max-height:360px;object-fit:contain;border-radius:10px;background:#111"/>'
+    +'<img id="rh-ia-cam-preview-img" style="width:100%;max-height:420px;object-fit:contain;border-radius:10px;background:#111"/>'
     +'</div>'
     +'<canvas id="rh-ia-cam-canvas" style="display:none"></canvas>'
     +'<div class="ma" style="flex-wrap:wrap;gap:6px">'
@@ -132746,7 +132914,7 @@ function rhIaCapturarFrame(){
     if(aviso && !confirm(aviso+'\n\nOK = continuar · Cancelar = refazer')){
       rhIaRefazerFoto();
     }
-  }, 'image/jpeg', 0.92);
+  }, 'image/jpeg', rhIaCapCfg().jpeg);
 }
 function rhIaRefazerFoto(){
   _rhIaCam.waitingConfirm=false;
@@ -133422,6 +133590,7 @@ function rhRenderEntradaIa(){
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
       +'<button type="button" class="btn" onclick="document.getElementById(\'rh-ia-file\').click()">Selecionar arquivos</button>'
       +'<button type="button" class="btn btn-pri" onclick="rhIaAbrirCapturaCamera('+(ctxProc?('\''+_rhIaContextoPadrao.contexto_origem+'\',{colaborador_id:_rhIaContextoPadrao.colaborador_id_contexto,contratacao_id:_rhIaContextoPadrao.contratacao_id,candidatura_id:_rhIaContextoPadrao.candidatura_id,vaga_id:_rhIaContextoPadrao.vaga_id,cargo_id:_rhIaContextoPadrao.cargo_id,contexto_origem:_rhIaContextoPadrao.contexto_origem}'):'\'dossie\'')+')">Capturar documento</button>'
+      +'<span style="font-size:11px;color:#888;align-self:center">Scanner/webcam: a qualidade fica no modal de captura (salva por equipamento).</span>'
       +'</div>'
       +'<div id="rh-ia-progresso" style="margin-top:12px"></div>'
       +'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
