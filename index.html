@@ -1981,9 +1981,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.122"></script>
-<script src="sesmt-alm-shell.js?v=8.1.122"></script>
-<script src="prog-projetos-shell.js?v=8.1.122"></script>
+<script src="portaria-offline.js?v=8.1.123"></script>
+<script src="sesmt-alm-shell.js?v=8.1.123"></script>
+<script src="prog-projetos-shell.js?v=8.1.123"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -44632,10 +44632,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.122',
+  numero: '8.1.123',
   data:   '23/09/2026',
   build:  '20260923-1935',
   log: [
+    {v:'8.1.123', d:'23/09/2026', itens:[
+      'Almoxarifado: entrada/pesquisa de itens deixa de remontar o catalogo a cada tecla (cache + indice + debounce). Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.122', d:'23/09/2026', itens:[
       'PORT-AUTO-SYS: recupera 1B/1C perdidas no index (TAG no veiculo + aba Acesso) a partir do commit 33bd686, sem rollback geral e sem 1D. SQL 1B/1C recolocados no repo. HOMOLOGACAO.',
     ]},
@@ -149008,9 +149011,12 @@ function salvarEditarFer(fid){
   if(!DEMO)sbUpdate('ferramentas',f,'id=eq.'+fid);
   closeModal();renderFer();
 }
+var _eeNormTipoMemo = {};
 function eeNormalizaTipo(t){
   if(!t) return '';
-  var s = String(t).toLowerCase().trim()
+  var memoK = String(t);
+  if(_eeNormTipoMemo[memoK]!==undefined) return _eeNormTipoMemo[memoK];
+  var s = memoK.toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   if(/\buniformes?\b/.test(s) || /\bvestimentas?\b/.test(s)) return 'vestimenta';
   var su = s.replace(/\s+/g,'_');
@@ -149019,7 +149025,9 @@ function eeNormalizaTipo(t){
     consumivel:'consumivel',consumível:'consumivel',
     equipamento:'equipamento',peca:'peca',peça:'peca',kit:'kit',outro:'outro',
     pneu:'pneu',pneus:'pneu'};
-  return map[su] || su;
+  var out = map[su] || su;
+  _eeNormTipoMemo[memoK] = out;
+  return out;
 }
 function eePareceUniformePorNome(nome){
   var n = String(nome||'').toLowerCase()
@@ -149209,9 +149217,31 @@ async function eeProcessarEntradaLinhaSap(linha, ctx, seq){
     movId:mov.id, itemId:mat.material_id||null, depositoId:null, estoqueId:null,
     saldoAntes:null, saldoDepois:null};
 }
+var _eeCatBuscaCache = {key:'', lista:null};
+function eeInvalidarCatalogoBusca(){ _eeCatBuscaCache = {key:'', lista:null}; }
+function eeCatalogoBuscaCacheKey(){
+  var dest = typeof eeObterDestinoEntrada==='function' ? eeObterDestinoEntrada() : 'patrimonial';
+  var tipo = eeNormalizaTipo((document.getElementById('ee-fil-tipo')||{}).value||'');
+  var cid = dest==='sap' ? String((document.getElementById('ee-cont-sap')||{}).value||'') : '';
+  return [dest, tipo, cid,
+    (itens_catalogo||[]).length,
+    (uniformesCat||[]).length,
+    (_epiCatalogo||[]).length,
+    (_almProdutos||[]).length,
+    (catalogo_materiais||[]).length
+  ].join('|');
+}
 function eeObterCatalogoBusca(){
+  var key = eeCatalogoBuscaCacheKey();
+  if(_eeCatBuscaCache.key===key && _eeCatBuscaCache.lista) return _eeCatBuscaCache.lista;
+  var lista = eeMontarCatalogoBusca();
+  _eeCatBuscaCache = {key:key, lista:lista};
+  return lista;
+}
+function eeMontarCatalogoBusca(){
   var dest = eeObterDestinoEntrada();
   var contratoId = (document.getElementById('ee-cont-sap')||{}).value||'';
+  var tipoFilt = eeNormalizaTipo((document.getElementById('ee-fil-tipo')||{}).value||'');
   var lista = [], vistos = {};
   function add(item){
     var ch = (item.origem==='sap_catalogo'
@@ -149221,7 +149251,6 @@ function eeObterCatalogoBusca(){
     vistos[ch] = true;
     lista.push(item);
   }
-
   if(dest==='sap'){
     almMateriaisCatalogoUnicos(contratoId).forEach(function(m){
       add({id:'matsap-'+m.id, nome:m.descricao, codigo:m.codigo_sap||'', sku:'',
@@ -149229,55 +149258,51 @@ function eeObterCatalogoBusca(){
     });
     return lista;
   }
-
+  var nomesCat = {}, codsCat = {}, skusCat = {};
   (itens_catalogo||[]).forEach(function(i){
     if(i.ativo===false) return;
-    add({id:i.id, nome:i.nome, codigo:i.codigo, sku:i.sku, tipo_item:eeNormalizaTipo(i.tipo_item)||eeInferirTipo(i),
+    var tipo = eeNormalizaTipo(i.tipo_item)||eeInferirTipo(i);
+    var wrap = {tipo_item:tipo, nome:i.nome, raw:i, origem:'catalogo'};
+    if(tipoFilt && !eeItemMatchTipoFiltro(wrap, tipoFilt)) return;
+    var nl = String(i.nome||'').trim().toLowerCase();
+    if(nl) nomesCat[nl] = true;
+    var c = String(i.codigo||'').trim();
+    var s = String(i.sku||'').trim();
+    if(c) codsCat[c] = true;
+    if(s) skusCat[s] = true;
+    add({id:i.id, nome:i.nome, codigo:i.codigo, sku:i.sku, tipo_item:tipo,
       origem:'catalogo', raw:i, ca:i.ca, ca_validade:i.ca_validade, unidade:i.unidade_medida});
   });
-
-  (uniformesCat||[]).forEach(function(u){
-    if(u.ativo===false) return;
-    var cs = typeof _uniCodigoSku==='function' ? _uniCodigoSku(u) : {codigoRaw:'', skuRaw:''};
-    var label = typeof _uniOptLabel==='function' ? _uniOptLabel(u) : ((u.tipo||'')+' '+(u.modelo||'')+' ('+(u.tamanho||'')+')');
-    var nomeLow = label.toLowerCase();
-    var dupCat = (itens_catalogo||[]).some(function(x){
-      if(x.ativo===false) return false;
-      if(!eeItemMatchTipoFiltro({tipo_item:x.tipo_item,nome:x.nome,raw:x}, 'vestimenta')) return false;
-      if(cs.codigoRaw && String(x.codigo||'').trim()===cs.codigoRaw) return true;
-      if(cs.skuRaw && String(x.sku||'').trim()===cs.skuRaw) return true;
-      return (x.nome||'').trim().toLowerCase()===nomeLow;
+  if(!tipoFilt || tipoFilt==='vestimenta'){
+    (uniformesCat||[]).forEach(function(u){
+      if(u.ativo===false) return;
+      var codigo = String(u.codigo||'').trim();
+      var sku = String(u.sku||'').trim();
+      var label = ((u.tipo||'')+' '+(u.modelo||'')+' ('+(u.tamanho||'')+')').replace(/\s+/g,' ').trim();
+      var nomeLow = label.toLowerCase();
+      if((codigo && codsCat[codigo]) || (sku && skusCat[sku]) || (nomeLow && nomesCat[nomeLow])) return;
+      add({id:'unicat-'+u.id, nome:label, codigo:codigo, sku:sku,
+        tipo_item:'vestimenta', origem:'uniformes_catalogo', raw:u, ca:'', unidade:'UN'});
     });
-    if(dupCat) return;
-    add({id:'unicat-'+u.id, nome:label, codigo:cs.codigoRaw||'', sku:cs.skuRaw||'',
-      tipo_item:'vestimenta', origem:'uniformes_catalogo', raw:u, ca:'', unidade:'UN'});
-  });
-
-  var tipoFilt = eeNormalizaTipo((document.getElementById('ee-fil-tipo')||{}).value||'');
+  }
   if(!tipoFilt || tipoFilt==='epi' || tipoFilt==='epc'){
     (_epiCatalogo||[]).forEach(function(e){
       if(e.ativo===false) return;
       var nomeEpi = (e.nome||'').trim().toLowerCase();
-      var jaNoCat = (itens_catalogo||[]).some(function(x){
-        return x.ativo!==false && (x.nome||'').trim().toLowerCase()===nomeEpi;
-      });
-      if(jaNoCat) return;
+      if(nomeEpi && nomesCat[nomeEpi]) return;
       var tEpi = eeNormalizaTipo(e.tipo==='EPC'?'epc':'epi');
       if(tipoFilt && !eeTipoItemMatch(tEpi, tipoFilt)) return;
       add({id:'epicat-'+e.id, nome:e.nome, codigo:'', sku:'', tipo_item:tEpi,
         origem:'epi_catalogo', raw:e, ca:e.ca});
     });
-    if(!tipoFilt || tipoFilt==='epi' || tipoFilt==='epc'){
-      almProdutosAtivos().forEach(function(p){
-        var tP = eeNormalizaTipo(p.tipo_item==='EPC'?'epc':'epi');
-        if(tipoFilt && !eeTipoItemMatch(tP, tipoFilt)) return;
-        var nomeP = (p.descricao||'').trim().toLowerCase();
-        var ja = (itens_catalogo||[]).some(function(x){ return x.ativo!==false && (x.nome||'').trim().toLowerCase()===nomeP; });
-        if(ja) return;
-        add({id:'almP-'+p.id, nome:p.descricao, codigo:p.codigo||'', sku:'', tipo_item:tP,
-          origem:'alm_produto', raw:p, ca:'', unidade:p.unidade||'UN'});
-      });
-    }
+    almProdutosAtivos().forEach(function(p){
+      var tP = eeNormalizaTipo(p.tipo_item==='EPC'?'epc':'epi');
+      if(tipoFilt && !eeTipoItemMatch(tP, tipoFilt)) return;
+      var nomeP = (p.descricao||'').trim().toLowerCase();
+      if(nomeP && nomesCat[nomeP]) return;
+      add({id:'almP-'+p.id, nome:p.descricao, codigo:p.codigo||'', sku:'', tipo_item:tP,
+        origem:'alm_produto', raw:p, ca:'', unidade:p.unidade||'UN'});
+    });
   }
   return lista;
 }
@@ -149412,6 +149437,11 @@ function eeSelecionarItemAdd(itemId){
   var inp=document.getElementById('ee-busca-add'); if(inp) inp.value='';
   eeFiltrarItensAdd();
   progShowToast('✓ '+item.nome+' vinculado à linha');
+}
+var _eeFiltAddT=null;
+function eeFiltrarItensAddDebounced(){
+  if(_eeFiltAddT) clearTimeout(_eeFiltAddT);
+  _eeFiltAddT=setTimeout(function(){ _eeFiltAddT=null; eeFiltrarItensAdd(); }, 160);
 }
 function eeFiltrarItensAdd(){
   var q=((document.getElementById('ee-busca-add')||{}).value||'').trim();
@@ -150685,7 +150715,7 @@ function openEntradaEstoque(tipoPre){
     +'<select class="inp" id="ee-fil-tipo" style="width:100%" onchange="eeFiltrarItensAdd()">'+tipoOpts+'</select></div>'
     +'<div><label style="font-size:11px;font-weight:600;display:block;margin-bottom:2px">Buscar item</label>'
     +'<input class="inp" id="ee-busca-add" style="width:100%" placeholder="Nome, código, SKU, CA..." autocomplete="off"'
-    +' oninput="eeFiltrarItensAdd()" onfocus="eeFiltrarItensAdd()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();eeAddLinhaBusca();}"/>'
+    +' oninput="eeFiltrarItensAddDebounced()" onfocus="eeFiltrarItensAdd()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();eeAddLinhaBusca();}"/>'
     +'<div id="ee-busca-add-sug" style="display:none;border:.5px solid #D4D0F0;border-radius:6px;margin-top:2px;max-height:280px;overflow-y:auto;background:#fff"></div>'
     +'<span id="ee-busca-add-hint" style="font-size:10px;color:#888;display:block;margin-top:2px">Busque no catálogo — item novo será cadastrado ao salvar</span></div>'
     +'<button type="button" class="btn btn-sm" onclick="eeAddLinhaBusca()" style="margin-top:18px;background:#534AB7;color:#fff;border-color:#534AB7">+ Adicionar</button>'
