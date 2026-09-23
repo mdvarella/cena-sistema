@@ -881,6 +881,7 @@ body.perfil-portaria .port-btn-editar-veic,
 body.perfil-portaria .port-btn-nova-reserva,
 body.perfil-portaria .port-btn-nova-programacao,
 body.perfil-portaria #port-tab-config    { display:none !important; }
+body.perfil-portaria #port-tab-acesso    { display:none !important; }
 body.perfil-portaria #port-tab-registros { display:none !important; }
 body.perfil-portaria #port-tab-reservas  { display:none !important; }
 /* Portaria no tablet: não cadastra autorizados — só libera entrada/saída */
@@ -1980,9 +1981,9 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.121"></script>
-<script src="sesmt-alm-shell.js?v=8.1.121"></script>
-<script src="prog-projetos-shell.js?v=8.1.121"></script>
+<script src="portaria-offline.js?v=8.1.122"></script>
+<script src="sesmt-alm-shell.js?v=8.1.122"></script>
+<script src="prog-projetos-shell.js?v=8.1.122"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7601,6 +7602,9 @@ async function sbInsert(table,data,opts){
       'contrato_id','deposito_id','status','observacao'],
     'alm_requisicao_eventos':['id','requisicao_id','evento','descricao','usuario','dados_json'],
     'colaborador_credenciais':['id','colaborador_id','tipo','uid','uid_normalizado','status','emitido_em','ativado_em','bloqueado_em','bloqueado_por','motivo_bloqueio','substitui_credencial_id','origem_leitura','criado_por','criado_em','atualizado_em'],
+    'veiculo_credenciais':['id','veiculo_id','tipo','uid','uid_normalizado','status','emitido_em','ativado_em','bloqueado_em','bloqueado_por','motivo_bloqueio','substitui_credencial_id','origem_leitura','criado_por','criado_em','atualizado_em'],
+    'portaria_pontos_acesso':['id','codigo','nome','base_id','portaria_id','tipo','sentido','ativo','criado_em','atualizado_em'],
+    'portaria_dispositivos':['id','codigo','nome','tipo','base_id','portaria_id','ponto_acesso_id','sentido','funcao','identificador_hardware','ativo','status_comunicacao','ultima_comunicacao','configuracao','criado_em','atualizado_em'],
     'rh_colaborador_contrato_hist':['colaborador_id','vigencia_inicio','snapshot','motivo','alterado_por'],
     'rh_colaborador_eventos':['colaborador_id','vinculo_ref','tipo','situacao','inicio','fim','cargo','funcao',
       'contrato_id','base_id','equipe_id','motivo','fonte','origem_modulo','origem_ref','payload',
@@ -8495,6 +8499,663 @@ async function cenaRfidConfirmarDescadastro(){
   if(typeof cenaRfidIndiceInvalidar==='function') cenaRfidIndiceInvalidar();
   if(typeof progShowToast==='function') progShowToast('Crachá descadastrado. UID liberado para novo vínculo.');
   cenaRfidMontarSecao(cid, cenaRfidDadosColab(cid));
+}
+
+var _cenaTagDemoCreds = [];
+
+function cenaTagNormalizarUid(valor){
+  if(typeof cenaRfidNormalizarUid==='function') return cenaRfidNormalizarUid(valor);
+  return String(valor==null?'':valor)
+    .replace(/[\n\r\t]+/g,'')
+    .replace(/[\s\-]+/g,'')
+    .trim()
+    .toUpperCase();
+}
+
+function cenaTagPodeCadastrar(){
+  if(typeof perfilAcessoTotal==='function' && perfilAcessoTotal()) return true;
+  var p = String((usuarioLogado && usuarioLogado.perfil) || '').toLowerCase();
+  return p==='admin' || p==='diretoria' || p==='gestor' || p==='coordenador';
+}
+
+function cenaTagFmtTs(iso){
+  if(typeof cenaRfidFmtTs==='function') return cenaRfidFmtTs(iso);
+  if(!iso) return '—';
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return '—';
+  function p(n){ return String(n).padStart(2,'0'); }
+  return p(d.getDate())+'/'+p(d.getMonth()+1)+'/'+d.getFullYear()+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+
+function cenaTagEsc(s){
+  if(typeof cenaRfidEsc==='function') return cenaRfidEsc(s);
+  if(typeof escHtml==='function') return escHtml(String(s==null?'':s));
+  return String(s==null?'':s).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+
+function cenaTagVeiculoMotivo(vei){
+  if(!vei || !vei.id) return 'VEICULO_INATIVO';
+  if(vei.ativo===false) return 'VEICULO_INATIVO';
+  var st=String(vei.status||'').toLowerCase();
+  if(st==='baixado' || st==='inativo' || st.indexOf('inativ')>=0) return 'VEICULO_INATIVO';
+  if(st==='bloqueado' || st==='quarentena') return 'VEICULO_BLOQUEADO';
+  return null;
+}
+
+function cenaTagParseErro(txt, status){
+  var msg = 'Erro TAG ('+status+')';
+  try{
+    var j = JSON.parse(txt);
+    msg = j.message || j.details || j.hint || msg;
+    if(String(j.hint||'')==='TAG_UID_HISTORICO' || /já vinculad/i.test(msg)){
+      if(msg.indexOf('⛔')!==0) msg = '⛔ '+msg;
+    }
+  }catch(e){
+    if(txt) msg = String(txt).slice(0, 280);
+  }
+  return msg;
+}
+
+async function cenaTagRpc(fn, params){
+  if(DEMO) return {ok:false, error:'DEMO_USE_LOCAL'};
+  var tok = null;
+  try{
+    tok = await cenaAuthGetValidToken({requireAuth:true, forceLogin:false, reason:'tag:'+fn});
+  }catch(e){ tok = null; }
+  if(!tok || tok==='demo' || (typeof sbAuthJwtIsAuthenticated==='function' && !sbAuthJwtIsAuthenticated(tok))){
+    return {ok:false, error:'Sessão Auth obrigatória para TAG. Faça login autenticado (não MD5).'};
+  }
+  try{
+    var r = await fetch(SB.url+'/rest/v1/rpc/'+fn, {
+      method:'POST',
+      headers:{
+        'apikey': SB.key,
+        'Authorization': 'Bearer '+tok,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(params||{})
+    });
+    var txt = await r.text();
+    var data = null;
+    try{ data = txt ? JSON.parse(txt) : null; }catch(e1){ data = null; }
+    if(!r.ok){
+      console.error('cenaTagRpc', fn, r.status, txt);
+      return {ok:false, error: cenaTagParseErro(txt, r.status), status:r.status, raw:data};
+    }
+    return {ok:true, data:data};
+  }catch(e){
+    console.error('cenaTagRpc', fn, e);
+    return {ok:false, error: String(e && e.message || e)};
+  }
+}
+
+function cenaTagDemoLista(veicId){
+  return _cenaTagDemoCreds.filter(function(x){ return String(x.veiculo_id)===String(veicId) && x.tipo==='RFID_TAG'; });
+}
+
+function cenaTagDemoAtiva(veicId){
+  return cenaTagDemoLista(veicId).filter(function(x){ return x.status==='ATIVO'; })[0] || null;
+}
+
+async function cenaTagCarregarCredenciais(veicId){
+  if(DEMO){
+    return cenaTagDemoLista(veicId).slice().sort(function(a,b){
+      return String(b.criado_em||'').localeCompare(String(a.criado_em||''));
+    });
+  }
+  var rows = await sbFetch('veiculo_credenciais', {
+    requireAuth: true,
+    select: 'id,veiculo_id,tipo,uid,uid_normalizado,status,ativado_em,criado_em,bloqueado_em,motivo_bloqueio,substitui_credencial_id,criado_por',
+    filters: ['veiculo_id=eq.'+veicId, 'tipo=eq.RFID_TAG'],
+    order: 'criado_em.desc',
+    limit: 40
+  });
+  return rows || [];
+}
+
+function cenaTagPickAtual(lista){
+  lista=lista||[];
+  var at = lista.filter(function(x){ return x.status==='ATIVO'; })[0];
+  var bl = lista.filter(function(x){ return x.status==='BLOQUEADO'; })[0];
+  return at || bl || lista[0] || null;
+}
+
+function cenaTagDemoResolver(uid){
+  var n = cenaTagNormalizarUid(uid);
+  if(!n) return {ok:false, encontrado:false, autenticavel:false, motivo:'UID_VAZIO', credencial:null, veiculo:null};
+  var cred = _cenaTagDemoCreds.filter(function(x){ return x.tipo==='RFID_TAG' && x.uid_normalizado===n; })[0];
+  if(!cred) return {ok:true, encontrado:false, autenticavel:false, motivo:'TAG_DESCONHECIDA', credencial:null, veiculo:null};
+  var vei = (typeof frt_veiculos!=='undefined'?frt_veiculos:[]).find(function(v){ return String(v.id)===String(cred.veiculo_id); }) || {};
+  var motivoCred = cred.status==='BLOQUEADO' ? 'TAG_BLOQUEADA' : (cred.status==='SUBSTITUIDO' ? 'TAG_SUBSTITUIDA' : null);
+  var motivoVei = cred.status==='ATIVO' ? cenaTagVeiculoMotivo(vei) : null;
+  var motivo = motivoCred || motivoVei;
+  var aut = !motivo;
+  return {
+    ok:true, encontrado:true, autenticavel:!!aut,
+    motivo: motivo,
+    credencial:{id:cred.id, status:cred.status},
+    veiculo:{id:vei.id||cred.veiculo_id, placa:vei.placa||'—', modelo:vei.modelo||'—', status:vei.status||'—'}
+  };
+}
+
+async function cenaTagResolverVeiculo(uid){
+  var n = cenaTagNormalizarUid(uid);
+  if(!n) return {ok:false, encontrado:false, autenticavel:false, motivo:'UID_VAZIO', credencial:null, veiculo:null};
+  if(DEMO) return cenaTagDemoResolver(uid);
+  var rpc = await cenaTagRpc('fn_tag_resolver', {p_uid: uid});
+  if(!rpc.ok) return {ok:false, encontrado:false, autenticavel:false, motivo:'ERRO', error:rpc.error, credencial:null, veiculo:null};
+  return rpc.data || {ok:true, encontrado:false, autenticavel:false, motivo:'TAG_DESCONHECIDA', credencial:null, veiculo:null};
+}
+
+function cenaTagDemoVincular(veicId, uid){
+  var n = cenaTagNormalizarUid(uid);
+  if(!n) return {ok:false, error:'UID TAG vazio após normalização'};
+  var exist = _cenaTagDemoCreds.filter(function(x){ return x.tipo==='RFID_TAG' && x.uid_normalizado===n; })[0];
+  if(exist) return {ok:false, error:'⛔ TAG já vinculada a outro registro (histórico).'};
+  if(cenaTagDemoAtiva(veicId)) return {ok:false, error:'Veículo já possui TAG ATIVA. Use substituição.'};
+  var now = new Date().toISOString();
+  var row = {
+    id:'tag-demo-'+Date.now(), veiculo_id:veicId, tipo:'RFID_TAG',
+    uid:String(uid||'').trim(), uid_normalizado:n, status:'ATIVO',
+    ativado_em:now, criado_em:now, origem_leitura:'SIMULADOR', criado_por:'DEMO'
+  };
+  _cenaTagDemoCreds.push(row);
+  return {ok:true, data:{ok:true, acao:'TAG_VINCULADA', credencial:{id:row.id, status:'ATIVO'}}};
+}
+
+function cenaTagDemoBloquear(veicId, motivo){
+  if(!String(motivo||'').trim()) return {ok:false, error:'Motivo de bloqueio obrigatório'};
+  var at = cenaTagDemoAtiva(veicId);
+  if(!at) return {ok:false, error:'Veículo não possui TAG ATIVA para bloquear'};
+  at.status='BLOQUEADO';
+  at.bloqueado_em=new Date().toISOString();
+  at.motivo_bloqueio=String(motivo).trim();
+  return {ok:true, data:{ok:true, acao:'TAG_BLOQUEADA', credencial:{id:at.id, status:'BLOQUEADO'}}};
+}
+
+function cenaTagDemoReativar(veicId){
+  if(cenaTagDemoAtiva(veicId)) return {ok:false, error:'Veículo já possui TAG ATIVA.'};
+  var bl = cenaTagDemoLista(veicId).filter(function(x){ return x.status==='BLOQUEADO'; })
+    .sort(function(a,b){ return String(b.bloqueado_em||'').localeCompare(String(a.bloqueado_em||'')); })[0];
+  if(!bl) return {ok:false, error:'Não há TAG BLOQUEADA para reativar'};
+  bl.status='ATIVO';
+  bl.ativado_em=new Date().toISOString();
+  bl.bloqueado_em=null;
+  bl.motivo_bloqueio=null;
+  return {ok:true, data:{ok:true, acao:'TAG_REATIVADA', credencial:{id:bl.id, status:'ATIVO'}}};
+}
+
+function cenaTagDemoSubstituir(veicId, uid, motivo){
+  var n = cenaTagNormalizarUid(uid);
+  if(!n) return {ok:false, error:'UID TAG vazio após normalização'};
+  var at = cenaTagDemoAtiva(veicId);
+  if(!at) return {ok:false, error:'Veículo não possui TAG ATIVA para substituir'};
+  if(at.uid_normalizado===n) return {ok:false, error:'O UID lido já é a TAG ATIVA deste veículo'};
+  var exist = _cenaTagDemoCreds.filter(function(x){ return x.tipo==='RFID_TAG' && x.uid_normalizado===n; })[0];
+  if(exist && String(exist.veiculo_id)!==String(veicId)) return {ok:false, error:'⛔ TAG já vinculada a outro veículo.'};
+  at.status='SUBSTITUIDO';
+  var now=new Date().toISOString();
+  var nova;
+  if(exist && String(exist.veiculo_id)===String(veicId)){
+    exist.status='ATIVO';
+    exist.ativado_em=now;
+    exist.substitui_credencial_id=at.id;
+    exist.bloqueado_em=null;
+    exist.motivo_bloqueio=null;
+    nova=exist;
+  } else {
+    nova={
+      id:'tag-demo-'+Date.now(), veiculo_id:veicId, tipo:'RFID_TAG',
+      uid:String(uid||'').trim(), uid_normalizado:n, status:'ATIVO',
+      ativado_em:now, criado_em:now, substitui_credencial_id:at.id,
+      origem_leitura:'SIMULADOR', criado_por:'DEMO', motivo:motivo||null
+    };
+    _cenaTagDemoCreds.push(nova);
+  }
+  return {ok:true, data:{ok:true, acao:'TAG_SUBSTITUIDA', credencial_anterior:{id:at.id, status:'SUBSTITUIDO'}, credencial:{id:nova.id, status:'ATIVO'}}};
+}
+
+async function cenaTagExecVincular(veicId, uid){
+  if(DEMO) return cenaTagDemoVincular(veicId, uid);
+  return cenaTagRpc('fn_tag_vincular', {p_veiculo_id:veicId, p_uid:uid, p_origem_leitura:'SIMULADOR'});
+}
+async function cenaTagExecSubstituir(veicId, uid, motivo){
+  if(DEMO) return cenaTagDemoSubstituir(veicId, uid, motivo);
+  return cenaTagRpc('fn_tag_substituir', {p_veiculo_id:veicId, p_uid:uid, p_origem_leitura:'SIMULADOR', p_motivo:motivo||null});
+}
+async function cenaTagExecBloquear(veicId, motivo){
+  if(DEMO) return cenaTagDemoBloquear(veicId, motivo);
+  return cenaTagRpc('fn_tag_bloquear', {p_veiculo_id:veicId, p_motivo:motivo});
+}
+async function cenaTagExecReativar(veicId){
+  if(DEMO) return cenaTagDemoReativar(veicId);
+  return cenaTagRpc('fn_tag_reativar', {p_veiculo_id:veicId});
+}
+
+function cenaTagSecaoHtml(veicId, vei, lista){
+  var pode = cenaTagPodeCadastrar();
+  var cred = cenaTagPickAtual(lista);
+  var st = cred && cred.status;
+  var corpo;
+  var hist = (lista||[]).map(function(c){
+    return '<div style="font-size:11px;color:#555;padding:3px 0;border-bottom:.5px solid #e8eef5">'
+      +'<b>'+cenaTagEsc(c.status)+'</b> · '+cenaTagEsc(c.uid_normalizado||'—')
+      +' · '+cenaTagFmtTs(c.ativado_em||c.criado_em)
+      +(c.status==='BLOQUEADO'&&c.motivo_bloqueio?' · '+cenaTagEsc(c.motivo_bloqueio):'')
+      +(c.substitui_credencial_id?' · subst.':'')
+      +'</div>';
+  }).join('');
+  if(!cred){
+    corpo = '<div style="font-size:13px;color:#666">Status: <b>Sem TAG</b></div>';
+  } else if(st==='ATIVO'){
+    corpo = '<div style="font-size:13px">TAG atual: <b style="letter-spacing:.03em">'+cenaTagEsc(cred.uid_normalizado||'—')+'</b></div>'
+      +'<div style="font-size:13px;margin-top:2px">Status: <b>Ativo</b></div>'
+      +'<div style="font-size:12px;color:#666">Ativada em: '+cenaTagFmtTs(cred.ativado_em||cred.criado_em)+'</div>';
+  } else if(st==='BLOQUEADO'){
+    corpo = '<div style="font-size:13px">TAG: <b style="letter-spacing:.03em">'+cenaTagEsc(cred.uid_normalizado||'—')+'</b></div>'
+      +'<div style="font-size:13px;margin-top:2px">Status: <b>Bloqueado</b> — não autentica</div>'
+      +'<div style="font-size:12px;color:#666">Em: '+cenaTagFmtTs(cred.bloqueado_em)+'</div>'
+      +(cred.motivo_bloqueio?'<div style="font-size:12px;color:#854F0B">Motivo: '+cenaTagEsc(cred.motivo_bloqueio)+'</div>':'');
+  } else {
+    corpo = '<div style="font-size:13px;color:#666">Sem TAG ATIVA (último: '+cenaTagEsc(st)+').</div>';
+  }
+  return '<div style="background:#F4F8FC;border:1px solid #c5d8ea;border-radius:10px;padding:.7rem .8rem">'
+    +'<div style="font-weight:700;font-size:12px;color:#185FA5;margin-bottom:6px">Identificação de acesso — TAG RFID</div>'
+    +corpo
+    +(pode?'':'<div style="font-size:11px;color:#888;margin-top:6px">Somente Admin / Diretoria / Gestor / Coordenador cadastram ou bloqueiam.</div>')
+    +'<div style="margin-top:10px;display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end">'
+    +'<div><label style="font-size:10px;color:#888;display:block;margin-bottom:2px">UID / TAG simulada</label>'
+    +'<input class="inp" id="cena-tag-uid" style="width:100%;font-family:monospace;letter-spacing:.04em" placeholder="Ex.: A1 B2 C3 D4" autocomplete="off"/></div>'
+    +'<button class="btn btn-sm" type="button" onclick="cenaTagAcaoResolver(\''+veicId+'\')">Resolver TAG</button>'
+    +'</div>'
+    +'<div id="cena-tag-resolver-out" style="font-size:12px;margin-top:6px;color:#555"></div>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">'
+    +(pode?'<button class="btn btn-sm" type="button" onclick="cenaTagAcaoVincular(\''+veicId+'\')">Vincular TAG</button>':'')
+    +(pode&&st==='ATIVO'?'<button class="btn btn-sm" type="button" onclick="cenaTagAcaoSubstituir(\''+veicId+'\')">Substituir TAG</button>':'')
+    +(pode&&st==='ATIVO'?'<button class="btn btn-sm" type="button" onclick="cenaTagAcaoBloquear(\''+veicId+'\')" style="color:#A32D2D;border-color:#A32D2D">Bloquear TAG</button>':'')
+    +(pode&&st==='BLOQUEADO'?'<button class="btn btn-sm" type="button" onclick="cenaTagAcaoReativar(\''+veicId+'\')">Reativar TAG</button>':'')
+    +'</div>'
+    +(hist?'<div style="margin-top:10px"><div style="font-size:10px;font-weight:700;color:#888;text-transform:uppercase;margin-bottom:4px">Histórico</div>'+hist+'</div>':'')
+    +'<div style="font-size:10px;color:#888;margin-top:8px">Leitura simulada. Sem hardware. Não abre portão.</div>'
+    +'</div>';
+}
+
+function cenaTagMontarSecao(veicId, vei){
+  var el = document.getElementById('cena-tag-secao');
+  if(!el || !veicId) return;
+  el.innerHTML = '<div style="padding:10px;color:#888;font-size:12px">Carregando TAG do veículo…</div>';
+  cenaTagCarregarCredenciais(veicId).then(function(lista){
+    var box = document.getElementById('cena-tag-secao');
+    if(!box) return;
+    box.innerHTML = cenaTagSecaoHtml(veicId, vei, lista);
+  }).catch(function(){
+    var box = document.getElementById('cena-tag-secao');
+    if(box) box.innerHTML = cenaTagSecaoHtml(veicId, vei, []);
+  });
+}
+
+function cenaTagUidCampo(){
+  return cenaTagNormalizarUid(((document.getElementById('cena-tag-uid')||{}).value)||'');
+}
+
+function cenaTagMostrarResolver(r, uid){
+  var out = document.getElementById('cena-tag-resolver-out');
+  if(!out) return;
+  if(!r || r.motivo==='UID_VAZIO'){
+    out.innerHTML = '<span style="color:#A32D2D">Informe um UID para resolver.</span>';
+    return;
+  }
+  if(!r.encontrado){
+    out.innerHTML = '<span style="color:#A32D2D">Não encontrada · '+cenaTagEsc(r.motivo||'TAG_DESCONHECIDA')+'</span>';
+    return;
+  }
+  var vei = r.veiculo||{};
+  var cor = r.autenticavel ? '#3B6D11' : '#A32D2D';
+  out.innerHTML = '<span style="color:'+cor+'">'+(r.autenticavel?'Identificada e autenticável':'Não autentica')
+    +' · '+(r.motivo||'OK')
+    +' · '+(vei.placa||'—')+' '+(vei.modelo||'')
+    +' · credencial '+(r.credencial&&r.credencial.status||'—')
+    +'</span>'
+    +'<div style="font-size:10px;color:#888;margin-top:2px">UID normalizado: '+cenaTagEsc(uid)+' · sem decisão de portão</div>';
+}
+
+async function cenaTagAcaoResolver(veicId){
+  var uid = ((document.getElementById('cena-tag-uid')||{}).value||'').trim();
+  var r = await cenaTagResolverVeiculo(uid);
+  cenaTagMostrarResolver(r, cenaTagNormalizarUid(uid));
+}
+
+async function cenaTagAcaoVincular(veicId){
+  if(!cenaTagPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para cadastrar TAG.','erro'); return; }
+  var uid = ((document.getElementById('cena-tag-uid')||{}).value||'').trim();
+  if(!cenaTagNormalizarUid(uid)){ alert('Informe o UID / TAG simulada.'); return; }
+  var r = await cenaTagExecVincular(veicId, uid);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao vincular TAG','erro');
+    else alert(r.error||'Falha ao vincular TAG');
+    return;
+  }
+  if(typeof progShowToast==='function') progShowToast('TAG vinculada.');
+  cenaTagMontarSecao(veicId, cenaTagDadosVeic(veicId));
+}
+
+async function cenaTagAcaoSubstituir(veicId){
+  if(!cenaTagPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para substituir TAG.','erro'); return; }
+  var uid = ((document.getElementById('cena-tag-uid')||{}).value||'').trim();
+  if(!cenaTagNormalizarUid(uid)){ alert('Informe o novo UID / TAG simulada.'); return; }
+  var motivo = prompt('Motivo da substituição (opcional):','')||'';
+  var r = await cenaTagExecSubstituir(veicId, uid, motivo);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao substituir TAG','erro');
+    else alert(r.error||'Falha ao substituir TAG');
+    return;
+  }
+  if(typeof progShowToast==='function') progShowToast('TAG substituída. Histórico preservado.');
+  cenaTagMontarSecao(veicId, cenaTagDadosVeic(veicId));
+}
+
+async function cenaTagAcaoBloquear(veicId){
+  if(!cenaTagPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para bloquear TAG.','erro'); return; }
+  var motivo = prompt('Motivo do bloqueio (obrigatório):','');
+  if(motivo==null) return;
+  if(!String(motivo).trim()){ alert('Informe o motivo do bloqueio.'); return; }
+  var r = await cenaTagExecBloquear(veicId, String(motivo).trim());
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao bloquear TAG','erro');
+    else alert(r.error||'Falha ao bloquear TAG');
+    return;
+  }
+  if(typeof progShowToast==='function') progShowToast('TAG bloqueada. Não autentica.');
+  cenaTagMontarSecao(veicId, cenaTagDadosVeic(veicId));
+}
+
+async function cenaTagAcaoReativar(veicId){
+  if(!cenaTagPodeCadastrar()){ if(typeof progShowToast==='function') progShowToast('Sem permissão para reativar TAG.','erro'); return; }
+  if(!confirm('Reativar a TAG bloqueada deste veículo?')) return;
+  var r = await cenaTagExecReativar(veicId);
+  if(!r.ok){
+    if(typeof progShowToast==='function') progShowToast(r.error||'Falha ao reativar TAG','erro');
+    else alert(r.error||'Falha ao reativar TAG');
+    return;
+  }
+  if(typeof progShowToast==='function') progShowToast('TAG reativada.');
+  cenaTagMontarSecao(veicId, cenaTagDadosVeic(veicId));
+}
+
+function cenaTagDadosVeic(veicId){
+  return (typeof frt_veiculos!=='undefined'?frt_veiculos:[]).find(function(v){ return String(v.id)===String(veicId); }) || {id:veicId};
+}
+
+/* PORT-AUTO-SYS-1C — pontos de acesso + dispositivos lógicos (SIMULADO). Sem hardware. */
+var _cenaAcessoPontos = [];
+var _cenaAcessoDisps = [];
+var _cenaAcessoInfraCarregado = false;
+
+function cenaAcessoInfraPodeCadastrar(){
+  var p = String((typeof usuarioLogado!=='undefined' && usuarioLogado && usuarioLogado.perfil) || '').toLowerCase().trim();
+  return ['admin','diretoria','gestor','coordenador'].indexOf(p) >= 0;
+}
+function cenaAcessoInfraPodeLer(){
+  var p = String((typeof usuarioLogado!=='undefined' && usuarioLogado && usuarioLogado.perfil) || '').toLowerCase().trim();
+  return cenaAcessoInfraPodeCadastrar() || ['supervisor','supervisor_tma','portaria','escritorio'].indexOf(p) >= 0;
+}
+function cenaAcessoInfraNomeBase(baseId){
+  var f = (typeof filiais!=='undefined'?filiais:[]).find(function(x){ return String(x.id)===String(baseId); });
+  if(!f) return '—';
+  return (f.codigo ? f.codigo+' — ' : '') + (f.nome||'');
+}
+function cenaAcessoInfraNomePonto(pontoId){
+  var p = _cenaAcessoPontos.find(function(x){ return String(x.id)===String(pontoId); });
+  return p ? (p.codigo+' — '+p.nome) : '—';
+}
+function cenaAcessoInfraBadgeStatus(st){
+  var s = String(st||'SIMULADO');
+  var bg = s==='ONLINE' ? '#E7F6EC' : (s==='OFFLINE' ? '#f5f5f3' : (s==='ERRO' ? '#FDECEC' : '#EEF4FF'));
+  var fg = s==='ONLINE' ? '#18794E' : (s==='OFFLINE' ? '#666' : (s==='ERRO' ? '#A32D2D' : '#185FA5'));
+  return '<span style="background:'+bg+';color:'+fg+';border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700">'+s+'</span>';
+}
+function cenaAcessoInfraTplPontos(){
+  return [
+    {codigo:'PORTAO_VEICULOS_SAIDA', nome:'Portão veículos — saída', tipo:'VEICULAR', sentido:'SAIDA'},
+    {codigo:'PORTAO_VEICULOS_ENTRADA', nome:'Portão veículos — entrada', tipo:'VEICULAR', sentido:'ENTRADA'},
+    {codigo:'PORTAO_PEDESTRES_ENTRADA', nome:'Portão pedestres — entrada', tipo:'PEDESTRE', sentido:'ENTRADA'},
+    {codigo:'PORTAO_PEDESTRES_SAIDA', nome:'Portão pedestres — saída', tipo:'PEDESTRE', sentido:'SAIDA'}
+  ];
+}
+function cenaAcessoInfraTplDisps(){
+  return [
+    {pref:'LEITOR_TAG_SAIDA', nome:'Leitor TAG — saída veicular', tipo:'LEITOR_TAG', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'LEITURA_TAG_SAIDA'},
+    {pref:'LEITOR_RFID_SAIDA', nome:'Leitor RFID — saída veicular', tipo:'LEITOR_RFID', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'LEITURA_RFID_SAIDA'},
+    {pref:'CTRL_PORTAO_SAIDA', nome:'Controlador — portão saída', tipo:'CONTROLADOR_PORTAO', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'COMANDO_PORTAO_SAIDA'},
+    {pref:'SENSOR_PORTAO_SAIDA', nome:'Sensor — portão saída', tipo:'SENSOR_PORTAO', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'ESTADO_PORTAO_SAIDA'},
+    {pref:'CAM01', nome:'Câmera 01 — saída', tipo:'CAMERA', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'EVIDENCIA_SAIDA'},
+    {pref:'CAM02', nome:'Câmera 02 — saída', tipo:'CAMERA', ponto:'PORTAO_VEICULOS_SAIDA', sentido:'SAIDA', funcao:'EVIDENCIA_SAIDA'},
+    {pref:'LEITOR_TAG_ENTRADA', nome:'Leitor TAG — entrada veicular', tipo:'LEITOR_TAG', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'LEITURA_TAG_ENTRADA'},
+    {pref:'LEITOR_RFID_ENTRADA', nome:'Leitor RFID — entrada veicular', tipo:'LEITOR_RFID', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'LEITURA_RFID_ENTRADA'},
+    {pref:'CTRL_PORTAO_ENTRADA', nome:'Controlador — portão entrada', tipo:'CONTROLADOR_PORTAO', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'COMANDO_PORTAO_ENTRADA'},
+    {pref:'SENSOR_PORTAO_ENTRADA', nome:'Sensor — portão entrada', tipo:'SENSOR_PORTAO', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'ESTADO_PORTAO_ENTRADA'},
+    {pref:'CAM03', nome:'Câmera 03 — entrada', tipo:'CAMERA', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'EVIDENCIA_ENTRADA'},
+    {pref:'CAM04', nome:'Câmera 04 — entrada', tipo:'CAMERA', ponto:'PORTAO_VEICULOS_ENTRADA', sentido:'ENTRADA', funcao:'EVIDENCIA_ENTRADA'},
+    {pref:'LEITOR_RFID_PED_ENTRADA', nome:'Leitor RFID — pedestre entrada', tipo:'LEITOR_RFID', ponto:'PORTAO_PEDESTRES_ENTRADA', sentido:'ENTRADA', funcao:'LEITURA_RFID_PEDESTRE_ENTRADA'},
+    {pref:'LEITOR_RFID_PED_SAIDA', nome:'Leitor RFID — pedestre saída', tipo:'LEITOR_RFID', ponto:'PORTAO_PEDESTRES_SAIDA', sentido:'SAIDA', funcao:'LEITURA_RFID_PEDESTRE_SAIDA'}
+  ];
+}
+function cenaAcessoInfraSeedsDemo(){
+  var bases = (typeof filiais!=='undefined' && filiais.length) ? filiais : [{id:'f-demo-cena01', codigo:'CENA01', nome:'COAQUIRA (DEMO)'}];
+  _cenaAcessoPontos = [];
+  _cenaAcessoDisps = [];
+  bases.forEach(function(f){
+    var suf = String(f.codigo||'BASE').replace(/\s+/g,'_');
+    cenaAcessoInfraTplPontos().forEach(function(p){
+      _cenaAcessoPontos.push({
+        id:'pt-'+f.id+'-'+p.codigo, codigo:p.codigo, nome:p.nome, base_id:f.id,
+        tipo:p.tipo, sentido:p.sentido, ativo:true, criado_em:new Date().toISOString()
+      });
+    });
+    cenaAcessoInfraTplDisps().forEach(function(d){
+      var ponto = _cenaAcessoPontos.find(function(x){ return x.base_id===f.id && x.codigo===d.ponto; });
+      _cenaAcessoDisps.push({
+        id:'dp-'+f.id+'-'+d.pref,
+        codigo:d.pref+'_'+suf,
+        nome:d.nome,
+        tipo:d.tipo,
+        base_id:f.id,
+        ponto_acesso_id: ponto ? ponto.id : null,
+        sentido:d.sentido,
+        funcao:d.funcao,
+        identificador_hardware:d.pref+'_'+suf,
+        ativo:true,
+        status_comunicacao:'SIMULADO',
+        ultima_comunicacao:null,
+        configuracao:{origem:'SEED_1C', simulado:true, sem_hardware:true}
+      });
+    });
+  });
+}
+function cenaAcessoInfraCarregar(){
+  if(typeof DEMO!=='undefined' && DEMO){
+    if(!_cenaAcessoPontos.length) cenaAcessoInfraSeedsDemo();
+    _cenaAcessoInfraCarregado = true;
+    return Promise.resolve();
+  }
+  return Promise.all([
+    sbFetch('portaria_pontos_acesso', {requireAuth:true, select:'id,codigo,nome,base_id,portaria_id,tipo,sentido,ativo,criado_em,atualizado_em', order:'codigo', limit:200}),
+    sbFetch('portaria_dispositivos', {requireAuth:true, select:'id,codigo,nome,tipo,base_id,ponto_acesso_id,sentido,funcao,identificador_hardware,ativo,status_comunicacao,ultima_comunicacao,configuracao,criado_em,atualizado_em', order:'codigo', limit:400})
+  ]).then(function(arr){
+    _cenaAcessoPontos = arr[0]||[];
+    _cenaAcessoDisps = arr[1]||[];
+    _cenaAcessoInfraCarregado = true;
+    if(!_cenaAcessoPontos.length){
+      console.info('[CENA 1C] portaria_pontos_acesso vazia — aplique sql_portaria_acesso_infra_1c.sql');
+    }
+  }).catch(function(err){
+    console.warn('[CENA 1C] falha ao carregar infra (SQL 1C pendente?)', err);
+    _cenaAcessoPontos = [];
+    _cenaAcessoDisps = [];
+    _cenaAcessoInfraCarregado = true;
+  });
+}
+function cenaAcessoInfraFiltroBase(){
+  var el = document.getElementById('cena-acesso-base');
+  return el ? String(el.value||'') : '';
+}
+function cenaAcessoInfraRender(){
+  var el = document.getElementById('port-aba-acesso');
+  if(!el) return;
+  var pode = cenaAcessoInfraPodeCadastrar();
+  var baseSel = cenaAcessoInfraFiltroBase();
+  var bases = [];
+  var seen = {};
+  (typeof filiais!=='undefined'?filiais:[]).forEach(function(f){
+    if(f && f.id && !seen[f.id]){ seen[f.id]=1; bases.push(f); }
+  });
+  _cenaAcessoPontos.forEach(function(p){
+    if(p.base_id && !seen[p.base_id]){ seen[p.base_id]=1; bases.push({id:p.base_id, codigo:'', nome:p.base_id}); }
+  });
+  var pontos = _cenaAcessoPontos.filter(function(p){ return !baseSel || String(p.base_id)===baseSel; });
+  var disps = _cenaAcessoDisps.filter(function(d){ return !baseSel || String(d.base_id)===baseSel; });
+  var cams = disps.filter(function(d){ return d.tipo==='CAMERA'; });
+  var tags = disps.filter(function(d){ return d.tipo==='LEITOR_TAG'; });
+  var rfids = disps.filter(function(d){ return d.tipo==='LEITOR_RFID'; });
+  var ctrls = disps.filter(function(d){ return d.tipo==='CONTROLADOR_PORTAO'; });
+  var html = ''
+    +'<div class="card" style="margin-bottom:.75rem">'
+    +'<div class="ch" style="flex-wrap:wrap;gap:8px"><span class="ct">🚪 Configurações de Acesso</span>'
+    +'<select class="inp" id="cena-acesso-base" style="width:220px" onchange="cenaAcessoInfraRender()">'
+    +'<option value="">Todas as bases</option>'
+    +bases.map(function(f){ return '<option value="'+escHtml(String(f.id))+'"'+(String(f.id)===baseSel?' selected':'')+'>'+escHtml(cenaAcessoInfraNomeBase(f.id)!=='—'?cenaAcessoInfraNomeBase(f.id):(f.codigo||f.nome||f.id))+'</option>'; }).join('')
+    +'</select>'
+    +(pode?'':'<span style="font-size:11px;color:#888">Somente leitura</span>')
+    +'</div>'
+    +'<p style="font-size:12px;color:#555;margin:0 0 .75rem">Representação lógica da portaria (SIMULADO). Sem câmera real, MQTT, RTSP ou comando de portão. Códigos estáveis para o CENA Access Gateway.</p>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:.75rem">'
+    +cenaAcessoInfraChip(pontos.length,'pontos')
+    +cenaAcessoInfraChip(cams.length,'câmeras')
+    +cenaAcessoInfraChip(tags.length,'leitores TAG')
+    +cenaAcessoInfraChip(rfids.length,'leitores RFID')
+    +cenaAcessoInfraChip(ctrls.length,'controladores')
+    +'</div></div>'
+    +'<div class="card" style="margin-bottom:.75rem"><div class="ch"><span class="ct">Pontos de acesso</span></div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
+    +'<th>Código</th><th>Nome</th><th>Base</th><th>Tipo</th><th>Sentido</th><th>Ativo</th>'
+    +(pode?'<th></th>':'')
+    +'</tr></thead><tbody>'
+    +(pontos.length?pontos.map(function(p){
+      return '<tr>'
+        +'<td style="font-family:monospace;font-weight:700">'+escHtml(p.codigo)+'</td>'
+        +'<td>'+escHtml(p.nome)+'</td>'
+        +'<td style="font-size:11px">'+escHtml(cenaAcessoInfraNomeBase(p.base_id))+'</td>'
+        +'<td>'+escHtml(p.tipo)+'</td>'
+        +'<td>'+escHtml(p.sentido)+'</td>'
+        +'<td>'+(p.ativo?'<span style="color:#18794E;font-weight:700">SIM</span>':'<span style="color:#A32D2D;font-weight:700">NÃO</span>')+'</td>'
+        +(pode?'<td><button class="btn btn-sm" onclick="cenaAcessoInfraTogglePonto(\''+p.id+'\','+(!p.ativo)+')">'+(p.ativo?'Desativar':'Ativar')+'</button></td>':'')
+        +'</tr>';
+    }).join(''):'<tr><td colspan="7" style="text-align:center;color:#888;padding:1.2rem">Nenhum ponto. Aplique sql_portaria_acesso_infra_1c.sql no Supabase ou use DEMO.</td></tr>')
+    +'</tbody></table></div></div>'
+    +'<div class="card"><div class="ch"><span class="ct">Dispositivos lógicos</span></div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
+    +'<th>Código</th><th>Nome</th><th>Tipo</th><th>Ponto</th><th>Função</th><th>Status</th><th>Ativo</th><th>Última comunicação</th>'
+    +(pode?'<th></th>':'')
+    +'</tr></thead><tbody>'
+    +(disps.length?disps.map(function(d){
+      var stOpts = ['SIMULADO','ONLINE','OFFLINE','ERRO'].map(function(s){
+        return '<option value="'+s+'"'+(d.status_comunicacao===s?' selected':'')+'>'+s+'</option>';
+      }).join('');
+      return '<tr>'
+        +'<td style="font-family:monospace;font-weight:700;font-size:11px">'+escHtml(d.codigo)+'</td>'
+        +'<td>'+escHtml(d.nome)+'</td>'
+        +'<td style="font-size:11px">'+escHtml(d.tipo)+'</td>'
+        +'<td style="font-size:11px">'+escHtml((function(){ var p=_cenaAcessoPontos.find(function(x){return String(x.id)===String(d.ponto_acesso_id);}); return p?p.codigo:'—'; })())+'</td>'
+        +'<td style="font-size:11px">'+escHtml(d.funcao||'—')+'</td>'
+        +'<td>'+(pode
+          ? '<select class="inp" style="width:118px;font-size:11px" onchange="cenaAcessoInfraSetStatus(\''+d.id+'\',this.value)">'+stOpts+'</select>'
+          : cenaAcessoInfraBadgeStatus(d.status_comunicacao))
+        +'</td>'
+        +'<td>'+(d.ativo?'<span style="color:#18794E;font-weight:700">SIM</span>':'<span style="color:#A32D2D;font-weight:700">NÃO</span>')+'</td>'
+        +'<td style="font-size:11px;color:#888">'+(d.ultima_comunicacao?escHtml(String(d.ultima_comunicacao).replace('T',' ').slice(0,16)):'—')+'</td>'
+        +(pode?'<td><button class="btn btn-sm" onclick="cenaAcessoInfraToggleDisp(\''+d.id+'\','+(!d.ativo)+')">'+(d.ativo?'Desativar':'Ativar')+'</button></td>':'')
+        +'</tr>';
+    }).join(''):'<tr><td colspan="9" style="text-align:center;color:#888;padding:1.2rem">Nenhum dispositivo lógico.</td></tr>')
+    +'</tbody></table></div>'
+    +'<p style="font-size:10px;color:#888;margin:.6rem 0 0">identificador_hardware é opaco e somente leitura. ONLINE não liga hardware — é status administrativo.</p>'
+    +'</div>';
+  el.innerHTML = html;
+}
+function cenaAcessoInfraChip(n, label){
+  return '<span style="background:#f5f5f3;border-radius:10px;padding:3px 10px;font-size:11px;font-weight:600">'+(n||0)+' '+label+'</span>';
+}
+function cenaAcessoInfraToast(msg, tipo){
+  if(typeof progShowToast==='function') progShowToast(msg, tipo||'ok');
+  else alert(msg);
+}
+async function cenaAcessoInfraTogglePonto(id, ativo){
+  if(!cenaAcessoInfraPodeCadastrar()){ cenaAcessoInfraToast('Sem permissão para alterar ponto de acesso.','erro'); return; }
+  if(typeof DEMO!=='undefined' && DEMO){
+    var p = _cenaAcessoPontos.find(function(x){ return String(x.id)===String(id); });
+    if(p){ p.ativo=!!ativo; p.atualizado_em=new Date().toISOString(); }
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast(ativo?'Ponto ativado.':'Ponto desativado.');
+    return;
+  }
+  try{
+    await sbUpdate('portaria_pontos_acesso', {ativo:!!ativo}, 'id=eq.'+id);
+    var row = _cenaAcessoPontos.find(function(x){ return String(x.id)===String(id); });
+    if(row) row.ativo=!!ativo;
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast(ativo?'Ponto ativado.':'Ponto desativado.');
+  }catch(e){
+    cenaAcessoInfraToast((e&&e.message)||'Falha ao alterar ponto.','erro');
+  }
+}
+async function cenaAcessoInfraToggleDisp(id, ativo){
+  if(!cenaAcessoInfraPodeCadastrar()){ cenaAcessoInfraToast('Sem permissão para alterar dispositivo.','erro'); return; }
+  if(typeof DEMO!=='undefined' && DEMO){
+    var d = _cenaAcessoDisps.find(function(x){ return String(x.id)===String(id); });
+    if(d){ d.ativo=!!ativo; d.atualizado_em=new Date().toISOString(); }
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast(ativo?'Dispositivo ativado.':'Dispositivo desativado.');
+    return;
+  }
+  try{
+    await sbUpdate('portaria_dispositivos', {ativo:!!ativo}, 'id=eq.'+id);
+    var row = _cenaAcessoDisps.find(function(x){ return String(x.id)===String(id); });
+    if(row) row.ativo=!!ativo;
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast(ativo?'Dispositivo ativado.':'Dispositivo desativado.');
+  }catch(e){
+    cenaAcessoInfraToast((e&&e.message)||'Falha ao alterar dispositivo.','erro');
+  }
+}
+async function cenaAcessoInfraSetStatus(id, status){
+  if(!cenaAcessoInfraPodeCadastrar()){ cenaAcessoInfraToast('Sem permissão para alterar status.','erro'); return; }
+  var ok = ['SIMULADO','ONLINE','OFFLINE','ERRO'].indexOf(status)>=0;
+  if(!ok){ cenaAcessoInfraToast('Status inválido.','erro'); return; }
+  var patch = {status_comunicacao:status};
+  if(status==='ONLINE') patch.ultima_comunicacao = new Date().toISOString();
+  if(typeof DEMO!=='undefined' && DEMO){
+    var d = _cenaAcessoDisps.find(function(x){ return String(x.id)===String(id); });
+    if(d){ d.status_comunicacao=status; if(patch.ultima_comunicacao) d.ultima_comunicacao=patch.ultima_comunicacao; }
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast('Status '+status+' (simulado — sem hardware).');
+    return;
+  }
+  try{
+    await sbUpdate('portaria_dispositivos', patch, 'id=eq.'+id);
+    var row = _cenaAcessoDisps.find(function(x){ return String(x.id)===String(id); });
+    if(row){
+      row.status_comunicacao=status;
+      if(patch.ultima_comunicacao) row.ultima_comunicacao=patch.ultima_comunicacao;
+    }
+    cenaAcessoInfraRender();
+    cenaAcessoInfraToast('Status '+status+' (administrativo — sem hardware).');
+  }catch(e){
+    cenaAcessoInfraToast((e&&e.message)||'Falha ao alterar status.','erro');
+  }
+}
+function portRenderAcesso(){
+  cenaAcessoInfraCarregar().then(function(){ cenaAcessoInfraRender(); });
 }
 
 function todayStr(){return new Date().toLocaleDateString('pt-BR');}
@@ -43971,10 +44632,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.121',
+  numero: '8.1.122',
   data:   '23/09/2026',
-  build:  '20260923-1905',
+  build:  '20260923-1935',
   log: [
+    {v:'8.1.122', d:'23/09/2026', itens:[
+      'PORT-AUTO-SYS: recupera 1B/1C perdidas no index (TAG no veiculo + aba Acesso) a partir do commit 33bd686, sem rollback geral e sem 1D. SQL 1B/1C recolocados no repo. HOMOLOGACAO.',
+    ]},
     {v:'8.1.121', d:'23/09/2026', itens:[
       'RH RFID: Descadastrar cracha em cadastro equivocado libera o UID para gravar de novo (RE 108 duplicado). Bloqueio/substituicao continuam reservando a tag. Requer SQL sql_colaborador_credenciais_rfid_descadastro.sql. HOMOLOGACAO.',
     ]},
@@ -75787,7 +76451,7 @@ var _AUDIT_MODULO_TABELA = {
   lancamentos:'financeiro', fin_faturamentos:'financeiro', adiantamentos:'financeiro',
   acord_negociacoes:'financeiro', acord_parcelas:'financeiro', acord_titulos:'financeiro', acord_fornecedores:'financeiro',
   colaboradores:'sesmt', treinamentos:'sesmt', epis:'sesmt', funcionarios:'sesmt', verificar_tratamentos:'operacional',
-  colaborador_credenciais:'rh',
+  colaborador_credenciais:'rh', veiculo_credenciais:'frotas', portaria_pontos_acesso:'frotas', portaria_dispositivos:'frotas',
   rh_colaborador_documentos:'rh',
   rh_documentos_obrigatorios:'rh',
   rh_contratacoes:'rh',
@@ -84425,7 +85089,7 @@ function portMostrarAba(aba){
   var aca=document.getElementById('app-content-area');if(aca)aca.scrollTop=0;
   var _btnAb=document.getElementById('port-tab-abertos'); if(_btnAb) _btnAb.style.display=portPodeEncerrarAbertos()?'':'none';
   if(typeof portOffRenderIndicador==='function') portOffRenderIndicador();
-  ['equipes','saida','liberacao','autorizados','registros','reservas','config','retorno','abertos'].forEach(function(a){
+  ['equipes','saida','liberacao','autorizados','registros','reservas','config','acesso','retorno','abertos'].forEach(function(a){
     var el=document.getElementById('port-aba-'+a);
     var btn=document.getElementById('port-tab-'+a);
     if(el) el.style.display = a===aba?'':'none';
@@ -84447,6 +85111,7 @@ function portMostrarAba(aba){
   if(aba==='registros'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
   if(aba==='reservas')  portRenderReservas();
   if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
+  if(aba==='acesso'){   portRenderAcesso(); }
   if(aba==='retorno'){
     portInvalidarCacheSaidas((document.getElementById('ret-data')||{}).value||dataHojeLocal());
     portEnsureReservas().then(function(){ portRenderRetorno(); });
@@ -92639,7 +93304,8 @@ function frtModalVeiculo(v, opts){
     +'<div><label style="font-size:10px;color:#888;display:block;margin-bottom:2px">ID externo</label>'
     +'<input class="inp" id="fv-rastr-id" style="width:100%;font-size:12px" value="'+(v?escHtml(v.rastreador_id_externo||''):'')+'"/></div>'
     +'</div></div>'
-    +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observações</label>'
+        +(v?'<div id="cena-tag-secao" style="grid-column:span 2"></div>':'')
++'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:3px">Observações</label>'
     +'<textarea class="inp" id="fv-obs" style="width:100%;height:55px">'+escHtml(v?v.observacoes||'':'')+'</textarea></div>'
     +(v?'<div style="grid-column:span 2;background:#f5f8fc;border:.5px solid #d5e4f5;border-radius:8px;padding:.6rem .75rem">'
       +'<div style="font-size:11px;font-weight:600;color:#185FA5;margin-bottom:.35rem">📎 Documentos do veículo</div>'
@@ -92699,6 +93365,7 @@ function frtModalVeiculo(v, opts){
     frtModalVeiculoSeguroToggle();
     frtModalVeiculoStatusHint();
     if(v){
+      if(typeof cenaTagMontarSecao==='function') cenaTagMontarSecao(v.id, v);
       window._fvDocsVeic=v;
       var lista=document.getElementById('fv-docs-lista');
       if(lista) lista.innerHTML=frtDocsVeiculoListaHtml(frtDocsCadastroDoVeiculo(v),{canDelete:true,empty:'Nenhum documento cadastrado neste veículo.'});
@@ -96318,6 +96985,7 @@ window._almShowAbaInterna = window._almShowAbaInterna || function(aba){
     <button class="port-tab-btn" id="port-tab-registros" onclick="portMostrarAba('registros')" style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📋 Registros</button>
     <button class="port-tab-btn" id="port-tab-reservas"  onclick="portMostrarAba('reservas')"  style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">📅 Reservas</button>
     <button class="port-tab-btn" id="port-tab-config"    onclick="portMostrarAba('config')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">⚙ Configuração</button>
+    <button class="port-tab-btn" id="port-tab-acesso"    onclick="portMostrarAba('acesso')"    style="padding:.5rem .85rem;border:none;border-bottom:2px solid transparent;color:#888;font-weight:500;background:none;cursor:pointer;font-size:12px">Acesso</button>
   </div>
 
   <!-- ABA: LIBERAÇÃO -->
@@ -96542,6 +97210,8 @@ window._almShowAbaInterna = window._almShowAbaInterna || function(aba){
   <!-- ABA: CONFIGURAÇÃO -->
   <div id="port-aba-config" style="display:none">
   </div>
+
+  <div id="port-aba-acesso" style="display:none"></div>
 
   <!-- ABA: RETORNO -->
   <div id="port-aba-retorno" style="display:none"></div>
