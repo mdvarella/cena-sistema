@@ -34,11 +34,28 @@
     return v!=null?v:fb;
   }
 
+  function _semAcento(s){
+    return String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  }
   function normStatus(s){
     return String(s||'').trim().toUpperCase().replace(/\s+/g,'_');
   }
+  function normTipo(s){
+    var t=_semAcento(s).replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    if(t==='fatura') return 'FATURA';
+    if(t==='mensalidade_tag_em_estoque'||t==='mensalidade_tag_estoque'||t==='mensalidade_em_estoque') return 'MENSALIDADE_TAG_ESTOQUE';
+    if(t==='mensalidade_tag'||t==='mensalidade') return 'MENSALIDADE_TAG';
+    return 'PASSAGEM';
+  }
+  function labelTipo(s){
+    var t=normTipo(s);
+    if(t==='FATURA') return 'FATURA';
+    if(t==='MENSALIDADE_TAG') return 'Mensalidade TAG';
+    if(t==='MENSALIDADE_TAG_ESTOQUE') return 'Mensalidade TAG em estoque';
+    return 'PASSAGEM';
+  }
   function ehFatura(p){
-    return String((p&&p.tipo)||'PASSAGEM').toUpperCase()==='FATURA';
+    return normTipo(p&&p.tipo)==='FATURA';
   }
   function entraNoCusto(p){
     if(!p || p.deleted_at) return false;
@@ -59,7 +76,7 @@
       String((p&&p.praca)||'').toLowerCase(),
       String(Number((p&&p.valor)||0).toFixed(2)),
       String((p&&p.origem)||'').toLowerCase(),
-      String((p&&p.tipo)||'PASSAGEM').toUpperCase()
+      normTipo(p&&p.tipo)
     ].join('|');
     var h=0;
     for(var i=0;i<key.length;i++){ h=((h<<5)-h)+key.charCodeAt(i); h|=0; }
@@ -219,7 +236,7 @@
       rodovia:form.rodovia||'',
       concessionaria:form.concessionaria||'',
       origem:form.origem||'manual',
-      tipo:form.tipo||'PASSAGEM',
+      tipo:normTipo(form.tipo||'PASSAGEM'),
       status:form.status||'VALIDADO',
       observacao:form.observacao||'',
       contrato_id:form.contrato_id||null,
@@ -238,11 +255,14 @@
       p.status='POSSIVEL_DUPLICIDADE';
       p.apropriacao_status='SEM_APROPRIACAO';
       p.motivo_sem_apropriacao='POSSIVEL_DUPLICIDADE';
-    } else if(p.contrato_id){
-      p.apropriacao_status='APROPRIADO';
-      p.contrato_nome=p.contrato_nome||nomeContrato(p.contrato_id);
     } else {
       apropriarAuto(p);
+      if(!p.contrato_id) aplicarContratoVeiculo(p);
+      if(p.contrato_id){
+        p.apropriacao_status='APROPRIADO';
+        p.motivo_sem_apropriacao=null;
+        p.contrato_nome=p.contrato_nome||nomeContrato(p.contrato_id);
+      }
     }
     p.hash_deduplicacao=hash(p);
     p.placa_normalizada=_np(p.placa);
@@ -374,6 +394,163 @@
     });
     out.total=Math.round(out.total*100)/100;
     return out;
+  }
+
+  function parseValor(v){
+    if(v==null||v==='') return 0;
+    if(typeof v==='number') return v;
+    var s=String(v).replace(/[R$\s]/g,'').trim();
+    if(!s) return 0;
+    if(s.indexOf(',')>=0 && s.indexOf('.')>=0){
+      if(s.lastIndexOf(',')>s.lastIndexOf('.')) s=s.replace(/\./g,'').replace(',', '.');
+      else s=s.replace(/,/g,'');
+    } else if(s.indexOf(',')>=0){
+      s=s.replace(',', '.');
+    }
+    return Number(s)||0;
+  }
+  function parseDataHora(v){
+    if(!v && v!==0) return '';
+    if(v instanceof Date && !isNaN(v.getTime())) return v.toISOString();
+    if(typeof v==='number' && v>20000 && v<80000){
+      var base=Date.UTC(1899,11,30);
+      return new Date(base+Math.round(v*86400000)).toISOString();
+    }
+    var s=String(v).trim();
+    if(!s) return '';
+    var m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if(m){
+      var dd=+m[1], mm=+m[2], yy=+m[3];
+      if(yy<100) yy+=2000;
+      var dt=new Date(yy, mm-1, dd, +(m[4]||0), +(m[5]||0), +(m[6]||0));
+      if(!isNaN(dt.getTime())) return dt.toISOString();
+    }
+    var iso=new Date(s);
+    if(!isNaN(iso.getTime())) return iso.toISOString();
+    return '';
+  }
+  function resolverContrato(txt){
+    var q=_semAcento(txt).trim();
+    if(!q) return null;
+    return (global.contratos||[]).find(function(c){
+      if(!c||c.ativo===false) return false;
+      return String(c.id)===String(txt).trim()
+        || _semAcento(c.codigo||'')===q
+        || _semAcento(c.nome||'')===q;
+    })||null;
+  }
+  function resolverVeiculo(placa){
+    var np=_np(placa);
+    if(!np) return null;
+    var lista=repo()&&repo().listarVeiculos?repo().listarVeiculos():(global.frt_veiculos||[]);
+    return lista.find(function(v){ return _np(v.placa)===np; })||null;
+  }
+  function contratoDoVeiculo(ref){
+    if(ref && ref.contrato_id && (ref.placa || ref.id) && !ref.data_hora){
+      return {
+        contrato_id:ref.contrato_id,
+        contrato_nome:ref.contrato_nome||nomeContrato(ref.contrato_id)||''
+      };
+    }
+    var vei=null;
+    var lista=repo()&&repo().listarVeiculos?repo().listarVeiculos():(global.frt_veiculos||[]);
+    if(ref && ref.veiculo_id){
+      vei=lista.find(function(v){ return String(v.id)===String(ref.veiculo_id); })||null;
+    }
+    if(!vei && ref && ref.id && !ref.data_hora){
+      vei=lista.find(function(v){ return String(v.id)===String(ref.id); })||null;
+    }
+    if(!vei && ref && ref.placa) vei=resolverVeiculo(ref.placa);
+    if(!vei && typeof ref==='string') vei=resolverVeiculo(ref);
+    if(!vei || !vei.contrato_id) return null;
+    return {
+      contrato_id:vei.contrato_id,
+      contrato_nome:vei.contrato_nome||nomeContrato(vei.contrato_id)||''
+    };
+  }
+  function aplicarContratoVeiculo(p){
+    p=p||{};
+    if(p.contrato_id){
+      p.contrato_nome=p.contrato_nome||nomeContrato(p.contrato_id);
+      return p;
+    }
+    var cv=contratoDoVeiculo(p);
+    if(!cv||!cv.contrato_id) return p;
+    p.contrato_id=cv.contrato_id;
+    p.contrato_nome=cv.contrato_nome||nomeContrato(cv.contrato_id);
+    return p;
+  }
+  function labelContrato(p){
+    if(p&&p.contrato_nome) return p.contrato_nome;
+    if(p&&p.contrato_id) return nomeContrato(p.contrato_id)||p.contrato_id;
+    var cv=contratoDoVeiculo(p||{});
+    return (cv&&(cv.contrato_nome||nomeContrato(cv.contrato_id)))||'';
+  }
+  function mapearLinhaImport(row){
+    row=row||{};
+    function g(){
+      var keys=arguments;
+      for(var i=0;i<keys.length;i++){
+        var k=keys[i];
+        if(row[k]==null || row[k]==='') continue;
+        if(row[k] instanceof Date) return row[k];
+        if(typeof row[k]==='number') return row[k];
+        if(String(row[k]).trim()!=='') return row[k];
+      }
+      return '';
+    }
+    var placa=g('placa','placa_veiculo','tag');
+    var tipo=normTipo(g('tipo','tipo_lancamento')||'PASSAGEM');
+    var contratoTxt=g('contrato','contrato_nome','contrato_codigo');
+    var cont=resolverContrato(contratoTxt);
+    var vei=resolverVeiculo(placa);
+    if(!placa && tipo==='MENSALIDADE_TAG_ESTOQUE') placa='ESTOQUE';
+    if(!cont && vei){
+      var cv=contratoDoVeiculo(vei);
+      if(cv) cont={id:cv.contrato_id, nome:cv.contrato_nome, codigo:cv.contrato_nome};
+    }
+    return {
+      placa:placa,
+      veiculo_id:vei&&vei.id,
+      modelo:vei?(vei.modelo||''):g('modelo','veiculo'),
+      data_hora:parseDataHora(g('data_hora','data','data/hora','datahora')),
+      valor:parseValor(g('valor','vlr','preco')),
+      praca:g('praca','praca_pedagio'),
+      rodovia:g('rodovia'),
+      concessionaria:g('estabelecimento','concessionaria','concessionaria_tag','operadora'),
+      centro_custo:g('centro_de_custo','centro_custo','cc','c_custo'),
+      origem:g('origem')||'importacao',
+      tipo:tipo,
+      status:normStatus(g('status')||'VALIDADO')||'VALIDADO',
+      observacao:g('observacao','obs'),
+      contrato_id:cont?cont.id:null,
+      contrato_nome:cont?(cont.nome||cont.codigo||''):''
+    };
+  }
+  async function importarLote(linhas){
+    var ok=0, erro=0, dup=0, falhas=[];
+    var lista=Array.isArray(linhas)?linhas:[];
+    for(var i=0;i<lista.length;i++){
+      var form=mapearLinhaImport(lista[i]);
+      if(!(Number(form.valor)>0)){
+        erro++; falhas.push({linha:i+2, motivo:'Valor invalido'}); continue;
+      }
+      if(!form.placa){
+        erro++; falhas.push({linha:i+2, motivo:'Placa vazia'}); continue;
+      }
+      if(!form.data_hora) form.data_hora=new Date().toISOString();
+      if(possivelDuplicata(form)){
+        form.status='POSSIVEL_DUPLICIDADE';
+        dup++;
+      }
+      try{
+        await salvarNovo(form);
+        ok++;
+      }catch(e){
+        erro++; falhas.push({linha:i+2, motivo:String(e&&e.message||e)});
+      }
+    }
+    return {ok:ok, erro:erro, dup:dup, total:lista.length, falhas:falhas};
   }
 
   function seedDemo(){
@@ -534,6 +711,8 @@
 
   Ped._svc={
     normStatus:normStatus,
+    normTipo:normTipo,
+    labelTipo:labelTipo,
     ehFatura:ehFatura,
     entraNoCusto:entraNoCusto,
     competenciaYm:competenciaYm,
@@ -550,6 +729,13 @@
     seedDemo:seedDemo,
     rodarTestesVbe:rodarTestesVbe,
     nomeContrato:nomeContrato,
-    nomeEquipe:nomeEquipe
+    nomeEquipe:nomeEquipe,
+    contratoDoVeiculo:contratoDoVeiculo,
+    aplicarContratoVeiculo:aplicarContratoVeiculo,
+    labelContrato:labelContrato,
+    parseValor:parseValor,
+    parseDataHora:parseDataHora,
+    mapearLinhaImport:mapearLinhaImport,
+    importarLote:importarLote
   };
 })(typeof window!=='undefined'?window:this);

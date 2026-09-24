@@ -1,4 +1,4 @@
-/* CENA — casco das telas SESMT / Almoxarifado (8.1.112)
+/* CENA — casco das telas SESMT / Almoxarifado (8.1.131)
    O index.html perdeu os <div id="pg-sesmt-*"> / pg-alm-*.
    Sem o container, o clique no menu não pinta nada. */
 (function(){
@@ -74,14 +74,14 @@
   }
   function htmlEstoque(){
     return hdr('🗄 Estoque')
-      +'<div class="card"><div class="ch" style="flex-wrap:wrap;gap:6px"><span class="ct">Saldos</span>'
+      +'<div class="card est-card"><div class="ch est-fil-bar" id="est-fil-bar" style="flex-wrap:wrap;gap:6px"><span class="ct">Saldos</span>'
       +'<select class="inp" id="est-fil-filial" style="width:150px" onchange="if(typeof renderEstoque===\'function\')renderEstoque()"><option value="">Todas as filiais</option></select>'
       +'<select class="inp" id="est-fil-deposito" style="width:150px" onchange="if(typeof renderEstoque===\'function\')renderEstoque()"><option value="">Todos os depósitos</option></select>'
       +'<select class="inp" id="est-fil-tipo" style="width:140px" onchange="if(typeof renderEstoque===\'function\')renderEstoque()"><option value="">Todos os tipos</option></select>'
       +'<select class="inp" id="est-fil-status" style="width:130px" onchange="if(typeof renderEstoque===\'function\')renderEstoque()"><option value="">Todos</option></select>'
       +'<input class="inp" id="est-fil-busca" placeholder="Buscar" style="width:160px" oninput="if(typeof renderEstoque===\'function\')renderEstoque()">'
       +'<input class="inp" id="est-fil-ini" type="date"><input class="inp" id="est-fil-fim" type="date">'
-      +'</div><div style="overflow-x:auto"><table class="tbl alm-req-cols" data-cols-key="estoque"><thead><tr>'
+      +'</div><div id="est-tbl-wrap" class="est-tbl-wrap"><table class="tbl alm-req-cols" data-cols-key="estoque"><thead><tr>'
       +'<th>TIPO</th><th>SKU</th><th>ITENS</th><th>UN</th><th>R$ Unitário</th><th>DEPÓSITO</th>'
       +'<th>SALDO ANT</th><th>ENT PERÍODO</th><th>SAÍDA</th><th>DISPONÍVEL</th><th>RESERVA</th>'
       +'<th>SALDO FINAL</th><th>MIN</th><th>DATA ULT MOV</th><th>AÇÃO</th>'
