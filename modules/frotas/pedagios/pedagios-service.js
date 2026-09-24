@@ -549,12 +549,22 @@
       contrato_nome:cont?(cont.nome||cont.codigo||''):''
     };
   }
+  function hashesEmMemoria(){
+    var out={};
+    ((repo()?repo().memoria():global.frt_pedagios)||[]).forEach(function(p){
+      if(!p||p.deleted_at) return;
+      var h=p.hash_deduplicacao||hash(p);
+      if(h) out[h]=1;
+    });
+    return out;
+  }
   async function importarLote(linhas){
     var ok=0, erro=0, dup=0, falhas=[];
     var lista=Array.isArray(linhas)?linhas:[];
-    var visto={};
-    for(var i=0;i<lista.length;i++){
-      var form=mapearLinhaImport(lista[i]);
+    var forms=[];
+    var i, form, min='', max='';
+    for(i=0;i<lista.length;i++){
+      form=mapearLinhaImport(lista[i]);
       if(!(Number(form.valor)>0)){
         erro++; falhas.push({linha:i+2, motivo:'Valor invalido'}); continue;
       }
@@ -562,20 +572,36 @@
         erro++; falhas.push({linha:i+2, motivo:'Placa vazia'}); continue;
       }
       if(!form.data_hora) form.data_hora=new Date().toISOString();
+      form._linha=i+2;
+      forms.push(form);
+      if(!min || form.data_hora<min) min=form.data_hora;
+      if(!max || form.data_hora>max) max=form.data_hora;
+    }
+    if(forms.length && repo()&&repo().carregarFaixa){
+      try{ await repo().carregarFaixa(min, max); }catch(eC){}
+    }
+    var existente=hashesEmMemoria();
+    var visto={};
+    for(i=0;i<forms.length;i++){
+      form=forms[i];
       var h=hash(form);
-      if(visto[h] || possivelDuplicata(form)){
+      if(visto[h] || existente[h]){
         dup++; continue;
       }
       visto[h]=1;
       try{
         var saved=await salvarNovo(form);
-        if(saved&&saved._duplicado){ dup++; continue; }
+        if(saved&&saved._duplicado){ existente[h]=1; dup++; continue; }
         if(saved&&saved._erroPersist){
-          erro++; falhas.push({linha:i+2, motivo:saved._erroPersist}); continue;
+          if(/23505|uq_frotas_pedagios_hash|duplicate/i.test(String(saved._erroPersist))){
+            existente[h]=1; dup++; continue;
+          }
+          erro++; falhas.push({linha:form._linha, motivo:saved._erroPersist}); continue;
         }
+        existente[h]=1;
         ok++;
       }catch(e){
-        erro++; falhas.push({linha:i+2, motivo:String(e&&e.message||e)});
+        erro++; falhas.push({linha:form._linha, motivo:String(e&&e.message||e)});
       }
     }
     return {ok:ok, erro:erro, dup:dup, total:lista.length, falhas:falhas};

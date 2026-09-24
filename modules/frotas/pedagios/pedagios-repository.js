@@ -70,11 +70,30 @@
   async function buscarPorHash(h){
     if(!h || isDemo() || typeof global.sbFetch!=='function') return null;
     try{
-      var rows=await global.sbFetch(TABELA,{filters:['hash_deduplicacao=eq.'+h,'deleted_at=is.null'],limit:1});
+      var rows=await global.sbFetch(TABELA,{filters:['hash_deduplicacao=eq.'+encodeURIComponent(h),'deleted_at=is.null'],limit:1});
       return rows&&rows[0]?rows[0]:null;
     }catch(e){
       return null;
     }
+  }
+
+  async function carregarFaixa(isoIni, isoFim){
+    if(isDemo() || typeof global.sbFetchAll!=='function') return memoria();
+    var filters=['deleted_at=is.null'];
+    if(isoIni) filters.push('data_hora=gte.'+String(isoIni).slice(0,10));
+    if(isoFim) filters.push('data_hora=lte.'+String(isoFim).slice(0,10)+'T23:59:59.999');
+    try{
+      var rows=await global.sbFetchAll(TABELA,{order:'data_hora.asc',filters:filters,maxPages:80});
+      if(rows&&rows.length){
+        var byId={};
+        memoria().forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
+        rows.forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
+        global.frt_pedagios=Object.keys(byId).map(function(k){ return byId[k]; });
+      }
+    }catch(e){
+      console.warn('[PEDAGIOS] carregarFaixa', e);
+    }
+    return memoria();
   }
 
   async function persistir(p, modo){
@@ -86,6 +105,14 @@
     }
     try{
       if(modo==='criar'){
+        if(p.hash_deduplicacao){
+          var ja=await buscarPorHash(p.hash_deduplicacao);
+          if(ja){
+            mergeLocal(ja);
+            ja._duplicado=true;
+            return ja;
+          }
+        }
         var ins=await global.sbInsert(TABELA, payload(p), {silent:true});
         if(ins&&ins[0]){
           p=Object.assign(p, ins[0]);
@@ -124,6 +151,7 @@
     listarSaidas:listarSaidas,
     listarVeiculos:listarVeiculos,
     carregar:carregar,
+    carregarFaixa:carregarFaixa,
     buscarPorHash:buscarPorHash,
     persistir:persistir
   };
