@@ -252,9 +252,9 @@
       p.apropriacao_status='PENDENTE';
       p.motivo_sem_apropriacao='FATURA_NAO_E_CUSTO';
     } else if(possivelDuplicata(p)){
-      p.status='POSSIVEL_DUPLICIDADE';
-      p.apropriacao_status='SEM_APROPRIACAO';
-      p.motivo_sem_apropriacao='POSSIVEL_DUPLICIDADE';
+      p._duplicado=true;
+      p.hash_deduplicacao=hash(p);
+      return p;
     } else {
       apropriarAuto(p);
       if(!p.contrato_id) aplicarContratoVeiculo(p);
@@ -267,6 +267,8 @@
     p.hash_deduplicacao=hash(p);
     p.placa_normalizada=_np(p.placa);
     p=await repo().persistir(p,'criar');
+    if(p&&p._duplicado) return p;
+    if(p&&p._erroPersist) return p;
     _audit('criar','Cadastrou pedágio '+_np(p.placa)+' '+_fmtR(p.valor),{
       evento:'cadastro_pedagio', pedagio_id:p.id, status:p.status,
       apropriacao_status:p.apropriacao_status, origem:p.origem, tipo:p.tipo
@@ -550,6 +552,7 @@
   async function importarLote(linhas){
     var ok=0, erro=0, dup=0, falhas=[];
     var lista=Array.isArray(linhas)?linhas:[];
+    var visto={};
     for(var i=0;i<lista.length;i++){
       var form=mapearLinhaImport(lista[i]);
       if(!(Number(form.valor)>0)){
@@ -559,12 +562,17 @@
         erro++; falhas.push({linha:i+2, motivo:'Placa vazia'}); continue;
       }
       if(!form.data_hora) form.data_hora=new Date().toISOString();
-      if(possivelDuplicata(form)){
-        form.status='POSSIVEL_DUPLICIDADE';
-        dup++;
+      var h=hash(form);
+      if(visto[h] || possivelDuplicata(form)){
+        dup++; continue;
       }
+      visto[h]=1;
       try{
-        await salvarNovo(form);
+        var saved=await salvarNovo(form);
+        if(saved&&saved._duplicado){ dup++; continue; }
+        if(saved&&saved._erroPersist){
+          erro++; falhas.push({linha:i+2, motivo:saved._erroPersist}); continue;
+        }
         ok++;
       }catch(e){
         erro++; falhas.push({linha:i+2, motivo:String(e&&e.message||e)});

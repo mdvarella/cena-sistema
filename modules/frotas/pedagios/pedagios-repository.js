@@ -67,6 +67,16 @@
     return memoria();
   }
 
+  async function buscarPorHash(h){
+    if(!h || isDemo() || typeof global.sbFetch!=='function') return null;
+    try{
+      var rows=await global.sbFetch(TABELA,{filters:['hash_deduplicacao=eq.'+h,'deleted_at=is.null'],limit:1});
+      return rows&&rows[0]?rows[0]:null;
+    }catch(e){
+      return null;
+    }
+  }
+
   async function persistir(p, modo){
     p.atualizado_por=p.atualizado_por||((global.usuarioLogado&&(global.usuarioLogado.nome||global.usuarioLogado.email))||'Sistema');
     if(modo==='criar') p.criado_por=p.criado_por||p.atualizado_por;
@@ -77,14 +87,32 @@
     try{
       if(modo==='criar'){
         var ins=await global.sbInsert(TABELA, payload(p), {silent:true});
-        if(ins&&ins[0]) p=Object.assign(p, ins[0]);
+        if(ins&&ins[0]){
+          p=Object.assign(p, ins[0]);
+          mergeLocal(p);
+          return p;
+        }
+        var err=String(global._sbLastInsertErr||'');
+        if(/23505|uq_frotas_pedagios_hash|duplicate key/i.test(err)){
+          var exist=await buscarPorHash(p.hash_deduplicacao);
+          if(exist){
+            mergeLocal(exist);
+            exist._duplicado=true;
+            return exist;
+          }
+          p._duplicado=true;
+          return p;
+        }
+        p._erroPersist=err||'falha ao salvar';
+        return p;
       } else if(p.id){
         await global.sbUpdate(TABELA, payload(p), 'id=eq.'+p.id);
+        mergeLocal(p);
       }
     }catch(e){
       console.warn('[PEDAGIOS] persist', e);
+      p._erroPersist=String(e&&e.message||e);
     }
-    mergeLocal(p);
     return p;
   }
 
@@ -96,6 +124,7 @@
     listarSaidas:listarSaidas,
     listarVeiculos:listarVeiculos,
     carregar:carregar,
+    buscarPorHash:buscarPorHash,
     persistir:persistir
   };
 })(typeof window!=='undefined'?window:this);

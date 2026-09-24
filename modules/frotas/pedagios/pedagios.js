@@ -268,7 +268,7 @@
     if(!placa) placa='ESTOQUE';
     if(!(Number(valor)>0)){ _toast('Informe o valor.','erro'); return; }
     var iso=dt?new Date(dt).toISOString():new Date().toISOString();
-    await svc().salvarNovo({
+    var saved=await svc().salvarNovo({
       placa:placa,
       veiculo_id:opt&&opt.getAttribute('data-vid'),
       modelo:opt&&opt.getAttribute('data-modelo'),
@@ -285,7 +285,9 @@
       contrato_nome:opt&&opt.getAttribute('data-cnome')
     });
     if(typeof global.closeModal==='function') global.closeModal();
-    _toast('Pedágio registrado.');
+    if(saved&&saved._duplicado) _toast('Este pedágio já estava cadastrado. Nada foi duplicado.');
+    else if(saved&&saved._erroPersist) _toast('Não foi possível salvar: '+saved._erroPersist,'erro');
+    else _toast('Pedágio registrado.');
     render();
   }
 
