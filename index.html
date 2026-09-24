@@ -2000,12 +2000,12 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.135"></script>
-<script src="sesmt-alm-shell.js?v=8.1.135"></script>
-<script src="prog-projetos-shell.js?v=8.1.135"></script>
-<script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.135"></script>
-<script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.135"></script>
-<script src="modules/frotas/pedagios/pedagios.js?v=8.1.135"></script>
+<script src="portaria-offline.js?v=8.1.136"></script>
+<script src="sesmt-alm-shell.js?v=8.1.136"></script>
+<script src="prog-projetos-shell.js?v=8.1.136"></script>
+<script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.136"></script>
+<script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.136"></script>
+<script src="modules/frotas/pedagios/pedagios.js?v=8.1.136"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -44655,10 +44655,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.135',
+  numero: '8.1.136',
   data:   '24/09/2026',
-  build:  '20260924-1650',
+  build:  '20260924-1728',
   log: [
+    {v:'8.1.136', d:'24/09/2026', itens:[
+      'SESMT ASO: integracao preenche medico/clinica e salva como o formulario (+ ASO), com validade; linha da Evolucao deixa de ficar vermelha sem reabrir o exame. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.135', d:'24/09/2026', itens:[
       'Entrada IA: some Revisar apos REVISADO/SALVO e nao reabre a revisao depois de integrar SESMT; ASO grava medico/clinica/datas e valida vencimento sem reabrir o exame. Sem SQL. HOMOLOGACAO.',
     ]},
@@ -133415,7 +133418,11 @@ async function rhIa5bExecutarAplicacao(){
         criado_em: new Date().toISOString()
       };
       // Não inventar validade (nem a partir do fim do período do curso)
-      if(!row.validade) delete row.validade;
+      if(st.modo==='ASO' && !row.validade){
+        row.validade = typeof sesmtAsoValidadePadrao==='function' ? sesmtAsoValidadePadrao(row.data) : null;
+        vals.validade = row.validade;
+      }
+      if(st.modo!=='ASO' && !row.validade) delete row.validade;
       if(row.data && !/^\d{4}-\d{2}-\d{2}$/.test(String(row.data))){
         throw new Error('Data inválida ou ambígua. Revise antes de aplicar.');
       }
@@ -133599,6 +133606,18 @@ async function rhIa5bExecutarAplicacao(){
     progShowToast((st.modo==='ASO'?'ASO':'Treinamento')+' aplicado: '+(oks.length?oks.join(' + '):'sem alterações')+'.');
   }
 
+  if(st.modo==='ASO' && resultados.sesmt==='ok' && col && typeof sesmtSalvarASO==='function'){
+    try{
+      var dAso = typeof sesmtAsoDadosParaForm==='function' ? sesmtAsoDadosParaForm(col.id) : {};
+      dAso.medico = vals.medico || dAso.medico;
+      dAso.clinica = vals.clinica || vals.instituicao || dAso.clinica;
+      dAso.data = vals.data || dAso.data;
+      dAso.validade = vals.validade || dAso.validade;
+      dAso.resultado = vals.resultado || dAso.resultado;
+      if(vals.titulo) dAso.tipo = String(vals.titulo).replace(/^ASO\s+/i,'');
+      await sesmtSalvarASO(col.id, dAso);
+    }catch(eAsoForm){ console.warn('sesmtSalvarASO pos-IA', eAsoForm); }
+  }
   _rhIa5b = null;
   closeModal();
   if(typeof rhIaSetFiltroStatus==='function'){
@@ -135575,9 +135594,10 @@ async function evolCarregarDadosColab(colabId){
     });
     if(!treinamentos) treinamentos = [];
     (tren||[]).forEach(function(t){
+      if(t && t.validade && !t.val) t.val = String(t.validade).slice(0,10);
       var ix = treinamentos.findIndex(function(x){ return String(x.id)===String(t.id); });
-      if(ix>=0) treinamentos[ix] = Object.assign({}, treinamentos[ix], t);
-      else treinamentos.push(t);
+      if(ix>=0) treinamentos[ix] = Object.assign({}, treinamentos[ix], t, {val:(t.val||t.validade||treinamentos[ix].val||null)});
+      else treinamentos.push(Object.assign({}, t, {val:t.val||t.validade||null}));
     });
   }catch(eT){ console.warn('evolCarregarDadosColab treinamentos', eT); }
   try{
@@ -135598,6 +135618,9 @@ async function evolCarregarDadosColab(colabId){
   try{
     if(typeof rhSesmtCarregarVinculosColab==='function') await rhSesmtCarregarVinculosColab(colabId);
   }catch(eV){}
+  try{
+    if(typeof sesmtCompletarAsoComoFormulario==='function') await sesmtCompletarAsoComoFormulario(colabId);
+  }catch(eAsoFix){ console.warn('sesmtCompletarAsoComoFormulario', eAsoFix); }
   return new Promise(function(resolve){ docCarregarColab(colabId, resolve); });
 }
 
@@ -135946,11 +135969,180 @@ function evolDocDossieResumoHtml(c, checklist){
   return '';
 }
 
-function evolRegistrarASO(colabId){
+function sesmtAsoValidadePadrao(dataIso){
+  var base = String(dataIso||'').slice(0,10);
+  var d;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(base)) d = new Date(base+'T12:00:00');
+  else d = new Date();
+  if(isNaN(d.getTime())) d = new Date();
+  d.setFullYear(d.getFullYear()+1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function sesmtAsoNormTipo(s){
+  var t = String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if(/admiss/.test(t)) return 'Admissional';
+  if(/demiss/.test(t)) return 'Demissional';
+  if(/retorno/.test(t)) return 'Retorno ao trabalho';
+  if(/mudanc/.test(t)) return 'Mudan\u00e7a de fun\u00e7\u00e3o';
+  if(/monitor/.test(t)) return 'Monitora\u00e7\u00e3o pontual';
+  return 'Peri\u00f3dico';
+}
+function sesmtAsoDoColab(colabId){
+  var ids = {};
+  if(typeof _colabIdsRelacionados==='function'){
+    var m = _colabIdsRelacionados(colabId)||{};
+    Object.keys(m).forEach(function(k){ ids[String(k)]=1; });
+  }
+  ids[String(colabId)] = 1;
+  var fid = typeof sesmtTreinamentoColabId==='function' ? sesmtTreinamentoColabId(colabId) : colabId;
+  if(fid) ids[String(fid)] = 1;
+  var lista = (typeof treinamentos!=='undefined' && treinamentos) || [];
+  return lista.filter(function(t){
+    if(!t || t.deleted_at) return false;
+    if(!ids[String(t.funcionario_id)]) return false;
+    var nr=(t.nr||'').toUpperCase(); var tt=(t.titulo||'').toUpperCase();
+    return nr==='ASO'||tt.indexOf('ASO')>=0||tt.indexOf('ADMISSIONAL')>=0||tt.indexOf('PERIODICO')>=0||tt.indexOf('PERI\u00d3DICO')>=0;
+  }).sort(function(a,b){
+    return String(b.val||b.validade||b.data||'') > String(a.val||a.validade||a.data||'') ? 1 : -1;
+  })[0] || null;
+}
+function sesmtAsoDadosDaIa(colabId){
+  var out = {medico:'', clinica:'', data:'', validade:'', resultado:'', tipo:''};
+  var itens = (_rhIaItens||[]).filter(function(it){
+    if(String(it.colaborador_id_sugerido)!==String(colabId)) return false;
+    var t = it.tipo_documento_sugerido||'';
+    return (typeof rhIaEhAso==='function' && rhIaEhAso(t)) || /ASO/i.test(t);
+  });
+  var item = itens[0];
+  if(!item) return out;
+  var dados = typeof rhIa5aDadosLeitura==='function' ? rhIa5aDadosLeitura(item) : {campos:(item.campos_extraidos&&item.campos_extraidos.campos)||{}};
+  function pack(ch){
+    var p = typeof rhIa5aPackCampo==='function' ? rhIa5aPackCampo(dados, ch) : (dados.campos&&dados.campos[ch]);
+    return typeof rhIa4ValPack==='function' ? rhIa4ValPack(p) : String((p&&(p.valor_normalizado||p.valor))||'').trim();
+  }
+  out.medico = pack('medico');
+  out.clinica = pack('clinica') || pack('instituicao');
+  out.resultado = (typeof rhIa5bNormResultado==='function' ? rhIa5bNormResultado(pack('resultado')) : '') || pack('resultado');
+  out.tipo = pack('tipo_exame');
+  var nd = typeof rhIa5bNormalizarData==='function' ? rhIa5bNormalizarData(pack('data_exame')) : null;
+  var nv = typeof rhIa5bNormalizarData==='function' ? rhIa5bNormalizarData(pack('data_validade')) : null;
+  if(nd && nd.valido) out.data = nd.inicio;
+  if(nv && nv.valido) out.validade = nv.inicio;
+  var datas = typeof rhIaDatasItem==='function' ? rhIaDatasItem(item) : {};
+  if(!out.data && datas && datas.emissao) out.data = String(datas.emissao).slice(0,10);
+  if(!out.validade && datas && datas.validade) out.validade = String(datas.validade).slice(0,10);
+  return out;
+}
+function sesmtAsoDadosParaForm(colabId){
+  var aso = sesmtAsoDoColab(colabId) || {};
+  var ia = sesmtAsoDadosDaIa(colabId);
+  var data = String(aso.data||ia.data||'').slice(0,10);
+  var val = String(aso.val||aso.validade||ia.validade||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(data)) data = (typeof dataHojeLocal==='function'?dataHojeLocal():(typeof dataHoje==='function'?dataHoje():''));
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(val)) val = sesmtAsoValidadePadrao(data);
+  var tipo = sesmtAsoNormTipo((aso.titulo||'').replace(/^ASO\s+/i,'') || ia.tipo);
+  return {
+    id: aso.id || null,
+    tipo: tipo,
+    data: data,
+    validade: val,
+    resultado: aso.resultado || ia.resultado || 'Apto',
+    medico: aso.medico || ia.medico || '',
+    clinica: aso.clinica || aso.instituicao || ia.clinica || '',
+    obs: aso.observacoes || ''
+  };
+}
+function sesmtPreencherFormASO(d){
+  d = d || {};
+  function setv(id, v){
+    var el = document.getElementById(id);
+    if(!el || v==null || String(v)==='') return;
+    el.value = v;
+  }
+  setv('aso-tipo', d.tipo);
+  setv('aso-data', d.data);
+  setv('aso-val', d.validade);
+  setv('aso-resultado', d.resultado);
+  setv('aso-medico', d.medico);
+  setv('aso-clinica', d.clinica);
+  setv('aso-obs', d.obs);
+}
+async function sesmtSalvarASO(colabId, dados){
+  dados = dados || sesmtAsoDadosParaForm(colabId);
+  var tipo = dados.tipo || 'Peri\u00f3dico';
+  var data = dados.data || (typeof dataHojeLocal==='function'?dataHojeLocal():'');
+  var val = dados.validade || sesmtAsoValidadePadrao(data);
+  var res = dados.resultado || 'Apto';
+  var med = dados.medico || '';
+  var cli = dados.clinica || '';
+  if(!data) return {ok:false, erro:'Informe a data do exame.'};
+  var fid = (typeof sesmtTreinamentoColabId==='function'?sesmtTreinamentoColabId(colabId):colabId)||colabId;
+  if(!fid) return {ok:false, erro:'Colaborador n\u00e3o encontrado.'};
+  var payload = {
+    funcionario_id: fid,
+    nr: 'ASO',
+    titulo: (String(tipo).indexOf('ASO')===0 ? tipo : ('ASO '+tipo)),
+    validade: val,
+    data: data,
+    instituicao: cli || null,
+    resultado: res,
+    medico: med || null,
+    clinica: cli || null
+  };
+  var exist = null;
+  if(dados.id) exist = ((treinamentos||[]).find(function(t){ return String(t.id)===String(dados.id); })||null);
+  if(!exist) exist = sesmtAsoDoColab(colabId);
+  var mem = Object.assign({val:val}, payload);
+  if(typeof treinamentos==='undefined') treinamentos = [];
+  if(exist && exist.id){
+    mem.id = exist.id;
+    if(!DEMO){
+      var up = await sbUpdate('treinamentos', payload, 'id=eq.'+exist.id);
+      if(up===null){
+        var fb = Object.assign({}, payload);
+        delete fb.clinica; delete fb.medico; delete fb.resultado;
+        await sbUpdate('treinamentos', fb, 'id=eq.'+exist.id);
+      }
+    }
+    Object.assign(exist, mem);
+    exist.val = val;
+    exist.validade = val;
+    exist.medico = med;
+    exist.clinica = cli;
+    exist.instituicao = cli || exist.instituicao;
+  } else {
+    mem.id = 'aso'+Date.now();
+    mem.criado_em = new Date().toISOString();
+    payload.criado_em = mem.criado_em;
+    if(!DEMO){
+      var ins = await sbInsert('treinamentos', payload);
+      if(!ins){
+        var fb2 = Object.assign({}, payload);
+        delete fb2.clinica; delete fb2.medico; delete fb2.resultado;
+        ins = await sbInsert('treinamentos', fb2);
+      }
+      if(ins && ins[0]) Object.assign(mem, ins[0], {val:val, validade:val, medico:med, clinica:cli, instituicao:cli});
+    }
+    treinamentos.push(mem);
+  }
+  return {ok:true, aso:mem};
+}
+async function sesmtCompletarAsoComoFormulario(colabId){
+  var aso = sesmtAsoDoColab(colabId);
+  var d = sesmtAsoDadosParaForm(colabId);
+  if(!aso && !d.medico && !d.clinica) return {ok:true, skip:true};
+  var valOk = /^\d{4}-\d{2}-\d{2}$/.test(String((aso&&(aso.val||aso.validade))||'').slice(0,10));
+  var temCli = !!(aso && (aso.clinica||aso.instituicao));
+  var temMed = !!(aso && aso.medico);
+  if(aso && valOk && temCli && temMed) return {ok:true, skip:true};
+  if(aso && aso.id) d.id = aso.id;
+  return sesmtSalvarASO(colabId, d);
+}
+function evolRegistrarASO(colabId, prefill){
   var c=colaboradores.find(function(x){return x.id===colabId;})||{};
-  var hoje=dataHojeLocal();
-  var d1=new Date(); d1.setFullYear(d1.getFullYear()+1);
-  var prox=d1.getFullYear()+'-'+String(d1.getMonth()+1).padStart(2,'0')+'-'+String(d1.getDate()).padStart(2,'0');
+  var d=Object.assign(typeof sesmtAsoDadosParaForm==='function'?sesmtAsoDadosParaForm(colabId):{}, prefill||{});
+  var hoje=d.data || dataHojeLocal();
+  var prox=d.validade || sesmtAsoValidadePadrao(hoje);
   setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
     +'<h3 style="margin-bottom:1rem">🩺 Registrar ASO / Exame Ocupacional</h3>'
     +'<div style="font-size:12px;font-weight:500;color:#185FA5;background:#E6F1FB;border-radius:7px;padding:7px 12px;margin-bottom:.85rem">'
@@ -135962,17 +136154,17 @@ function evolRegistrarASO(colabId){
     +'<option>Retorno ao trabalho</option><option>Mudan\u00e7a de fun\u00e7\u00e3o</option><option>Monitora\u00e7\u00e3o pontual</option>'
     +'</select></div>'
     +'<div class="fg"><label style="font-size:11px">Data do exame *</label>'
-    +'<input class="inp" type="date" id="aso-data" value="'+hoje+'" style="width:100%"/></div>'
+    +'<input class="inp" type="date" id="aso-data" value="'+escHtml(hoje)+'" style="width:100%"/></div>'
     +'<div class="fg"><label style="font-size:11px">Pr\u00f3ximo exame (validade)</label>'
-    +'<input class="inp" type="date" id="aso-val" value="'+prox+'" style="width:100%"/></div>'
+    +'<input class="inp" type="date" id="aso-val" value="'+escHtml(prox)+'" style="width:100%"/></div>'
     +'<div class="fg"><label style="font-size:11px">Resultado</label>'
     +'<select class="inp" id="aso-resultado" style="width:100%">'
     +'<option>Apto</option><option>Apto com restri\u00e7\u00e3o</option><option>Inapto tempor\u00e1rio</option><option>Inapto definitivo</option>'
     +'</select></div>'
     +'<div class="fg"><label style="font-size:11px">M\u00e9dico</label>'
-    +'<input class="inp" id="aso-medico" style="width:100%" placeholder="Nome do m\u00e9dico"/></div>'
+    +'<input class="inp" id="aso-medico" style="width:100%" placeholder="Nome do m\u00e9dico" value="'+escHtml(d.medico||'')+'"/></div>'
     +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Cl\u00ednica / Hospital</label>'
-    +'<input class="inp" id="aso-clinica" style="width:100%" placeholder="Nome da cl\u00ednica"/></div>'
+    +'<input class="inp" id="aso-clinica" style="width:100%" placeholder="Nome da cl\u00ednica" value="'+escHtml(d.clinica||'')+'"/></div>'
     +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Observa\u00e7\u00f5es</label>'
     +'<textarea class="inp" id="aso-obs" style="width:100%;height:50px;resize:vertical" placeholder="Restri\u00e7\u00f5es, encaminhamentos..."></textarea></div>'
     +'</div>'
@@ -135981,9 +136173,10 @@ function evolRegistrarASO(colabId){
     +'<button class="btn btn-pri" id="aso-salvar" style="flex:2">Registrar ASO</button>'
     +'</div></div></div>');
   setTimeout(function(){
+    if(typeof sesmtPreencherFormASO==='function') sesmtPreencherFormASO(d);
     var btn=document.getElementById('aso-salvar');
     if(!btn)return;
-    btn.onclick=function(){
+    btn.onclick=async function(){
       var tipo=(document.getElementById('aso-tipo')||{}).value||'Peri\u00f3dico';
       var data=(document.getElementById('aso-data')||{}).value||hoje;
       var val =(document.getElementById('aso-val')||{}).value||prox;
@@ -135992,16 +136185,8 @@ function evolRegistrarASO(colabId){
       var cli =(document.getElementById('aso-clinica')||{}).value||'';
       var obs =(document.getElementById('aso-obs')||{}).value||'';
       if(!data){progShowToast('\u26a0 Informe a data do exame.');return;}
-      var colId=(typeof sesmtTreinamentoColabId==='function'?sesmtTreinamentoColabId(colabId):colabId)||colabId;
-      if(!colId){progShowToast('\u26a0 Colaborador n\u00e3o encontrado no cadastro.','erro');return;}
-      var novo={id:'aso'+Date.now(),funcionario_id:colId,
-        nr:'ASO',titulo:'ASO '+tipo,val:val,validade:val,
-        data:data,instituicao:cli,resultado:res,medico:med,clinica:cli,
-        observacoes:obs,tipo_aso:tipo,criado_em:new Date().toISOString()};
-      treinamentos.push(novo);
-      if(!DEMO){
-        sbInsert('treinamentos',{funcionario_id:colId,nr:'ASO',titulo:'ASO '+tipo,validade:val,data:data,instituicao:cli,resultado:res,medico:med,clinica:cli,criado_em:novo.criado_em});
-      }
+      var r = await sesmtSalvarASO(colabId, {id:d.id, tipo:tipo, data:data, validade:val, resultado:res, medico:med, clinica:cli, obs:obs});
+      if(!r||!r.ok){ progShowToast((r&&r.erro)||'Falha ao salvar ASO.','erro'); return; }
       closeModal(); renderEvolucao();
       progShowToast('\u2705 ASO registrado \u2014 '+escHtml(c.nome||'')+' \u00b7 '+tipo+' \u00b7 '+res);
     };
