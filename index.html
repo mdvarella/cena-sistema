@@ -2000,12 +2000,12 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.134"></script>
-<script src="sesmt-alm-shell.js?v=8.1.134"></script>
-<script src="prog-projetos-shell.js?v=8.1.134"></script>
-<script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.134"></script>
-<script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.134"></script>
-<script src="modules/frotas/pedagios/pedagios.js?v=8.1.134"></script>
+<script src="portaria-offline.js?v=8.1.135"></script>
+<script src="sesmt-alm-shell.js?v=8.1.135"></script>
+<script src="prog-projetos-shell.js?v=8.1.135"></script>
+<script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.135"></script>
+<script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.135"></script>
+<script src="modules/frotas/pedagios/pedagios.js?v=8.1.135"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -44655,10 +44655,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.134',
+  numero: '8.1.135',
   data:   '24/09/2026',
-  build:  '20260924-1548',
+  build:  '20260924-1650',
   log: [
+    {v:'8.1.135', d:'24/09/2026', itens:[
+      'Entrada IA: some Revisar apos REVISADO/SALVO e nao reabre a revisao depois de integrar SESMT; ASO grava medico/clinica/datas e valida vencimento sem reabrir o exame. Sem SQL. HOMOLOGACAO.',
+    ]},
     {v:'8.1.134', d:'24/09/2026', itens:[
       'SESMT: corrige salvar ASO (sesmtTreinamentoColabId) e libera Entrada Inteligente no menu SESMT sem abrir o modulo RH. Sem SQL. HOMOLOGACAO.',
     ]},
@@ -100834,7 +100837,7 @@ function calcularAptidao(colab){
     var aso = treinDoColaborador(colab.id).filter(function(t){
       return (t.nr==='ASO' || (t.titulo||'').toUpperCase().includes('ASO'));
     });
-    etapas.aso = aso.some(function(t){ var v=t.val||t.validade; return v && v >= hoje; });
+    etapas.aso = aso.some(function(t){ var v=String(t.val||t.validade||'').slice(0,10); return /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= hoje; });
     if(!etapas.aso) pendencias.push('ASO vencido ou ausente');
   }
 
@@ -119848,7 +119851,7 @@ function rhCtIaGradeHtml(){
     if(it.arquivo_url_staging){
       acoes += '<a class="btn btn-sm" href="'+rhEsc(it.arquivo_url_staging)+'" target="_blank" rel="noopener">Ver</a> ';
     }
-    if(it.status!=='RECEBIDO' && it.status!=='ERRO_UPLOAD' && it.status!=='CANCELADO'){
+    if(it.status!=='RECEBIDO' && it.status!=='ERRO_UPLOAD' && it.status!=='CANCELADO' && it.status!=='REVISADO' && it.status!=='APROVADO' && it.status!=='SALVO'){
       acoes += '<button type="button" class="btn btn-sm" onclick="rhIaAbrirRevisao(\''+idSafe+'\')">Corrigir / Conferir</button> ';
     }
     if(it.status==='RECEBIDO'){
@@ -128150,7 +128153,7 @@ var _rhIaFiltroStatus = (function(){
   try{ return localStorage.getItem('rh_ia_filtro_status') || 'FILA'; }catch(e){ return 'FILA'; }
 })();
 var RH_IA_FILTROS_GRUPO = [
-  {id:'FILA', label:'Fila', excluir:['SALVO','CANCELADO','DUPLICADO_LOTE']},
+  {id:'FILA', label:'Fila', excluir:['SALVO','CANCELADO','DUPLICADO_LOTE','REVISADO','APROVADO']},
   {id:'REVISADO', label:'Revisados', statuses:['REVISADO','APROVADO']},
   {id:'SALVO', label:'Salvos', statuses:['SALVO']},
   {id:'AGUARDANDO_REVISAO', label:'Aguardando revisão', statuses:['AGUARDANDO_REVISAO','COM_DIVERGENCIA','NAO_CLASSIFICADO']},
@@ -130470,7 +130473,23 @@ async function rhIaGravarAsoSesmt(col, datas, doc, item){
   var val = datas && datas.validade ? datas.validade : null;
   var dataEx = (datas && datas.emissao) || null;
   var campos = (item && item.campos_extraidos && item.campos_extraidos.campos) || {};
-  function txt(k){ var o=campos[k]; return o && o.valor!=null ? String(o.valor) : (typeof o==='string'?o:''); }
+  function txt(k){
+    var aliasMap = {
+      clinica: ['clinica','clinica_exame','clinica_hospital','hospital','local_exame','instituicao'],
+      instituicao: ['instituicao','clinica','clinica_exame','hospital'],
+      medico: ['medico','nome_medico','medico_responsavel','medico_examinador','profissional'],
+      resultado: ['resultado','apto_inapto','conclusao','parecer'],
+      tipo_exame: ['tipo_exame','tipo','subtipo']
+    };
+    var keys = aliasMap[k] || [k];
+    var i, o, s;
+    for(i=0;i<keys.length;i++){
+      o = campos[keys[i]];
+      s = o && o.valor!=null ? String(o.valor) : (o && o.valor_normalizado!=null ? String(o.valor_normalizado) : (typeof o==='string'?o:''));
+      if(s && String(s).trim()) return String(s).trim();
+    }
+    return '';
+  }
   var url = doc && doc.arquivo_url ? String(doc.arquivo_url) : '';
   var sub = typeof rhIa5bDetectarSubtipoAso==='function' ? rhIa5bDetectarSubtipoAso(item||{arquivo_nome:(doc&&doc.arquivo_nome),tipo_documento_sugerido:'ASO'}) : null;
   var titAso = (typeof rhIa5bTituloAso==='function' ? rhIa5bTituloAso(sub||item) : null)
@@ -131710,8 +131729,26 @@ function rhIa5aDadosLeitura(item, provider){
   };
 }
 function rhIa5aPackCampo(dados, chave){
+  if(!dados) return null;
   if(chave==='nome'||chave==='cpf'||chave==='re'){
     return (dados.pessoa && dados.pessoa[chave]) || (dados.campos && dados.campos[chave]) || null;
+  }
+  var aliases = {
+    medico: ['medico','nome_medico','medico_responsavel','medico_examinador','medico_do_trabalho','profissional','examinador'],
+    clinica: ['clinica','clinica_exame','clinica_hospital','hospital','local_exame','empresa_exame','instituicao'],
+    instituicao: ['instituicao','clinica','clinica_exame','hospital'],
+    data_exame: ['data_exame','data_emissao','data','data_realizacao','exame_em','data_aso'],
+    data_validade: ['data_validade','validade','data_vencimento','proximo_exame','vencimento','validade_aso'],
+    resultado: ['resultado','apto_inapto','conclusao','parecer']
+  };
+  var keys = aliases[chave] || [chave];
+  var i, k, p, v;
+  for(i=0;i<keys.length;i++){
+    k = keys[i];
+    p = dados.campos && dados.campos[k];
+    if(!p) continue;
+    v = typeof rhIa4ValPack==='function' ? rhIa4ValPack(p) : String((p.valor_normalizado||p.valor||'')).trim();
+    if(v) return p;
   }
   return (dados.campos && dados.campos[chave]) || null;
 }
@@ -132250,8 +132287,11 @@ async function rhIa5aExecutarAplicacao(){
   }
   _rhIa5a = null;
   closeModal();
-  rhRenderEntradaIa();
-  rhIaAbrirRevisao(item.id);
+  if(typeof rhIaSetFiltroStatus==='function'){
+    try{ rhIaSetFiltroStatus('SALVO'); }catch(eFilt5a){ rhRenderEntradaIa(); }
+  } else {
+    rhRenderEntradaIa();
+  }
 }
 
 /* ── IA-5B: Aplicação controlada ASO + NR/Treinamentos ─────────────── */
@@ -132931,7 +132971,6 @@ function rhIa5bValoresDeCampos(campos, decisoes, modo){
     if(dec!=='documento' && c.status!=='CONFERE') return;
     var v = c.docVal;
     if(dec==='cena'||dec==='manter'||dec==='skip') return;
-    if(c.status==='CONFERE' && dec!=='documento') return;
     if(c.chave==='tipo_exame') out.titulo = 'ASO '+v;
     if(c.chave==='titulo') out.titulo = v;
     if(c.chave==='nr_curso'){ out.nr = rhIa5bNormNr(v)||v; if(!out.titulo) out.titulo = out.nr; }
@@ -133331,6 +133370,33 @@ async function rhIa5bExecutarAplicacao(){
       // ficam na auditoria do item IA; opcionalmente anexados à instituição (texto).
       var extras = (vals.obsParts||[]).filter(Boolean);
       var instBase = vals.instituicao || vals.clinica || '';
+      if(st.modo==='ASO' && typeof rhIa5aDadosLeitura==='function' && typeof rhIa5aPackCampo==='function'){
+        var dadosFill = rhIa5aDadosLeitura(item, st.provider);
+        function rhIa5bPackTxt(ch){
+          var p = rhIa5aPackCampo(dadosFill, ch);
+          return typeof rhIa4ValPack==='function' ? rhIa4ValPack(p) : String((p&&(p.valor_normalizado||p.valor))||'').trim();
+        }
+        if(!vals.medico) vals.medico = rhIa5bPackTxt('medico');
+        if(!vals.clinica) vals.clinica = rhIa5bPackTxt('clinica');
+        if(!vals.instituicao) vals.instituicao = rhIa5bPackTxt('instituicao') || vals.clinica;
+        if(!vals.resultado){
+          var rFill = rhIa5bPackTxt('resultado');
+          vals.resultado = (typeof rhIa5bNormResultado==='function' ? rhIa5bNormResultado(rFill) : '') || rFill;
+        }
+        if(!vals.data){
+          var dFill = rhIa5bPackTxt('data_exame');
+          var ndFill = dFill && typeof rhIa5bNormalizarData==='function' ? rhIa5bNormalizarData(dFill) : null;
+          if(ndFill && ndFill.valido) vals.data = ndFill.inicio;
+        }
+        if(!vals.validade){
+          var vFill = rhIa5bPackTxt('data_validade');
+          var nvFill = vFill && typeof rhIa5bNormalizarData==='function' ? rhIa5bNormalizarData(vFill) : null;
+          if(nvFill && nvFill.valido) vals.validade = nvFill.inicio;
+        }
+      }
+      if(vals.data) vals.data = String(vals.data).slice(0,10);
+      if(vals.validade) vals.validade = String(vals.validade).slice(0,10);
+      if(!instBase && vals.clinica) instBase = vals.clinica;
       if(extras.length){
         var extraTxt = extras.join(' · ');
         instBase = (instBase ? (instBase+' · ') : '') + extraTxt;
@@ -133403,7 +133469,10 @@ async function rhIa5bExecutarAplicacao(){
         }
         if(!ins || !ins[0]) throw new Error('Falha ao gravar em treinamentos (SESMT).');
         tid = ins[0].id;
-        var novoMem = Object.assign({id:tid, val:row.validade}, row, ins[0]);
+        var novoMem = Object.assign({id:tid, val:row.validade||vals.validade||null}, row, ins[0]||{});
+        if(!novoMem.val) novoMem.val = novoMem.validade || vals.validade || null;
+        if(novoMem.val) novoMem.val = String(novoMem.val).slice(0,10);
+        if(novoMem.validade) novoMem.validade = String(novoMem.validade).slice(0,10);
         treinamentos.push(novoMem);
       }
       resultados.sesmt = 'ok';
@@ -133532,8 +133601,14 @@ async function rhIa5bExecutarAplicacao(){
 
   _rhIa5b = null;
   closeModal();
-  rhRenderEntradaIa();
-  rhIaAbrirRevisao(item.id);
+  if(typeof rhIaSetFiltroStatus==='function'){
+    try{ rhIaSetFiltroStatus('SALVO'); }catch(eFilt){ rhRenderEntradaIa(); }
+  } else {
+    rhRenderEntradaIa();
+  }
+  if(item.colaborador_id_sugerido && typeof evolInvalidateAposIa==='function'){
+    try{ evolInvalidateAposIa(item.colaborador_id_sugerido); }catch(eInv){}
+  }
 }
 
 function rhIaRevLidoIaHtml(item){
@@ -133848,6 +133923,7 @@ async function rhIaRevisaoSalvar(itemId, limpar){
   closeModal();
   if(!limpar && st==='REVISADO'){
     var itemOk = (_rhIaItens||[]).find(function(x){ return String(x.id)===String(itemId); });
+    if(typeof rhIaSetFiltroStatus==='function') rhIaSetFiltroStatus('REVISADO');
     if(itemOk && rhIaItemEhProcesso(itemOk)){
       progShowToast('Revisão salva. Use “Salvar no processo” para gravar arquivo e dados na contratação.');
     } else {
@@ -134593,7 +134669,7 @@ function rhIaListaItensHtml(){
         +'<td style="white-space:nowrap">'
           +(it.status==='RECEBIDO'?'<button class="btn btn-sm" data-rh-ia-busy="1" '+(rhIaItemEstaBusy(it.id)||_rhIaProcBusy?'disabled':'')+' onclick="rhIaProcessarItemUi(\''+String(it.id).replace(/'/g,'')+'\',{provider:RH_IA_PROVIDER_PADRAO,modo:\'automatico\'})">'+(rhIaItemEstaBusy(it.id)?'Analisando…':'Processar Gemini')+'</button> ':'')
           +(it.status==='FALHA_NA_LEITURA_IA'?'<button class="btn btn-sm" data-rh-ia-busy="1" '+(rhIaItemEstaBusy(it.id)||_rhIaProcBusy?'disabled':'')+' onclick="rhIaReprocessarGemini(\''+String(it.id).replace(/'/g,'')+'\',\'falha_gemini\')">'+(rhIaItemEstaBusy(it.id)?'Analisando…':'Tentar Gemini novamente')+'</button> ':'')
-          +(it.status!=='RECEBIDO'&&it.status!=='ERRO_UPLOAD'&&it.status!=='CANCELADO'?'<button class="btn btn-sm" onclick="rhIaAbrirRevisao(\''+String(it.id).replace(/'/g,'')+'\')">Revisar</button> ':'')
+          +(it.status!=='RECEBIDO'&&it.status!=='ERRO_UPLOAD'&&it.status!=='CANCELADO'&&it.status!=='REVISADO'&&it.status!=='APROVADO'&&it.status!=='SALVO'?'<button class="btn btn-sm" onclick="rhIaAbrirRevisao(\''+String(it.id).replace(/'/g,'')+'\')">Revisar</button> ':'')
           +(rhIaPodeSalvarProcesso(it)?'<button class="btn btn-sm btn-pri" style="background:#0B6E4F;border-color:#0B6E4F" data-rh-ia-busy="1" '+(rhIaItemEstaBusy(it.id)?'disabled':'')+' onclick="rhIaGravarProcessoDaFila(\''+String(it.id).replace(/'/g,'')+'\')">Salvar no processo</button> ':'')
           +rhIaBotoesDestinoHtml(it,{small:true})
           +(it.status!=='RECEBIDO'&&it.status!=='ERRO_UPLOAD'&&it.status!=='CANCELADO'?'<button class="btn btn-sm" data-rh-ia-busy="1" style="background:#5B2C6F;color:#fff;border-color:#5B2C6F" '+(rhIaItemEstaBusy(it.id)||_rhIaProcBusy?'disabled':'')+' title="Use somente quando a leitura padrão do Gemini não for suficiente." onclick="rhIaConfirmarReprocessarClaude(\''+String(it.id).replace(/'/g,'')+'\',\''+(it.status==='FALHA_NA_LEITURA_IA'?'falha_gemini':'revisao_fila')+'\')">'+(rhIaItemEstaBusy(it.id)?'Analisando…':'Claude')+'</button> ':'')
@@ -135572,8 +135648,8 @@ function evolMontarCardHtml(c){
     return nr==='ASO'||tt.includes('ASO')||tt.includes('ADMISSIONAL')||tt.includes('PERI\u00d3DICO')||tt.includes('PERIODICO');
   }).sort(function(a,b){return (b.val||b.validade||'')>(a.val||a.validade||'')?1:-1;});
   var aso = asos[0];
-  var asoVal = aso ? (aso.val||aso.validade||'') : '';
-  var asoSt  = !aso?'sem_aso':asoVal<hoje?'vencido':asoVal<=em30?'proximo':'valido';
+  var asoVal = aso ? String(aso.val||aso.validade||'').slice(0,10) : '';
+  var asoSt  = !aso?'sem_aso':!asoVal?'vencido':asoVal<hoje?'vencido':asoVal<=em30?'proximo':'valido';
   var ASO_COR = {
     sem_aso:{bg:'#FCEBEB',cor:'#A32D2D',icone:'🚫',label:'ASO ausente'},
     vencido: {bg:'#FCEBEB',cor:'#A32D2D',icone:'🔴',label:'ASO vencido'},
@@ -135607,6 +135683,9 @@ function evolMontarCardHtml(c){
       ? '<div style="font-size:11px;color:#555;margin-top:1px">'+escHtml(aso.titulo||'ASO')
         +(asoVal?' \u00b7 V\u00e1lido at\u00e9: <b>'+fmtD(asoVal)+'</b>':'')
         +(diasAso!==null?' \u00b7 <b style="color:'+asoC.cor+'">'+(diasAso<0?Math.abs(diasAso)+'d vencido':diasAso===0?'Vence HOJE':diasAso+'d restantes')+'</b>':'')
+        +(aso.medico?' \u00b7 M\u00e9dico: '+escHtml(aso.medico):'')
+        +(aso.clinica||aso.instituicao?' \u00b7 Cl\u00ednica: '+escHtml(aso.clinica||aso.instituicao):'')
+        +(aso.resultado?' \u00b7 '+escHtml(aso.resultado):'')
         +evolAsoArquivoHtml(c, aso)
         +'</div>'
       : '<div style="font-size:11px;color:#A32D2D;margin-top:1px">Nenhum ASO registrado. Necess\u00e1rio para aptid\u00e3o.</div>'
