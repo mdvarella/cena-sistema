@@ -48,19 +48,28 @@
     return global.frt_veiculos||[];
   }
 
+  function proximoYm(ym){
+    var y=Number(String(ym).slice(0,4)), m=Number(String(ym).slice(5,7));
+    if(!y||!m) return '';
+    m++; if(m>12){ m=1; y++; }
+    return y+'-'+String(m).padStart(2,'0');
+  }
+
   async function carregar(ym){
     if(isDemo() || typeof global.sbFetchAll!=='function') return memoria();
     ym=String(ym||'').slice(0,7);
     var filters=['deleted_at=is.null'];
-    if(/^\d{4}-\d{2}$/.test(ym)) filters.push('data_hora=gte.'+ym+'-01');
+    var maxPages=6;
+    if(/^\d{4}-\d{2}$/.test(ym)){
+      filters.push('data_hora=gte.'+ym+'-01');
+      var nxt=proximoYm(ym);
+      if(nxt) filters.push('data_hora=lt.'+nxt+'-01');
+    } else {
+      maxPages=80;
+    }
     try{
-      var rows=await global.sbFetchAll(TABELA,{order:'data_hora.desc',filters:filters,maxPages:6});
-      if(rows&&rows.length){
-        var byId={};
-        memoria().forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        rows.forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        global.frt_pedagios=Object.keys(byId).map(function(k){ return byId[k]; });
-      }
+      var rows=await global.sbFetchAll(TABELA,{order:'data_hora.desc',filters:filters,maxPages:maxPages});
+      if(Array.isArray(rows)) global.frt_pedagios=rows;
     }catch(e){
       console.warn('[PEDAGIOS] carregar — tabela frotas_pedagios', e);
     }
@@ -84,12 +93,7 @@
     if(isoFim) filters.push('data_hora=lte.'+String(isoFim).slice(0,10)+'T23:59:59.999');
     try{
       var rows=await global.sbFetchAll(TABELA,{order:'data_hora.asc',filters:filters,maxPages:80});
-      if(rows&&rows.length){
-        var byId={};
-        memoria().forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        rows.forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        global.frt_pedagios=Object.keys(byId).map(function(k){ return byId[k]; });
-      }
+      if(Array.isArray(rows)) global.frt_pedagios=rows;
     }catch(e){
       console.warn('[PEDAGIOS] carregarFaixa', e);
     }

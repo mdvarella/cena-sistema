@@ -153,9 +153,11 @@
     var tb=document.getElementById('frt-ped-tbody');
     if(tb){
       if(!rows.length){
-        tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:#888;padding:1.5rem">Nenhum pedágio no filtro.</td></tr>';
+        tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:#888;padding:1.5rem">Nenhum pedágio no filtro. Troque o mês ou marque Todos os meses — o cadastro não fica só no mês atual.</td></tr>';
       } else {
-        tb.innerHTML=rows.map(function(p){
+        var lim=800;
+        var extra=rows.length>lim?'<tr><td colspan="13" style="text-align:center;color:#888;padding:.6rem">Mostrando '+lim+' de '+rows.length+' lançamentos. Afine o mês ou a placa para ver o restante.</td></tr>':'';
+        tb.innerHTML=rows.slice(0,lim).map(function(p){
           var tipoLbl=svc().labelTipo?svc().labelTipo(p.tipo):(p.tipo||'PASSAGEM');
           var tipo=svc().ehFatura(p)
             ?'<span class="bdg gray">FATURA</span>'
@@ -182,7 +184,7 @@
               ?'<button class="btn btn-sm" style="color:#A32D2D" onclick="frtPedConfirmarCancelar(\''+_esc(p.id)+'\')">✕</button>'
               :'')
             +'</td></tr>';
-        }).join('');
+        }).join('')+extra;
       }
     }
     var badge=document.getElementById('frt-ped-fila-badge');
@@ -377,15 +379,26 @@
     render();
   }
 
-  async function init(){
-    if(global.DEMO && svc().seedDemo) svc().seedDemo();
+  function _marcarCarregando(){
+    var tb=document.getElementById('frt-ped-tbody');
+    if(tb) tb.innerHTML='<tr><td colspan="13" style="text-align:center;color:#888;padding:1.5rem">Carregando pedágios…</td></tr>';
+  }
+
+  async function recarregarLista(){
+    var todos=document.getElementById('frt-ped-todos');
     var mesEl=document.getElementById('frt-ped-mes');
-    var ym=mesEl&&mesEl.value;
-    if(!ym){
-      var d=new Date();
-      ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    _marcarCarregando();
+    if(todos&&todos.checked){
+      if(repo().carregar) await repo().carregar('');
+    } else {
+      var ym=mesEl&&mesEl.value;
+      if(!ym){
+        var d=new Date();
+        ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+        if(mesEl) mesEl.value=ym;
+      }
+      if(repo().carregar) await repo().carregar(ym);
     }
-    if(repo().carregar) await repo().carregar(ym);
     (repo().memoria?repo().memoria():[]).forEach(function(p){
       if(p && !p.contrato_id && svc().normStatus(p.apropriacao_status)!=='SEM_APROPRIACAO'
         && !svc().ehFatura(p) && svc().normStatus(p.status)!=='CANCELADO'){
@@ -393,6 +406,17 @@
       }
     });
     render();
+  }
+
+  async function init(){
+    if(global.DEMO && svc().seedDemo) svc().seedDemo();
+    await recarregarLista();
+    var todos=document.getElementById('frt-ped-todos');
+    var mem=repo().memoria?repo().memoria():[];
+    if(!(todos&&todos.checked) && !mem.length && !global.DEMO && repo().carregar){
+      if(todos) todos.checked=true;
+      await recarregarLista();
+    }
   }
 
   function abrir(){
@@ -675,6 +699,7 @@
 
   global.frtPedInit=init;
   global.frtPedRender=render;
+  global.frtPedRecarregar=recarregarLista;
   global.frtPedAba=aba;
   global.frtPedAbrirImportar=abrirImportar;
   global.frtPedBaixarModelo=baixarModelo;
