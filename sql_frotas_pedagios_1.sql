@@ -3,6 +3,9 @@
 -- Aditivo / idempotente.
 -- NÃO executar pelo ERP. Aplicar manualmente no SQL Editor do Supabase após aprovação.
 --
+-- Se a tabela já existir (tentativa anterior incompleta), este script
+-- SÓ COMENTA colunas DEPOIS de garantir que elas existem (ADD COLUMN).
+--
 -- Espelha o padrão de frotas_combustivel: uma tabela operacional.
 -- A fatura (tipo=FATURA) é documento de conciliação/pagamento — NÃO é custo.
 -- A passagem (tipo=PASSAGEM) é a base do custo da Viabilidade Econômica.
@@ -20,43 +23,46 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS public.frotas_pedagios (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  veiculo_id uuid,
-  placa text,
-  placa_normalizada text,
-  modelo text,
-  motorista text,
-  colaborador_id uuid,
-  data_hora timestamptz NOT NULL DEFAULT now(),
-  valor numeric NOT NULL DEFAULT 0,
-  praca text,
-  rodovia text,
-  concessionaria text,
-  origem text NOT NULL DEFAULT 'manual',
-  tipo text NOT NULL DEFAULT 'PASSAGEM',
-  status text NOT NULL DEFAULT 'PENDENTE',
-  apropriacao_status text NOT NULL DEFAULT 'PENDENTE',
-  portaria_saida_id uuid,
-  equipe_id uuid,
-  equipe_nome text,
-  contrato_id uuid,
-  contrato_nome text,
-  projeto_id uuid,
-  projeto_nome text,
-  centro_custo text,
-  filial_id uuid,
-  base_nome text,
-  fatura_id uuid,
-  hash_deduplicacao text,
-  motivo_sem_apropriacao text,
-  observacao text,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now(),
-  deleted_at timestamptz,
-  criado_por text,
-  atualizado_por text
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid()
 );
 
+-- 1) Colunas primeiro (a tabela pode já existir sem elas).
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS veiculo_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS placa text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS placa_normalizada text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS modelo text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS motorista text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS colaborador_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS data_hora timestamptz DEFAULT now();
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS valor numeric DEFAULT 0;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS praca text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS rodovia text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS concessionaria text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS origem text DEFAULT 'manual';
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS tipo text DEFAULT 'PASSAGEM';
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS status text DEFAULT 'PENDENTE';
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS apropriacao_status text DEFAULT 'PENDENTE';
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS portaria_saida_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS equipe_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS equipe_nome text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS contrato_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS contrato_nome text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS projeto_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS projeto_nome text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS centro_custo text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS filial_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS base_nome text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS fatura_id uuid;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS hash_deduplicacao text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS motivo_sem_apropriacao text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS observacao text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now();
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now();
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS criado_por text;
+ALTER TABLE public.frotas_pedagios ADD COLUMN IF NOT EXISTS atualizado_por text;
+
+-- 2) Comentários só depois das colunas existirem.
 COMMENT ON TABLE public.frotas_pedagios IS
   'Passagens de pedágio (Frotas → Pedágios). Fonte única do custo operacional. Fatura = conciliação, não custo.';
 COMMENT ON COLUMN public.frotas_pedagios.tipo IS 'PASSAGEM (custo) ou FATURA (conciliação/pagamento).';
@@ -68,42 +74,6 @@ COMMENT ON COLUMN public.frotas_pedagios.data_hora IS
   'Data/hora da passagem (competência operacional). Não usar vencimento da fatura.';
 COMMENT ON COLUMN public.frotas_pedagios.fatura_id IS
   'Vínculo opcional da passagem à fatura de conciliação. A fatura não entra no custo.';
-
-ALTER TABLE public.frotas_pedagios
-  ADD COLUMN IF NOT EXISTS veiculo_id uuid,
-  ADD COLUMN IF NOT EXISTS placa text,
-  ADD COLUMN IF NOT EXISTS placa_normalizada text,
-  ADD COLUMN IF NOT EXISTS modelo text,
-  ADD COLUMN IF NOT EXISTS motorista text,
-  ADD COLUMN IF NOT EXISTS colaborador_id uuid,
-  ADD COLUMN IF NOT EXISTS data_hora timestamptz,
-  ADD COLUMN IF NOT EXISTS valor numeric,
-  ADD COLUMN IF NOT EXISTS praca text,
-  ADD COLUMN IF NOT EXISTS rodovia text,
-  ADD COLUMN IF NOT EXISTS concessionaria text,
-  ADD COLUMN IF NOT EXISTS origem text,
-  ADD COLUMN IF NOT EXISTS tipo text,
-  ADD COLUMN IF NOT EXISTS status text,
-  ADD COLUMN IF NOT EXISTS apropriacao_status text,
-  ADD COLUMN IF NOT EXISTS portaria_saida_id uuid,
-  ADD COLUMN IF NOT EXISTS equipe_id uuid,
-  ADD COLUMN IF NOT EXISTS equipe_nome text,
-  ADD COLUMN IF NOT EXISTS contrato_id uuid,
-  ADD COLUMN IF NOT EXISTS contrato_nome text,
-  ADD COLUMN IF NOT EXISTS projeto_id uuid,
-  ADD COLUMN IF NOT EXISTS projeto_nome text,
-  ADD COLUMN IF NOT EXISTS centro_custo text,
-  ADD COLUMN IF NOT EXISTS filial_id uuid,
-  ADD COLUMN IF NOT EXISTS base_nome text,
-  ADD COLUMN IF NOT EXISTS fatura_id uuid,
-  ADD COLUMN IF NOT EXISTS hash_deduplicacao text,
-  ADD COLUMN IF NOT EXISTS motivo_sem_apropriacao text,
-  ADD COLUMN IF NOT EXISTS observacao text,
-  ADD COLUMN IF NOT EXISTS created_at timestamptz,
-  ADD COLUMN IF NOT EXISTS updated_at timestamptz,
-  ADD COLUMN IF NOT EXISTS deleted_at timestamptz,
-  ADD COLUMN IF NOT EXISTS criado_por text,
-  ADD COLUMN IF NOT EXISTS atualizado_por text;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_frotas_pedagios_hash
   ON public.frotas_pedagios (hash_deduplicacao)
