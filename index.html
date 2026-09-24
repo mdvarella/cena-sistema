@@ -869,6 +869,7 @@ body.perfil-portaria #frotas-tab-veiculos,
 body.perfil-portaria #frotas-tab-programacao,
 body.perfil-portaria #frotas-tab-manutencoes,
 body.perfil-portaria #frotas-tab-combustivel,
+body.perfil-portaria #frotas-tab-pedagios,
 body.perfil-portaria #frotas-tab-multas,
 body.perfil-portaria #frotas-tab-avarias,
 body.perfil-portaria #frotas-tab-documentos,
@@ -1981,9 +1982,12 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.124"></script>
-<script src="sesmt-alm-shell.js?v=8.1.124"></script>
-<script src="prog-projetos-shell.js?v=8.1.124"></script>
+<script src="portaria-offline.js?v=8.1.126"></script>
+<script src="sesmt-alm-shell.js?v=8.1.126"></script>
+<script src="prog-projetos-shell.js?v=8.1.126"></script>
+<script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.126"></script>
+<script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.126"></script>
+<script src="modules/frotas/pedagios/pedagios.js?v=8.1.126"></script>
 <script>
 /* Fallback embutido: gera QR local sem depender de pasta vendor (serve :8888 etc.) */
 (function(global){
@@ -7475,6 +7479,7 @@ async function sbInsert(table,data,opts){
       'movimentacao_origem_id','tipo_ajuste','colaborador_id','equipe_id','veiculo_id','projeto_id','previsao_devolucao'],
     'frotas_avarias':['placa','modelo','veiculo_id','motorista','colaborador_id','tipo','descricao','data','custo_estimado','custo_final','status'],
     'frotas_multas':['placa','modelo','veiculo_id','motorista','colaborador_id','descricao','data_infracao','valor','vencimento','status'],
+    'frotas_pedagios':['veiculo_id','placa','placa_normalizada','modelo','motorista','colaborador_id','data_hora','valor','praca','rodovia','concessionaria','origem','tipo','status','apropriacao_status','portaria_saida_id','equipe_id','equipe_nome','contrato_id','contrato_nome','projeto_id','projeto_nome','centro_custo','filial_id','base_nome','fatura_id','hash_deduplicacao','motivo_sem_apropriacao','observacao','atualizado_por','criado_por'],
     // Colunas reais no Supabase: numero/emissao/validade (não numero_documento/data_emissao/data_vencimento)
     // observacao: só existe após sql_frotas_documentos_observacao.sql — não listar aqui até rodar o SQL
     'frotas_documentos':['placa','modelo','tipo','numero','emissao','validade','valor','status',
@@ -7775,7 +7780,7 @@ function gerarUUID(){
 var _SOFT_DELETE_TABLES = [
   'lancamentos','financeiro_faturamentos','usuarios_sistema','user_permissoes',
   'fornecedores','colaboradores','estoque','contratos',
-  'frotas_veiculos','frotas_manutencoes','frotas_documentos',
+  'frotas_veiculos','frotas_manutencoes','frotas_documentos','frotas_pedagios',
   'sot_materiais','alm_movimentos',
   'prog_status_diario','composicao_dia','equipes_disp','locacoes','prog_veiculos_dia',
   'ativos_inventario','ativos_categorias','ativos_movimentacoes','ativos_manutencoes','ativos_documentos','ativos_inventarios_fisicos','ativos_inventario_itens',
@@ -44632,10 +44637,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.124',
-  data:   '23/09/2026',
-  build:  '20260923-1935',
+  numero: '8.1.126',
+  data:   '24/09/2026',
+  build:  '20260924-0700',
   log: [
+    {v:'8.1.126', d:'24/09/2026', itens:[
+      'CENA-MOD-PED-1: Frotas > Pedagios extraido para modules/frotas/pedagios (UI/service/repository) com API CENA.Frotas.Pedagios. Sem SQL. Sem mudanca de regra. HOMOLOGACAO.',
+    ]},
     {v:'8.1.124', d:'23/09/2026', itens:[
       'Estoque: restaura salvarEntrada / eeProcessarEntradaLinha / eeGarantirItemCatalogo (botao Registrar entrada). Sem SQL. HOMOLOGACAO.',
     ]},
@@ -66392,7 +66400,7 @@ function vbeCategoriaNovaParaLegada(catNova){
     treinamentos:'outros', uniformes:'outros',
     epi:'epi', epc:'outros',
     ferramentas:'outros', materiais:'material',
-    combustivel:'combustivel', pedagios:'outros',
+    combustivel:'combustivel', pedagios:'pedagio',
     locacao_frota:'locacao', manutencao_frota:'manutencao_frota',
     pneus:'outros', documentacao_frota:'outros', seguros_frota:'outros',
     administrativo:'administrativo', servicos_terceiros:'outros',
@@ -66829,6 +66837,9 @@ async function vbeEnsureDadosCustosERP(comp){
   // Lançamentos + combustível: garante o mês da competência (não só janela de 90/120 dias)
   await vbeEnsureLancamentosCompetencia(ym);
   await vbeEnsureCombustivelCompetencia(ym, d120);
+  if(typeof frtPedCarregar==='function'){
+    try{ await frtPedCarregar(ym); }catch(ePedL){ console.warn('vbeEnsureDadosCustosERP pedagios:',ePedL); }
+  }
   if(!frt_manutencoes||!frt_manutencoes.length){
     var mn=await sbFetch('frotas_manutencoes',{order:'data.desc',filters:['data=gte.'+d120],limit:3000}).catch(function(){return[];});
     if(mn&&mn.length) frt_manutencoes=mn;
@@ -67043,6 +67054,7 @@ function vbeAdicionarValorNaEstrutura(est,categoria,valor,meta){
   valor=Math.round((Number(valor)||0)*100)/100;
   if(!valor) return;
   var cat=String(categoria||'outros');
+  if(cat==='pedagio') cat='pedagios';
   var grupo=typeof vbeGrupoGerencialDaCategoria==='function'?vbeGrupoGerencialDaCategoria(cat):'outros';
   var ok=false;
   if(grupo==='pessoal'&&est.pessoal[cat]!=null){ est.pessoal[cat]+=valor; ok=true; }
@@ -67560,7 +67572,17 @@ function vbeColetarCustosERP(cid,comp){
     vbeAdicionarValorNaEstrutura(despesas,'combustivel',comb,{fonte:'frt_combustivel'});
   }
 
-  var manut=0;
+  
+  var pedag=0;
+  if(typeof frtPedSomarContrato==='function'){
+    try{ var _ps=frtPedSomarContrato(cid, ym); pedag=Number(_ps&&_ps.valor||0)||0; }catch(ePed){ pedag=0; }
+  }
+  if(pedag>0){
+    pedag=Math.round(pedag*100)/100;
+    linhas.push({categoria_custo:'pedagio',valor:pedag,descricao:P+'Pedagios (frota)',fonte_erp:'frt_pedagios',origem:'Calculado',nivel_confianca:'Alta'});
+    vbeAdicionarValorNaEstrutura(despesas,'pedagios',pedag,{fonte:'frt_pedagios'});
+  }
+var manut=0;
   (frt_manutencoes||[]).filter(function(m){
     return !!placasNorm[_np(m.placa)]&&String(m.data||'').slice(0,7)===ym;
   }).forEach(function(m){ manut+=Number(m.valor||0); });
@@ -67666,6 +67688,7 @@ function vbeColetarCustosERP(cid,comp){
     // Dedup com módulos frota/locação (só no realizado — comprometido continua visível)
     var skipDedupReal=
       ((catNova==='combustivel'||catLeg==='combustivel')&&comb>0)||
+      ((catNova==='pedagios'||catNova==='pedagio'||catLeg==='pedagio')&&pedag>0)||
       ((catNova==='manutencao_frota'||catLeg==='manutencao_frota')&&manut>0)||
       ((catNova==='locacao_frota'||catLeg==='locacao')&&loc>0);
 
@@ -71735,6 +71758,10 @@ function vbeMontarDreViabilidade(cid, comp){
   var folhaOp=Number(p.folha_operacional_total||0)||0;
   var folhaBo=Number(p.folha_backoffice_total||0)||0;
   var combustivel=vbeSomarCombustivelContratoComp(cid, ym);
+  var pedagios=0;
+  if(typeof frtPedSomarContrato==='function'){
+    try{ var _pd=frtPedSomarContrato(cid, ym); pedagios=Number(_pd&&_pd.valor||0)||0; }catch(ePd){ pedagios=0; }
+  }
   var locacoes=0;
   try{ locacoes=Number(typeof vbeLocacaoTotalContrato==='function'?vbeLocacaoTotalContrato(cid):0)||0; }
   catch(eL){ locacoes=0; }
@@ -71784,7 +71811,7 @@ function vbeMontarDreViabilidade(cid, comp){
   });
   demais=Math.round(demais*100)/100;
 
-  var totalDespesas=Math.round((folhaOp+folhaBo+combustivel+locacoes+demais)*100)/100;
+  var totalDespesas=Math.round((folhaOp+folhaBo+combustivel+pedagios+locacoes+demais)*100)/100;
   var resultado=Math.round((receita-totalDespesas)*100)/100;
   var margem=receita>0 ? Math.round((resultado/receita*100)*100)/100 : null;
 
@@ -71807,6 +71834,7 @@ function vbeMontarDreViabilidade(cid, comp){
     folha_operacional:folhaOp,
     folha_backoffice:folhaBo,
     combustivel:combustivel,
+    pedagios:pedagios,
     locacoes:locacoes,
     demais_despesas:demais,
     total_despesas:totalDespesas,
@@ -71817,6 +71845,7 @@ function vbeMontarDreViabilidade(cid, comp){
       folha_operacional:'Premissas → Folha Operacional',
       folha_backoffice:'Premissas → Folha Backoffice',
       combustivel:'Frotas → Combustíveis',
+      pedagios:'Frotas > Pedagios',
       locacoes:'Almoxarifado → Locações',
       demais:'Financeiro → Lançamentos (excluindo folha, locações, combustível e manutenção já cobertos por módulos)'
     },
@@ -71891,6 +71920,7 @@ function vbeHtmlDreViabilidade(dre){
     +row('(−) Folha Operacional', vbeFmtValor(dre.folha_operacional), o.folha_operacional)
     +row('(−) Folha Backoffice', vbeFmtValor(dre.folha_backoffice), o.folha_backoffice)
     +row('(−) Combustível', vbeFmtValor(dre.combustivel), o.combustivel)
+    +row('(-) Pedagios', vbeFmtValor(dre.pedagios), o.pedagios)
     +row('(−) Locações', vbeFmtValor(dre.locacoes), o.locacoes)
     +row('(−) Demais despesas financeiras', vbeFmtValor(dre.demais_despesas), o.demais)
     +row('Total de despesas', vbeFmtValor(dre.total_despesas), null, {bold:true, cor:'#854F0B'})
@@ -76170,6 +76200,7 @@ var MAIN_CONFIG = {
     {id:'frotas-programacao',  label:'📅 Programação'},
     {id:'frotas-manutencoes',  label:'🔧 Manutenções'},
     {id:'frotas-combustivel',  label:'⛽ Combustível'},
+    {id:'frotas-pedagios',     label:'Pedagios'},
     {id:'frotas-multas',       label:'📋 Multas'},
     {id:'frotas-avarias',      label:'🔨 Avarias / Sinistros'},
     {id:'frotas-documentos',   label:'📄 Documentos'},
@@ -76193,7 +76224,7 @@ var ALL_PAGES = ['dashboard','show-room-cena','contratos-lista','adiantamentos',
   'sesmt-ferramentas','sesmt-locacoes','sesmt-estoque','sesmt-treinamentos','sesmt-turmas','sesmt-nr6','sesmt-ocorrencias','sesmt-aprovacoes','sesmt-vales','sesmt-filiais',
   'campo-diario','campo-turno','campo-checklist','campo-apr','campo-execucao-field','campo-solicitacoes','obras-requisicao','obras-medicao','plr','av-colaborador',
   'rh-dashboard','rh-vagas','rh-testes','rh-contratacao','rh-assinaturas','rh-pisos','rh-beneficios','rh-conciliacao-synergy','rh-central-divergencias','rh-dossie','rh-documentos','rh-entrada-ia','rh-regras','rh-pendencias','rh-conformidade','rh-prontidao','rh-cargos','rh-atalhos',
-  'viabilidade-contratos','ativos-dashboard','ativos-lista','ativos-movimentacoes','ativos-manutencoes','ativos-documentos','ativos-inventario-fisico','ativos-relatorios','ativos-etiquetas','ativos-depreciacao','ativos-vinculos','ativos-categorias','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-conduta','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
+  'viabilidade-contratos','ativos-dashboard','ativos-lista','ativos-movimentacoes','ativos-manutencoes','ativos-documentos','ativos-inventario-fisico','ativos-relatorios','ativos-etiquetas','ativos-depreciacao','ativos-vinculos','ativos-categorias','frotas-dashboard','frotas-veiculos','frotas-portaria','frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-pedagios','frotas-multas','frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos','frotas-conduta','frotas-auditoria','frotas-integracoes','frotas-relatorios'];
 
 // ── SIDEBAR RENDER ─────────────────────────────────────────
 // Mapeamento de grupos por módulo para a sidebar
@@ -76355,6 +76386,7 @@ var SIDEBAR_GROUPS = {
     {label:'Operação', items:[
       {id:'frotas-avarias',     icon:'🔨', label:'Avarias / Sinistros'},
       {id:'frotas-combustivel', icon:'⛽', label:'Combustível'},
+      {id:'frotas-pedagios',    icon:'P', label:'Pedagios'},
       {id:'frotas-manutencoes', icon:'🔧', label:'Manutenções'},
       {id:'frotas-multas',      icon:'📋', label:'Multas'}, // → Documentos > Multas (Fase 5)
     ]},
@@ -76488,7 +76520,7 @@ var _AUDIT_MODULO_TABELA = {
   rh_candidato_resultado_selecao:'rh',
   rh_testes:'rh', rh_teste_questoes:'rh', rh_teste_tentativas:'rh', rh_teste_resultados:'rh',
   rh_cargo_testes:'rh', rh_vaga_testes:'rh',
-  frotas_veiculos:'frotas', frt_manutencoes:'frotas', frt_combustivel:'frotas', frt_documentos:'frotas', frt_multas:'frotas',
+  frotas_veiculos:'frotas', frt_manutencoes:'frotas', frt_combustivel:'frotas', frotas_pedagios:'frotas', frt_documentos:'frotas', frt_multas:'frotas',
   fornecedores:'cadastros', contratos:'cadastros', categorias_despesa:'cadastros', usuarios_sistema:'sistema'
 };
 function _auditModuloDe(table){ return _AUDIT_MODULO_TABELA[table] || 'sistema'; }
@@ -83712,6 +83744,7 @@ var frt_veiculos = [];
 var frt_portaria = [];      // saídas/retornos
 var frt_manutencoes = [];
 var frt_combustivel = [];
+var frt_pedagios = [];
 var frt_multas = [];
 var frt_avarias = [];
 var frt_reservas = [];
@@ -83949,7 +83982,7 @@ function frtPasteFiltroPlacas(e, renderFn){
 function frtInit(subpage){
   // Mover TODAS as páginas de frotas para dentro do app-content-area de uma vez
   ['frotas-dashboard','frotas-veiculos','frotas-pneus','frotas-portaria',
-   'frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-multas',
+   'frotas-programacao','frotas-manutencoes','frotas-combustivel','frotas-pedagios','frotas-multas',
    'frotas-avarias','frotas-documentos','frotas-ociosidade','frotas-custos',
    'frotas-conduta','frotas-auditoria','frotas-integracoes','frotas-relatorios'].forEach(function(sub){
     _ensureInACA('pg-'+sub);
@@ -84006,6 +84039,9 @@ function frtInit(subpage){
       if(typeof frtCombCarregarInconsistencias==='function'){
         frtCombCarregarInconsistencias().then(function(){ frtCombRender(); });
       }
+    }
+    else if(subpage==='frotas-pedagios'){
+      if(typeof frtPedInit==='function') frtPedInit();
     }
     else if(subpage==='frotas-multas'){
       // Fase 5 — redireciona para Documentos > Multas
@@ -84140,6 +84176,7 @@ function frtGerarDemoData(){
     data:dataHojeLocal(),combustivel:'Diesel',litros:80,
     valor_total:480,valor_litro:6.00,km:45000,posto:'Posto BR',contrato_nome:'RDSE',
     origem:'manual'}];
+  if(typeof frtPedSeedDemo==='function') frtPedSeedDemo();
   frt_documentos = [
     {id:'d1',placa:'ABC-1234',modelo:'Ranger',tipo:'CRLV',numero:'SP-2024-001',
       emissao:'2024-01-01',validade:'2025-12-31',status:'Válido'},
@@ -93052,7 +93089,7 @@ function syncOmniSafyRastreamento(){
  * Endpoint: [INSERIR endpoint oficial do Sem Parar]
  */
 function syncSemPararPedagios(){
-  console.log('[FROTAS] syncSemPararPedagios — aguardando endpoint e credenciais Sem Parar');
+  console.log('[FROTAS] syncSemPararPedagios — aguardando endpoint e credenciais Sem Parar (grava em Pedagios, nao na VBE)');
 }
 
 /*
@@ -97349,6 +97386,47 @@ window._almShowAbaInterna = window._almShowAbaInterna || function(aba){
       <div style="font-size:11px;color:#666">Agrupado por placa: cada bloco reúne todos os abastecimentos daquela placa para tratar em massa (vincular, cadastrar veículo, sincronizar, etc.). Cadastro de veículo continua manual — depois use Sincronizar.</div>
     </div>
     <div id="frt-comb-inc-list"></div>
+  </div>
+</div>
+
+
+<!-- PEDAGIOS -->
+<div id="pg-frotas-pedagios" class="hidden">
+  <div class="card" style="margin-bottom:1rem">
+    <div class="ch" style="flex-wrap:wrap;gap:8px">
+      <span class="ct">Pedagios</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <input type="month" class="inp" id="frt-ped-mes" style="width:145px" onchange="frtPedRender()"/>
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" id="frt-ped-todos" onchange="frtPedRender()"/> Todos os meses</label>
+        <select class="inp" id="frt-ped-cont" style="width:180px" onchange="frtPedRender()">
+          <option value="">Todos os contratos</option>
+        </select>
+        <input class="inp" id="frt-ped-placa" placeholder="Placa ou cole lista (Ctrl+V)" style="width:180px" oninput="frtPedRender();frtHintFiltroPlacas(this)" onpaste="frtPasteFiltroPlacas(event, frtPedRender)" title="Cole varias placas do Excel (Ctrl+C / Ctrl+V), uma por linha"/>
+        <select class="inp" id="frt-ped-status" style="width:170px" onchange="frtPedRender()">
+          <option value="">Todos os status</option>
+          <option>PENDENTE</option><option>VALIDADO</option><option>CONCILIADO</option>
+          <option>CANCELADO</option><option>POSSIVEL_DUPLICIDADE</option><option>DIVERGENTE</option>
+        </select>
+        <button class="btn btn-pri" onclick="frtPedAbrirNovo()">+ Novo pedagio</button>
+      </div>
+    </div>
+    <div id="frt-ped-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;padding:.75rem;border-top:.5px solid #f0efe8"></div>
+    <div style="display:flex;border-top:.5px solid #f0efe8;padding:0 .75rem">
+      <button type="button" class="btn" id="frt-ped-tab-lista" onclick="frtPedAba('lista')" style="border:none;border-bottom:2px solid #1a1a18;border-radius:0;background:none;font-weight:600">Lista</button>
+      <button type="button" class="btn" id="frt-ped-tab-fila" onclick="frtPedAba('fila')" style="border:none;border-bottom:2px solid transparent;border-radius:0;background:none;color:#888">Sem apropriacao <span id="frt-ped-fila-badge" class="bdg" style="display:none;margin-left:6px;background:#854F0B;color:#fff"></span></button>
+    </div>
+  </div>
+  <div id="frt-ped-panel-lista">
+    <div style="overflow-x:auto"><table class="tbl tbl-responsive">
+      <thead><tr>
+        <th>Data</th><th>Placa</th><th>Veiculo</th><th>Praca</th><th>Rodovia</th><th>Concessionaria / TAG</th>
+        <th style="text-align:right">Valor</th><th>Equipe</th><th>Contrato</th><th>Projeto / obra</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody id="frt-ped-tbody"></tbody>
+    </table></div>
+  </div>
+  <div id="frt-ped-panel-fila" style="display:none">
+    <div id="frt-ped-fila"></div>
   </div>
 </div>
 

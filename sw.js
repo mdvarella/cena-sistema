@@ -1,11 +1,11 @@
 // ══════════════════════════════════════════════════════════════
-// CENA ERP — Service Worker v8.1.124
+// CENA ERP — Service Worker v8.1.126
 // App shell cache (network-first no HTML e nos scripts do app).
 // NÃO cacheia API Supabase / Azure / Nexus.
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.124';
+const SW_VERSION   = 'cena-8.1.126';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
@@ -21,7 +21,10 @@ const PRECACHE = [
   './manifest.json',
   './portaria-offline.js',
   './sesmt-alm-shell.js',
-  './prog-projetos-shell.js'
+  './prog-projetos-shell.js',
+  './modules/frotas/pedagios/pedagios-repository.js',
+  './modules/frotas/pedagios/pedagios-service.js',
+  './modules/frotas/pedagios/pedagios.js'
 ];
 
 // ── Install ────────────────────────────────────────────────
