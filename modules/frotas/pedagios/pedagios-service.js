@@ -42,9 +42,9 @@
   }
   function normTipo(s){
     var t=_semAcento(s).replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
-    if(t==='fatura') return 'FATURA';
-    if(t==='mensalidade_tag_em_estoque'||t==='mensalidade_tag_estoque'||t==='mensalidade_em_estoque') return 'MENSALIDADE_TAG_ESTOQUE';
-    if(t==='mensalidade_tag'||t==='mensalidade') return 'MENSALIDADE_TAG';
+    if(t.indexOf('fatura')>=0) return 'FATURA';
+    if(t.indexOf('mensal')>=0 && t.indexOf('estoque')>=0) return 'MENSALIDADE_TAG_ESTOQUE';
+    if(t.indexOf('mensal')>=0) return 'MENSALIDADE_TAG';
     return 'PASSAGEM';
   }
   function labelTipo(s){
@@ -425,7 +425,12 @@
       var dt=new Date(yy, mm-1, dd, +(m[4]||0), +(m[5]||0), +(m[6]||0));
       if(!isNaN(dt.getTime())) return dt.toISOString();
     }
-    var iso=new Date(s);
+    var y=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if(y){
+      var dtY=new Date(+y[1], +y[2]-1, +y[3], +(y[4]||0), +(y[5]||0), +(y[6]||0));
+      if(!isNaN(dtY.getTime())) return dtY.toISOString();
+    }
+    var iso=new Date(s.replace(/ (\d):/, ' 0$1:'));
     if(!isNaN(iso.getTime())) return iso.toISOString();
     return '';
   }
@@ -488,18 +493,33 @@
   }
   function mapearLinhaImport(row){
     row=row||{};
+    function pickVal(val){
+      if(val==null || val==='') return null;
+      if(val instanceof Date) return val;
+      if(typeof val==='number') return val;
+      if(String(val).trim()!=='') return val;
+      return null;
+    }
     function g(){
-      var keys=arguments;
-      for(var i=0;i<keys.length;i++){
-        var k=keys[i];
-        if(row[k]==null || row[k]==='') continue;
-        if(row[k] instanceof Date) return row[k];
-        if(typeof row[k]==='number') return row[k];
-        if(String(row[k]).trim()!=='') return row[k];
+      var keys=arguments, i, k, rk, got;
+      for(i=0;i<keys.length;i++){
+        k=keys[i];
+        got=pickVal(row[k]);
+        if(got!=null) return got;
+      }
+      for(i=0;i<keys.length;i++){
+        k=keys[i];
+        for(rk in row){
+          if(!rk) continue;
+          if(rk===k || rk.indexOf(k+'_')===0 || rk.indexOf(k)===0){
+            got=pickVal(row[rk]);
+            if(got!=null) return got;
+          }
+        }
       }
       return '';
     }
-    var placa=g('placa','placa_veiculo','tag');
+    var placa=g('placa','placa_veiculo');
     var tipo=normTipo(g('tipo','tipo_lancamento')||'PASSAGEM');
     var contratoTxt=g('contrato','contrato_nome','contrato_codigo');
     var cont=resolverContrato(contratoTxt);
@@ -514,7 +534,7 @@
       veiculo_id:vei&&vei.id,
       modelo:vei?(vei.modelo||''):g('modelo','veiculo'),
       data_hora:parseDataHora(g('data_hora','data','data/hora','datahora')),
-      valor:parseValor(g('valor','vlr','preco')),
+      valor:parseValor(g('valor','valor_r','valor_rs','vlr','preco')),
       praca:g('praca','praca_pedagio'),
       rodovia:g('rodovia'),
       concessionaria:g('estabelecimento','concessionaria','concessionaria_tag','operadora'),

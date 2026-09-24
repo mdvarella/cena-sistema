@@ -647,7 +647,11 @@
     if(preview) preview.innerHTML='<div style="color:#888">Importando '+_pedImportRows.length+' linha(s)…</div>';
     var r=svc().importarLote?await svc().importarLote(_pedImportRows):{ok:0,erro:_pedImportRows.length,dup:0};
     if(typeof global.closeModal==='function') global.closeModal();
-    _toast('Importados: '+r.ok+(r.dup?' · possivel duplicidade: '+r.dup:'')+(r.erro?' · recusados: '+r.erro:''));
+    var det='Importados: '+r.ok+(r.dup?' · possivel duplicidade: '+r.dup:'')+(r.erro?' · recusados: '+r.erro:'');
+    if(r.erro && r.falhas && r.falhas.length){
+      det+=' — '+r.falhas.slice(0,3).map(function(f){ return 'linha '+f.linha+': '+f.motivo; }).join('; ');
+    }
+    _toast(det, r.ok?undefined:'erro');
     render();
   }
 
