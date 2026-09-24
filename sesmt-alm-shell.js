@@ -81,7 +81,11 @@
       +'<select class="inp" id="est-fil-status" style="width:130px" onchange="if(typeof renderEstoque===\'function\')renderEstoque()"><option value="">Todos</option></select>'
       +'<input class="inp" id="est-fil-busca" placeholder="Buscar" style="width:160px" oninput="if(typeof renderEstoque===\'function\')renderEstoque()">'
       +'<input class="inp" id="est-fil-ini" type="date"><input class="inp" id="est-fil-fim" type="date">'
-      +'</div>'+tbl('tbody-est',['Item','Tipo','Depósito','Saldo','Mín.','Status',''])+'</div>';
+      +'</div><div style="overflow-x:auto"><table class="tbl alm-req-cols" data-cols-key="estoque"><thead><tr>'
+      +'<th>TIPO</th><th>SKU</th><th>ITENS</th><th>UN</th><th>R$ Unitário</th><th>DEPÓSITO</th>'
+      +'<th>SALDO ANT</th><th>ENT PERÍODO</th><th>SAÍDA</th><th>DISPONÍVEL</th><th>RESERVA</th>'
+      +'<th>SALDO FINAL</th><th>MIN</th><th>DATA ULT MOV</th><th>AÇÃO</th>'
+      +'</tr></thead><tbody id="tbody-est"></tbody></table></div></div>';
   }
   function htmlDiag(){
     return hdr('🔍 Diagnóstico de Estoque','<button class="btn btn-pri" onclick="if(typeof almRodarDiagnosticoEstoque===\'function\')almRodarDiagnosticoEstoque();else if(typeof almInitDiagnosticoEstoque===\'function\')almInitDiagnosticoEstoque()">Analisar</button>')
