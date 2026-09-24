@@ -1,4 +1,4 @@
-/* CENA — casco das telas SESMT / Almoxarifado (8.1.131)
+/* CENA — casco das telas SESMT / Almoxarifado (8.1.137)
    O index.html perdeu os <div id="pg-sesmt-*"> / pg-alm-*.
    Sem o container, o clique no menu não pinta nada. */
 (function(){
@@ -157,7 +157,7 @@
       +'</div><div id="loc-lista-cards"></div>';
   }
   function htmlFiliais(){
-    return hdr('🏢 Filiais / Depósitos','<button class="btn btn-pri" onclick="if(typeof openFilial===\'function\')openFilial();else if(typeof openCadastro===\'function\')openCadastro(\'filiais\')">+ Filial</button>')
+    return hdr('🏢 Filiais / Depósitos','<button class="btn btn-pri" type="button" onclick="openFilial()">+ Filial</button>')
       +'<div class="card" id="filiais-wrap">'+tbl('tbody-filiais',['Código','Nome','Cidade','Status',''])+'</div>';
   }
   function htmlVales(){
