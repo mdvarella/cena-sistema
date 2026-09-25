@@ -1,36 +1,29 @@
--- 99 — gravar em frotas_pedagios e remover staging
--- Rode so depois de todas as partes 01..14
+-- 99 — aplicar agosto/2026
+-- Rode A. Se o editor aceitar só um comando, rode A e depois B (sem o DROP).
+-- No fim, rode C.
+-- Staging _stg_ped_ago26 precisa existir.
 
-INSERT INTO public.frotas_pedagios (
-  veiculo_id, placa, placa_normalizada, modelo,
-  data_hora, valor, praca, concessionaria, centro_custo,
-  origem, tipo, status,
-  apropriacao_status, motivo_sem_apropriacao,
-  contrato_id, contrato_nome,
-  hash_deduplicacao, observacao,
-  criado_por, atualizado_por
-)
-SELECT
-  v.id,
-  s.placa,
-  s.placa_norm,
-  v.modelo,
-  s.data_hora,
-  s.valor,
-  s.estabelecimento,
-  s.estabelecimento,
-  s.centro_custo,
-  s.origem,
-  s.tipo,
-  s.status,
-  CASE WHEN v.contrato_id IS NOT NULL THEN 'APROPRIADO' ELSE 'SEM_APROPRIACAO' END,
-  CASE WHEN v.contrato_id IS NOT NULL THEN NULL ELSE 'SEM_CONTRATO_NO_VEICULO' END,
-  v.contrato_id,
-  NULL,
-  'imp_ago26_'||s.hash,
-  'IMPORT_AGOSTO_2026'||COALESCE(' | '||s.tipo_origem,''),
-  'IMPORT_SQL_AGOSTO_2026',
-  'IMPORT_SQL_AGOSTO_2026'
+-- A) reativa/atualiza hash já existente (zerar / tentativa anterior)
+UPDATE public.frotas_pedagios p
+SET
+  deleted_at = NULL,
+  veiculo_id = v.id,
+  placa = s.placa,
+  placa_normalizada = s.placa_norm,
+  modelo = v.modelo,
+  data_hora = s.data_hora,
+  valor = s.valor,
+  praca = s.estabelecimento,
+  concessionaria = s.estabelecimento,
+  centro_custo = s.centro_custo,
+  origem = s.origem,
+  tipo = s.tipo,
+  status = s.status,
+  apropriacao_status = CASE WHEN v.contrato_id IS NOT NULL THEN 'APROPRIADO' ELSE 'SEM_APROPRIACAO' END,
+  motivo_sem_apropriacao = CASE WHEN v.contrato_id IS NOT NULL THEN NULL ELSE 'SEM_CONTRATO_NO_VEICULO' END,
+  contrato_id = v.contrato_id,
+  observacao = 'IMPORT_AGOSTO_2026'||COALESCE(' | '||s.tipo_origem,''),
+  atualizado_por = 'IMPORT_SQL_AGOSTO_2026'
 FROM public._stg_ped_ago26 s
 LEFT JOIN LATERAL (
   SELECT fv.id, fv.modelo, fv.contrato_id
@@ -39,14 +32,4 @@ LEFT JOIN LATERAL (
     AND regexp_replace(upper(coalesce(fv.placa,'')), '[^A-Z0-9]', '', 'g') = s.placa_norm
   LIMIT 1
 ) v ON TRUE
-WHERE NOT EXISTS (
-  SELECT 1 FROM public.frotas_pedagios x
-  WHERE x.deleted_at IS NULL
-    AND x.hash_deduplicacao = ('imp_ago26_'||s.hash)
-);
-
-DROP TABLE IF EXISTS public._stg_ped_ago26;
-
--- Conferencia:
--- SELECT count(*), round(sum(valor),2) FROM public.frotas_pedagios
--- WHERE observacao LIKE 'IMPORT_AGOSTO_2026%' AND deleted_at IS NULL;
+WHERE p.hash_deduplicacao = ('imp_ago26_'||s.hash);
