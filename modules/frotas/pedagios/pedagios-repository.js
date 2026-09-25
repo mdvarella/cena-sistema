@@ -48,19 +48,34 @@
     return global.frt_veiculos||[];
   }
 
-  async function carregar(ym){
+  function mesSeguinte(ym){
+    var y=Number(String(ym).slice(0,4));
+    var m=Number(String(ym).slice(5,7));
+    if(!y||!m) return '';
+    if(m===12) return (y+1)+'-01-01';
+    return y+'-'+String(m+1).padStart(2,'0')+'-01';
+  }
+
+  async function carregar(ym, opts){
     if(isDemo() || typeof global.sbFetchAll!=='function') return memoria();
+    opts=opts||{};
     ym=String(ym||'').slice(0,7);
     var filters=['deleted_at=is.null'];
-    if(/^\d{4}-\d{2}$/.test(ym)) filters.push('data_hora=gte.'+ym+'-01');
+    if(opts.todos){
+      var d=new Date();
+      d.setMonth(d.getMonth()-14);
+      filters.push('data_hora=gte.'+d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-01');
+    } else if(/^\d{4}-\d{2}$/.test(ym)){
+      filters.push('data_hora=gte.'+ym+'-01');
+      var nxt=mesSeguinte(ym);
+      if(nxt) filters.push('data_hora=lt.'+nxt);
+    }
     try{
-      var rows=await global.sbFetchAll(TABELA,{order:'data_hora.desc',filters:filters,maxPages:6});
-      if(rows&&rows.length){
-        var byId={};
-        memoria().forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        rows.forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
-        global.frt_pedagios=Object.keys(byId).map(function(k){ return byId[k]; });
-      }
+      var rows=await global.sbFetchAll(TABELA,{order:'data_hora.desc',filters:filters,pageSize:1000,maxPages:12});
+      var byId={};
+      if(!opts.substituirMes) memoria().forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
+      (rows||[]).forEach(function(p){ if(p&&p.id) byId[p.id]=p; });
+      global.frt_pedagios=Object.keys(byId).map(function(k){ return byId[k]; });
     }catch(e){
       console.warn('[PEDAGIOS] carregar — tabela frotas_pedagios', e);
     }

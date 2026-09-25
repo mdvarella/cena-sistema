@@ -372,15 +372,21 @@
     render();
   }
 
+  async function onFiltroMes(){
+    return init();
+  }
+
   async function init(){
     if(global.DEMO && svc().seedDemo) svc().seedDemo();
     var mesEl=document.getElementById('frt-ped-mes');
+    var todos=document.getElementById('frt-ped-todos');
     var ym=mesEl&&mesEl.value;
     if(!ym){
       var d=new Date();
       ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      if(mesEl) mesEl.value=ym;
     }
-    if(repo().carregar) await repo().carregar(ym);
+    if(repo().carregar) await repo().carregar(ym, {todos:!!(todos&&todos.checked)});
     (repo().memoria?repo().memoria():[]).forEach(function(p){
       if(p && !p.contrato_id && svc().normStatus(p.apropriacao_status)!=='SEM_APROPRIACAO'
         && !svc().ehFatura(p) && svc().normStatus(p.status)!=='CANCELADO'){
@@ -403,6 +409,7 @@
   global.frtPedInit=init;
   global.frtPedRender=render;
   global.frtPedOnFiltroPlaca=onFiltroPlaca;
+  global.frtPedOnFiltroMes=onFiltroMes;
   global.frtPedAba=aba;
   global.frtPedAbrirNovo=abrirNovo;
   global.frtPedConfirmarNovo=confirmarNovo;
