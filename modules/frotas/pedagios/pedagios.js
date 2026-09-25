@@ -76,10 +76,12 @@
   function renderFila(){
     var wrap=document.getElementById('frt-ped-fila');
     var badge=document.getElementById('frt-ped-fila-badge');
-    var rows=svc().listarSemApropriacao?svc().listarSemApropriacao():[];
+    var placa=placaFiltroAtual();
+    var todos=svc().listarSemApropriacao?svc().listarSemApropriacao():[];
+    var rows=todos.filter(function(p){ return casaPlaca(p, placa); });
     if(badge){
-      badge.textContent=rows.length||'';
-      badge.style.display=rows.length?'inline-flex':'none';
+      badge.textContent=todos.length||'';
+      badge.style.display=todos.length?'inline-flex':'none';
     }
     if(!wrap) return;
     if(!rows.length){
@@ -106,24 +108,35 @@
       +'</tbody></table></div>';
   }
 
+  function placaFiltroAtual(){
+    return String((document.getElementById('frt-ped-placa')||{}).value||'').trim();
+  }
+  function casaPlaca(p, busca){
+    if(!busca) return true;
+    if(typeof global.frtPlacaMatchBusca==='function'){
+      return global.frtPlacaMatchBusca(p&&p.placa, busca)
+        || global.frtPlacaMatchBusca(p&&p.placa_normalizada, busca)
+        || global.frtPlacaMatchBusca(p&&p.placa_original, busca);
+    }
+    var q=_np(busca);
+    if(!q) return true;
+    return _np(p&&p.placa).indexOf(q)>=0 || _np(p&&p.placa_normalizada).indexOf(q)>=0;
+  }
   function filtrados(){
     var mesEl=document.getElementById('frt-ped-mes');
     var todos=document.getElementById('frt-ped-todos');
     var cid=(document.getElementById('frt-ped-cont')||{}).value||'';
-    var placa=(document.getElementById('frt-ped-placa')||{}).value||'';
+    var placa=placaFiltroAtual();
     var st=(document.getElementById('frt-ped-status')||{}).value||'';
-    var ym=(!todos||!todos.checked)?((mesEl&&mesEl.value)||''):'';
+    var buscaPlaca=_np(placa).length>=2;
+    var ym=(!buscaPlaca && (!todos||!todos.checked))?((mesEl&&mesEl.value)||''):'';
     var arr=repo().memoria?repo().memoria():(global.frt_pedagios||[]);
     return arr.filter(function(p){
       if(!p||p.deleted_at) return false;
-      if(ym && svc().competenciaYm(p)!==ym) return false;
+      if(ym && svc().competenciaYm && svc().competenciaYm(p)!==ym) return false;
       if(cid && String(p.contrato_id||'')!==String(cid)) return false;
-      if(placa){
-        if(typeof global.frtPlacaMatchBusca==='function'){
-          if(!global.frtPlacaMatchBusca(p.placa, placa)) return false;
-        } else if(_np(p.placa).indexOf(_np(placa))<0) return false;
-      }
-      if(st && svc().normStatus(p.status)!==svc().normStatus(st)) return false;
+      if(placa && !casaPlaca(p, placa)) return false;
+      if(st && svc().normStatus && svc().normStatus(p.status)!==svc().normStatus(st)) return false;
       return true;
     });
   }
@@ -188,6 +201,26 @@
       badge.style.display=nFila?'inline-flex':'none';
     }
     if(global._frtPedAba==='fila') renderFila();
+  }
+
+  var _placaTimer=null;
+  function onFiltroPlaca(){
+    try{
+      if(typeof global.frtHintFiltroPlacas==='function'){
+        global.frtHintFiltroPlacas(document.getElementById('frt-ped-placa'));
+      }
+      render();
+    }catch(e){ console.warn('[PEDAGIOS] filtro placa', e); }
+    var placa=placaFiltroAtual();
+    var safe=_np(placa);
+    if(safe.length<2 || global.DEMO) return;
+    if(_placaTimer) clearTimeout(_placaTimer);
+    _placaTimer=setTimeout(function(){
+      if(!repo().buscarPorPlaca) return;
+      repo().buscarPorPlaca(placa).then(function(){
+        if(_np(placaFiltroAtual())===safe) render();
+      });
+    }, 280);
   }
 
   function optsContrato(sel){
@@ -369,6 +402,7 @@
 
   global.frtPedInit=init;
   global.frtPedRender=render;
+  global.frtPedOnFiltroPlaca=onFiltroPlaca;
   global.frtPedAba=aba;
   global.frtPedAbrirNovo=abrirNovo;
   global.frtPedConfirmarNovo=confirmarNovo;
@@ -387,4 +421,10 @@
   global.frtPedNormStatus=function(s){ return svc().normStatus?svc().normStatus(s):String(s||''); };
   global.frtPedEhFatura=function(p){ return !!(svc().ehFatura&&svc().ehFatura(p)); };
   global.FRT_PEDAGIOS_TABELA='frotas_pedagios';
+  global.frtPedZerarImportados=async function(){
+    var r=repo().zerarImportados?await repo().zerarImportados():{ok:false};
+    render();
+    _toast(r&&r.ok?'Pedágios importados removidos (soft-delete).':'Falha ao zerar importados.');
+    return r;
+  };
 })(typeof window!=='undefined'?window:this);
