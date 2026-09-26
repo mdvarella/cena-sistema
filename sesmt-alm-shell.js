@@ -191,8 +191,21 @@
       +'<div id="extrato-abas" style="display:none"></div>'
       +'<div id="extrato-conteudo"></div>';
   }
+  function btnEntradaIa(){
+    return '<button type="button" class="btn btn-pri sesmt-btn-entrada-ia" onclick="if(typeof showSub===\'function\')showSub(\'rh-entrada-ia\');else if(typeof showPage===\'function\')showPage(\'rh-entrada-ia\')">🤖 Entrada Inteligente</button>';
+  }
+  function garantirBtnEntradaIa(pgId){
+    var el=document.getElementById(pgId);
+    if(!el || el.querySelector('.sesmt-btn-entrada-ia')) return;
+    var bar=el.firstElementChild;
+    if(!bar) return;
+    var tmp=document.createElement('div');
+    tmp.innerHTML=btnEntradaIa();
+    if(tmp.firstChild) bar.appendChild(tmp.firstChild);
+  }
+
   function htmlSdb(){
-    return hdr('📊 Dashboard SESMT')
+    return hdr('📊 Dashboard SESMT', btnEntradaIa())
       +'<div class="card" style="padding:.75rem;margin-bottom:.75rem;display:flex;gap:8px;flex-wrap:wrap">'
       +'<select class="inp" id="sdb-fil-cont" style="min-width:200px" onchange="if(typeof renderSesmtDashboard===\'function\')renderSesmtDashboard()"><option value="">Todos os contratos</option></select>'
       +'<select class="inp" id="sdb-fil-periodo" style="width:140px" onchange="if(typeof renderSesmtDashboard===\'function\')renderSesmtDashboard()">'
@@ -243,7 +256,7 @@
       +'<input class="inp" id="mob-fil-busca" placeholder="Nome / RE" style="width:180px" oninput="if(typeof renderMobilizacao===\'function\')renderMobilizacao()"></div>'
       +'<div id="mob-metricas" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:.75rem"></div>'
       +'<div id="mob-lista"></div>');
-    page('pg-sesmt-evolucao', hdr('📈 Evolução do Colaborador')
+    page('pg-sesmt-evolucao', hdr('📈 Evolução do Colaborador', btnEntradaIa())
       +'<div class="card" style="padding:.75rem;margin-bottom:.75rem;display:flex;gap:6px;flex-wrap:wrap">'
       +'<select class="inp" id="evol-fil-contrato" style="width:200px" onchange="if(typeof evolOnFiltroChange===\'function\')evolOnFiltroChange()"><option value="">Todos os contratos (só com busca)</option></select>'
       +'<input class="inp" id="evol-fil-busca" placeholder="Nome ou RE" style="width:200px" oninput="if(typeof evolOnFiltroChange===\'function\')evolOnFiltroChange()">'
@@ -276,6 +289,8 @@
         if(window._ALM_HUB_CHILD_PG_IDS.indexOf(id)<0) window._ALM_HUB_CHILD_PG_IDS.push(id);
       });
     }
+    garantirBtnEntradaIa('pg-sesmt-dashboard');
+    garantirBtnEntradaIa('pg-sesmt-evolucao');
     return hub;
   };
 
