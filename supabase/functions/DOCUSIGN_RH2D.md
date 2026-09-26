@@ -1,33 +1,37 @@
 # DocuSign Edge Functions — ERP CENA RH-2D
 
-## Deploy
+## Deploy controlado Recovery-3
+
+Somente estas Edges (nesta ordem). Sem frontend. Sem envelope.
 
 ```bash
 supabase functions deploy docusign-create-envelope
 supabase functions deploy docusign-envelope-status
 supabase functions deploy docusign-download-completed
-supabase functions deploy rh-documento-assinado-url
 supabase functions deploy docusign-webhook --no-verify-jwt
 ```
 
-`rh-documento-assinado-url` exige JWT (NÃO usar `--no-verify-jwt`). Signed URL: 90 segundos, bucket `cena-rh-assinados`.
+Webhook Connect permanece público (HMAC via `DOCUSIGN_CONNECT_SECRET`, fail-closed).
 
-Webhook Connect deve ser público (HMAC via `DOCUSIGN_CONNECT_SECRET`).
+Não incluir `rh-documento-assinado-url` neste passo (fora do Recovery-3).
 
-## Secrets (Vault / Function secrets — NUNCA no frontend)
+Após o deploy: **somente** diagnóstico — `POST docusign-envelope-status` `{ "acao": "diagnostico" }` com sessão RH. Sem create-envelope.
 
-| Secret | Uso |
-|--------|-----|
-| `DOCUSIGN_INTEGRATION_KEY` | Integration Key (OAuth JWT Grant) |
-| `DOCUSIGN_USER_ID` | GUID do usuário impersonado |
-| `DOCUSIGN_PRIVATE_KEY` | RSA private key PEM (JWT assertion) |
-| `DOCUSIGN_ACCOUNT_ID` | Account ID |
-| `DOCUSIGN_BASE_URI` | Opcional; senão demo/prod default |
-| `DOCUSIGN_AMBIENTE` | `DEMO` ou `PRODUCAO` (default DEMO) |
-| `DOCUSIGN_SMS_ENABLED` | `true` só se a conta tiver SMS |
-| `DOCUSIGN_CONNECT_SECRET` | HMAC Connect (recomendado) |
-| `DOCUSIGN_ACCESS_TOKEN` | Opcional: token estático só para smoke test |
-| `SUPABASE_SERVICE_ROLE_KEY` | Já padrão nas Edge |
+## Secrets (Vault — NUNCA no frontend)
+
+Conferência Dashboard 26/09/2026 (nomes apenas):
+
+| Secret | Dashboard | Uso |
+|--------|-----------|-----|
+| `DOCUSIGN_INTEGRATION_KEY` | PRESENTE | Integration Key (JWT Grant) |
+| `DOCUSIGN_USER_ID` | PRESENTE | Usuário impersonado |
+| `DOCUSIGN_PRIVATE_KEY` | PRESENTE | RSA PEM da assertion |
+| `DOCUSIGN_ACCOUNT_ID` | PRESENTE | Account ID |
+| `DOCUSIGN_AMBIENTE` | PRESENTE | `DEMO` ou `PRODUCAO` |
+| `DOCUSIGN_SMS_ENABLED` | PRESENTE | SMS da conta |
+| `DOCUSIGN_CONNECT_SECRET` | PRESENTE | HMAC Connect (obrigatório) |
+| `DOCUSIGN_BASE_URI` | AUSENTE | Opcional; obter via userinfo |
+| `DOCUSIGN_ACCESS_TOKEN` | AUSENTE | Legado. **Não criar.** Fora do fluxo oficial. |
 
 ## Webhook URL
 
