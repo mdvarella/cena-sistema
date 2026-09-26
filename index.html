@@ -1982,7 +1982,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.148"></script>
+<script src="portaria-offline.js?v=8.1.153"></script>
 <script src="portaria-camera.js?v=8.1.151"></script>
 <script src="sesmt-alm-shell.js?v=8.1.152"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
@@ -44638,10 +44638,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.152',
-  data:   '25/09/2026',
-  build:  '20260925-2215',
+  numero: '8.1.153',
+  data:   '26/09/2026',
+  build:  '20260926-0900',
   log: [
+    {v:'8.1.153', d:'26/09/2026', itens:[
+      'Portaria: KM divergente da última leitura não bloqueia. Avisa o motivo, pede confirmação e cadastra; as próximas KMs da placa passam a partir desta leitura (rebase). Sem SQL.',
+    ]},
     {v:'8.1.152', d:'25/09/2026', itens:[
       'SESMT: restaura atalho Entrada Inteligente no menu (Saúde e Segurança) e no dashboard/evolução. Perfil sesmt pode abrir a tela. Sem SQL.',
     ]},
@@ -84953,10 +84956,7 @@ function portAbrirVistoriaRetorno(saidaId){
         return;
       }
       var _kmRet=portKmValidarRetorno(saida, km);
-      if(_kmRet.bloqueia){
-        progShowToast('🚫 '+(_kmRet.msgs[0]||'KM de retorno inválido.'),'erro');
-        return;
-      }
+      if(!portKmConfirmarDivergencia(_kmRet, km, 'retorno')) return;
       if(typeof portOffTravar==='function' && !portOffTravar('RETORNO:'+(saida.id||saida.placa||''))){
         progShowToast('Aguarde, este retorno já está em andamento.');
         return;
@@ -85009,6 +85009,9 @@ function portAbrirVistoriaRetorno(saidaId){
       // Foto fica no IndexedDB (Blob). Não espera upload para confirmar na tela.
       _gravarRetorno(fotoB64||null);
 
+      portKmAposRegistrar(saida.placa, saida, km, {
+        km_motivo_divergencia:_kmRet.km_motivo_divergencia||(_kmRet.msgs&&_kmRet.msgs.length?_kmRet.msgs.join(' | '):null)
+      });
       closeModal();
       portRenderEquipesDia();
       portRenderRetorno();
@@ -86591,6 +86594,7 @@ function portLiberar(tipo, id, placa, dataProg){
   portKmAnexarSaida(saida, kmMeta);
 
   frt_portaria.unshift(saida);
+  portKmAposRegistrar(placa, saida, km, kmMeta);
   if(!DEMO){
     if(typeof portOffRegistrarSaida==='function') portOffRegistrarSaida(saida);
     else portInsertSaidaDB(saida).catch(function(e){ console.warn('[Portaria] saida',e); });
@@ -86713,6 +86717,7 @@ function portLiberarReservaDireto(r, placa, destino, km, quem, obs, kmMeta){
   };
   portKmAnexarSaida(saida, kmMeta);
   frt_portaria.unshift(saida);
+  portKmAposRegistrar(placa, saida, km, kmMeta);
   if(!DEMO){
     if(typeof portOffRegistrarSaida==='function') portOffRegistrarSaida(saida);
     else portInsertSaidaDB(saida).catch(function(e){ console.warn('[Portaria] reserva saida',e); });
@@ -86978,6 +86983,7 @@ function portAbrirLiberacaoEquipe(eqId, data){
       });
       if(_jaEmCampo){ progShowToast('⚠️ Esta equipe/veículo já está Em Campo hoje.','erro'); return; }
       frt_portaria.unshift(saida);
+      portKmAposRegistrar(placa, saida, km, kmMeta);
       (composicao_dia||[]).forEach(function(cx){
         if(String(cx.equipe_id)===String(eqId) && (portDiaISO(cx.data)===portDiaISO(data) || portDiaISO(cx.data)===dataHojeLocal()))
           cx._portaria_liberado=true;
@@ -88350,14 +88356,12 @@ function portKmValidarAlertas(placa, kmInformado, confianca){
     var kmAb = parseFloat(saidaAberta.km_saida)||0;
     if(kmAb>0 && km<kmAb){
       msgs.push('KM informado ('+km.toLocaleString('pt-BR')+') é menor que o KM da saída sem retorno ('+kmAb.toLocaleString('pt-BR')+').');
-      bloqueia=true;
     }
   }
 
   var ultimo=portKmUltimoRegistrado(placa);
   if(ultimo>0 && km<ultimo){
-    msgs.push('KM informado ('+km.toLocaleString('pt-BR')+') é menor que a última KM registrada desta placa ('+ultimo.toLocaleString('pt-BR')+'). Corrija o odômetro — a saída está bloqueada.');
-    bloqueia=true;
+    msgs.push('KM informado ('+km.toLocaleString('pt-BR')+') é menor que a última KM registrada desta placa ('+ultimo.toLocaleString('pt-BR')+').');
   }
   if(ultimo>0 && (km-ultimo)>PORT_KM_SALTO_ALERTA){
     msgs.push('Salto de KM muito grande: +'+(km-ultimo).toLocaleString('pt-BR')+' km desde o último registro ('+ultimo.toLocaleString('pt-BR')+').');
@@ -88365,7 +88369,7 @@ function portKmValidarAlertas(placa, kmInformado, confianca){
   if(confianca!=null && confianca<PORT_KM_CONF_BAIXA){
     msgs.push('Confiança da leitura OCR baixa ('+Math.round(confianca*100)+'%). Revise o KM antes de liberar.');
   }
-  return {ok:msgs.length===0, msgs:msgs, bloqueia:bloqueia, saidaAberta:saidaAberta, sugestaoKm:sugestaoKm};
+  return {ok:msgs.length===0, msgs:msgs, bloqueia:bloqueia, saidaAberta:saidaAberta, sugestaoKm:sugestaoKm, ultimo:ultimo||0, divergente:!!(ultimo>0 && km && km!==ultimo)};
 }
 /** Próxima saída da placa DEPOIS desta (vizinho cronológico à frente). Base p/ o teto do KM de retorno em back-fill. */
 function portKmProxSaidaApos(placa, saida){
@@ -88394,18 +88398,126 @@ function portKmFaixaRetorno(saida){
 function portKmValidarRetorno(saida, kmInformado){
   var msgs=[], bloqueia=false;
   var km=parseFloat(kmInformado)||0;
-  if(!km){ return {ok:false, msgs:['Informe o KM de retorno do odômetro.'], bloqueia:true}; }
+  var ultimo=saida&&saida.placa?portKmUltimoRegistrado(saida.placa):0;
+  if(!km){ return {ok:false, msgs:['Informe o KM de retorno do odômetro.'], bloqueia:true, faixa:null, ultimo:ultimo||0}; }
   var faixa=portKmFaixaRetorno(saida);
   if(faixa.min>0 && km<faixa.min){
     msgs.push('KM retorno ('+km.toLocaleString('pt-BR')+') é menor que o KM de saída ('+faixa.min.toLocaleString('pt-BR')+').');
-    bloqueia=true;
   }
   if(faixa.max!=null && km>faixa.max){
     var qP=faixa.prox&&faixa.prox.data_saida?(typeof fmtDT==='function'?fmtDT(faixa.prox.data_saida):String(faixa.prox.data_saida).slice(0,16)):'—';
-    msgs.push('KM retorno ('+km.toLocaleString('pt-BR')+') é maior que o KM da próxima saída desta placa ('+faixa.max.toLocaleString('pt-BR')+' em '+qP+'). O retorno deve ficar entre '+faixa.min.toLocaleString('pt-BR')+' e '+faixa.max.toLocaleString('pt-BR')+'.');
-    bloqueia=true;
+    msgs.push('KM retorno ('+km.toLocaleString('pt-BR')+') é maior que o KM da próxima saída desta placa ('+faixa.max.toLocaleString('pt-BR')+' em '+qP+').');
   }
-  return {ok:!bloqueia, msgs:msgs, bloqueia:bloqueia, faixa:faixa};
+  return {ok:msgs.length===0, msgs:msgs, bloqueia:bloqueia, faixa:faixa, ultimo:ultimo||0, divergente:msgs.length>0};
+}
+function portKmTextoConfirmacao(v, kmInformado, papel){
+  var km=parseFloat(kmInformado)||0;
+  var ultimo=v&&v.ultimo>0?v.ultimo:0;
+  var linhas=['KM de '+(papel||'odômetro')+' divergente.','','KM informado: '+km.toLocaleString('pt-BR')];
+  if(ultimo) linhas.push('Última KM da placa: '+ultimo.toLocaleString('pt-BR'));
+  if(v&&v.faixa){
+    if(v.faixa.min>0) linhas.push('KM de saída desta viagem: '+v.faixa.min.toLocaleString('pt-BR'));
+    if(v.faixa.max!=null) linhas.push('KM da próxima saída: '+v.faixa.max.toLocaleString('pt-BR'));
+  }
+  if(v&&v.msgs&&v.msgs.length){
+    linhas.push('','Motivo:');
+    v.msgs.forEach(function(m){ linhas.push('• '+m); });
+  }
+  linhas.push('','Se confirmar, esta leitura será cadastrada e passará a ser a base de partida das próximas KMs da placa (registros seguintes serão reajustados).','','Confirmar e continuar?');
+  return linhas.join('\n');
+}
+function portKmConfirmarDivergencia(v, kmInformado, papel){
+  if(!v) return false;
+  if(v.bloqueia){
+    progShowToast(v.msgs&&v.msgs[0]?v.msgs[0]:'KM inválido.','erro');
+    return false;
+  }
+  if(v.msgs&&v.msgs.length){
+    return !!confirm(portKmTextoConfirmacao(v, kmInformado, papel||'odômetro'));
+  }
+  return true;
+}
+function portKmDefinirAtualVeiculo(placa, km){
+  km=parseFloat(km)||0;
+  if(!km) return;
+  var veic=(frt_veiculos||[]).find(function(x){return portNormPlaca(x.placa)===portNormPlaca(placa);});
+  if(!veic) return;
+  veic.km_atual=km;
+  if(!DEMO && veic.id) sbUpdate('frotas_veiculos',{km_atual:km},'id=eq.'+veic.id).catch(function(){});
+}
+function portKmPersistirRebase(p, kmS, kmR, just){
+  if(!p) return;
+  var quem=typeof portNomePorteiroAtual==='function'?portNomePorteiroAtual():'Portaria';
+  var agora=new Date().toISOString();
+  var antesS=p.km_saida, antesR=p.km_retorno;
+  var ev={
+    em:agora, por:quem, justificativa:just,
+    km_saida_antes:antesS, km_saida_depois:kmS,
+    km_retorno_antes:antesR, km_retorno_depois:kmR,
+    rebase_portaria:true
+  };
+  var hist=(typeof portKmAjustesLista==='function'?portKmAjustesLista(p):[]).concat([ev]);
+  p.km_saida=kmS;
+  if(kmR!=null) p.km_retorno=kmR;
+  p.km_ajustado_por=quem;
+  p.km_ajustado_em=agora;
+  p.km_ajuste_justificativa=just;
+  p.km_ajustes=hist;
+  var nota='[Rebase KM Portaria '+agora.slice(0,16).replace('T',' ')+' por '+quem+'] saída '+(antesS||'—')+'→'+kmS
+    +(kmR!=null?' · retorno '+(antesR!=null?antesR:'—')+'→'+kmR:'')+' — '+just;
+  p.obs=((p.obs||p.observacao||'')+(p.obs||p.observacao?'\n':'')+nota).trim();
+  if(DEMO) return;
+  if(typeof isUUID==='function' && !isUUID(String(p.id||''))) return;
+  var full={km_saida:kmS, km_retorno:kmR, obs:p.obs, km_ajustado_por:quem, km_ajustado_em:agora, km_ajuste_justificativa:just, km_ajustes:hist};
+  var mini={km_saida:kmS, km_retorno:kmR, obs:p.obs};
+  Promise.resolve(sbUpdate('frotas_portaria_saidas', full, 'id=eq.'+p.id)).then(function(r){
+    if(r===false) return sbUpdate('frotas_portaria_saidas', mini, 'id=eq.'+p.id);
+  }).catch(function(){});
+}
+function portKmRebaseProximasApos(placa, saidaRef, kmBase, motivo){
+  kmBase=parseFloat(kmBase)||0;
+  if(!kmBase || !saidaRef) return 0;
+  var pl=portNormPlaca(placa);
+  var t0=portKmTsRegistro(saidaRef);
+  if(!pl||!t0) return 0;
+  var list=(frt_portaria||[]).filter(function(p){
+    if(!p || portNormPlaca(p.placa)!==pl) return false;
+    if(String(p.id)===String(saidaRef.id)) return false;
+    if(p.status==='Cancelado' || p.deleted_at) return false;
+    return portKmTsRegistro(p)>t0;
+  }).sort(function(a,b){ return portKmTsRegistro(a)-portKmTsRegistro(b); });
+  if(!list.length) return 0;
+  var just=motivo||'Rebase após KM divergente confirmado na Portaria';
+  var ultimoAntes=portKmUltimoRegistrado(placa,{excluirId:saidaRef.id});
+  var delta=(ultimoAntes>0 && kmBase!==ultimoAntes)?(kmBase-ultimoAntes):0;
+  var piso=kmBase, n=0;
+  list.forEach(function(p){
+    var s=parseFloat(p.km_saida)||0;
+    var temR=p.km_retorno!=null && p.km_retorno!=='' && !isNaN(parseFloat(p.km_retorno));
+    var r=temR?parseFloat(p.km_retorno):null;
+    var ns=s, nr=r;
+    if(delta){
+      if(s>0) ns=Math.max(1, Math.round(s+delta));
+      if(r!=null) nr=Math.max(1, Math.round(r+delta));
+    }
+    if(ns>0 && ns<piso) ns=piso;
+    if(nr!=null && nr<ns) nr=ns;
+    if(ns!==s || (nr!=null && nr!==r)){
+      portKmPersistirRebase(p, ns, nr, just);
+      n++;
+    }
+    piso=Math.max(piso, ns, nr||0);
+  });
+  return n;
+}
+function portKmAposRegistrar(placa, saida, km, meta){
+  meta=meta||{};
+  var n=0;
+  try{ n=portKmRebaseProximasApos(placa, saida, km, meta.km_motivo_divergencia); }
+  catch(eRb){ console.warn('[Portaria KM rebase]', eRb); }
+  var last=portKmUltimoRegistrado(placa);
+  portKmDefinirAtualVeiculo(placa, last||km);
+  if(n>0) progShowToast('KM cadastrado. '+n+' KM seguinte(s) reajustada(s) a partir desta leitura.');
 }
 /** Bloco HTML: campo KM + foto odômetro + OCR (reuso Diário). */
 function portKmWidgetHtml(inputId, opts){
@@ -88434,7 +88546,7 @@ function portKmWidgetHtml(inputId, opts){
     +'<input type="hidden" id="port-km-foto" value=""/>'
     +'<input type="hidden" id="port-km-ocr" value=""/>'
     +'<input type="hidden" id="port-km-conf" value=""/>'
-    +'<div id="port-km-status" style="font-size:10px;color:#888;margin-top:4px">Tire foto do odômetro. OCR preenche o KM — revise antes de liberar. KM menor que o último da placa bloqueia a saída.</div>'
+    +'<div id="port-km-status" style="font-size:10px;color:#888;margin-top:4px">Tire foto do odômetro. OCR preenche o KM — revise antes de liberar. KM divergente da última leitura avisa e pede confirmação; se confirmar, esta leitura vira a base das próximas.</div>'
     +'<div id="port-km-alertas" style="display:none;margin-top:6px"></div>'
     +'</div>';
 }
@@ -88601,13 +88713,11 @@ function portKmPrepararLiberacao(placa, kmInformado, opts){
     return null;
   }
   var v=portKmValidarAlertas(placa, kmInformado, meta.km_ocr_confianca);
-  if(v.bloqueia){
-    progShowToast(v.msgs[0]||'KM inválido.','erro');
-    return null;
-  }
-  if(v.msgs.length){
-    var ok=confirm('Alertas de KM:\n\n• '+v.msgs.join('\n• ')+'\n\nDeseja liberar mesmo assim?');
-    if(!ok) return null;
+  if(!portKmConfirmarDivergencia(v, kmInformado, 'saída')) return null;
+  if(v.msgs&&v.msgs.length){
+    meta.km_divergente=true;
+    meta.km_motivo_divergencia=v.msgs.join(' | ');
+    meta.km_ultimo_antes=v.ultimo||0;
   }
   return meta;
 }
@@ -94034,7 +94144,13 @@ function frtPortariaAbrirSaida(){
       var veic=frt_veiculos.find(function(v){return v.id===veicSel.value;});
       var km=parseInt(g('fps-km'));
       if(!g('fps-motorista')||!km){alert('Motorista e KM são obrigatórios.');return;}
-      var _pisoKm=(typeof portKmUltimoRegistrado==='function'&&veic)?portKmUltimoRegistrado(veic.placa):(veic&&veic.km_atual)||0; if(veic&&_pisoKm>0&&km<_pisoKm){alert('KM saida nao pode ser menor que a ultima KM da placa ('+_pisoKm.toLocaleString('pt-BR')+').');return;}
+      var _kmSaidaV=typeof portKmValidarAlertas==='function'?portKmValidarAlertas(veic&&veic.placa, km, null):{ok:true,msgs:[],bloqueia:false};
+      if(typeof portKmConfirmarDivergencia==='function'){
+        if(!portKmConfirmarDivergencia(_kmSaidaV, km, 'saída')) return;
+      } else if(veic){
+        var _pisoKm=(typeof portKmUltimoRegistrado==='function')?portKmUltimoRegistrado(veic.placa):(veic.km_atual)||0;
+        if(_pisoKm>0&&km<_pisoKm){alert('KM saida nao pode ser menor que a ultima KM da placa ('+_pisoKm.toLocaleString('pt-BR')+').');return;}
+      }
       var contSel=document.getElementById('fps-cont');
       var contNome=contSel&&contSel.value?(contratos.find(function(c){return c.id===contSel.value;})||{nome:''}).nome:'';
       var saida={id:'ps'+Date.now(),
@@ -94046,6 +94162,11 @@ function frtPortariaAbrirSaida(){
         obs:g('fps-obs'),status:'Em campo'};
       frt_portaria.unshift(saida);
       if(veic){veic.status='Em uso';veic.km_atual=km;}
+      if(typeof portKmAposRegistrar==='function'){
+        portKmAposRegistrar(saida.placa, saida, km, {
+          km_motivo_divergencia:_kmSaidaV.msgs&&_kmSaidaV.msgs.length?_kmSaidaV.msgs.join(' | '):null
+        });
+      }
       // Gerar risco se sem programação prévia (auditoria)
       frtGerarRisco('Uso sem programação','Baixa',saida.placa,saida.motorista,'Saída não vinculada a programação prévia');
       if(!DEMO){
@@ -94101,7 +94222,7 @@ function frtPortariaAbrirRetornoItem(saidaId){
       if(!saida){alert('Selecione a saída.');return;}
       var km=parseInt(g('fpr-km'));
       var _kmRet=portKmValidarRetorno(saida, km);
-      if(_kmRet.bloqueia){ progShowToast('🚫 '+(_kmRet.msgs[0]||'KM de retorno inválido.'),'erro'); return; }
+      if(!portKmConfirmarDivergencia(_kmRet, km, 'retorno')) return;
       var _fprAvariaFoto = ((document.getElementById('fpr-avaria-b64')||{}).value||'').trim();
       if(!_fprAvariaFoto){
         progShowToast('⚠ Tire a foto do veículo antes de confirmar.','erro'); return;
@@ -94122,6 +94243,9 @@ function frtPortariaAbrirRetornoItem(saidaId){
       saida._sync_status='PENDENTE';
       var veic=frt_veiculos.find(function(v){return v.id===saida.veiculo_id;});
       if(veic){veic.status=g('fpr-avaria')==='sim'?'Solicitação de manutenção':'Disponível';veic.km_atual=km;}
+      portKmAposRegistrar(saida.placa, saida, km, {
+        km_motivo_divergencia:_kmRet.msgs&&_kmRet.msgs.length?_kmRet.msgs.join(' | '):null
+      });
       if(g('fpr-avaria')==='sim'){
         frt_avarias.unshift({id:'av'+Date.now(),placa:saida.placa,modelo:saida.modelo,
           motorista:saida.motorista,tipo:'Avaria leve',descricao:g('fpr-obs')||'Avaria reportada no retorno',
