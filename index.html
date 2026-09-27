@@ -44638,10 +44638,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.154',
-  data:   '26/09/2026',
-  build:  '20260926-0940',
+  numero: '8.1.155',
+  data:   '27/09/2026',
+  build:  '20260927-1127',
   log: [
+    {v:'8.1.155', d:'27/09/2026', itens:[
+      'Portaria: aba Retornos em aberto deixa de listar a mesma placa duas vezes (clones Em campo). Sem SQL.',
+    ]},
     {v:'8.1.154', d:'26/09/2026', itens:[
       'Portaria: remove o seletor Operando em (port-sel-ativa). Sem efeito operacional nas saidas. Sem SQL.',
     ]},
@@ -85039,12 +85042,59 @@ function portPodeEncerrarAbertos(){
   return p==='admin'||p==='gestor'||p==='coordenador'||p==='diretoria';
 }
 function portRetAbertosCarregar(force){
-  if(DEMO){ _portAbertos=(frt_portaria||[]).filter(function(p){return p.status==='Em campo'&&!p.deleted_at;}); _portAbertosLoaded=true; return Promise.resolve(_portAbertos); }
+  if(DEMO){ _portAbertos=portDedupAbertosLista((frt_portaria||[]).filter(function(p){return p.status==='Em campo'&&!p.deleted_at;})); _portAbertosLoaded=true; return Promise.resolve(_portAbertos); }
   if(_portAbertosLoaded && !force) return Promise.resolve(_portAbertos);
   var sel=(typeof PORT_SAIDA_SEL_LISTA!=='undefined')?PORT_SAIDA_SEL_LISTA:'*';
   return sbFetch('frotas_portaria_saidas',{select:sel, filters:['status=eq.Em campo','deleted_at=is.null'], order:'data_saida.asc', limit:3000}).then(function(rows){
-    _portAbertos=Array.isArray(rows)?rows:[]; _portAbertosLoaded=true; return _portAbertos;
-  }).catch(function(){ _portAbertos=(frt_portaria||[]).filter(function(p){return p.status==='Em campo'&&!p.deleted_at;}); _portAbertosLoaded=true; return _portAbertos; });
+    _portAbertos=portDedupAbertosLista(Array.isArray(rows)?rows:[]); _portAbertosLoaded=true; return _portAbertos;
+  }).catch(function(){ _portAbertos=portDedupAbertosLista((frt_portaria||[]).filter(function(p){return p.status==='Em campo'&&!p.deleted_at;})); _portAbertosLoaded=true; return _portAbertos; });
+}
+/** Clones offline/mesmo minuto da mesma placa não entram de novo na lista administrativa. */
+function portDedupAbertosLista(rows){
+  var src=Array.isArray(rows)?rows:[];
+  var byId={}, out=[];
+  src.forEach(function(p){
+    if(!p || p.deleted_at) return;
+    if(typeof portEstaEmCampo==='function'){ if(!portEstaEmCampo(p)) return; }
+    else if(p.status!=='Em campo') return;
+    var id=String(p.id||'');
+    if(id && byId[id]) return;
+    var hit=-1;
+    for(var i=0;i<out.length;i++){
+      var q=out[i];
+      if(id && String(q.id||'')===id){ hit=i; break; }
+      var ka=typeof portSaidaChaveDedup==='function'?portSaidaChaveDedup(q):'';
+      var kb=typeof portSaidaChaveDedup==='function'?portSaidaChaveDedup(p):'';
+      if(ka && kb && ka===kb){ hit=i; break; }
+      var pla=typeof portNormPlaca==='function'?portNormPlaca(q.placa):String(q.placa||'').toUpperCase();
+      var plb=typeof portNormPlaca==='function'?portNormPlaca(p.placa):String(p.placa||'').toUpperCase();
+      if(!pla || pla!==plb) continue;
+      if(typeof portSaidaMesmoMinuto==='function' && portSaidaMesmoMinuto(q,p)){
+        var ea=typeof portEquipeChaveSaida==='function'?portEquipeChaveSaida(q):'';
+        var eb=typeof portEquipeChaveSaida==='function'?portEquipeChaveSaida(p):'';
+        if(ea && eb && ea!==eb) continue;
+        hit=i; break;
+      }
+    }
+    if(hit>=0){
+      var w=typeof portFundirSaidas==='function'?portFundirSaidas(out[hit], p):out[hit];
+      out[hit]=w;
+      if(w && w.id) byId[String(w.id)]=true;
+      return;
+    }
+    out.push(p);
+    if(id) byId[id]=true;
+  });
+  return out;
+}
+function portAbaAbertosWrap(){
+  var pages=document.querySelectorAll('#pg-frotas-portaria');
+  var pg=null;
+  for(var i=0;i<pages.length;i++){
+    if(!pages[i].classList.contains('hidden')){ pg=pages[i]; break; }
+  }
+  if(!pg) pg=pages[0]||document;
+  return (pg&&pg.querySelector)?(pg.querySelector('#port-aba-abertos')||document.getElementById('port-aba-abertos')):document.getElementById('port-aba-abertos');
 }
 function portAbDias(saida){
   var t=saida&&saida.data_saida?new Date(String(saida.data_saida).slice(0,10)).getTime():0;
@@ -85061,7 +85111,7 @@ function portAbFiltradas(){
   });
 }
 function portRenderRetornosAbertos(){
-  var wrap=document.getElementById('port-aba-abertos'); if(!wrap) return;
+  var wrap=typeof portAbaAbertosWrap==='function'?portAbaAbertosWrap():document.getElementById('port-aba-abertos'); if(!wrap) return;
   if(!portPodeEncerrarAbertos()){
     wrap.innerHTML='<div class="card" style="padding:1.5rem;text-align:center;color:#888;font-size:13px">🔒 Acesso restrito a gestor/admin.</div>'; return;
   }
@@ -85164,7 +85214,7 @@ function portEncerrarSelecionadas(){
 
 function portMostrarAba(aba){
   var aca=document.getElementById('app-content-area');if(aca)aca.scrollTop=0;
-  var _btnAb=document.getElementById('port-tab-abertos'); if(_btnAb) _btnAb.style.display=portPodeEncerrarAbertos()?'':'none';
+  document.querySelectorAll('#port-tab-abertos').forEach(function(_btnAb){ _btnAb.style.display=portPodeEncerrarAbertos()?'':'none'; });
   if(typeof portOffRenderIndicador==='function') portOffRenderIndicador();
   ['equipes','saida','liberacao','autorizados','registros','reservas','config','acesso','retorno','abertos'].forEach(function(a){
     var el=document.getElementById('port-aba-'+a);
