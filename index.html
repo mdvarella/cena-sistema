@@ -115588,8 +115588,65 @@ var RH_CONTRATACAO_MAP=[
 ];
 var RH_CT_TIPOS={
   indeterminado:'CLT indeterminado', experiencia:'Experiência', temporario:'Temporário',
-  aprendiz:'Aprendiz', estagio:'Estágio', terceiro:'Terceiro', recontratacao:'Recontratação'
+  aprendiz:'Aprendiz', estagio:'Estágio',
+  terceiro_pj:'Terceiro PJ / Prestador direto',
+  terceiro_fornecedor:'Terceiro de empresa fornecedora',
+  recontratacao:'Recontratação'
 };
+function rhResolverPerfilContratacao(tipo){
+  var t=String(tipo==null?'' : tipo).trim();
+  if(t==='terceiro_pj') return 'TERCEIRO_PJ';
+  if(t==='terceiro_fornecedor') return 'TERCEIRO_FORNECEDOR';
+  if(t==='estagio') return 'ESTAGIARIO';
+  if(t==='indeterminado'||t==='experiencia'||t==='temporario'||t==='aprendiz'||t==='recontratacao') return 'CLT';
+  return '';
+}
+function rhObterPacoteDocumental(perfil){
+  var pfl=String(perfil||'');
+  if(pfl==='TERCEIRO_PJ') return {perfil:pfl, itens:[], mensagem:'Pacote PJ em preparação', bloquear_clt:true, bloquear_pj:false};
+  if(pfl==='TERCEIRO_FORNECEDOR') return {perfil:pfl, itens:[], mensagem:'Pacote de fornecedor em preparação', bloquear_clt:true, bloquear_pj:true};
+  return {perfil:pfl||'CLT', itens:null, mensagem:'', bloquear_clt:false, bloquear_pj:false};
+}
+function rhDocCodigoBloqueadoPorPerfil(codigo, perfil){
+  var c=String(codigo||'').toUpperCase();
+  var pack=rhObterPacoteDocumental(perfil);
+  if(pack.bloquear_clt && (c==='CTR-CLT-CENA' || c==='CTR-CLT-TESTE')) return true;
+  if(pack.bloquear_pj && c==='CTR-PJ-CENA') return true;
+  return false;
+}
+function rhCtOnTipoContratacao(){
+  if(!_rhCtAtual) return;
+  if(typeof rhCtColetar==='function') rhCtColetar();
+  _rhCtAtual._aviso_perfil_documental=true;
+  if(typeof rhRenderAssistente==='function') rhRenderAssistente();
+}
+function rhCtTituloAssistente(){
+  var tipo=_rhCtAtual?(_rhCtAtual.tipo_contratacao||(typeof rhCtVal==='function'?rhCtVal('tipo_contratacao'):'')):'';
+  var perfil=rhResolverPerfilContratacao(tipo);
+  if(perfil==='TERCEIRO_PJ') return 'Contratação PJ / Prestador direto';
+  if(perfil==='TERCEIRO_FORNECEDOR') return 'Terceiro de Empresa Fornecedora';
+  if(perfil==='ESTAGIARIO') return 'Contratação — Estágio';
+  return 'Contratação — Admissão Inteligente (RH-2A)';
+}
+function rhCtBlocosConceituaisPerfilHtml(perfil){
+  if(perfil==='TERCEIRO_PJ'){
+    return '<div style="margin-top:12px;padding:10px 12px;background:#F4F7F5;border:1px solid #D5DDD8;border-radius:8px">'
+      +'<div style="font-weight:700;margin-bottom:6px">Contexto PJ (sem persistir novos campos nesta fase)</div>'
+      +'<div style="font-size:12px;color:#555;display:grid;gap:6px">'
+      +'<div><b>Dados da Pessoa Jurídica</b> — razão, CNPJ e endereço em fase própria. Não usar CPF/nome CLT.</div>'
+      +'<div><b>Representante da PJ</b> — cadastro estruturado depois.</div>'
+      +'<div><b>Dados do Contrato</b> — objeto, honorários e vigência depois.</div>'
+      +'<div><b>Documentos</b> — '+rhEsc(rhObterPacoteDocumental(perfil).mensagem)+'</div>'
+      +'</div></div>';
+  }
+  if(perfil==='TERCEIRO_FORNECEDOR'){
+    return '<div style="margin-top:12px;padding:10px 12px;background:#F7F5F0;border:1px solid #E0DCD1;border-radius:8px">'
+      +'<div style="font-weight:700;margin-bottom:6px">Contexto — trabalhador de empresa fornecedora</div>'
+      +'<div style="font-size:12px;color:#555">Sem contrato PJ da CENA com esta pessoa. Pacote (acesso, segurança, LGPD, EPI) em preparação. CTR-PJ não se aplica.</div>'
+      +'</div>';
+  }
+  return '';
+}
 /** Tipos que existem no catálogo/dossiê, mas não entram no kit da admissão (todos os cargos).
  *  SESMT/treinamentos: após a contratação. Apontamentos (atestado, advertência, suspensão): dia a dia.
  *  Mudança de Função: só no processo de Promoção. */
@@ -116692,7 +116749,7 @@ function rhDocRegraBate(regra, proc){
   if(regra.contrato_id && String(regra.contrato_id)!==String(proc.contrato_id||'')) return false;
   if(regra.cargo_id && String(regra.cargo_id)!==String(proc.cargo_id||'')) return false;
   if(regra.base_id && String(regra.base_id)!==String(proc.base_id||'')) return false;
-  if(regra.vinculo && String(regra.vinculo)!==String(proc.vinculo||proc.tipo_contratacao||'')) return false;
+  if(regra.vinculo && String(regra.vinculo)!==String(proc.vinculo||'')) return false;
   return true;
 }
 function rhDocEspecificidade(regra){
@@ -116740,7 +116797,15 @@ function rhDocMontarKitGeracao(proc){
     });
   });
   kit.sort(function(a,b){return a.ordem-b.ordem;});
-  return {kit:kit, conflitos:conflitos};
+  var perfil=rhResolverPerfilContratacao(proc.tipo_contratacao);
+  var packDoc=rhObterPacoteDocumental(perfil);
+  if(packDoc.itens){
+    kit=kit.filter(function(item){ return !rhDocCodigoBloqueadoPorPerfil(item.codigo, perfil); });
+    kit=[];
+  } else {
+    kit=kit.filter(function(item){ return !rhDocCodigoBloqueadoPorPerfil(item.codigo, perfil); });
+  }
+  return {kit:kit, conflitos:conflitos, perfil:perfil, mensagem:packDoc.mensagem||''};
 }
 function rhDocGeradoAtivoDoModelo(ctId, modeloCodigo){
   return (_rhDocGerados||[]).find(function(g){
@@ -118149,8 +118214,11 @@ function rhDocBlocoGeracaoHtml(){
   if(!_rhDocModelosDisponivel && !DEMO){
     html+='<div style="padding:8px;background:#FEF3E2;color:#854F0B;font-size:12px;border-radius:8px;margin-bottom:8px">'+rhEsc(_rhDocModelosErro||rhDocSqlHint())+'</div>';
   }
+  if(pack.mensagem){
+    html+='<div style="font-size:12px;color:#854F0B;padding:8px;background:#FEF3E2;border-radius:8px;margin-bottom:8px">'+rhEsc(pack.mensagem)+'</div>';
+  }
   if(!pack.kit.length){
-    html+='<div style="font-size:12px;color:#888;padding:8px;border:1px dashed #ddd;border-radius:8px">Nenhum modelo aplicável. Cadastre/publique modelos e regras na aba <b>Modelos de documentos</b>.</div>';
+    html+='<div style="font-size:12px;color:#888;padding:8px;border:1px dashed #ddd;border-radius:8px">'+(pack.mensagem?rhEsc(pack.mensagem)+' Sem modelos neste perfil nesta fase.':'Nenhum modelo aplicável. Cadastre/publique modelos e regras na aba <b>Modelos de documentos</b>.')+'</div>';
   } else {
     html+='<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
       +'<th>Documento</th><th>Modelo</th><th>Versão</th><th>Status</th><th>Pendências</th><th>Ações</th></tr></thead><tbody>';
@@ -119094,7 +119162,8 @@ function rhMontarKit(){
     }
   }
   var tipo=rhCtVal('tipo_contratacao');
-  if(tipo) _rhCtAtual.modelo_contrato_codigo='contrato_'+tipo;
+  var perfilMc=rhResolverPerfilContratacao(tipo);
+  if(tipo && perfilMc!=='TERCEIRO_PJ' && perfilMc!=='TERCEIRO_FORNECEDOR') _rhCtAtual.modelo_contrato_codigo='contrato_'+tipo;
   if(typeof rhCtAplicarFiltroKitAdmissao==='function') rhCtAplicarFiltroKitAdmissao();
 }
 function rhKitGeraPendencia(it){
@@ -120899,7 +120968,7 @@ function rhRenderAssistente(){
       +'<div class="fg"><label>Função</label>'+rhCtFuncaoSelect(rhCtVal('funcao'))+'<div style="font-size:11px;color:#888;margin-top:4px">Default = cargo.</div></div>'
       +'<div class="fg"><label>Contrato *</label>'+rhCtContratoSelect(rhCtVal('contrato_id'))+'</div>'
       +'<div class="fg"><label>Base / filial *</label>'+rhCtBaseSelect(rhCtVal('base_id'))+'</div>'
-      +'<div class="fg"><label>Tipo de contratação</label><select class="inp" id="rh-ct-tipo" data-nosort="1">'
+      +'<div class="fg"><label>Tipo de contratação</label><select class="inp" id="rh-ct-tipo" data-nosort="1" onchange="rhCtOnTipoContratacao()">'
       +'<option value="">— Selecione —</option>'+Object.keys(RH_CT_TIPOS).map(function(k){
         return '<option value="'+k+'"'+(tipo===k?' selected':'')+'>'+RH_CT_TIPOS[k]+'</option>';
       }).join('')+'</select></div>'
@@ -120910,7 +120979,8 @@ function rhRenderAssistente(){
       }).join('')+'</select></div>'
       +'<div class="fg"><label>Gestor</label><input class="inp" id="rh-ct-gestor" value="'+rhEsc(_rhCtAtual.gestor_nome||'')+'"/></div>'
       +'<div class="fg"><label>Data prevista de admissão</label><input class="inp" type="date" id="rh-ct-data" value="'+rhEsc(_rhCtAtual.data_prevista_admissao||'')+'"/></div>'
-      +'</div>';
+      +'</div>'
+      +rhCtBlocosConceituaisPerfilHtml(rhResolverPerfilContratacao(tipo));
   } else if(s===2){
     body=rhCtDocsEtapaHtml();
   } else if(s===3){
@@ -120919,6 +120989,9 @@ function rhRenderAssistente(){
     if(!_rhRemCarregado){
       body='<div style="color:#888">Carregando piso e parâmetros legais…</div>';
       rhRemCarregar().then(function(){ rhRenderAssistente(); });
+    } else if(rhResolverPerfilContratacao(rhCtVal('tipo_contratacao')||(_rhCtAtual&&_rhCtAtual.tipo_contratacao))==='TERCEIRO_PJ'
+      || rhResolverPerfilContratacao(rhCtVal('tipo_contratacao')||(_rhCtAtual&&_rhCtAtual.tipo_contratacao))==='TERCEIRO_FORNECEDOR'){
+      body='<div style="font-size:12px;color:#666">Etapa 4 — remuneração CLT ocultada neste perfil. Dados já preenchidos permanecem no processo e não são apagados.</div>';
     } else {
       body='<div style="font-size:12px;color:#666;margin-bottom:8px">Etapa 4 — Remuneração. IA documental não define salário/adicionais/benefícios.</div>'+rhRemAssistenteHtml();
     }
@@ -120932,10 +121005,15 @@ function rhRenderAssistente(){
       body=rhCtConferenciaEtapaHtml();
     }
   }
-  wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">Contratação — Admissão Inteligente (RH-2A)</span>'
+  var avisoPerfil='';
+  if(_rhCtAtual && _rhCtAtual._aviso_perfil_documental){
+    avisoPerfil='<div style="margin:0 1rem 0;padding:8px 10px;background:#EFF6FF;color:#1D4ED8;font-size:12px;border-radius:8px">O perfil da contratação foi alterado. Dados do perfil anterior permanecem preservados, mas não participam do pacote documental ativo.</div>';
+  }
+  wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">'+rhEsc(rhCtTituloAssistente())+'</span>'
     +'<div style="display:flex;gap:6px"><button class="btn" onclick="rhCtVoltarLista()">← Lista</button>'
     +'<button class="btn btn-pri" onclick="rhSalvarRascunho()">Salvar rascunho</button></div></div>'
     +'<div style="padding:.6rem 1rem;display:flex;gap:6px;flex-wrap:wrap;border-bottom:.5px solid #eee">'+nav+'</div>'
+    +avisoPerfil
     +'<div style="padding:1rem">'+body+'</div>'
     +'<div class="ma" style="padding:0 1rem 1rem;display:flex;gap:8px">'
     +(s>1?'<button class="btn" onclick="rhCtPasso('+(s-1)+')">Voltar</button>':'')
