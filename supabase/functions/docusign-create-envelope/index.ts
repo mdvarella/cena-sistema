@@ -11,7 +11,7 @@ import {
   type DsEnv,
 } from "../_shared/docusign.ts";
 import { exigirPermissaoRhModelos, registrarAuditLog } from "../_shared/cena-rh-auth.ts";
-import { validarAnchorsHtml, anchorAssinaturaPorPapel } from "../_shared/docusign-anchors.ts";
+import { validarAnchorsHtml, anchorAssinaturaPorPapel, ANCHOR_DATA } from "../_shared/docusign-anchors.ts";
 
 function pendingProviderId(docId: string) {
   return "pending-" + docId;
@@ -195,7 +195,7 @@ serve(async (req) => {
           ],
           dateSignedTabs: [
             {
-              anchorString: "[[DATA_ASSINATURA]]",
+              anchorString: ANCHOR_DATA,
               anchorUnits: "pixels",
               anchorIgnoreIfNotPresent: "false",
             },
