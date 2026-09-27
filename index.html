@@ -7554,7 +7554,7 @@ async function sbInsert(table,data,opts){
       'motivo_match','campos_extraidos','diff_cadastro','decisoes','documento_final_id','erro_ia','tentativas',
       'aviso_hash_historico','hash_visto_em','hash_lote_anterior_id','hash_item_anterior_id','criado_por','aprovado_por','aprovado_em',
       'origem_entrada','contexto_origem','colaborador_id_contexto','grupo_documento_id','grupo_papel','grupo_pagina',
-      'contratacao_id','candidatura_id','vaga_id','cargo_id'],
+      'contratacao_id','candidatura_id','vaga_id','cargo_id','storage_bucket','storage_path'],
     'rh_beneficio_competencias':['id','pagamento_ano','pagamento_mes','apuracao_ini','apuracao_fim','contrato_id','status',
       'vt_por_dia','vr_por_dia','min_minutos','calculado_em','calculado_por','data_carga'],
     'rh_beneficio_apuracoes':['id','competencia_id','colaborador_id','re','nome','contrato_id','contrato_nome','base_id','base_nome',
@@ -115907,6 +115907,7 @@ function rhCtBlocosDadosPjHtml(){
   return '<div style="margin-top:12px;display:grid;gap:12px">'
     +'<div style="font-size:12px;color:#555">Contato operacional permanece em nome/CPF do processo e <b>não</b> é copiado para a PJ. Contratante CENA continua em empregadoras.</div>'
     +rhCtHtmlRepresentanteContratante()
+    +(typeof rhPjHtmlDocumentos==='function'?rhPjHtmlDocumentos():'')
     +'<div style="padding:10px 12px;background:#F4F7F5;border:1px solid #D5DDD8;border-radius:8px">'
     +'<div style="font-weight:700;margin-bottom:8px">Dados da Empresa Contratada</div>'
     +'<div class="g2">'
@@ -120564,7 +120565,9 @@ function rhCtIaItensDoProcesso(){
   if(!_rhCtAtual || !_rhCtAtual.id) return [];
   var ct = String(_rhCtAtual.id);
   return (_rhIaItens||[]).filter(function(it){
-    return String(it.contratacao_id||'')===ct;
+    if(String(it.contratacao_id||'')!==ct) return false;
+    if(typeof rhIaItemEhPj==='function' && rhIaItemEhPj(it)) return false;
+    return true;
   });
 }
 
@@ -128971,7 +128974,8 @@ var RH_IA_TIPOS_PRIORIDADE = [
   'Operador de Guindauto','Operador de Maquinas','Operador de Empilhadeira','RAS-CAS-SAS',
   'Acesso a Subestação',
   'Seguro de Vida','Atestado','Termo de Uso de Armário','Termo de Uso de Imagem',
-  'Protocolos / Recibos','Regulamento Interno / Manual','Termo de Ciência Álcool'
+  'Protocolos / Recibos','Regulamento Interno / Manual','Termo de Ciência Álcool',
+  'Cartão CNPJ','Contrato Social','Alteração Contratual'
 ];
 var RH_IA_STATUS_ITEM = [
   'RECEBIDO','EM_PROCESSAMENTO','CLASSIFICADO','COLABORADOR_IDENTIFICADO',
@@ -129144,6 +129148,519 @@ function rhIaCapAtualizarInfo(){
 }
 
 var _rhIaContextoPadrao = {origem_entrada:'upload', contexto_origem:'dossie', colaborador_id_contexto:null, contratacao_id:null, candidatura_id:null, vaga_id:null, cargo_id:null};
+var RH_PJ_IA_BUCKET='cena-rh-pj-documentos';
+var RH_PJ_IA_TIPOS=['Cartão CNPJ','Contrato Social','Alteração Contratual'];
+var RH_PJ_IA_CAMPOS_EMP=['cnpj','razao_social','nome_fantasia','cep','logradouro','numero','complemento','bairro','cidade','uf','email','telefone'];
+var RH_PJ_IA_CAMPOS_REP=['nome','cpf','rg','nacionalidade','estado_civil','qualificacao','endereco','email','telefone'];
+var RH_PJ_IA_CAMPOS_CONTRATO=['numero_contrato','objeto_contrato','descricao_atividades','valor_honorarios','forma_pagamento','data_instrumento','data_inicio','tipo_vigencia','data_fim'];
+function rhIaEhTipoDocumentoPj(tipo){
+  var t=String(tipo||'');
+  return RH_PJ_IA_TIPOS.indexOf(t)>=0 || /cart[aã]o cnpj|contrato social|altera[cç][aã]o contratual/i.test(t);
+}
+function rhIaEhContextoPj(meta){
+  meta=meta||{};
+  var o=String(meta.contexto_origem||meta.fluxo||'');
+  return o==='terceiro_pj' || o==='pj_contratada' || !!meta.fluxo_pj;
+}
+function rhIaItemEhPj(item){
+  if(!item) return false;
+  if(rhIaEhContextoPj(item)) return true;
+  if(rhIaEhTipoDocumentoPj(item.tipo_documento_sugerido)) return true;
+  var dec=item.decisoes&&typeof item.decisoes==='object'?item.decisoes:{};
+  return !!(dec.pj && (dec.pj.fluxo||dec.pj.campos));
+}
+function rhPjRefItem(item){
+  if(!item) return '';
+  if(item.storage_path) return 'private://'+String(item.storage_bucket||RH_PJ_IA_BUCKET)+'/'+item.storage_path;
+  return String(item.arquivo_url_staging||'');
+}
+function rhPjParseRef(ref){
+  var s=String(ref||'');
+  var m=s.match(/^private:\/\/([^/]+)\/(.+)$/);
+  if(m) return {bucket:m[1], path:m[2]};
+  return null;
+}
+async function rhPjUploadPrivado(file, loteId, itemId, meta){
+  meta=meta||{};
+  var ct=meta.contratacao_id||'sem-processo';
+  var safe=(typeof rhSanPath==='function'?rhSanPath(file.name):String(file.name||'arquivo').replace(/[^a-zA-Z0-9._-]+/g,'_'));
+  var path=String(ct)+'/'+String(loteId)+'/'+String(itemId)+'/'+Date.now()+'_'+safe;
+  var url=SB.url+'/storage/v1/object/'+RH_PJ_IA_BUCKET+'/'+path.split('/').map(encodeURIComponent).join('/');
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':file.type||'application/octet-stream','x-upsert':'false'};
+  var r=await fetch(url,{method:'POST',headers:h,body:file});
+  if(!r.ok){
+    var txt=await r.text().catch(function(){return '';});
+    throw new Error('Falha no Storage privado PJ: '+(txt||('HTTP '+r.status)));
+  }
+  return {bucket:RH_PJ_IA_BUCKET, path:path, ref:'private://'+RH_PJ_IA_BUCKET+'/'+path};
+}
+async function rhPjSignedUrl(item, expSeg){
+  var bucket=item.storage_bucket||RH_PJ_IA_BUCKET;
+  var path=item.storage_path;
+  if(!path){
+    var p=rhPjParseRef(item.arquivo_url_staging);
+    if(p){ bucket=p.bucket; path=p.path; }
+  }
+  if(!path) return '';
+  var url=SB.url+'/storage/v1/object/sign/'+bucket+'/'+path.split('/').map(encodeURIComponent).join('/');
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
+  var r=await fetch(url,{method:'POST',headers:h,body:JSON.stringify({expiresIn:expSeg||120})});
+  if(!r.ok) return '';
+  var j=await r.json().catch(function(){return {};});
+  var signed=j.signedURL||j.signedUrl||(j.data&&(j.data.signedUrl||j.data.signedURL))||'';
+  if(!signed) return '';
+  if(/^https?:/i.test(signed)) return signed;
+  return SB.url+'/storage/v1'+signed;
+}
+async function rhPjBaixarBlob(item){
+  var bucket=item.storage_bucket||RH_PJ_IA_BUCKET;
+  var path=item.storage_path;
+  if(!path){
+    var p=rhPjParseRef(item.arquivo_url_staging);
+    if(p){ bucket=p.bucket; path=p.path; }
+  }
+  if(!path) throw new Error('Item PJ sem path privado');
+  var url=SB.url+'/storage/v1/object/authenticated/'+bucket+'/'+path.split('/').map(encodeURIComponent).join('/');
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+  var r=await fetch(url,{headers:h});
+  if(!r.ok) throw new Error('Falha ao baixar documento PJ HTTP '+r.status);
+  return r.blob();
+}
+function rhPjItensDoProcesso(){
+  if(!_rhCtAtual||!_rhCtAtual.id) return [];
+  var ct=String(_rhCtAtual.id);
+  return (_rhIaItens||[]).filter(function(it){
+    return String(it.contratacao_id||'')===ct && rhIaItemEhPj(it);
+  });
+}
+function rhPjDecisoes(item){
+  var d=(item&&item.decisoes&&typeof item.decisoes==='object')?item.decisoes:{};
+  if(!d.pj||typeof d.pj!=='object') d.pj={fluxo:'terceiro_pj', campos:{}, representantes_encontrados:[], representante_escolhido_idx:null};
+  if(!d.pj.campos) d.pj.campos={};
+  if(!Array.isArray(d.pj.representantes_encontrados)) d.pj.representantes_encontrados=[];
+  return d;
+}
+function rhPjCampoVazio(){
+  return {proposto:'', final:'', estado:'NAO_ENCONTRADO', fonte:'', item_id:null, tipo_doc:'', confianca:null, decisao:null, confirmado_em:null, novo:null};
+}
+function rhPjNormCampoVal(k, v){
+  v=v==null?'':String(v).trim();
+  if(!v) return '';
+  if(k==='cnpj') return String(v).replace(/\D/g,'');
+  if(k==='cpf') return String(v).replace(/\D/g,'');
+  if(k==='cep') return String(v).replace(/\D/g,'').slice(0,8);
+  if(k==='uf') return v.toUpperCase().slice(0,2);
+  return v;
+}
+function rhPjPackVal(obj){
+  if(obj==null) return '';
+  if(typeof obj==='object') return obj.valor!=null?String(obj.valor).trim():'';
+  return String(obj).trim();
+}
+function rhPjMesclarCampo(atual, proposto, meta){
+  atual=atual&&typeof atual==='object'?atual:rhPjCampoVazio();
+  meta=meta||{};
+  var nv=rhPjNormCampoVal(meta.chave, proposto);
+  if(atual.estado==='CONFIRMADO'){
+    if(nv && nv!==String(atual.final||atual.proposto||'')){
+      return Object.assign({}, atual, {estado:'DIVERGENTE', novo:nv, fonte_nova:meta.fonte||'', item_id_novo:meta.item_id||null, tipo_doc_novo:meta.tipo_doc||''});
+    }
+    return atual;
+  }
+  if(!nv){
+    if(atual.proposto||atual.final) return atual;
+    return Object.assign(rhPjCampoVazio(), {estado:'NAO_ENCONTRADO', fonte:meta.fonte||'', item_id:meta.item_id||null, tipo_doc:meta.tipo_doc||''});
+  }
+  var cur=String(atual.final||atual.proposto||'');
+  if(cur && cur!==nv && atual.estado!=='NAO_ENCONTRADO'){
+    return Object.assign({}, atual, {estado:'DIVERGENTE', novo:nv, fonte_nova:meta.fonte||'', item_id_novo:meta.item_id||null, tipo_doc_novo:meta.tipo_doc||''});
+  }
+  return {
+    proposto:nv, final:nv, estado:'ENCONTRADO', fonte:meta.fonte||'', item_id:meta.item_id||null,
+    tipo_doc:meta.tipo_doc||'', confianca:meta.confianca!=null?meta.confianca:null, decisao:null, confirmado_em:null, novo:null
+  };
+}
+function rhPjExtrairEmpresaDoItem(item, ia){
+  var campos=(ia&&ia.campos)||{};
+  var out={};
+  function take(k, aliases){
+    var v=rhPjPackVal(campos[k]);
+    if(!v && aliases) aliases.forEach(function(a){ if(!v) v=rhPjPackVal(campos[a]); });
+    out[k]=v;
+  }
+  take('cnpj',[]);
+  take('razao_social',['empresa','razao']);
+  take('nome_fantasia',['fantasia']);
+  take('cep',[]);
+  take('logradouro',['endereco']);
+  take('numero',['numero_end']);
+  take('complemento',[]);
+  take('bairro',[]);
+  take('cidade',[]);
+  take('uf',[]);
+  take('email',[]);
+  take('telefone',['celular']);
+  if(!out.cnpj) out.cnpj=rhPjPackVal((ia.identificadores||{}).cnpj);
+  return out;
+}
+function rhPjExtrairRepresentantes(ia){
+  var raw=(ia&&(ia.representantes_encontrados||(ia.campos&&ia.campos.representantes_encontrados)))||[];
+  if(!Array.isArray(raw)) raw=[];
+  return raw.map(function(r){
+    r=r||{};
+    function g(k){ return rhPjPackVal(r[k]||(r[k]&&r[k].valor)); }
+    return {
+      nome:g('nome'), cpf:rhPjNormCampoVal('cpf', g('cpf')), rg:g('rg'),
+      nacionalidade:g('nacionalidade'), estado_civil:g('estado_civil')||g('estadoCivil'),
+      qualificacao:g('qualificacao')||g('qualificação'), endereco:g('endereco')||g('endereço'),
+      email:g('email'), telefone:g('telefone')
+    };
+  }).filter(function(r){ return r.nome||r.cpf; });
+}
+function rhPjAplicarExtracaoNoProcesso(item, ia){
+  if(!_rhCtAtual) return;
+  if(!_rhCtAtual.parte_pj) _rhCtAtual.parte_pj=rhCtPjVazio();
+  var rev=_rhCtAtual._pjIaRevisao||{campos:{}, representantes_encontrados:[], representante_escolhido_idx:null};
+  if(!rev.campos) rev.campos={};
+  var emp=rhPjExtrairEmpresaDoItem(item, ia);
+  var tipo=ia.tipo_documento||item.tipo_documento_sugerido||'';
+  RH_PJ_IA_CAMPOS_EMP.forEach(function(k){
+    rev.campos[k]=rhPjMesclarCampo(rev.campos[k], emp[k], {
+      chave:k, fonte:tipo, item_id:item.id, tipo_doc:tipo, confianca:ia.confianca_tipo
+    });
+  });
+  var reps=rhPjExtrairRepresentantes(ia);
+  if(reps.length){
+    var ja=rev.representantes_encontrados||[];
+    reps.forEach(function(r){
+      var dup=ja.some(function(x){ return (r.cpf&&x.cpf&&r.cpf===x.cpf)||(r.nome&&x.nome&&r.nome===x.nome); });
+      if(!dup) ja.push(Object.assign({fonte:tipo, item_id:item.id}, r));
+    });
+    rev.representantes_encontrados=ja;
+  }
+  if(rhIaEhTipoDocumentoPj(tipo)===false && /CNH|RG/.test(String(tipo))){
+    var idents=(ia.identificadores)||{};
+    var um={
+      nome:rhPjPackVal(idents.nome)||rhPjPackVal((ia.campos||{}).nome),
+      cpf:rhPjNormCampoVal('cpf', rhPjPackVal(idents.cpf)||rhPjPackVal((ia.campos||{}).cpf)),
+      rg:rhPjPackVal((ia.campos||{}).rg)||rhPjPackVal((ia.campos||{}).numero_documento),
+      nacionalidade:rhPjPackVal((ia.campos||{}).nacionalidade),
+      estado_civil:rhPjPackVal((ia.campos||{}).estado_civil),
+      qualificacao:'', endereco:'', email:'', telefone:'',
+      fonte:tipo, item_id:item.id
+    };
+    if(um.nome||um.cpf){
+      rev.representantes_encontrados=rev.representantes_encontrados||[];
+      var dup2=rev.representantes_encontrados.some(function(x){ return (um.cpf&&x.cpf===um.cpf)||(um.nome&&x.nome===um.nome); });
+      if(!dup2) rev.representantes_encontrados.push(um);
+    }
+  }
+  _rhCtAtual._pjIaRevisao=rev;
+}
+function rhPjEstadoLabel(st){
+  return ({ENCONTRADO:'Encontrado',NAO_ENCONTRADO:'Não encontrado',DIVERGENTE:'Divergente',EDITADO_MANUALMENTE:'Editado manualmente',CONFIRMADO:'Confirmado'})[st]||st||'—';
+}
+function rhPjHtmlCampoRev(chave, label){
+  var rev=(_rhCtAtual&&_rhCtAtual._pjIaRevisao)||{campos:{}};
+  var c=rev.campos[chave]||rhPjCampoVazio();
+  var val=c.final!=null&&c.final!==''?c.final:(c.proposto||'');
+  var st=c.estado||'NAO_ENCONTRADO';
+  var cor=st==='DIVERGENTE'?'#A32D2D':(st==='NAO_ENCONTRADO'?'#854F0B':(st==='CONFIRMADO'?'#047857':'#185FA5'));
+  var extra='';
+  if(st==='DIVERGENTE'){
+    extra='<div style="font-size:11px;color:#A32D2D;margin-top:4px">DIVERGÊNCIA — atual: '+rhEsc(c.final||c.proposto||'—')+' · novo: '+rhEsc(c.novo||'—')
+      +' ('+rhEsc(c.tipo_doc_novo||c.fonte_nova||'')+')'
+      +'<div style="margin-top:4px">'
+      +'<button class="btn btn-sm" type="button" onclick="rhPjDecidirCampo(\''+chave+'\',\'manter\')">Manter atual</button> '
+      +'<button class="btn btn-sm" type="button" onclick="rhPjDecidirCampo(\''+chave+'\',\'novo\')">Usar novo</button>'
+      +'</div></div>';
+  }
+  return '<div class="fg"><label>'+rhEsc(label)+'</label>'
+    +'<input class="inp" id="rh-pj-rev-'+chave+'" value="'+rhEsc(val)+'" oninput="rhPjOnEditarCampo(\''+chave+'\')"/>'
+    +'<div style="font-size:10px;color:'+cor+';margin-top:3px">'+rhEsc(rhPjEstadoLabel(st))
+    +(c.fonte?' · Fonte: '+rhEsc(c.fonte):'')
+    +(c.confianca!=null?' · confiança '+rhEsc(String(c.confianca)):'')
+    +(st==='NAO_ENCONTRADO'?' · Preencher manualmente':'')
+    +'</div>'+extra+'</div>';
+}
+function rhPjOnEditarCampo(chave){
+  if(!_rhCtAtual) return;
+  var rev=_rhCtAtual._pjIaRevisao||{campos:{}};
+  if(!rev.campos[chave]) rev.campos[chave]=rhPjCampoVazio();
+  var el=document.getElementById('rh-pj-rev-'+chave);
+  var v=el?el.value:'';
+  rev.campos[chave].final=rhPjNormCampoVal(chave,v);
+  if(rev.campos[chave].estado!=='CONFIRMADO') rev.campos[chave].estado='EDITADO_MANUALMENTE';
+  rev.campos[chave].decisao='editado_manual';
+  _rhCtAtual._pjIaRevisao=rev;
+}
+function rhPjDecidirCampo(chave, acao){
+  if(!_rhCtAtual||!_rhCtAtual._pjIaRevisao) return;
+  var c=_rhCtAtual._pjIaRevisao.campos[chave]; if(!c) return;
+  if(acao==='novo' && c.novo){
+    c.proposto=c.novo; c.final=c.novo; c.fonte=c.fonte_nova||c.fonte; c.estado='ENCONTRADO'; c.decisao='usar_novo';
+  } else {
+    c.estado='ENCONTRADO'; c.decisao='manter_atual'; c.novo=null;
+  }
+  if(typeof rhRenderAssistente==='function') rhRenderAssistente();
+}
+function rhPjEscolherRepresentante(idx){
+  if(!_rhCtAtual||!_rhCtAtual._pjIaRevisao) return;
+  var lista=_rhCtAtual._pjIaRevisao.representantes_encontrados||[];
+  var r=lista[idx]; if(!r) return;
+  _rhCtAtual._pjIaRevisao.representante_escolhido_idx=idx;
+  _rhCtAtual._pjIaRevisao.representante_escolhido=r;
+  if(typeof rhRenderAssistente==='function') rhRenderAssistente();
+}
+function rhPjSetContextoUpload(){
+  if(typeof _rhIaContextoPadrao==='undefined') return;
+  _rhIaContextoPadrao={
+    origem_entrada:'upload', contexto_origem:'terceiro_pj', fluxo_pj:true,
+    colaborador_id_contexto:null,
+    contratacao_id:_rhCtAtual&&_rhCtAtual.id||null,
+    candidatura_id:null, vaga_id:null, cargo_id:null
+  };
+}
+function rhPjOnFileInput(el){
+  rhPjSetContextoUpload();
+  var files=el&&el.files?Array.prototype.slice.call(el.files):[];
+  files.forEach(function(f){ f._rhIaMeta={origem_entrada:'upload', contexto_origem:'terceiro_pj', fluxo_pj:true, contratacao_id:_rhCtAtual&&_rhCtAtual.id||null}; });
+  if(typeof rhIaAdicionarArquivos==='function') rhIaAdicionarArquivos(files);
+  if(el) el.value='';
+  if(typeof rhIaIniciarUpload==='function'){
+    Promise.resolve(rhIaIniciarUpload()).then(function(){ if(typeof rhRenderAssistente==='function') rhRenderAssistente(); });
+  }
+}
+function rhPjUsarCamera(){
+  rhPjSetContextoUpload();
+  if(typeof rhIaAbrirCapturaCamera==='function') rhIaAbrirCapturaCamera('terceiro_pj',{contratacao_id:_rhCtAtual&&_rhCtAtual.id, contexto_origem:'terceiro_pj'});
+  else progShowToast('Câmera da Entrada Inteligente indisponível.','aviso');
+}
+async function rhPjAnalisarDocumentos(){
+  rhPjSetContextoUpload();
+  var itens=rhPjItensDoProcesso().filter(function(it){ return it.status==='RECEBIDO'||it.status==='FALHA_NA_LEITURA_IA'; });
+  if(!itens.length){ progShowToast('Nenhum documento PJ aguardando análise.','aviso'); return; }
+  for(var i=0;i<itens.length;i++){
+    try{
+      await rhIaProcessarItemUi(itens[i].id,{provider:RH_IA_PROVIDER_PADRAO,modo:'automatico'});
+    }catch(e){ console.warn('rhPjAnalisar', e); }
+  }
+  if(typeof rhRenderAssistente==='function') rhRenderAssistente();
+}
+function rhPjHtmlDocumentos(){
+  if(!_rhCtAtual || rhResolverPerfilContratacao(_rhCtAtual.tipo_contratacao)!=='TERCEIRO_PJ') return '';
+  var itens=rhPjItensDoProcesso();
+  var rows=itens.map(function(it){
+    var tipo=it.tipo_documento_sugerido||'—';
+    var conf=it.confianca_tipo!=null&&typeof rhIaFaixaConf==='function'?rhIaFaixaConf(it.confianca_tipo):'—';
+    var st=it.status||'—';
+    var rev=st==='REVISADO'||st==='APROVADO'||st==='AGUARDANDO_REVISAO'?'Sim':'Não';
+    var confm=(it.decisoes&&it.decisoes.pj&&it.decisoes.pj.confirmado_em)?'Sim':'Não';
+    var ver='';
+    if(it.storage_path||(it.arquivo_url_staging&&String(it.arquivo_url_staging).indexOf('private://')===0)){
+      ver='<button class="btn btn-sm" type="button" onclick="rhPjAbrirArquivo(\''+String(it.id).replace(/'/g,'')+'\')">Ver</button>';
+    }
+    return '<tr><td>'+rhEsc(tipo)+'</td><td>'+rhEsc(it.arquivo_nome||'—')+'</td><td>'+rhEsc(st)+'</td><td>'+rhEsc(String(conf))+'</td><td>'+rev+'</td><td>'+confm+'</td><td>'+ver+'</td></tr>';
+  }).join('')||'<tr><td colspan="7" style="color:#888;padding:8px">Nenhum documento da contratada enviado.</td></tr>';
+  var rev=(_rhCtAtual._pjIaRevisao)||{campos:{},representantes_encontrados:[]};
+  var reps=rev.representantes_encontrados||[];
+  var escolhido=rev.representante_escolhido_idx;
+  var htmlRep='';
+  if(reps.length){
+    htmlRep='<div style="margin-top:10px;padding:8px;background:#FEF3E2;border-radius:8px">'
+      +'<div style="font-weight:700;margin-bottom:6px">Representantes encontrados</div>'
+      +'<div style="font-size:12px;color:#854F0B;margin-bottom:6px">Ninguém é escolhido automaticamente. Selecione quem representará a CONTRATADA.</div>';
+    reps.forEach(function(r,i){
+      htmlRep+='<div style="padding:6px 0;border-top:1px solid #E8D9B0">'
+        +'<b>'+(i+1)+'. '+rhEsc(r.nome||'Sem nome')+'</b>'
+        +(r.qualificacao?' · '+rhEsc(r.qualificacao):'')
+        +(escolhido===i?' · <span style="color:#047857">selecionado</span>':'')
+        +'<div style="margin-top:4px"><button class="btn btn-sm" type="button" onclick="rhPjEscolherRepresentante('+i+')">Usar como representante da CONTRATADA</button></div>'
+        +'</div>';
+    });
+    htmlRep+='</div>';
+  }
+  return '<div style="padding:10px 12px;background:#EEF4F8;border:1px solid #C9D6DF;border-radius:8px">'
+    +'<div style="font-weight:700;margin-bottom:8px">Documentos da Contratada</div>'
+    +'<div style="font-size:12px;color:#555;margin-bottom:8px">Upload → IA classifica e extrai → você revisa → confirma. A IA não gera contrato. Documentos ficam em bucket privado.</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    +'<label class="btn btn-sm">Adicionar documento<input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/*" multiple hidden onchange="rhPjOnFileInput(this)"/></label>'
+    +'<button class="btn btn-sm" type="button" onclick="rhPjUsarCamera()">Usar câmera</button>'
+    +'<button class="btn btn-sm btn-pri" type="button" onclick="rhPjAnalisarDocumentos()">Analisar documentos</button>'
+    +'</div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>Tipo</th><th>Arquivo</th><th>Status IA</th><th>Confiança</th><th>Revisado</th><th>Confirmado</th><th></th></tr></thead><tbody>'
+    +rows+'</tbody></table></div>'
+    +'<div style="font-weight:700;margin:12px 0 8px">Dados da empresa encontrados</div>'
+    +'<div class="g2">'
+    +rhPjHtmlCampoRev('cnpj','CNPJ')
+    +rhPjHtmlCampoRev('razao_social','Razão Social')
+    +rhPjHtmlCampoRev('nome_fantasia','Nome Fantasia')
+    +rhPjHtmlCampoRev('cep','CEP')
+    +rhPjHtmlCampoRev('logradouro','Logradouro')
+    +rhPjHtmlCampoRev('numero','Número')
+    +rhPjHtmlCampoRev('complemento','Complemento')
+    +rhPjHtmlCampoRev('bairro','Bairro')
+    +rhPjHtmlCampoRev('cidade','Cidade')
+    +rhPjHtmlCampoRev('uf','UF')
+    +rhPjHtmlCampoRev('email','E-mail')
+    +rhPjHtmlCampoRev('telefone','Telefone')
+    +'</div>'
+    +htmlRep
+    +'<div style="margin-top:10px"><button class="btn btn-pri" type="button" onclick="rhPjConfirmarDados()">Confirmar dados PJ</button>'
+    +'<div style="font-size:11px;color:#666;margin-top:4px">Só valores confirmados entram no snapshot. Campos do contrato (objeto, honorários, vigência) continuam manuais.</div></div>'
+    +'</div>';
+}
+async function rhPjAbrirArquivo(itemId){
+  var it=(_rhIaItens||[]).find(function(x){return String(x.id)===String(itemId);});
+  if(!it) return;
+  var u=await rhPjSignedUrl(it, 120);
+  if(!u){ progShowToast('Não foi possível abrir o documento (permissão ou path).','erro'); return; }
+  window.open(u,'_blank','noopener');
+}
+function rhPjColetarRevisaoDoDom(){
+  if(!_rhCtAtual) return;
+  var rev=_rhCtAtual._pjIaRevisao||{campos:{}};
+  if(!rev.campos) rev.campos={};
+  RH_PJ_IA_CAMPOS_EMP.forEach(function(k){
+    var el=document.getElementById('rh-pj-rev-'+k);
+    if(!el) return;
+    if(!rev.campos[k]) rev.campos[k]=rhPjCampoVazio();
+    var v=rhPjNormCampoVal(k, el.value);
+    if(v!==String(rev.campos[k].final||rev.campos[k].proposto||'')){
+      rev.campos[k].final=v;
+      if(rev.campos[k].estado!=='CONFIRMADO') rev.campos[k].estado='EDITADO_MANUALMENTE';
+    } else {
+      rev.campos[k].final=v;
+    }
+  });
+  _rhCtAtual._pjIaRevisao=rev;
+}
+async function rhPjConfirmarDados(){
+  if(!_rhCtAtual||!_rhCtAtual.id){ progShowToast('Abra o processo.','erro'); return; }
+  if(rhResolverPerfilContratacao(_rhCtAtual.tipo_contratacao)!=='TERCEIRO_PJ'){
+    progShowToast('Confirmação PJ só no perfil TERCEIRO_PJ.','erro'); return;
+  }
+  rhPjColetarRevisaoDoDom();
+  var rev=_rhCtAtual._pjIaRevisao||{campos:{}};
+  var c=rev.campos||{};
+  function fin(k){ return c[k]&&c[k].final!=null?String(c[k].final).trim():''; }
+  var cnpj=rhPjNormCampoVal('cnpj', fin('cnpj'));
+  if(cnpj && typeof rhCtCnpjValido==='function' && !rhCtCnpjValido(cnpj)){
+    progShowToast('CNPJ INVÁLIDO — não confirmado.','erro');
+    if(c.cnpj) c.cnpj.estado='ENCONTRADO';
+    return;
+  }
+  var esc=rev.representante_escolhido||null;
+  if(rev.representante_escolhido_idx!=null && (rev.representantes_encontrados||[])[rev.representante_escolhido_idx]){
+    esc=rev.representantes_encontrados[rev.representante_escolhido_idx];
+  }
+  var cpf=esc?rhPjNormCampoVal('cpf', esc.cpf):'';
+  if(cpf && typeof rhCtCpfValido==='function' && !rhCtCpfValido(cpf) && typeof rhIa4CpfValido==='function' && !rhIa4CpfValido(cpf)){
+    progShowToast('CPF do representante INVÁLIDO — não confirmado.','erro');
+    return;
+  }
+  if(!_rhCtAtual.parte_pj) _rhCtAtual.parte_pj=rhCtPjVazio();
+  var p=_rhCtAtual.parte_pj;
+  var cena={
+    contratante_representante_id:p.contratante_representante_id,
+    contratante_representante_nome:p.contratante_representante_nome,
+    contratante_representante_cpf:p.contratante_representante_cpf,
+    contratante_representante_rg:p.contratante_representante_rg,
+    contratante_representante_nacionalidade:p.contratante_representante_nacionalidade,
+    contratante_representante_estado_civil:p.contratante_representante_estado_civil,
+    contratante_representante_qualificacao:p.contratante_representante_qualificacao,
+    contratante_representante_email:p.contratante_representante_email,
+    contratante_representante_telefone:p.contratante_representante_telefone,
+    contratante_representante_congelado_em:p.contratante_representante_congelado_em
+  };
+  var contratoKeep={};
+  RH_PJ_IA_CAMPOS_CONTRATO.forEach(function(k){ contratoKeep[k]=p[k]; });
+  Object.assign(p, {
+    cnpj:cnpj||p.cnpj||null,
+    razao_social:fin('razao_social')||p.razao_social||null,
+    nome_fantasia:fin('nome_fantasia')||p.nome_fantasia||null,
+    cep:fin('cep')||p.cep||null,
+    logradouro:fin('logradouro')||p.logradouro||null,
+    numero:fin('numero')||p.numero||null,
+    complemento:fin('complemento')||p.complemento||null,
+    bairro:fin('bairro')||p.bairro||null,
+    cidade:fin('cidade')||p.cidade||null,
+    uf:fin('uf')||p.uf||null,
+    email:fin('email')||p.email||null,
+    telefone:fin('telefone')||p.telefone||null
+  }, contratoKeep, cena);
+  if(esc){
+    p.representante_nome=esc.nome||p.representante_nome||null;
+    p.representante_cpf=cpf||p.representante_cpf||null;
+    p.representante_rg=esc.rg||p.representante_rg||null;
+    p.representante_nacionalidade=esc.nacionalidade||p.representante_nacionalidade||null;
+    p.representante_estado_civil=esc.estado_civil||p.representante_estado_civil||null;
+    p.representante_qualificacao=esc.qualificacao||p.representante_qualificacao||null;
+    p.representante_endereco=esc.endereco||p.representante_endereco||null;
+    p.representante_email=esc.email||p.representante_email||null;
+    p.representante_telefone=esc.telefone||p.representante_telefone||null;
+  }
+  Object.keys(c).forEach(function(k){
+    if(!c[k]) return;
+    c[k].estado='CONFIRMADO';
+    c[k].confirmado_em=new Date().toISOString();
+    c[k].decisao=c[k].decisao||'confirmado';
+  });
+  rev.confirmado_em=new Date().toISOString();
+  _rhCtAtual._pjIaRevisao=rev;
+  _rhCtAtual.parte_pj=p;
+  rhPjSincronizarFormularioManual();
+  rhPjItensDoProcesso().forEach(function(it){
+    var dec=rhPjDecisoes(it);
+    dec.pj.campos=rev.campos;
+    dec.pj.representantes_encontrados=rev.representantes_encontrados;
+    dec.pj.representante_escolhido_idx=rev.representante_escolhido_idx;
+    dec.pj.confirmado_em=rev.confirmado_em;
+    it.decisoes=dec;
+    if(!DEMO && it.id) sbUpdate('rh_documento_ia_itens',{decisoes:dec},'id=eq.'+it.id);
+  });
+  if(typeof rhCtPersistirPartePj==='function'){
+    var ok=await rhCtPersistirPartePj();
+    if(!ok){ progShowToast('Confirmação local ok; persistência PJ falhou (tabela/RLS).','aviso'); return; }
+  }
+  progShowToast('Dados PJ confirmados no snapshot. Contrato continua manual.');
+  if(typeof rhRenderAssistente==='function') rhRenderAssistente();
+}
+function rhPjSincronizarFormularioManual(){
+  if(!_rhCtAtual) return;
+  var rev=_rhCtAtual._pjIaRevisao||{campos:{}};
+  var c=rev.campos||{};
+  function fin(k){ return c[k]&&c[k].final!=null?String(c[k].final):''; }
+  function set(id,v){ var el=document.getElementById(id); if(el) el.value=v==null?'':String(v); }
+  set('rh-pj-cnpj', fin('cnpj'));
+  set('rh-pj-razao', fin('razao_social'));
+  set('rh-pj-fantasia', fin('nome_fantasia'));
+  set('rh-pj-cep', fin('cep'));
+  set('rh-pj-log', fin('logradouro'));
+  set('rh-pj-numend', fin('numero'));
+  set('rh-pj-compl', fin('complemento'));
+  set('rh-pj-bairro', fin('bairro'));
+  set('rh-pj-cidade', fin('cidade'));
+  set('rh-pj-uf', fin('uf'));
+  set('rh-pj-email', fin('email'));
+  set('rh-pj-tel', fin('telefone'));
+  var esc=rev.representante_escolhido||null;
+  if(rev.representante_escolhido_idx!=null && (rev.representantes_encontrados||[])[rev.representante_escolhido_idx]){
+    esc=rev.representantes_encontrados[rev.representante_escolhido_idx];
+  }
+  if(esc){
+    set('rh-pj-rep-nome', esc.nome||'');
+    set('rh-pj-rep-cpf', esc.cpf||'');
+    set('rh-pj-rep-rg', esc.rg||'');
+    set('rh-pj-rep-nac', esc.nacionalidade||'');
+    set('rh-pj-rep-civil', esc.estado_civil||'');
+    set('rh-pj-rep-qual', esc.qualificacao||'');
+    set('rh-pj-rep-email', esc.email||'');
+    set('rh-pj-rep-tel', esc.telefone||'');
+    set('rh-pj-rep-end', esc.endereco||'');
+  }
+}
+
 function rhIaContextoEhProcesso(ctx){
   ctx = ctx || _rhIaContextoPadrao || {};
   var o = String(ctx.contexto_origem||'');
@@ -129151,6 +129668,7 @@ function rhIaContextoEhProcesso(ctx){
 }
 function rhIaItemEhProcesso(item){
   if(!item) return false;
+  if(typeof rhIaItemEhPj==='function' && rhIaItemEhPj(item)) return false;
   if(item.contratacao_id){
     var o = String(item.contexto_origem||'');
     if(!o || o==='contratacao' || o==='promocao') return true;
@@ -129292,6 +129810,7 @@ async function rhIaProcessarItemUi(itemId, opts){
   }finally{
     rhIaSetItemBusy(itemId, false);
     rhRenderEntradaIa();
+    if(typeof rhRenderAssistente==='function') rhRenderAssistente();
   }
 }
 
@@ -129365,8 +129884,13 @@ async function rhIaBuscarHashHistorico(hash){
   return hit || null;
 }
 
-async function rhIaUploadStaging(file, loteId, itemId){
+async function rhIaUploadStaging(file, loteId, itemId, meta){
   if(!file) return '';
+  meta = meta || {};
+  if(typeof rhIaEhContextoPj==='function' && rhIaEhContextoPj(meta)){
+    var priv = await rhPjUploadPrivado(file, loteId, itemId, meta);
+    return priv;
+  }
   var safeNome = (typeof rhSanPath==='function' ? rhSanPath(file.name) : String(file.name||'arquivo').replace(/[^a-zA-Z0-9._-]+/g,'_'));
   var path = 'rh/ia-inbox/'+encodeURIComponent(loteId)+'/'+encodeURIComponent(itemId)+'/'+Date.now()+'_'+safeNome;
   var url = SB.url+'/storage/v1/object/cena-docs/'+path;
@@ -129382,6 +129906,11 @@ async function rhIaUploadStaging(file, loteId, itemId){
     throw new Error('Falha no Storage cena-docs (staging): '+(txt||('HTTP '+r.status)));
   }
   return SB.url+'/storage/v1/object/public/cena-docs/'+path;
+}
+function rhIaStagingRefToUrl(ref){
+  if(!ref) return '';
+  if(typeof ref==='object') return ref.ref || ('private://'+(ref.bucket||RH_PJ_IA_BUCKET)+'/'+ref.path);
+  return String(ref);
 }
 
 function rhIaCpfDigits(s){
@@ -129500,6 +130029,11 @@ function rhIaMapearTipoDocumento(sugestao){
     vacinacao:'Vacinação',
     contratoassinado:'Termos de Prorrogação de Experiência', termosprorrogacao:'Termos de Prorrogação de Experiência',
     termosdeprorrogacaodeexperiencia:'Termos de Prorrogação de Experiência',
+    cartaocnpj:'Cartão CNPJ', comprovantecnpj:'Cartão CNPJ', comprovantedeinscricaocnpj:'Cartão CNPJ',
+    comprovantedeinscricaoecadastrocnpj:'Cartão CNPJ', situacaocadastralcnpj:'Cartão CNPJ',
+    contratosocial:'Contrato Social', estatutosocial:'Contrato Social',
+    alteracaocontratual:'Alteração Contratual', alteracaodecontratosocial:'Alteração Contratual',
+    alteracaodocontratosocial:'Alteração Contratual',
     contrato:'Contrato de Trabalho', contratodetrabalho:'Contrato de Trabalho',
     foto3x4:'Foto 3x4', foto:'Foto 3x4', fotografia:'Foto 3x4', foto3x4colorida:'Foto 3x4',
     aso:'ASO', exameadmissional:'ASO', saudeocupacional:'ASO', exameadmissionalaso:'Certificado de Dispensa',
@@ -129627,7 +130161,10 @@ var RH_IA4_SCHEMAS = {
   'Termo de Uso de Imagem': RH_IA4_CAMPOS_COMUNS.concat(['data_emissao','empresa','observacoes_aso']),
   'Protocolos / Recibos': RH_IA4_CAMPOS_COMUNS.concat(['data_emissao','numero_documento','empresa','observacoes_aso']),
   'Regulamento Interno / Manual': RH_IA4_CAMPOS_COMUNS.concat(['data_emissao','empresa','observacoes_aso']),
-  'Termo de Ciência Álcool': RH_IA4_CAMPOS_COMUNS.concat(['data_emissao','empresa','observacoes_aso'])
+  'Termo de Ciência Álcool': RH_IA4_CAMPOS_COMUNS.concat(['data_emissao','empresa','observacoes_aso']),
+  'Cartão CNPJ': ['cnpj','razao_social','nome_fantasia','cep','logradouro','numero','complemento','bairro','cidade','uf','email','telefone'],
+  'Contrato Social': ['cnpj','razao_social','nome_fantasia','cep','logradouro','numero','complemento','bairro','cidade','uf','email','telefone'],
+  'Alteração Contratual': ['cnpj','razao_social','nome_fantasia','cep','logradouro','numero','complemento','bairro','cidade','uf','email','telefone']
 };
 var RH_IA4_LABELS = {
   nome:'Nome', cpf:'CPF', re:'RE', matricula:'Matrícula', numero_documento:'Nº do documento',
@@ -129647,6 +130184,7 @@ var RH_IA4_LABELS = {
   carga_horaria:'Carga horária', data_realizacao:'Data realização', certificado:'Certificado',
   funcao:'Função', data_inicio:'Data início', jornada:'Jornada', filial:'Filial',
   alteracao_contratual:'Alteração contratual', cbo:'CBO', tipo_contrato:'Tipo de contrato',
+  cnpj:'CNPJ', razao_social:'Razão Social', nome_fantasia:'Nome Fantasia',
   orgao_emissor_cnh:'Órgão emissor CNH', uf_cnh:'UF CNH'
 };
 function rhIa4LabelCampo(chave, tipo){
@@ -129676,7 +130214,10 @@ function rhIa4HintTipoNome(nome){
   if(/NR[\s_-]*20/.test(n)) return 'NR-20';
   if(/NR[\s_-]*1\b/.test(n)) return 'NR-1';
   if(/NR[\s_-]*6\b/.test(n)) return 'NR-6';
-  if(/COMPROVANTE|RESIDENC|ENDERECO|CONTA.*LUZ|CONTA.*AGUA/.test(n)) return 'Comprovante de Residência';
+  if(/CARTAO[\s_-]*CNPJ|COMPROVANTE.*CNPJ|INSCRICAO.*CNPJ|SITUACAO[\s_-]*CADASTRAL.*CNPJ/.test(n)) return 'Cartão CNPJ';
+  if(/CONTRATO[\s_-]*SOCIAL|ESTATUTO[\s_-]*SOCIAL|ATO[\s_-]*CONSTITUTIVO/.test(n)) return 'Contrato Social';
+  if(/ALTERACAO[\s_-]*CONTRATUAL|ALTERACAO[\s_-]*(DO[\s_-]*)?CONTRATO[\s_-]*SOCIAL/.test(n)) return 'Alteração Contratual';
+  if(/COMPROVANTE|RESIDENC|ENDERECO|CONTA.*LUZ|CONTA.*AGUA/.test(n) && !/CNPJ/.test(n)) return 'Comprovante de Residência';
   if(/CTPS.*REG|REG\s*ANTERIORES/.test(n)) return 'CTPS Reg Anteriores';
   if(/CTPS|CARTEIRA.*TRAB/.test(n)) return 'CTPS';
   if(/VACIN/.test(n)) return 'Vacinação';
@@ -129715,6 +130256,7 @@ function rhIa4EhTreinamentoTipo(t){
 function rhIa4CamposDoTipo(tipo){
   var map = rhIaMapearTipoDocumento(tipo);
   var t = (map.ok && map.tipo) ? map.tipo : tipo;
+  if(typeof rhIaEhTipoDocumentoPj==='function' && rhIaEhTipoDocumentoPj(t) && RH_IA4_SCHEMAS[t]) return RH_IA4_SCHEMAS[t].slice();
   var base = RH_IA4_SCHEMAS[t] ? RH_IA4_SCHEMAS[t].slice() : RH_IA4_CAMPOS_COMUNS.slice();
   if(rhIaEhAso(t) && !RH_IA4_SCHEMAS[t]) base = RH_IA4_SCHEMAS.ASO.slice();
   if(rhIa4EhTreinamentoTipo(t) && !RH_IA4_SCHEMAS[t]) base = RH_IA4_SCHEMAS['Certificado de Capacitação'].slice();
@@ -129747,6 +130289,9 @@ var RH_IA4_GUIA_CNH =
 
 function rhIa4GuiaDoTipo(tipo){
   var t = String(tipo||'');
+  if(t==='Cartão CNPJ') return 'Cartão/Comprovante CNPJ (Receita Federal): extraia SOMENTE o que estiver impresso — cnpj, razao_social, nome_fantasia, endereço (cep, logradouro, numero, complemento, bairro, cidade, uf), email e telefone só se constarem. NÃO invente contato. NÃO é contrato de trabalho. NÃO extraia honorários, objeto, vigência, salário, cargo.\n';
+  if(t==='Contrato Social') return 'Contrato Social / ato constitutivo: dados da PESSOA JURÍDICA (cnpj, razão social, endereço se houver) e LISTA representantes_encontrados com TODOS sócios/administradores visíveis (nome, cpf, rg, nacionalidade, estado_civil, qualificacao, endereco, email, telefone — só se encontrados). NÃO escolha um representante. NÃO classifique como Contrato de Trabalho. NÃO extraia numero_contrato, objeto, honorários, forma_pagamento, datas de vigência.\n';
+  if(t==='Alteração Contratual') return 'Alteração contratual societária: pode alterar razão social, endereço, quadro societário ou administradores. Extraia valores NOVOS encontrados e a lista representantes_encontrados. NÃO substitua automaticamente o que já foi confirmado. NÃO é Contrato de Trabalho. NÃO extraia honorários/objeto/vigência do contrato CENA.\n';
   if(t==='CNH') return RH_IA4_GUIA_CNH;
   if(t==='RG / Identidade') return 'RG/CIN: número do registro geral, órgão/UF, nascimento, filiação, naturalidade, sexo. NÃO trate como CNH (sem CATEGORIA A–E de habilitação).\n';
   if(t==='CPF') return 'Cartão/Comprovante CPF: nome + CPF (11 dígitos). Não extrair categoria de habilitação.\n';
@@ -129784,7 +130329,10 @@ function rhIa4MontarPromptClassificar(catalogo){
     + '- Suspensão: comunicado/termo disciplinar de suspensão (não confundir com Advertência).\n'
     + '- Advertência: advertência disciplinar escrita.\n'
     + '- Comprovante de Residência: conta de consumo, aluguel ou declaração com endereço.\n'
-    + '- Contrato / Aditivo: contrato de trabalho ou aditivo assinado.\n'
+    + '- Cartão CNPJ: comprovante/cartão CNPJ da Receita (CNPJ + razão social). NÃO é contrato.\n'
+    + '- Contrato Social: contrato/estatuto social da empresa (sócios/administradores). NUNCA classifique como Contrato de Trabalho.\n'
+    + '- Alteração Contratual: alteração do contrato social / quadro societário. NÃO é Contrato de Trabalho.\n'
+    + '- Contrato / Aditivo: contrato de trabalho CLT ou aditivo assinado (empregado/empregador). NÃO usar para contrato social.\n'
     + '- Foto 3x4: só fotografia de rosto, sem formulário.\n'
     + '- Seguro de Vida: apólice/inclusão/certificado de seguro de vida.\n'
     + '- Atestado: atestado médico de afastamento (CID/CRM). Não é ASO.\n'
@@ -129803,7 +130351,10 @@ function rhIa4MontarPromptExtrair(tipoConfirmado, catalogo){
   return 'PASSAGEM 2 — EXTRAÇÃO COMPLETA E MÁXIMA. O tipo já foi classificado como: '
     + (tipo ? JSON.stringify(tipo) : 'null (não classificado — extraia tudo o que for legível sem forçar tipo).')+'\n'
     + 'Mantenha tipo_documento igual a essa classificação (ou null). Classes válidas: '+JSON.stringify(tipos)+'\n'
-    + 'Objetivo: maximizar dados úteis para cadastro do colaborador, contratação, SESMT/treinamentos e dossiê.\n'
+    + (typeof rhIaEhTipoDocumentoPj==='function' && rhIaEhTipoDocumentoPj(tipo)
+      ? 'Objetivo: extrair dados da EMPRESA (PJ) e, se houver, LISTA de representantes. NÃO preencher colaborador CLT. NÃO extrair numero_contrato, objeto_contrato, descricao_atividades, valor_honorarios, forma_pagamento, data_instrumento, data_inicio, tipo_vigencia, data_fim. NÃO alterar empregadora/contratante CENA.\n'
+        + 'Inclua representantes_encontrados: array (pode ser vazio ou ter várias pessoas). Nunca reduza a uma só pessoa automaticamente.\n'
+      : 'Objetivo: maximizar dados úteis para cadastro do colaborador, contratação, SESMT/treinamentos e dossiê.\n')
     + 'Extraia TODOS estes campos se legíveis (omita só o que não existir no documento): '+JSON.stringify(campos)+'\n'
     + 'Também pode incluir outras chaves legíveis em "campos" (ex.: telefone, email, observações).\n'
     + 'NÃO invente. NÃO preencha campos de CNH (categoria_cnh, primeira_habilitacao) se o documento NÃO for CNH.\n'
@@ -129941,7 +130492,9 @@ function rhIa4NormalizarResultado(parsed){
   ['nome','cpf','re','matricula'].forEach(function(k){
     if(!campos[k] && pessoa[k] && pessoa[k].valor) campos[k] = pessoa[k];
   });
-  return {pessoa:pessoa, campos:campos, tipo:parsed.tipo_documento||null, confianca_tipo:parsed.confianca_tipo, paginas:parsed.paginas, observacoes:parsed.observacoes||''};
+  var outN = {pessoa:pessoa, campos:campos, tipo:parsed.tipo_documento||null, confianca_tipo:parsed.confianca_tipo, paginas:parsed.paginas, observacoes:parsed.observacoes||''};
+  if(parsed.representantes_encontrados) outN.representantes_encontrados = parsed.representantes_encontrados;
+  return outN;
 }
 function rhIa4ValPack(pack){
   if(!pack) return '';
@@ -130381,7 +130934,11 @@ async function rhIaFileToBase64(fileOrBlob){
   });
 }
 async function rhIaFetchStagingBlob(item){
-  if(!item || !item.arquivo_url_staging) throw new Error('Item sem arquivo staging');
+  if(!item) throw new Error('Item sem arquivo staging');
+  if(item.storage_path || (item.arquivo_url_staging && String(item.arquivo_url_staging).indexOf('private://')===0)){
+    return rhPjBaixarBlob(item);
+  }
+  if(!item.arquivo_url_staging) throw new Error('Item sem arquivo staging');
   if(String(item.arquivo_url_staging).indexOf('demo://')===0) throw new Error('DEMO sem blob real');
   var h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
   var r = await fetch(item.arquivo_url_staging, {headers:h});
@@ -130687,6 +131244,8 @@ async function processarDocumentoIA(arquivoOuItem, opts){
       _passagens: {classificacao: tipoPass1, confianca_p1: confPass1, tipo_confirmado: tipoConfirmado, extracao:'OK'},
       provider: prov.provider, model: prov.model, modo: prov.modo, usage: usage
     };
+    if(parsed.representantes_encontrados) out.representantes_encontrados = parsed.representantes_encontrados;
+    else if(parsed.campos && parsed.campos.representantes_encontrados) out.representantes_encontrados = parsed.campos.representantes_encontrados;
     return rhIa4PosValidarCnh(out);
   }catch(e){
     var prefE = prov.provider===RH_IA_PROVIDER_AVANCADO
@@ -130712,6 +131271,19 @@ async function rhOcrSugerir(arquivo, tipoDocumento){
 
 function rhIaMotorMatch(iaResult, opts){
   opts = opts || {};
+  if((typeof rhIaEhContextoPj==='function' && rhIaEhContextoPj(opts)) || (typeof rhIaEhTipoDocumentoPj==='function' && rhIaEhTipoDocumentoPj(iaResult && iaResult.tipo_documento))){
+    var mapPj = rhIaMapearTipoDocumento(iaResult && iaResult.tipo_documento);
+    return {
+      status:'AGUARDANDO_REVISAO',
+      tipo_documento_sugerido: mapPj.ok ? mapPj.tipo : (iaResult && iaResult.tipo_documento) || null,
+      categoria_sugerida: 'PJ',
+      confianca_tipo: iaResult && iaResult.confianca_tipo != null ? Number(iaResult.confianca_tipo) : null,
+      colaborador_id_sugerido: null,
+      confianca_colaborador: null,
+      motivo_match: 'FLUXO_PJ_SEM_COLABORADOR',
+      divergencias: []
+    };
+  }
   var ehProc = !!(opts.contratacao_id || opts.contexto_origem==='contratacao' || opts.contexto_origem==='promocao');
   var idents = (iaResult && iaResult.identificadores) || {};
   function val(obj){ return obj && obj.valor != null ? String(obj.valor).trim() : ''; }
@@ -130927,6 +131499,7 @@ async function rhIaProcessarItem(itemId, opts){
       merged.identificadores = ia.identificadores || {};
       merged.campos_ia_brutos = ia.campos || {};
       merged._passagens = ia._passagens || null;
+      if(ia.representantes_encontrados) merged.representantes_encontrados = ia.representantes_encontrados;
       return merged;
     })(),
     diff_cadastro: {divergencias: motor.divergencias||[], ia4:true},
@@ -130934,6 +131507,9 @@ async function rhIaProcessarItem(itemId, opts){
     tentativas: Number(item.tentativas||0)+1
   };
   Object.keys(patch).forEach(function(k){ item[k]=patch[k]; });
+  if(typeof rhIaItemEhPj==='function' && rhIaItemEhPj(item) && typeof rhPjAplicarExtracaoNoProcesso==='function'){
+    rhPjAplicarExtracaoNoProcesso(item, ia);
+  }
   if(!DEMO) await sbUpdate('rh_documento_ia_itens', patch, 'id=eq.'+item.id);
   return item;
 }
@@ -135162,7 +135738,13 @@ async function rhIaIniciarUpload(){
       };
       try{
         if(DEMO){
-          itemPayload.arquivo_url_staging = 'demo://ia-inbox/'+loteId+'/'+itemId+'/'+encodeURIComponent(s.nome);
+          if(typeof rhIaEhContextoPj==='function' && rhIaEhContextoPj(s)){
+            itemPayload.storage_bucket = RH_PJ_IA_BUCKET;
+            itemPayload.storage_path = 'demo/'+loteId+'/'+itemId+'/'+s.nome;
+            itemPayload.arquivo_url_staging = 'private://'+RH_PJ_IA_BUCKET+'/'+itemPayload.storage_path;
+          } else {
+            itemPayload.arquivo_url_staging = 'demo://ia-inbox/'+loteId+'/'+itemId+'/'+encodeURIComponent(s.nome);
+          }
           itemPayload.criado_em = new Date().toISOString();
           _rhIaItens.unshift(itemPayload);
           s._itemId = itemId;
@@ -135175,14 +135757,21 @@ async function rhIaIniciarUpload(){
           var saved = insI && insI[0] ? insI[0] : itemPayload;
           itemId = saved.id || itemId;
           s._itemId = itemId;
-          var url = await rhIaUploadStaging(s.file, loteId, itemId);
-          await sbUpdate('rh_documento_ia_itens', {
+          var up = await rhIaUploadStaging(s.file, loteId, itemId, s);
+          var url = (up && typeof up==='object') ? (up.ref || rhIaStagingRefToUrl(up)) : up;
+          var patchUp = {
             arquivo_url_staging: url,
             status: 'RECEBIDO',
             tentativas: 1,
             erro_ia: null
-          }, 'id=eq.'+itemId);
+          };
+          if(up && typeof up==='object'){
+            patchUp.storage_bucket = up.bucket || null;
+            patchUp.storage_path = up.path || null;
+          }
+          await sbUpdate('rh_documento_ia_itens', patchUp, 'id=eq.'+itemId);
           saved.arquivo_url_staging = url;
+          if(up && typeof up==='object'){ saved.storage_bucket=up.bucket; saved.storage_path=up.path; }
           saved.status = 'RECEBIDO';
           _rhIaItens.unshift(saved);
           s.uiStatus = 'Recebido';
