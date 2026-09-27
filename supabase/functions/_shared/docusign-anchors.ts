@@ -1,15 +1,15 @@
-/** Anchors DocuSign — fail-closed. Sem Deno. */
+/** Anchors DocuSign técnicos (DS_*) — fail-closed. Sem Deno. */
 
 export type PapelSigner = "EMPREGADO" | "EMPRESA" | "TESTEMUNHA" | string;
 
 export function anchorAssinaturaPorPapel(papel: PapelSigner): string {
   const p = String(papel || "EMPREGADO").toUpperCase();
-  if (p === "EMPRESA") return "[[ASSINATURA_EMPRESA]]";
-  if (p === "TESTEMUNHA") return "[[ASSINATURA_TESTEMUNHA]]";
-  return "[[ASSINATURA_EMPREGADO]]";
+  if (p === "EMPRESA") return "[[DS_ASSINATURA_EMPRESA]]";
+  if (p === "TESTEMUNHA") return "[[DS_ASSINATURA_TESTEMUNHA]]";
+  return "[[DS_ASSINATURA_EMPREGADO]]";
 }
 
-export const ANCHOR_DATA = "[[DATA_ASSINATURA]]";
+export const ANCHOR_DATA = "[[DS_DATA_ASSINATURA]]";
 
 export function validarAnchorsHtml(
   html: string,

@@ -37,13 +37,13 @@ function validarAnchorsHtml(html, destinatarios, opts) {
   for (const d of destinatarios) {
     const p = String(d.papel || "EMPREGADO").toUpperCase();
     const marker = p === "EMPRESA"
-      ? "[[ASSINATURA_EMPRESA]]"
+      ? "[[DS_ASSINATURA_EMPRESA]]"
       : p === "TESTEMUNHA"
-      ? "[[ASSINATURA_TESTEMUNHA]]"
-      : "[[ASSINATURA_EMPREGADO]]";
+      ? "[[DS_ASSINATURA_TESTEMUNHA]]"
+      : "[[DS_ASSINATURA_EMPREGADO]]";
     if (!src.includes(marker)) return { ok: false, marker };
   }
-  if (exigirData && !src.includes("[[DATA_ASSINATURA]]")) return { ok: false, marker: "[[DATA_ASSINATURA]]" };
+  if (exigirData && !src.includes("[[DS_DATA_ASSINATURA]]")) return { ok: false, marker: "[[DS_DATA_ASSINATURA]]" };
   return { ok: true };
 }
 
@@ -76,7 +76,7 @@ assert("edges exigem permissão",
 assert("fonte usuarios_sistema.perfil", /usuarios_sistema/.test(authSrc) && /auth_user_id/.test(authSrc));
 
 // 4 anchors
-const htmlOk = "texto [[ASSINATURA_EMPREGADO]] [[DATA_ASSINATURA]]";
+const htmlOk = "texto [[DS_ASSINATURA_EMPREGADO]] [[DS_DATA_ASSINATURA]]";
 assert("anchor ausente rejeita", validarAnchorsHtml("sem marker", [{ papel: "EMPREGADO" }]).ok === false);
 assert("anchor presente passa", validarAnchorsHtml(htmlOk, [{ papel: "EMPREGADO" }]).ok === true);
 assert("create usa validarAnchorsHtml", /validarAnchorsHtml/.test(createSrc));
