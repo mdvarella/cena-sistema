@@ -1,5 +1,9 @@
 # DocuSign Edge Functions — ERP CENA RH-2D
 
+Homologação DEMO encerrada: ver [DOCUSIGN-RECOVERY-6.0.md](./DOCUSIGN-RECOVERY-6.0.md).  
+Diagnóstico oficial: `docusign-envelope-status` `{ "acao": "diagnostico" }`. Edge temporária `docusign-diagnostico-recovery` removida (6.1).  
+Não promover PRODUÇÃO neste documento.
+
 ## Deploy controlado Recovery-3
 
 Somente estas Edges (nesta ordem). Sem frontend. Sem envelope.

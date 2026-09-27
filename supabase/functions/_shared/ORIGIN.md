@@ -34,3 +34,6 @@ Somente existência de **nomes**. Valores não lidos, não alterados, não rotac
 | `DOCUSIGN_ACCESS_TOKEN` | AUSENTE — legado; **não criar**; fora do fluxo oficial |
 
 Diagnóstico oficial: JWT Grant → userinfo. Sem envelope. Sem `DOCUSIGN_ACCESS_TOKEN`.
+
+Fechamento DEMO (26/09/2026): [DOCUSIGN-RECOVERY-6.0.md](../DOCUSIGN-RECOVERY-6.0.md).  
+Recovery-6.1: `docusign-diagnostico-recovery` removida. Diagnóstico oficial permanece. PRODUÇÃO não homologada.
