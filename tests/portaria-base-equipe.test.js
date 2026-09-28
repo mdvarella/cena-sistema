@@ -16,7 +16,11 @@ function sliceFn(src, name, nextName) {
 
 const sandbox = {
   console,
-  filiais: [{ id: 'f-embu', nome: 'CENA 07 - EMBU', codigo: '07' }, { id: 'f-lapa', nome: 'CENA 01 - LAPA', codigo: '01' }],
+  filiais: [
+    { id: 'f-embu', nome: 'CENA 07 - EMBU', codigo: '07' },
+    { id: 'f-lapa', nome: 'CENA 01 - LAPA', codigo: '01' },
+    { id: 'f-coa', nome: 'CENA 01 - Coaquira', codigo: 'CENA 01' }
+  ],
   contratos: [{ id: 'c1', filial_id: 'f-embu' }],
   _portAtiva: { filial_id: 'f-embu', nome: 'Portaria Embu' },
   usuarioLogado: { filial_id: 'f-embu' },
@@ -25,7 +29,7 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 vm.runInContext(
-  sliceFn(html, 'eqNomeBase', 'openNovaEquipeDisp') +
+  sliceFn(html, 'portTextoParaBaseTma', 'openNovaEquipeDisp') +
   sliceFn(html, 'portEqPassaFiltroPort', 'portSaidaEquipeDia'),
   sandbox
 );
@@ -34,6 +38,10 @@ const eqLapa = { id: '1', codigo: 'EJN101', nome: 'LAPA', contrato_id: 'c1', fil
 const eqEmbu = { id: '2', codigo: 'EON124', nome: 'EMBU', contrato_id: 'c1', filial_id: 'f-embu', status: 'Ativo' };
 const eqPrefix = { id: '3', codigo: 'EBN196', nome: '', contrato_id: 'c1', status: 'Ativo' };
 
+assert.strictEqual(sandbox.portTextoParaBaseTma('CENA 01 - Coaquira'), 'LAPA');
+assert.strictEqual(sandbox.portTextoParaBaseTma('COAQUIRA (DEMO)'), 'LAPA');
+assert.strictEqual(sandbox.portTextoParaBaseTma('CENA 07 - EMBU'), 'EMBU');
+assert.strictEqual(sandbox.eqNomeBase({ nome: 'Coaquira' }), 'LAPA');
 assert.strictEqual(sandbox.eqNomeBase(eqLapa), 'LAPA');
 assert.strictEqual(sandbox.eqNomeBase(eqEmbu), 'EMBU');
 assert.strictEqual(sandbox.eqNomeBase(eqPrefix), 'LAPA');
@@ -45,16 +53,19 @@ assert.strictEqual(sandbox.portEqPassaFiltroPort(eqEmbu, '', 'f-embu'), true);
 assert.strictEqual(sandbox.portEqPassaFiltroPort({ status: 'Inativo' }, '', 'f-embu'), false);
 
 assert.strictEqual(sandbox.portBaseDaPortaria('f-embu'), 'EMBU');
+assert.strictEqual(sandbox.portBaseDaPortaria('f-coa'), 'LAPA');
 assert.strictEqual(sandbox.portEqOutraBase(eqLapa, 'f-embu'), true);
 assert.strictEqual(sandbox.portEqOutraBase(eqEmbu, 'f-embu'), false);
+assert.strictEqual(sandbox.portEqOutraBase(eqLapa, 'f-coa'), false, 'Lapa é da mesma base que Coaquira');
+assert.strictEqual(sandbox.portEqOutraBase(eqEmbu, 'f-coa'), true, 'Embu é outra base na portaria Coaquira');
 
 const grupos = sandbox.portAgruparItensPorBase(
   [{ eq: eqLapa }, { eq: eqEmbu }],
-  'f-embu'
+  'f-coa'
 );
-assert.strictEqual(grupos[0].base, 'EMBU');
+assert.strictEqual(grupos[0].base, 'LAPA');
 assert.strictEqual(grupos[0].outra, false);
-assert.strictEqual(grupos[1].base, 'LAPA');
+assert.strictEqual(grupos[1].base, 'EMBU');
 assert.strictEqual(grupos[1].outra, true);
 
 const htmlChips = sandbox.portHtmlChipsPorBase(
