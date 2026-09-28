@@ -74,7 +74,7 @@ const htmlAlerta = alerta({
 ok('texto Respostas enviadas', /Respostas enviadas/.test(htmlAlerta));
 ok('amarelo', /#FDE68A/.test(htmlAlerta));
 ok('lista usa col11', html.includes("'<td style=\"font-size:11px\">'+col11+'</td>'"));
-ok('versao 8.1.157', /numero: '8.1.157'/.test(html));
+ok('versao 8.1.158', /numero: '8.1.158'/.test(html));
 
 if (failed.length) {
   console.error('FAIL\n' + failed.join('\n'));
