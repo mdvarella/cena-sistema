@@ -1,0 +1,263 @@
+function rhCtKitAcoesHtml(it){
+  var st=it.status_kit||'';
+  if(st==='Nao se aplica') return '<span style="font-size:11px;color:#888">—</span>';
+  var tipoEnc=encodeURIComponent(it.tipo_documento||'');
+  var orig=it.origem_esperada||'RH';
+  var html='<div style="display:flex;flex-direction:column;gap:4px;min-width:148px;max-width:180px">';
+  if(st==='Dispensado'||st==='Atendido por documento equivalente'){
+    html+='<span style="font-size:10px;color:#888">'+(st==='Dispensado'?'Dispensado':('via '+rhEsc(it.equivalente_tipo||'equivalente')))+'</span>';
+    if(it.equivalente_documento_id||it.documento_id||it.arquivo_url) html+='<button class="btn btn-sm" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')">Ver</button>';
+    html+='</div>';
+    return html;
+  }
+  if(!_rhCtAtual||!_rhCtAtual.id){
+    return '<span style="font-size:11px;color:#888">Salve o rascunho do processo</span>';
+  }
+  var temArq=!!(it.arquivo_url||it.documento_id);
+  if(temArq && it.arquivo_url && /\.(jpe?g|png|webp|gif)$/i.test(String(it.arquivo_nome||it.arquivo_url))){
+    html+='<img src="'+rhEsc(it.arquivo_url)+'" alt="'+rhEsc(it.arquivo_nome||'preview')+'" title="Clique para ampliar" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')" style="width:100%;max-width:160px;height:96px;object-fit:contain;border-radius:6px;border:.5px solid #c5d4e8;cursor:pointer;background:#1a1a1a"/>';
+  }
+  if(it.arquivo_nome||temArq) html+='<span style="font-size:10px;color:#3B6D11;word-break:break-word;line-height:1.25">'+rhEsc(it.arquivo_nome||(it.documento_id?'No dossiê':'No processo'))+'</span>';
+  html+='<button type="button" class="btn btn-sm" style="cursor:pointer;margin:0" onclick="rhCtAbrirCameraKit(\''+tipoEnc+'\')">📷 Câmera</button>'
+    +'<label class="btn btn-sm" style="cursor:pointer;margin:0" title="PDF ou foto da galeria">'+(temArq?'Substituir':'Arquivo')
+    +'<input type="file" accept="image/*,application/pdf,.pdf" style="display:none" data-tipo="'+tipoEnc+'" onchange="rhCtAnexarKit(this)"/></label>';
+  if(temArq) html+='<button class="btn btn-sm" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')">Ver</button>';
+  if(temArq && it.arquivo_url) html+='<button class="btn btn-sm btn-pri" style="background:#185FA5;border-color:#185FA5" onclick="rhCtLerIa(\''+tipoEnc+'\')">Ler com IA</button>';
+  if(st==='Recebido'||st==='Em conferencia'||st==='A vencer') html+='<button class="btn btn-sm btn-pri" onclick="rhKitValidar(\''+tipoEnc+'\')">Validar</button>';
+  if(temArq && st!=='Validado') html+='<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="rhKitRecusar(\''+tipoEnc+'\')">Recusar</button>';
+  if(st==='Pendente'||st==='Recusado'||st==='Vencido') html+='<button class="btn btn-sm" onclick="rhKitDispensar(\''+tipoEnc+'\')">Dispensar</button>';
+  if(st==='Pendente'||st==='Recusado') html+='<button class="btn btn-sm" onclick="rhKitEquivalencia(\''+tipoEnc+'\')">Equivalência</button>';
+  if(orig && orig!=='RH') html+='<button class="btn btn-sm" onclick="rhKitAtalhoModulo(\''+String(orig).replace(/'/g,'')+'\')">→ '+rhEsc(orig)+'</button>';
+  html+='</div>';
+  return html;
+}
+async function rhKitColabAtual(){
+  var colId=_rhCtAtual&&_rhCtAtual.colaborador_id;
+  if(!colId) return null;
+  var col=(colaboradores||[]).find(function(c){return String(c.id)===String(colId);})||null;
+  if(!col && !DEMO){
+    var rows=await sbFetch('colaboradores',{filters:['id=eq.'+colId],limit:1});
+    col=rows&&rows[0];
+    if(col && colaboradores) colaboradores.push(col);
+  }
+  return col;
+}
+async function rhKitGarantirDoc(id){
+  if(!id) return null;
+  var d=(_rhDocs||[]).find(function(x){return String(x.id)===String(id);});
+  if(d) return d;
+  if(DEMO) return null;
+  var rows=await sbFetch('rh_colaborador_documentos',{filters:['id=eq.'+id],limit:1});
+  d=rows&&rows[0];
+  if(d){ _rhDocs=_rhDocs||[]; _rhDocs.unshift(d); }
+  return d||null;
+}
+async function rhCtAnexarKit(inp){
+  var tipo=decodeURIComponent((inp&&inp.getAttribute('d
+
+=====
+
+function rhIaAbrirCapturaCamera(contexto, opts){
+  opts = opts || {};
+  if(!rhModuloPermitido('rh-entrada-ia') && !opts.bypassPerm){
+    // permite chamada futura de outras telas RH se já autenticado no módulo
+    if(!usuarioLogado){ progShowToast('Faça login.','erro'); return; }
+  }
+  _rhIaCam.contexto = contexto || 'dossie';
+  _rhIaCam.opts = opts;
+  _rhIaCam.mode = opts.mode || 'unico';
+  _rhIaCam.pages = [];
+  _rhIaCam.deviceIdx = 0;
+  rhIaPararCamera();
+
+  var hasGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  if(!hasGUM){
+    // fallback capture
+    var inp = document.createElement('input');
+    inp.type='file'; inp.accept='image/*'; inp.capture='environment'; inp.style.display='none';
+    document.body.appendChild(inp);
+    inp.onchange = function(){
+      var f = inp.files && inp.files[0];
+      document.body.removeChild(inp);
+      if(f) rhIaReceberCapturaArquivo(f);
+    };
+    inp.click();
+    return;
+  }
+  rhIaRenderModalCamera();
+  rhIaListarCameras().then(function(){ return rhIaIniciarStream(); }).catch(function(e){
+    progShowToast('Câmera indisponível: '+((e&&e.message)||e)+'. Usando seletor de arquivo.','erro');
+    closeModal();
+    var inp2 = document.createElement('input');
+    inp2.type='file'; inp2.accept='image/*'; inp2.capture='environment';
+    inp2.onchange=function(){ var f=inp2.files&&inp2.files[0]; if(f) rhIaReceberCapturaArquivo(f); };
+    inp2.click();
+  });
+}
+async function rhIaListarCameras(){
+  try{
+    var tmp = await navigator.mediaDevices.getUserMedia({audio:false, video:{width:{ideal:((typeof rhIaCapCfg==='function'&&rhIaCapCfg().w)||2560)}, height:{ideal:((typeof rhIaCapCfg==='function'&&rhIaCapCfg().h)||1920)}}});
+    tmp.getTracks().forEach(function(t){t.stop();});
+  }catch(e){}
+  var all = await navigator.mediaDevices.enumerateDevices();
+  _rhIaCam.devices = (all||[]).filter(function(d){ return d.kind==='videoinput'; });
+  rhIaCapEscolherDevice();
+}
+async function rhIaIniciarStream(){
+  rhIaPararCamera({keepPreview:true});
+  var cfg = rhIaCapCfg();
+  var video = {width:{ideal:cfg.w}, height:{ideal:cfg.h}};
+  if(_rhIaCam.devices.length && _rhIaCam.devices[_rhIaCam.deviceIdx]){
+    video.deviceId = {exact: _rhIaCam.devices[_rhIaCam.deviceIdx].deviceId};
+  } else {
+    video.facingMode = {ideal:_rhIaCam.facing};
+  }
+  try{
+    _rhIaCam.stream = await navigator.mediaDevices.getUserMedia({audio:false, video:video});
+  }catch(e1){
+    var simple = video.deviceId ? {deviceId:video.deviceId} : {facingMode:{ideal:_rhIaCam.facing}};
+    _rhIaCam.stream = await navigator.mediaDevices.getUserMedia({audio:false, video:simple});
+  }
+  var v = document.getElementById('rh-ia-cam-video');
+  if(v){ v.srcObject = _rhIaCam.stream; v.play().catch(function(){}); }
+  var lab = document.getElementById('rh-ia-cam-device-lab');
+  if(lab){
+    var d = _rhIaCam.devices[_rhIaCam.deviceIdx];
+    lab.textContent = d && d.label ? d.label : ('Câmera '+(_rhIaCam.deviceIdx+1));
+  }
+  var all = rhIaCapLoad();
+  var dev = rhIaCapDeviceId();
+  if(dev && all.lastDeviceId!==dev){ all.lastDeviceId = dev; rhIaCapSave(all); }
+  rhIaCapSincronizarSelects();
+  rhIaCapAtualizarInfo();
+}
+
+
+=====
+
+function rhIaRenderModalCamera(){
+  var passo = _rhIaCam.mode==='frente_verso'
+    ? (_rhIaCam.pages.length===0?'Capturar FRENTE':(_rhIaCam.pages.length===1?'Capturar VERSO':'Conjunto'))
+    : (_rhIaCam.mode==='multipagina' ? ('Página '+(_rhIaCam.pages.length+1)) : 'Capturar documento');
+  var capOpts = rhIaCapOptsHtml();
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:720px">'
+    +'<h3>📷 Capturar documento</h3>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:8px">Contexto: <b>'+rhEsc(_rhIaCam.contexto)+'</b> · '+rhEsc(passo)
+    +(_rhIaCam.opts.colaborador_id?' · colaborador contexto definido':'')+'</div>'
+    +'<div id="rh-ia-cam-live">'
+    +'<video id="rh-ia-cam-video" autoplay playsinline muted style="width:100%;max-height:420px;background:#111;border-radius:10px"></video>'
+    +'<div style="font-size:11px;color:#888;margin-top:4px" id="rh-ia-cam-device-lab">—</div>'
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0">'
+    +'<label style="font-size:11px;color:#555">Qualidade do equipamento<br>'
+    +'<select id="rh-ia-cap-preset" onchange="rhIaCapOnChange()" style="min-width:240px;margin-top:3px">'
+    +capOpts.presets
+    +'</select></label>'
+    +'<label style="font-size:11px;color:#555">JPEG<br>'
+    +'<select id="rh-ia-cap-jpeg" onchange="rhIaCapOnChange()" style="margin-top:3px">'
+    +capOpts.jpeg
+    +'</select></label>'
+    +'</div>'
+    +'<div id="rh-ia-cam-res" style="font-size:11px;color:#666;margin-bottom:4px">Aguardando imagem do equipamento…</div>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:8px">A prévia pode parecer pequena; a foto usa a resolução real do scanner/câmera. A escolha fica salva neste computador, por equipamento.</div>'
+    +'</div>'
+    +'<div id="rh-ia-cam-preview" style="display:none">'
+    +'<img id="rh-ia-cam-preview-img" style="width:100%;max-height:420px;object-fit:contain;border-radius:10px;background:#111"/>'
+    +'</div>'
+    +'<canvas id="rh-ia-cam-canvas" style="display:none"></canvas>'
+    +'<div class="ma" style="flex-wrap:wrap;gap:6px">'
+    +'<button class="btn" onclick="rhIaFecharCamera()">Cancelar</button>'
+    +'<button class="btn" id="rh-ia-cam-switch" onclick="rhIaTrocarCamera()">Trocar câmera</button>'
+    +'<button class="btn" onclick="_rhIaCam.mode=\'frente_verso\';_rhIaCam.pages=[];rhIaRenderModalCamera();rhIaIniciarStream()">Frente/Verso</button>'
+    +'<button class="btn" onclick="_rhIaCam.mode=\'multipagina\';rhIaRenderModalCamera();rhIaIniciarStream()">Várias páginas</button>'
+    +'<button class="btn btn-pri" id="rh-ia-cam-shot" onclick="rhIaCapturarFrame()">Capturar</button>'
+    +'<button class="btn" id="rh-ia-cam-retake" style="display:none" onclick="rhIaRefazerFoto()">Refazer</button>'
+    +'<button class="btn btn-pri" id="rh-ia-cam-use" style="display:none" onclick="rhIaUsarFoto()">Usar esta foto</button>'
+    +'<button class="btn btn-pri" id="rh-ia-cam-finish" style="display:none" onclick="rhIaFinalizarGrupoCamera()">Finalizar documento</button>'
+    +'</div></div></div>');
+}
+function rhIaFecharCamera(){ rhIaPararCamera(); closeModal(); }
+async function rhIaTrocarCamera(){
+  if(!_rhIaCam.devices.length) await rhIaListarCameras();
+  if(_rhIaCam.devices.length < 2){
+    _rhIaCam.facing = _rhIaCam.facing==='environment'?'user':'environment';
+  } else {
+    _rhIaCam.deviceIdx = (_rhIaCam.deviceIdx+1) % _rhIaCam.devices.length;
+  }
+  try{ await rhIaIniciarStream(); }catch(e){ progShowToast('Não foi possível trocar a câmera.','erro'); }
+}
+function rhIaCapturarFrame(){
+  var v = document.getElementById('rh-ia-cam-video');
+  var c = document.getElementById('rh-ia-cam-canvas');
+  if(!v || !c) return;
+  var w = v.videoWidth || 1280, h = v.videoHeight || 720;
+  c.width=w; c.height=h;
+  var ctx = c.getContext('2d');
+  ctx.drawImage(v,0,0,w,h);
+  var minSide = Math.min(w,h);
+  var aviso = '';
+  if(minSide < RH_IA_MIN_PX) aviso = 'Imagem pode estar difícil de ler (resolução baixa). Deseja refazer?';
+  c.toBlob(function(blob){
+    if(!blob || !blob.size){ progShowToast('Captura vazia.','erro'); return; }
+    if(_rhIaCam.previewUrl) try{URL.revokeObjectURL(_rhIaCam.previewUrl);}catch(e){}
+    _rhIaCam.previewBlob = blob;
+    _rhIaCam.previewUrl = URL.createObjectURL(blob);
+    _rhIaCam.waitingConfirm = true;
+    var live=document.getElementById('rh-ia-cam-live'), prev=document.getElementById('rh-ia-cam-preview');
+    var img=document.getElementById('rh-ia-cam-preview-img');
+    if(live) live.style.display='none';
+    if(prev) prev.style.display='block';
+    if(img) img.src=_rhIaCam.previewUrl;
+    var shot=document.getElementById('rh-ia-cam-shot'), use=document.getElementById('rh-ia-cam-use'), ret=document.getElementById('rh-ia-cam-retake');
+    if(shot) shot.style.display='none';
+    if(use) use.style.display='';
+    if(ret) ret.style.display='';
+    if(aviso && !confirm(aviso+'\n\nOK = continuar 
+
+=====
+
+function rhCtItemFromRegra(r, extra){
+  extra=extra||{};
+  return {
+    regra_id:r.id, tipo_documento:r.tipo_documento, categoria:r.categoria||'',
+    origem_esperada:r.origem_esperada||'RH', obrigatorio:r.obrigatorio!==false,
+    condicional:!!extra.condicional, exige_arquivo:r.exige_arquivo!==false,
+    exige_validade:!!r.exige_validade, validade_meses:r.validade_meses||null,
+    status_kit:extra.status||'Pendente', motivo_exigencia:extra.mot||(r.observacao||''),
+    equivalente_tipo:'', acao:extra.acao||'Providenciar', dispensado_motivo:extra.disp||null
+  };
+}
+function rhMontarKit(){
+  var prev={};
+  (_rhCtKit||[]).forEach(function(it){
+    if(it && it.tipo_documento) prev[rhNormTxt(it.tipo_documento)]=it;
+  });
+  var cargo=rhCtVal('cargo'), funcao=rhCtVal('funcao')||cargo;
+  var virtual={contrato_id:rhCtVal('contrato_id'), filial_id:rhCtVal('base_id'), base_id:rhCtVal('base_id'),
+    cargo:cargo, funcao:funcao, vinculo:rhCtVal('vinculo')};
+  var regras=(_rhRegras||[]).filter(function(r){ return rhRegraBateColab(r, virtual); });
+  _rhCtKit=regras.map(function(r){ return rhCtItemFromRegra(r, {mot:'Recorte da regra documental'}); });
+  RH_CONTRATACAO_MAP.forEach(function(m){
+    if(rhCtVal(m.p)!==m.v) return;
+    if(typeof rhCtDocForaKitAdmissao==='function' && rhCtDocForaKitAdmissao(m.tipo)) return;
+    var it=rhCtFindItem(m.tipo);
+    if(m.acao==='nao_aplica'){
+      if(it){ it.status_kit='Nao se aplica'; it.obrigatorio=false; it.motivo_exigencia=m.mot; it.acao='—'; it.condicional=!!m.cond; }
+      return;
+    }
+    if(m.acao==='incluir'){
+      if(!it){
+        var r=rhCtFindRegraTipo(m.tipo);
+        if(!r) return;
+        it=rhCtItemFromRegra(r, {condicional:!!m.cond, mot:m.mot});
+        _rhCtKit.push(it);
+      }
+      it.status_kit='Pendente'; it.obrigatorio=true; it.condicional=!!m.cond; it.motivo_exigencia=m.mot; it.acao='Providenciar';
+    }
+  });
+  var possui=rhCtProcessoTemCnh(), dirige=rhCtBool('dirige_veiculo');
+  var cnh=rhCtFindItem('CNH');
+  if(dirige){
+    if(!cnh){ var rCnh=rhCtFindRegraTipo('CNH'); if(rCnh){ cnh=rhCtItemFromRegra(rCnh,{mot:'Dirigir exige CNH'}); _rhCtKit.push(cnh);} }
+    if(cnh){ cnh.status_kit='Pendente'; cnh.obrigatorio=true; cnh.motivo_exigencia='Vai dirigir: CNH obrigatória (categoria e validade vêm da Entrada Inteligente)'; cnh.acao='Anexar na etapa Documentos'; }
+  } else if(!possui){
+    if(cnh){ cnh.status_kit='Nao se aplica'; cnh.obrigatorio=false; cnh.motivo_exig

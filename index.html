@@ -7546,7 +7546,7 @@ async function sbInsert(table,data,opts){
     'rh_contratacao_respostas':['contratacao_id','pergunta_codigo','pergunta_texto','valor'],
     'rh_contratacao_documentos':['contratacao_id','regra_id','tipo_documento','categoria','origem_esperada','obrigatorio',
       'condicional','exige_arquivo','exige_validade','validade_meses','status_kit','motivo_exigencia','equivalente_tipo',
-      'acao','documento_id','equivalente_documento_id','dispensado_motivo','arquivo_url','arquivo_nome','ia_item_id'],
+      'acao','documento_id','equivalente_documento_id','dispensado_motivo','arquivo_url','arquivo_nome','ia_item_id','arquivos_extras'],
     'rh_documento_equivalencias':['tipo_apresentado','tipo_atendido','condicao','ativo','observacao'],
     'rh_documento_ia_lotes':['status','total_arquivos','arquivos_recebidos','arquivos_com_erro','criado_por','finalizado_em','observacao'],
     'rh_documento_ia_itens':['lote_id','arquivo_nome','arquivo_tipo','arquivo_tamanho','arquivo_url_staging','hash_sha256',
@@ -44686,10 +44686,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.161',
+  numero: '8.1.162',
   data:   '28/09/2026',
-  build:  '20260928-1349',
+  build:  '20260928-1620',
   log: [
+    {v:'8.1.162', d:'28/09/2026', itens:[
+      'RH Contratação: cada item do kit aceita vários arquivos (várias fotos da câmera ou vários arquivos de uma vez); ver/remover cada um. Entrada Inteligente ganha “Tirar fotos”: fotos sem nome e sem escolher linha; a IA lê e sugere o vínculo, RH confirma ou deixa sem vínculo. SQL: 20260928160000_rh_kit_arquivos_extras.sql.',
+    ]},
     {v:'8.1.161', d:'28/09/2026', itens:[
       'ZAPSIGN-CORE-2A: Signature Core + adapter sandbox + Edge zapsign-create fail-closed sem renderer HTML→PDF. Sem SQL avulso. Sem DocuSign.',
     ]},
@@ -116321,6 +116324,13 @@ function rhCtKitAplicarArquivoNoTipo(tipo, opts){
   var iaId=opts.ia_item_id||null;
   (_rhCtKit||[]).forEach(function(it){
     if(it===dest) return;
+    var exO=rhKitExtrasLista(it);
+    if(exO.length){
+      var exF=exO.filter(function(a){
+        return !((url && String(a.url)===String(url)) || (iaId && a.ia_item_id && String(a.ia_item_id)===String(iaId)));
+      });
+      if(exF.length!==exO.length) it.arquivos_extras=exF;
+    }
     var sameUrl=url && it.arquivo_url && String(it.arquivo_url)===String(url);
     var sameIa=iaId && it.ia_item_id && String(it.ia_item_id)===String(iaId);
     var sameNome=nome && it.arquivo_nome && String(it.arquivo_nome)===String(nome) && !it.documento_id;
@@ -116333,9 +116343,26 @@ function rhCtKitAplicarArquivoNoTipo(tipo, opts){
       it.acao='Providenciar';
     }
   });
-  dest.arquivo_url=url;
-  dest.arquivo_nome=nome;
-  dest.ia_item_id=iaId||dest.ia_item_id||null;
+  var exD=rhKitExtrasLista(dest);
+  var mesmoPrincipal=!dest.arquivo_url
+    || (url && String(dest.arquivo_url)===String(url))
+    || (iaId && dest.ia_item_id && String(dest.ia_item_id)===String(iaId))
+    || (nome && dest.arquivo_nome && String(dest.arquivo_nome)===String(nome));
+  var extraIdx=-1;
+  exD.forEach(function(a,i){
+    if(extraIdx>=0) return;
+    if((url && String(a.url)===String(url)) || (iaId && a.ia_item_id && String(a.ia_item_id)===String(iaId)) || (nome && a.nome && String(a.nome)===String(nome))) extraIdx=i;
+  });
+  var colExtrasOk=(typeof _rhKitExtrasColOk!=='undefined' && _rhKitExtrasColOk===true) || (typeof DEMO!=='undefined' && DEMO);
+  if(!mesmoPrincipal && colExtrasOk && url){
+    var novoExtra={url:url, nome:nome, ia_item_id:iaId, em:new Date().toISOString(), origem:'IA'};
+    if(extraIdx>=0) exD[extraIdx]=novoExtra; else exD.push(novoExtra);
+    dest.arquivos_extras=exD;
+  } else {
+    dest.arquivo_url=url;
+    dest.arquivo_nome=nome;
+    dest.ia_item_id=iaId||dest.ia_item_id||null;
+  }
   if(['Nao se aplica','Dispensado','Pendente','','Atendido por documento equivalente'].indexOf(String(dest.status_kit||''))>=0
       || !dest.status_kit){
     dest.status_kit='Recebido';
@@ -119624,6 +119651,7 @@ async function rhAbrirContratacao(id){
     (resp||[]).forEach(function(r){ _rhCtRespostas[r.pergunta_codigo]=r; });
     var kit=await sbFetch('rh_contratacao_documentos',{filters:['contratacao_id=eq.'+ct.id],limit:200});
     _rhCtKit=kit||[];
+    if(_rhCtKit.length && Object.prototype.hasOwnProperty.call(_rhCtKit[0],'arquivos_extras')) _rhKitExtrasColOk=true;
   }
   if(typeof rhMontarKit==='function'){ try{ rhMontarKit(); }catch(eMk){} }
   try{
@@ -119840,6 +119868,7 @@ function rhMontarKit(){
     if(old.arquivo_url) it.arquivo_url=old.arquivo_url;
     if(old.arquivo_nome) it.arquivo_nome=old.arquivo_nome||it.arquivo_nome;
     if(old.ia_item_id) it.ia_item_id=old.ia_item_id;
+    if(rhKitExtrasLista(old).length) it.arquivos_extras=rhKitExtrasLista(old);
     if(old.equivalente_documento_id) it.equivalente_documento_id=old.equivalente_documento_id;
     if(old.dispensado_motivo) it.dispensado_motivo=old.dispensado_motivo;
     var st=it.status_kit||'';
@@ -119920,6 +119949,7 @@ async function rhPersistirKitSnapshot(opts){
     else rhMontarKit();
   }
   if(DEMO){ _rhCtAtual.kit_gerado_em=new Date().toISOString(); return; }
+  var comExtras=await rhKitExtrasColunaDisponivel();
   await sbDelete('rh_contratacao_documentos','contratacao_id=eq.'+_rhCtAtual.id);
   if(_rhCtKit.length){
     var rows=_rhCtKit.map(function(it){
@@ -119931,7 +119961,14 @@ async function rhPersistirKitSnapshot(opts){
         equivalente_documento_id:it.equivalente_documento_id||null,
         arquivo_url:it.arquivo_url||null, arquivo_nome:it.arquivo_nome||null, ia_item_id:it.ia_item_id||null};
     });
-    await sbInsert('rh_contratacao_documentos', rows);
+    if(comExtras) rows.forEach(function(r,i){ r.arquivos_extras=rhKitExtrasLista(_rhCtKit[i]); });
+    var insKit=await sbInsert('rh_contratacao_documentos', rows);
+    if(!insKit && comExtras){
+      _rhKitExtrasColOk=false;
+      rows.forEach(function(r){ delete r.arquivos_extras; });
+      await sbInsert('rh_contratacao_documentos', rows);
+      progShowToast('Arquivos adicionais do kit não foram gravados (coluna arquivos_extras indisponível).','erro');
+    }
   }
   _rhCtAtual.kit_gerado_em=new Date().toISOString();
 }
@@ -120162,10 +120199,12 @@ function rhCtKitAcoesHtml(it){
     html+='<img src="'+rhEsc(it.arquivo_url)+'" alt="'+rhEsc(it.arquivo_nome||'preview')+'" title="Clique para ampliar" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')" style="width:100%;max-width:160px;height:96px;object-fit:contain;border-radius:6px;border:.5px solid #c5d4e8;cursor:pointer;background:#1a1a1a"/>';
   }
   if(it.arquivo_nome||temArq) html+='<span style="font-size:10px;color:#3B6D11;word-break:break-word;line-height:1.25">'+rhEsc(it.arquivo_nome||(it.documento_id?'No dossiê':'No processo'))+'</span>';
-  html+='<button type="button" class="btn btn-sm" style="cursor:pointer;margin:0" onclick="rhCtAbrirCameraKit(\''+tipoEnc+'\')">📷 Câmera</button>'
-    +'<label class="btn btn-sm" style="cursor:pointer;margin:0" title="PDF ou foto da galeria">'+(temArq?'Substituir':'Arquivo')
-    +'<input type="file" accept="image/*,application/pdf,.pdf" style="display:none" data-tipo="'+tipoEnc+'" onchange="rhCtAnexarKit(this)"/></label>';
-  if(temArq) html+='<button class="btn btn-sm" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')">Ver</button>';
+  var extrasKit=rhKitExtrasLista(it);
+  if(extrasKit.length) html+=rhKitExtrasMiniHtml(it, tipoEnc);
+  html+='<button type="button" class="btn btn-sm" style="cursor:pointer;margin:0" onclick="rhCtAbrirCameraKit(\''+tipoEnc+'\')" title="Tire uma ou várias fotos; cada foto vira um arquivo deste item">'+(temArq?'📷 + Fotos':'📷 Câmera')+'</button>'
+    +'<label class="btn btn-sm" style="cursor:pointer;margin:0" title="PDF ou fotos da galeria (pode escolher vários)">'+(temArq?'+ Arquivos':'Arquivo')
+    +'<input type="file" multiple accept="image/*,application/pdf,.pdf" style="display:none" data-tipo="'+tipoEnc+'" onchange="rhCtAnexarKit(this)"/></label>';
+  if(temArq) html+='<button class="btn btn-sm" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\')">Ver'+(extrasKit.length?' ('+(extrasKit.length+1)+')':'')+'</button>';
   if(temArq && it.arquivo_url) html+='<button class="btn btn-sm btn-pri" style="background:#185FA5;border-color:#185FA5" onclick="rhCtLerIa(\''+tipoEnc+'\')">Ler com IA</button>';
   if(st==='Recebido'||st==='Em conferencia'||st==='A vencer') html+='<button class="btn btn-sm btn-pri" onclick="rhKitValidar(\''+tipoEnc+'\')">Validar</button>';
   if(temArq && st!=='Validado') html+='<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="rhKitRecusar(\''+tipoEnc+'\')">Recusar</button>';
@@ -120198,10 +120237,10 @@ async function rhKitGarantirDoc(id){
 }
 async function rhCtAnexarKit(inp){
   var tipo=decodeURIComponent((inp&&inp.getAttribute('data-tipo'))||'');
-  var file=inp&&inp.files&&inp.files[0];
+  var files=inp&&inp.files?Array.prototype.slice.call(inp.files):[];
   if(inp) inp.value='';
-  if(!file) return;
-  return rhCtAnexarKitArquivo(tipo, file);
+  if(!files.length) return;
+  return rhCtAnexarKitArquivos(tipo, files);
 }
 function rhCtAbrirCameraKit(tipoEnc){
   var tipo=decodeURIComponent(tipoEnc||'');
@@ -120216,7 +120255,7 @@ function rhCtAbrirCameraKit(tipoEnc){
   var ctxOrig=rhEhPromocao()?'promocao':'contratacao';
   rhIaAbrirCapturaCamera(ctxOrig, {
     bypassPerm:true,
-    mode:'unico',
+    mode:'lote',
     colaborador_id:_rhCtAtual.colaborador_id||null,
     contratacao_id:_rhCtAtual.id,
     candidatura_id:_rhCtAtual.candidatura_id||null,
@@ -120224,13 +120263,118 @@ function rhCtAbrirCameraKit(tipoEnc){
     cargo_id:_rhCtAtual.cargo_id||null,
     contexto_origem:ctxOrig,
     onFiles:function(files){
-      var f=files&&files[0];
-      if(!f) return;
-      rhCtAnexarKitArquivo(tipo, f);
+      if(files && files.length) rhCtAnexarKitArquivos(tipo, files);
     }
   });
 }
-async function rhCtAnexarKitArquivo(tipo, file){
+var _rhKitExtrasColOk=null;
+async function rhKitExtrasColunaDisponivel(){
+  if(DEMO) return true;
+  if(_rhKitExtrasColOk!==null) return _rhKitExtrasColOk;
+  if((_rhCtKit||[]).some(function(it){ return rhKitExtrasLista(it).length>0; })){ _rhKitExtrasColOk=true; return true; }
+  try{
+    var r=await sbFetch('rh_contratacao_documentos',{select:'id,arquivos_extras',limit:1});
+    _rhKitExtrasColOk=Array.isArray(r);
+  }catch(e){ _rhKitExtrasColOk=false; }
+  return _rhKitExtrasColOk;
+}
+function rhKitExtrasLista(it){
+  var ex=it&&it.arquivos_extras;
+  if(typeof ex==='string'){ try{ ex=JSON.parse(ex); }catch(e){ ex=[]; } }
+  return Array.isArray(ex)?ex.filter(function(a){ return a&&a.url; }):[];
+}
+function rhKitArqEhImagem(ref){
+  return /\.(jpe?g|png|webp|gif)(\?|$)/i.test(String(ref||''));
+}
+function rhKitArquivosDoItem(it){
+  if(!it) return [];
+  var out=[];
+  if(it.arquivo_url||it.documento_id) out.push({url:it.arquivo_url||null, nome:it.arquivo_nome||null, documento_id:it.documento_id||null, principal:true});
+  return out.concat(rhKitExtrasLista(it));
+}
+function rhKitExtrasMiniHtml(it, tipoEnc){
+  var ex=rhKitExtrasLista(it);
+  if(!ex.length) return '';
+  return '<div style="display:flex;flex-wrap:wrap;gap:4px">'+ex.map(function(a,i){
+    var thumb=rhKitArqEhImagem(a.nome||a.url)
+      ? '<img src="'+rhEsc(a.url)+'" alt="'+rhEsc(a.nome||'arquivo')+'" style="width:44px;height:44px;object-fit:cover;border-radius:4px;border:.5px solid #c5d4e8;background:#1a1a1a"/>'
+      : '<span style="display:inline-flex;width:44px;height:44px;align-items:center;justify-content:center;border-radius:4px;border:.5px solid #c5d4e8;font-size:10px;background:#F5F5F0">PDF</span>';
+    return '<span style="cursor:pointer" title="'+rhEsc(a.nome||('Arquivo '+(i+2)))+'" onclick="rhKitAbrirArquivo(\''+tipoEnc+'\','+(i+1)+')">'+thumb+'</span>';
+  }).join('')+'</div><span style="font-size:10px;color:#3B6D11">'+(ex.length+1)+' arquivos neste item</span>';
+}
+function rhKitAbrirNavHtml(it, tipoEncSafe, idxAtual){
+  var arqs=rhKitArquivosDoItem(it);
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">'+arqs.map(function(a,i){
+    return '<button type="button" class="btn btn-sm'+(i===idxAtual?' btn-pri':'')+'" onclick="rhKitAbrirArquivo(\''+tipoEncSafe+'\','+i+')">Arquivo '+(i+1)+'</button>';
+  }).join('')+'</div>';
+}
+async function rhKitAdicionarExtra(it, file){
+  var nome=file.name||('arquivo_'+Date.now());
+  var url=DEMO
+    ? ('demo://contratacao/'+_rhCtAtual.id+'/'+nome)
+    : await rhUploadArquivoContratacao(file, _rhCtAtual.id, it.tipo_documento||'doc');
+  if(!url) throw new Error('Falha no upload de '+nome);
+  var ex=rhKitExtrasLista(it);
+  ex.push({url:url, nome:nome, em:new Date().toISOString(), por:(usuarioLogado&&(usuarioLogado.nome||usuarioLogado.email))||''});
+  it.arquivos_extras=ex;
+}
+async function rhCtAnexarKitArquivos(tipo, files){
+  files=(files||[]).filter(Boolean);
+  if(!files.length) return;
+  if(!_rhCtAtual||!_rhCtAtual.id){
+    progShowToast('Salve o rascunho do processo antes de anexar.','erro');
+    return;
+  }
+  var it=rhCtFindItem(tipo);
+  if(!it){ progShowToast('Item do kit não encontrado.','erro'); return; }
+  var fila=files.slice();
+  if(!(it.arquivo_url||it.documento_id)){
+    var primeiro=fila.shift();
+    if(!fila.length) return rhCtAnexarKitArquivo(tipo, primeiro);
+    var okPrim=await rhCtAnexarKitArquivo(tipo, primeiro, {semFinalizar:true});
+    if(!okPrim) return;
+  }
+  var n=0;
+  if(fila.length && !(await rhKitExtrasColunaDisponivel())){
+    progShowToast('Para guardar mais de um arquivo no mesmo item, aplique a migração 20260928160000_rh_kit_arquivos_extras.sql. Só o primeiro arquivo foi gravado.','erro');
+    fila=[];
+  }
+  for(var i=0;i<fila.length;i++){
+    try{ await rhKitAdicionarExtra(it, fila[i]); n++; }
+    catch(e){ progShowToast((e&&e.message)||'Falha ao anexar arquivo adicional.','erro'); }
+  }
+  if(n>0 && ['','Pendente','Recusado','Nao se aplica'].indexOf(String(it.status_kit||''))>=0){
+    it.status_kit='Recebido';
+    it.acao='No processo — até efetivação';
+  }
+  try{ await rhKitFlush(); }
+  catch(eF){ progShowToast((eF&&eF.message)||'Falha ao salvar o kit.','erro'); }
+  var total=rhKitArquivosDoItem(it).length;
+  progShowToast(total>1?(total+' arquivos gravados neste item.'):'Arquivo gravado no processo.');
+  rhRenderAssistente();
+}
+async function rhKitRemoverArquivo(tipoEnc, idx){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it) return;
+  idx=Number(idx)||0;
+  var ex=rhKitExtrasLista(it);
+  if(idx===0 && (it.documento_id||!ex.length)) return;
+  if(!confirm('Remover este arquivo do item '+(it.tipo_documento||'')+'?')) return;
+  if(idx>0){
+    ex.splice(idx-1,1);
+  } else {
+    var nx=ex.shift();
+    it.arquivo_url=nx.url;
+    it.arquivo_nome=nx.nome||null;
+    it.ia_item_id=nx.ia_item_id||null;
+  }
+  it.arquivos_extras=ex;
+  closeModal();
+  await rhKitFlush();
+  progShowToast('Arquivo removido do item.');
+  rhRenderAssistente();
+}
+async function rhCtAnexarKitArquivo(tipo, file, opts){
   if(!file) return;
   if(!_rhCtAtual||!_rhCtAtual.id){
     progShowToast('Salve o rascunho do processo antes de anexar.','erro');
@@ -120271,11 +120415,14 @@ async function rhCtAnexarKitArquivo(tipo, file){
       it.status_kit='Recebido';
       it.acao='No processo — até efetivação';
     }
+    if(opts && opts.semFinalizar) return true;
     await rhKitFlush();
     progShowToast(usarDossie?'Arquivo gravado no dossiê.':'Arquivo gravado no processo de contratação (não vai ao dossiê até a efetivação).');
     rhRenderAssistente();
+    return true;
   } catch(e){
     progShowToast((e&&e.message)||'Falha ao anexar.','erro');
+    return false;
   }
 }
 async function rhKitResolverUrlVisualizacao(url){
@@ -120302,12 +120449,16 @@ async function rhKitResolverUrlVisualizacao(url){
     return url;
   }
 }
-async function rhKitAbrirArquivo(tipoEnc){
+async function rhKitAbrirArquivo(tipoEnc, idx){
   var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
   if(!it) return;
+  var extrasAb=rhKitExtrasLista(it);
+  idx=Number(idx)||0;
+  if(idx<0||idx>extrasAb.length) idx=0;
   var url=it.arquivo_url||null;
   var nome=it.arquivo_nome||'arquivo';
-  var id=it.documento_id||it.equivalente_documento_id;
+  var id=idx>0?null:(it.documento_id||it.equivalente_documento_id);
+  if(idx>0){ url=extrasAb[idx-1].url; nome=extrasAb[idx-1].nome||('arquivo_'+(idx+1)); }
   if(id){
     var dDs=await rhKitGarantirDoc(id);
     if(dDs && rhDocEhAssinaturaDigital(dDs)){
@@ -120327,13 +120478,17 @@ async function rhKitAbrirArquivo(tipoEnc){
       ? '<iframe src="'+rhEsc(viewUrl)+'" title="'+rhEsc(nome)+'" style="width:100%;height:70vh;border:.5px solid #e0dfd8;border-radius:8px"></iframe>'
       : '<div style="padding:16px;background:#F5F5F0;border-radius:8px;font-size:13px">Pré-visualização não disponível para este tipo. Use “Abrir em nova aba”.</div>');
   var tipoEncSafe=String(tipoEnc||'').replace(/'/g,'');
+  var totalArq=rhKitArquivosDoItem(it).length;
+  var podeRemover=idx>0 || (!!it.arquivo_url && !it.documento_id && extrasAb.length>0);
   setModal('<div class="modal-bg"><div class="modal" style="max-width:920px;max-height:92vh;overflow:auto">'
     +'<h3 style="margin-bottom:4px">'+rhEsc(it.tipo_documento||'Documento')+'</h3>'
-    +'<div style="font-size:12px;color:#666;margin-bottom:10px">'+rhEsc(nome)+' · status '+rhEsc(it.status_kit||'')+'</div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:10px">'+rhEsc(nome)+' · status '+rhEsc(it.status_kit||'')+(totalArq>1?' · arquivo '+(idx+1)+' de '+totalArq:'')+'</div>'
     +corpo
+    +(totalArq>1?rhKitAbrirNavHtml(it, tipoEncSafe, idx):'')
     +'<div class="ma" style="margin-top:12px;flex-wrap:wrap;gap:6px">'
     +'<button class="btn" onclick="closeModal()">Fechar</button>'
     +'<a class="btn" href="'+rhEsc(url)+'" target="_blank" rel="noopener">Abrir em nova aba</a>'
+    +(podeRemover?'<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="rhKitRemoverArquivo(\''+tipoEncSafe+'\','+idx+')">Remover este arquivo</button>':'')
     +(it.arquivo_url?'<button class="btn btn-pri" onclick="closeModal();rhCtLerIa(\''+tipoEncSafe+'\')">Ler este arquivo com IA</button>':'')
     +'</div></div></div>');
 }
@@ -120377,6 +120532,7 @@ async function rhKitConfirmarRecusa(tipoEnc){
     it.arquivo_url=null;
     it.arquivo_nome=null;
     it.ia_item_id=null;
+    it.arquivos_extras=[];
     closeModal();
     await rhKitFlush();
     progShowToast('Documento recusado no processo. Anexe uma nova versão.');
@@ -120394,6 +120550,7 @@ async function rhKitConfirmarRecusa(tipoEnc){
     if(!ok){ progShowToast('Não foi possível recusar no dossiê.','erro'); return; }
   }
   Object.assign(d,payload);
+  it.arquivos_extras=[];
   it.status_kit='Recusado';
   it.acao='Corrigir e reenviar';
   closeModal();
@@ -120561,10 +120718,15 @@ async function rhCtEnfileirarKitParaIa(tipoEnc){
   }
   progShowToast('Reaproveitando '+lista.length+' arquivo(s) do kit na Entrada Inteligente…');
   var files=[];
-  for(var i=0;i<lista.length;i++){
-    var it=lista[i];
+  var fontes=[];
+  lista.forEach(function(itK){
+    fontes.push({it:itK, url:itK.arquivo_url, nome:itK.arquivo_nome});
+    rhKitExtrasLista(itK).forEach(function(a){ fontes.push({it:itK, url:a.url, nome:a.nome}); });
+  });
+  for(var i=0;i<fontes.length;i++){
+    var it=fontes[i].it;
     try{
-      var f=await rhCtFetchUrlComoFile(it.arquivo_url, it.arquivo_nome||((it.tipo_documento||'doc')+'.jpg'));
+      var f=await rhCtFetchUrlComoFile(fontes[i].url, fontes[i].nome||((it.tipo_documento||'doc')+'.jpg'));
       f._rhIaMeta={
         origem_entrada:'upload',
         contexto_origem:(_rhIaContextoPadrao&&_rhIaContextoPadrao.contexto_origem)||(rhEhPromocao()?'promocao':'contratacao'),
@@ -120939,6 +121101,69 @@ function rhCtIaOnFiles(inp){
   if(typeof rhIaAdicionarArquivos==='function') rhIaAdicionarArquivos(files);
 }
 
+function rhCtIaAbrirCameraLote(){
+  if(!_rhCtAtual || !_rhCtAtual.id){
+    progShowToast('Salve o rascunho do processo antes de capturar.','erro');
+    return;
+  }
+  if(typeof rhIaAbrirCapturaCamera!=='function'){
+    progShowToast('Câmera indisponível neste build.','erro');
+    return;
+  }
+  rhCtIaSetContexto();
+  var ctxOrig = (typeof rhEhPromocao==='function' && rhEhPromocao()) ? 'promocao' : 'contratacao';
+  rhIaAbrirCapturaCamera(ctxOrig, {
+    bypassPerm:true,
+    mode:'lote',
+    colaborador_id:_rhCtAtual.colaborador_id||null,
+    contratacao_id:_rhCtAtual.id,
+    candidatura_id:_rhCtAtual.candidatura_id||null,
+    vaga_id:_rhCtAtual.vaga_id||null,
+    cargo_id:_rhCtAtual.cargo_id||null,
+    contexto_origem:ctxOrig,
+    onFiles:function(files){ rhCtIaReceberFotosLote(files); }
+  });
+}
+
+async function rhCtIaReceberFotosLote(files){
+  files = (files||[]).filter(Boolean);
+  if(!files.length) return;
+  rhCtIaSetContexto();
+  if(typeof rhIaAdicionarArquivos!=='function'){
+    progShowToast('Entrada Inteligente indisponível.','erro');
+    return;
+  }
+  rhIaAdicionarArquivos(files);
+  progShowToast(files.length+' foto(s) capturada(s). Enviando para a IA identificar…');
+  await rhCtIaEnviarStaging();
+  await rhCtIaProcessarRecebidosDoProcesso();
+}
+
+async function rhCtIaProcessarRecebidosDoProcesso(){
+  if(typeof rhIaProcessarItem!=='function') return;
+  if(typeof _rhIaProcBusy!=='undefined' && _rhIaProcBusy){
+    progShowToast('IA já está processando. Use “Processar pendentes (IA)” depois.');
+    return;
+  }
+  var pend = rhCtIaItensDoProcesso().filter(function(it){ return it.status==='RECEBIDO'; });
+  if(!pend.length){ await rhCtIaRefreshPainel(); return; }
+  _rhIaProcBusy = true;
+  try{
+    await rhIaMapComConcorrencia(pend, (typeof RH_IA_PROC_CONCURRENCY!=='undefined'?RH_IA_PROC_CONCURRENCY:2), async function(it){
+      try{
+        await rhIaProcessarItem(it.id, {provider:RH_IA_PROVIDER_PADRAO, model:RH_IA_MODEL_PADRAO, modo:'automatico'});
+      }catch(e){
+        it.status='FALHA_NA_LEITURA_IA';
+        it.erro_ia='Falha no processamento com Gemini. '+((e&&e.message)||String(e));
+      }
+    });
+  } finally {
+    _rhIaProcBusy = false;
+  }
+  await rhCtIaRefreshPainel();
+  progShowToast('IA leu '+pend.length+' foto(s). Confira abaixo: “Confirmar no kit” vincula ao item; se não fizer sentido, deixe sem vínculo.');
+}
+
 async function rhCtIaEnviarStaging(){
   rhCtIaSetContexto();
   if(!_rhCtAtual || !_rhCtAtual.id){
@@ -121050,6 +121275,7 @@ function rhCtDocsEtapaHtml(){
     +'<input id="rh-ct-ia-file" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" style="display:none" onchange="rhCtIaOnFiles(this)"/>'
     +'</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
+    +'<button type="button" class="btn btn-pri" onclick="rhCtIaAbrirCameraLote()" title="Tire várias fotos seguidas, sem nomear e sem escolher a linha. A IA identifica cada documento e sugere o vínculo.">📷 Tirar fotos</button>'
     +'<button type="button" class="btn" onclick="document.getElementById(\'rh-ct-ia-file\').click()">Selecionar arquivos</button>'
     +'<button type="button" class="btn btn-pri" onclick="rhCtIaEnviarStaging()">Enviar para staging</button>'
     +'<button type="button" class="btn" onclick="rhCtIaProcessarPendentes()">Processar pendentes (IA)</button>'
@@ -129329,7 +129555,7 @@ var RH_IA_FILTROS_GRUPO = [
 var _rhIaProgresso = {done:0, total:0, msg:''};
 var _rhIaCam = {
   stream:null, devices:[], deviceIdx:0, facing:'environment',
-  contexto:'dossie', opts:{}, mode:'unico', // unico | frente_verso | multipagina
+  contexto:'dossie', opts:{}, mode:'unico', // unico | frente_verso | multipagina | lote (cada foto = 1 arquivo)
   pages:[], previewBlob:null, previewUrl:null, waitingConfirm:false
 };
 var RH_IA_CAP_LS = 'cena_rh_ia_cap';
@@ -135684,7 +135910,8 @@ async function rhIaIniciarStream(){
 function rhIaRenderModalCamera(){
   var passo = _rhIaCam.mode==='frente_verso'
     ? (_rhIaCam.pages.length===0?'Capturar FRENTE':(_rhIaCam.pages.length===1?'Capturar VERSO':'Conjunto'))
-    : (_rhIaCam.mode==='multipagina' ? ('Página '+(_rhIaCam.pages.length+1)) : 'Capturar documento');
+    : (_rhIaCam.mode==='multipagina' ? ('Página '+(_rhIaCam.pages.length+1))
+      : (_rhIaCam.mode==='lote' ? ('Foto '+(_rhIaCam.pages.length+1)+' · cada foto vira um arquivo, sem precisar nomear') : 'Capturar documento'));
   var capOpts = rhIaCapOptsHtml();
   setModal('<div class="modal-bg"><div class="modal" style="max-width:720px">'
     +'<h3>📷 Capturar documento</h3>'
@@ -135713,12 +135940,12 @@ function rhIaRenderModalCamera(){
     +'<div class="ma" style="flex-wrap:wrap;gap:6px">'
     +'<button class="btn" onclick="rhIaFecharCamera()">Cancelar</button>'
     +'<button class="btn" id="rh-ia-cam-switch" onclick="rhIaTrocarCamera()">Trocar câmera</button>'
-    +'<button class="btn" onclick="_rhIaCam.mode=\'frente_verso\';_rhIaCam.pages=[];rhIaRenderModalCamera();rhIaIniciarStream()">Frente/Verso</button>'
-    +'<button class="btn" onclick="_rhIaCam.mode=\'multipagina\';rhIaRenderModalCamera();rhIaIniciarStream()">Várias páginas</button>'
+    +(_rhIaCam.mode==='lote'?'':('<button class="btn" onclick="_rhIaCam.mode=\'frente_verso\';_rhIaCam.pages=[];rhIaRenderModalCamera();rhIaIniciarStream()">Frente/Verso</button>'
+    +'<button class="btn" onclick="_rhIaCam.mode=\'multipagina\';rhIaRenderModalCamera();rhIaIniciarStream()">Várias páginas</button>'))
     +'<button class="btn btn-pri" id="rh-ia-cam-shot" onclick="rhIaCapturarFrame()">Capturar</button>'
     +'<button class="btn" id="rh-ia-cam-retake" style="display:none" onclick="rhIaRefazerFoto()">Refazer</button>'
     +'<button class="btn btn-pri" id="rh-ia-cam-use" style="display:none" onclick="rhIaUsarFoto()">Usar esta foto</button>'
-    +'<button class="btn btn-pri" id="rh-ia-cam-finish" style="display:none" onclick="rhIaFinalizarGrupoCamera()">Finalizar documento</button>'
+    +'<button class="btn btn-pri" id="rh-ia-cam-finish" style="display:none" onclick="rhIaFinalizarGrupoCamera()">'+(_rhIaCam.mode==='lote'?'Concluir fotos':'Finalizar documento')+'</button>'
     +'</div></div></div>');
 }
 function rhIaFecharCamera(){ rhIaPararCamera(); closeModal(); }
@@ -135783,11 +136010,22 @@ function rhIaUsarFoto(){
   } else if(_rhIaCam.mode==='multipagina'){
     papel = 'pagina';
     pagina = _rhIaCam.pages.length+1;
+  } else if(_rhIaCam.mode==='lote'){
+    papel = 'avulso';
+    pagina = _rhIaCam.pages.length+1;
   }
   _rhIaCam.pages.push({blob:_rhIaCam.previewBlob, papel:papel, pagina:pagina});
   _rhIaCam.waitingConfirm=false;
   if(_rhIaCam.mode==='unico'){
     rhIaFinalizarGrupoCamera();
+    return;
+  }
+  if(_rhIaCam.mode==='lote'){
+    rhIaRefazerFoto();
+    var finL=document.getElementById('rh-ia-cam-finish');
+    var nL=_rhIaCam.pages.length;
+    if(finL){ finL.style.display=''; finL.textContent='Concluir ('+nL+' foto'+(nL>1?'s':'')+')'; }
+    progShowToast('Foto '+nL+' guardada. Tire outra ou conclua.');
     return;
   }
   if(_rhIaCam.mode==='frente_verso' && _rhIaCam.pages.length>=2){
@@ -135824,9 +136062,9 @@ async function rhIaFinalizarGrupoCamera(){
       candidatura_id: (_rhIaCam.opts&&_rhIaCam.opts.candidatura_id) || (_rhIaContextoPadrao&&_rhIaContextoPadrao.candidatura_id) || null,
       vaga_id: (_rhIaCam.opts&&_rhIaCam.opts.vaga_id) || (_rhIaContextoPadrao&&_rhIaContextoPadrao.vaga_id) || null,
       cargo_id: (_rhIaCam.opts&&_rhIaCam.opts.cargo_id) || (_rhIaContextoPadrao&&_rhIaContextoPadrao.cargo_id) || null,
-      grupo_documento_id: _rhIaCam.pages.length>1 ? grupoId : null,
-      grupo_papel: p.papel||'unico',
-      grupo_pagina: p.pagina||(i+1)
+      grupo_documento_id: (_rhIaCam.pages.length>1 && _rhIaCam.mode!=='lote') ? grupoId : null,
+      grupo_papel: _rhIaCam.mode==='lote' ? 'unico' : (p.papel||'unico'),
+      grupo_pagina: _rhIaCam.mode==='lote' ? 1 : (p.pagina||(i+1))
     };
     return f;
   });

@@ -1,0 +1,11 @@
+'use strict';
+const fs = require('fs');
+const s = fs.readFileSync('index.html', 'utf8');
+const a = s.indexOf('function rhMontarKit');
+console.log(s.slice(a, a+3500).slice(-1500));
+console.log('\n==== FLUSH ====\n');
+const b = s.indexOf('function rhKitFlush');
+console.log(s.slice(b, b+1800));
+console.log('\n==== SET CONTEXTO ====\n');
+const c = s.indexOf('function rhCtIaSetContexto');
+console.log(c<0?'missing':s.slice(c, c+900));

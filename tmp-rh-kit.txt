@@ -1,0 +1,382 @@
+function rhCtAbrirCameraKit(tipoEnc){
+  var tipo=decodeURIComponent(tipoEnc||'');
+  if(!_rhCtAtual||!_rhCtAtual.id){
+    progShowToast('Salve o rascunho do processo antes de capturar.','erro');
+    return;
+  }
+  if(typeof rhIaAbrirCapturaCamera!=='function'){
+    progShowToast('Câmera indisponível neste build.','erro');
+    return;
+  }
+  var ctxOrig=rhEhPromocao()?'promocao':'contratacao';
+  rhIaAbrirCapturaCamera(ctxOrig, {
+    bypassPerm:true,
+    mode:'unico',
+    colaborador_id:_rhCtAtual.colaborador_id||null,
+    contratacao_id:_rhCtAtual.id,
+    candidatura_id:_rhCtAtual.candidatura_id||null,
+    vaga_id:_rhCtAtual.vaga_id||null,
+    cargo_id:_rhCtAtual.cargo_id||null,
+    contexto_origem:ctxOrig,
+    onFiles:function(files){
+      var f=files&&files[0];
+      if(!f) return;
+      rhCtAnexarKitArquivo(tipo, f);
+    }
+  });
+}
+async 
+
+=====
+
+function rhCtAnexarKitArquivo(tipo, file){
+  if(!file) return;
+  if(!_rhCtAtual||!_rhCtAtual.id){
+    progShowToast('Salve o rascunho do processo antes de anexar.','erro');
+    return;
+  }
+  var it=rhCtFindItem(tipo);
+  if(!it){ progShowToast('Item do kit não encontrado.','erro'); return; }
+  var jaAdmitido=!!(_rhCtAtual.admitido_em||_rhCtAtual.status==='Admitido');
+  var usarDossie=jaAdmitido && !!_rhCtAtual.colaborador_id;
+  try{
+    if(DEMO){
+      it.documento_id=usarDossie?('doc'+Date.now()):null;
+      it.arquivo_url=usarDossie?null:('demo://contratacao/'+_rhCtAtual.id+'/'+(file.name||'arquivo'));
+      it.arquivo_nome=file.name||('camera_'+Date.now()+'.jpg');
+      it.status_kit='Recebido';
+      it.acao=usarDossie?'No dossiê RH (demo)':'No processo (demo) — até efetivação';
+    } else if(usarDossie){
+      var col=await rhKitColabAtual();
+      if(!col){ progShowToast('Colaborador vinculado não encontrado.','erro'); return; }
+      var prev=it.documento_id?await rhKitGarantirDoc(it.documento_id):null;
+      var saved=await rhGravarUmDocumentoColab(col, file, {
+        categoria:it.categoria||'Admissional',
+        tipo_documento:it.tipo_documento,
+        obrigatorio:it.obrigatorio!==false,
+        status:'Pendente',
+        observacao:'Contratação '+(_rhCtAtual.id||'')
+      }, prev);
+      it.documento_id=saved&&saved.id;
+      it.arquivo_nome=file.name||(saved&&saved.arquivo_nome)||'';
+      it.arquivo_url=null;
+      it.status_kit='Recebido';
+      it.acao='No dossiê RH — conferir';
+    } else {
+      var url=await rhUploadArquivoContratacao(file, _rhCtAtual.id, it.tipo_documento||'doc');
+      it.arquivo_url=url;
+      it.arquivo_nome=file.name||('arquivo_'+Date.now());
+      it.documento_id=null;
+      it.status_kit='Recebido';
+      it.acao='No processo — até efetivação';
+    }
+    await rhKitFlush();
+    progShowToast(usarDossie?'Arquivo gravado no dossiê.':'Arquivo gravado no processo de contratação (não vai ao dossiê até a efetivação).');
+    rhRenderAssistente();
+  } catch(e){
+    progShowToast((e&&e.message)||'Falha ao anexar.','erro');
+  }
+}
+async function rhKitResolverUrlVisualizacao(url){
+  if(!url) return '';
+  if(String(url).indexOf('demo://')===0) return '';
+  try{
+    var r=await fetch(url,{method:'GET'});
+    if(r.ok){
+      var ct=(r.headers.get('content-type')||'').toLowerCase();
+      if(ct.indexOf('application/json')>=0 || ct.indexOf('text/html')>=0){
+        /* pode ser erro do storage — tenta autenticado */
+      } else {
+        return url;
+      }
+    }
+  }catch(e){}
+  try{
+    var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key)};
+    var r2=await fetch(url,{headers:h});
+    if(!r2.ok) return url;
+    var blob=await r2.blob();
+    return URL.createObjectURL(blob);
+  }catch(e2){
+    return url;
+  }
+}
+async function rhKitAbrirArquivo(tipoEnc){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it) return;
+  var url=it.arquivo_url||null;
+  var nome=it.arquivo_nome||'arquivo';
+  var id=it.documento_id||it.equivalente_documento_id;
+  if(id){
+    var dDs=await rhKitGarantirDoc(id);
+    if(dDs && rhDocEhAssinaturaDigital(dDs)){
+      rhAbrirDocumentoDocusignSeguro(dDs.id, 'ASSINADO');
+      return;
+    }
+    if(!url && dDs && dDs.arquivo_url){ url=dDs.arquivo_url; nome=dDs.arquivo_nome||nome; }
+  }
+  if(!url){ progShowToast('Arquivo ainda não disponível.','erro'); return; }
+  var viewUrl=await rhKitResolverUrlVisualizacao(url);
+  if(!viewUrl){ progShowToast('Pré-visualização indisponível neste modo.','erro'); return; }
+  var isImg=/\.(jpe?g|png|webp|gif)$/i.test(nome)||/\.(jpe?g|png|webp|gif)(\?|$)/i.test(url);
+  var isPdf=/\.pdf$/i.test(nome)||/\.pdf(\?|$)/i.test(url);
+  var corpo=isImg
+    ? '<img src="'+rhEsc(viewUrl)+'" alt="'+rhEsc(nome)+'" style="max-width:100%;max-height:70vh;display:block;margin:0 auto;border-radius:8px;border:.5px solid #e0dfd8"/>'
+    : (isPdf
+      ? '<iframe src="'+rhEsc(viewUrl)+'" title="'+rhEsc(nome)+'" style="width:100%;height:70vh;border:.5px solid #e0dfd8;border-radius:8px"></iframe>'
+      : '<div style="padding:16px;background:#F5F5F0;border-radius:8px;font-size:13px">Pré-visualização não disponível para este tipo. Use “Abrir em nova aba”.</div>');
+  var tipoEncSafe=String(tipoEnc||'').replace(/'/g,'');
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:920px;max-height:92vh;overflow:auto">'
+    +'<h3 style="margin-bottom:4px">'+rhEsc(it.tipo_documento||'Documento')+'</h3>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:10px">'+rhEsc(nome)+' · status '+rhEsc(it.status_kit||'')+'</div>'
+    +corpo
+    +'<div class="ma" style="margin-top:12px;flex-wrap:wrap;gap:6px">'
+    +'<button class="btn" onclick="closeModal()">Fechar</button>'
+    +'<a class="btn" href="'+rhEsc(url)+'" target="_blank" rel="noopener">Abrir em nova aba</a>'
+    +(it.arquivo_url?'<button class="btn btn-pri" onclick="closeModal();rhCtLerIa(\''+tipoEncSafe+'\')">Ler este arquivo com IA</button>':'')
+    +'</div></div></div>');
+}
+async function rhKitValidar(tipoEnc){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it||(!it.documento_id && !it.arquivo_url)){ progShowToast('Anexe o arquivo antes de validar.','erro'); return; }
+  if(it.arquivo_url && !it.documento_id){
+    it.status_kit='Validado';
+    it.acao='Conferido no processo (antes da admissão)';
+    await rhKitFlush();
+    progShowToast('Documento validado no processo.');
+    rhRenderAssistente();
+    return;
+  }
+  var d=await rhKitGarantirDoc(it.documento_id);
+  if(!d){ progShowToast('Documento do dossiê não encontrado.','erro'); return; }
+  var ok=await rhValidarDocumento(d.id, false);
+  if(!ok) return;
+  it.status_kit='Validado';
+  it.acao='Conferido pelo RH';
+  await rhKitFlush();
+  rhRenderAssistente();
+}
+function rhKitRecusar(tipoEnc){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it||(!it.documento_id && !it.arquivo_url)){ progShowToast('Não há arquivo para recusar.','erro'); return; }
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px"><h3>Recusar documento do kit</h3>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:.75rem">'+rhEsc(it.tipo_documento)+' — precisa corrigir e reenviar. Motivo obrigatório.</div>'
+    +'<div class="fg"><label>Motivo *</label><textarea class="inp" id="rh-kit-recusa-motivo" style="height:90px"></textarea></div>'
+    +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
+    +'<button class="btn btn-pri" style="background:#A32D2D;border-color:#A32D2D" onclick="rhKitConfirmarRecusa(\''+tipoEnc+'\')">Recusar</button></div></div></div>');
+}
+async function rhKitConfirmarRecusa(tipoEnc){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it||(!it.documento_id && !it.arquivo_url)){ closeModal(); return; }
+  var motivo=((document.getElementById('rh-kit-recusa-motivo')||{}).value||'').trim();
+  if(!motivo){ progShowToast('Informe o motivo.','erro'); return; }
+  if(it.arquivo_url && !it.documento_id){
+    it.status_kit='Recusado';
+    it.acao='Corrigir e reenviar · '+motivo.slice(0,80);
+    it.arquivo_url=null;
+    it.arquivo_nome=null;
+    it.ia_item_id=null;
+    closeModal();
+    await rhKitFlush();
+    progShowToast('Documento recusado no processo. Anexe uma nova versão.');
+    rhRenderAssistente();
+    return;
+  }
+  var d=await rhKitGarantirDoc(it.documento_id);
+  if(!d){ progShowToast('Documento do dossiê não encontrado.','erro'); return; }
+  var quem=usuarioLogado?(usuarioLogado.nome||usuarioLogado.email):'Sistema';
+  var agora=new Date().toISOString();
+  var obs=(d.observacao?d.observacao+' | ':'')+'Recusado: '+motivo;
+  var payload={status:'Recusado',motivo_recusa:motivo,recusado_por:quem,recusado_em:agora,observacao:obs};
+  if(!DEMO){
+    var ok=await sbUpdate('rh_colaborador_documentos',payload,'id=eq.'+d.id);
+    if(!ok){ progShowToast('Não foi possível recusar no dossiê.','erro'); return; }
+  }
+  Object.assign(d,payload);
+  it.status_kit='Recusado';
+  it.acao='Corrigir e reenviar';
+  closeModal();
+  await rhKitFlush();
+  progShowToast('Documento recusado. Anexe uma nova versão.');
+  rhRenderAssistente();
+}
+function rhKitDispensar(tipoEnc){
+  var it=rhCtFindItem(decodeURIComponent(tipoEnc||''));
+  if(!it) return;
+  var aviso=rhKitEhCpfArquivo(it.tipo_documento)
+    ? 'Isto dispensa só o ARQUIVO de CPF. O dado cadastral CPF permanece obrigatório.'
+    : 'Dispensa o item no kit deste processo. Informe o motivo (obrigatório).';
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:480px"><h3>Dispensar item</h3>'
+    +'<div style="font-size:13px;color:#555;margin-bottom:.75rem">'+rhEsc(it.tipo_documento)+' — '+aviso+'</div>'
+    +'<div class="fg"><label>Motivo *</label><textarea class="inp" id="rh-kit-disp-motivo" style="height:80px"></textarea></div>'
+    +'<
+
+=====
+
+function rhCtDocsEtapaHtml(){
+  var r=rhCtKitResumoHtml();
+  var inconsist=rhCtBool('dirige_veiculo') && !rhCtProcessoTemCnh();
+  var kitVis=typeof rhCtKitItensAdmissao==='function'?rhCtKitItensAdmissao():(_rhCtKit||[]);
+  var kitRows=kitVis.map(function(it){
+    var st=it.status_kit||'Pendente';
+    var dest=rhKitGeraPendencia(it)||rhKitGeraConferencia(it);
+    var dim=(st==='Nao se aplica'||st==='Dispensado');
+    return '<tr'+(dim?' style="opacity:.55"':(dest?'':' style="opacity:.92"'))+'>'
+      +'<td><b>'+rhEsc(it.tipo_documento)+'</b></td><td>'+rhEsc(it.categoria||'')+'</td><td>'+rhEsc(it.origem_esperada||'')+'</td>'
+      +'<td>'+(it.obrigatorio?'Sim':'Não')+'</td>'
+      +'<td>'+rhEsc(st)+'</td><td style="font-size:11px">'+rhEsc(it.motivo_exigencia||'')+'</td>'
+      +'<td>'+rhCtKitAcoesHtml(it)+'</td></tr>';
+  }).join('')||'<tr><td colspan="7" style="padding:1rem;color:#aaa;text-align:center">Preencha a etapa 1 (e atividade quando aplicável) para montar o kit.</td></tr>';
+  var da=_rhCtAtual.dados_admissionais; if(typeof da==='string'){ try{da=JSON.parse(da);}catch(e){da={};} }
+  da=da||{};
+  var camposPrev=['nome_completo','data_nascimento','rg_numero','rg_orgao_emissor','cep','logradouro','cidade','uf','pis_nit'];
+  var dadosCards=camposPrev.map(function(k){
+    var item=da[k], val=item&&item.valor, st=item?item.status:'SEM_DADO';
+    return '<div style="border:1px solid #eee;border-radius:8px;padding:8px;font-size:11px">'
+      +'<div style="color:#888">'+rhEsc(k)+'</div>'
+      +'<div style="font-weight:600">'+(val?rhEsc(String(val)):'—')+'</div>'
+      +'<div style="color:#666">'+rhEsc(st)+(item&&item.fonte?' · '+rhEsc(item.fonte):'')+'</div></div>';
+  }).join('');
+  var depJson=_rhCtAtual.dependentes_rascunho||[];
+  if(typeof depJson==='string'){ try{depJson=JSON.parse(depJson);}catch(e){depJson=[];} }
+  var depHtml=[0,1,2].map(function(i){
+    var d=depJson[i]||{};
+    return '<div class="g2"><div class="fg"><label>Dependente '+(i+1)+' — nome</label><input class="inp" id="rh-ct-dep-nome-'+(i+1)+'" value="'+rhEsc(d.nome||'')+'"/></div>'
+      +'<div class="fg"><label>Parentesco</label><input class="inp" id="rh-ct-dep-par-'+(i+1)+'" value="'+rhEsc(d.parentesco||'filho')+'"/></div>'
+      +'<div class="fg"><label>Nascimento</label><input class="inp" type="date" id="rh-ct-dep-dn-'+(i+1)+'" value="'+rhEsc(d.data_nascimento||'')+'"/></div></div>';
+  }).join('');
+  var deps=rhCtBool('tem_dependentes');
+  var maxBytes = (typeof RH_IA_MAX_BYTES!=='undefined'?RH_IA_MAX_BYTES:15*1024*1024);
+  var maxLab = (typeof rhIaFmtBytes==='function'?rhIaFmtBytes(maxBytes):(Math.round(maxBytes/1024/1024)+' MB'));
+
+  return '<div style="font-size:12px;color:#666;margin-bottom:8px">RH-2A — Documentos e Dados. Necessários: <b>'+r.total+'</b> · Recebidos/validados: <b>'+r.ok+'</b> · Falta arquivo: <b>'+r.pend+'</b> · Conferência: <b>'+r.conf+'</b>. IA sugere; RH confirma. Sem templates.</div>'
+    +rhCtIaContextoBannerHtml()
+    +(!_rhCtAtual.admitido_em?'<div style="margin-bottom:8px;padding:8px 10px;background:#EBF4FD;color:#185FA5;font-size:12px">Documentos e dados ficam neste processo até a efetivação. Não cria colaborador só por receber arquivos.</div>':'')
+    +(inconsist?'<div style="margin-bottom:8px;padding:8px 10px;background:#FCEBEB;color:#A32D2D;font-size:12px">Atividade marca dirigir=Sim sem CNH no kit — anexe a CNH na Entrada Inteligente abaixo.</div>':'')
+
+    +'<div id="rh-contratacao-docs-inteligente" style="margin-bottom:16px;border:1px solid #B5D4F4;border-radius:12px;overflow:hidden;background:#fff">'
+    +'<div style="padding:12px 14px;background:#F0F7FF;border-bottom:1px solid #D6E8FA">'
+    +'<div style="font-weight:700;font-size:14px;color:#185FA5">Entrada Inteligente de Documentos do Candidato</div>'
+    +'<div style="font-size:12px;color:#4B6A88;margin-top:4px">Envie vários documentos de uma vez. O sistema identifica os arquivos e prepara a vinculação ao candidato e à vaga para conferência do RH/DP.</div>'
+    +'</div>'
+    +'<div style="padding:14px">'
+    +'<div id="rh-ct-ia-drop" style="border:2px dashed #c5d4e8;background:#F7FAFC;border-radius:12px;padding:1.8rem 1rem;text-align:center;cursor:pointer" onclick="document.getElementById(\'rh-ct-ia-file\').click()">'
+    +'<div style="font-size:15px;font-weight:700;color:#185FA5;margin-bottom:6px">Arraste vários arquivos aqui</div>'
+    +'<div style="font-size:12px;color:#666">PDF, JPG, JPEG, PNG, WEBP · máx. '+rhEsc(maxLab)+' · mesmo motor da Entrada Inteligente</div>'
+    +'<input id="rh-ct-ia-file" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp" style="display:none" onchange="rhCtIaOnFiles(this)"/>'
+    +'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
+    +'<button type="button" class="btn" onclick="document.getElementById(\'rh-ct-ia-file\').click()">Selecionar arquivos</button>'
+    +'<button type="button" class="btn btn-pri" onclick="rhCtIaEnviarStaging()">Enviar para staging</button>'
+    +'<button type="button" class="btn" onclick="rhCtIaProcessarPendentes()">Processar pendentes (IA)</button>'
+    +'<button type="button" class="btn" onclick="rhCtIaAbrirCaixaCompleta()">Abrir caixa completa</button>'
+    +'<button type="button" class="btn" onclick="rhCtRepararKitUi()">Corrigir tipos do kit</button>'
+    +'<button type="button" class="btn" onclick="rhCtIaRefreshPainel()">Atualizar</button>'
+    +'</div>'
+    +'<div id="rh-ct-ia-selecao" style="margin-top:10px">'+rhCtIaSelecaoHtml()+'</div>'
+    +'<div style="font-weight:700;margin:14px 0 6px;font-size:13px">Documentos necessários (Matriz do cargo)</div>'
+    +'<div id="rh-ct-ia-matriz"><div style="font-size:12px;color:#888">Carregando matriz…</div></div>'
+    +'<div style="font-weight:700;margin:14px 0 6px;font-size:13px">Conferência RH / DP</div>'
+    +'<div style="font-size:11px;color:#666;margin-bottom:6px">IA sugere tipo e dados. Confirmação é humana. Divergências não sobrescrevem cadastro automaticamente.</div>'
+    +'<div id="rh-ct-ia-grade"><div style="font-size:12px;color:#888">Carregando…</div></div>'
+    +'</div></div>'
+
+    +'<div style="font-weight:700;margin:10px 0 6px">Dados cadastrais (propostas / aplicados)</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:12px">'+dadosCards+'</div>'
+    +'<div class="g2" style="margin-bottom:10px;padding:10px;background:#f9f9f7;border-radius:8px">'
+    +'<div class="fg"><label>Órgão emissor do RG <span style="color:#A32D2D">*</span> <span style="font-size:10px;color:#888">(token [[RG_ORGAO_EMISSOR]])</span></label>'
+    +'<input class="inp" id="rh-ct-rg-orgao" placeholder="Ex.: SSP/SP" value="'+rhEsc((da.rg_orgao_emissor&&da.rg_orgao_emissor.valor)||'')+'"/>'
+    +'<div style="font-size:11px;color:#888;margin-top:4px">Preencha se a IA não extraiu. Salve o processo depois.</div></div>'
+    +'<div class="fg" style="display:flex;align-items:flex-end"><button class="btn btn-sm" type="button" onclick="rhCtSalvarRgOrgao()">Salvar órgão emissor</button></div>'
+    +'</div>'
+    +'<div class="g2 rh-ct-etapa-qa" style="margin-bottom:10px">'
+    +'<div class="fg"><label>Casado?</label>'+rhCtSimNao('rh-ct-casado', rhCtVal('casado'))+'</div>'
+    +'<div class="fg"><label>Dependentes?</label>'+rhCtSimNao('rh-ct-deps', rhCtVal('tem_dependentes'))+'</div>'
+    +'</div>'
+    +'<div id="rh-ct-dep-extra" style="margin-top:6px;'+(deps?'':'display:none')+'"><div style="font-size:12px;color:#666;margin-bottom:6px">Rascunho de dependentes.</div>'+depHtml+'</div>'
+    +'<div style="font-weight:700;margin:12px 0 6px">Kit documental da admissão</div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:8px">NRs, treinamentos, integração, termos de posse e apontamentos (atestado, advertência, suspensão) não entram nesta lista — o SESMT complementa após a admissão; apontamentos aparecem no dia a dia. <b>Mudança de Função</b> só na promoção.</div>'
+    +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr><th>Documento</th><th>Cat.</th><th>Origem</th><th>Obrig.</th><th>Status</th><th>Motivo</th><th>Conferência</th></tr></thead><tbody>'
+    +kitRows+'</tbody></table></div>';
+}
+function rhCtAtividadeEtapaHtml(){
+  var elet=rhCtBool('trabalho_eletricidade'), dirige=rhCtBool('dirige_veiculo');
+  var temCnh=rhCtProcessoTemCnh();
+  var inconsist=dirige && !temCnh;
+  var cargoObj=null;
+  if(_rhCtAtual.cargo_id) cargoObj=(_cad_cargos||[]).filter(function(c){return String(c.id)===String(_rhCtAtual.cargo_id);})[0];
+  if(!cargoObj && _rhCtAtual.cargo) cargoObj=(_cad_cargos||[]).filter(function(c){return c.nome===_rhCtAtual.cargo;})[0];
+  var objPend=cargoObj && !String(cargoObj.objeto_funcao||'').trim();
+  var descPend=cargoObj && !String(cargoObj.descricao_atividades_responsabilidades||'').trim();
+  return '<div 
+
+=====
+
+function rhCtFindItem(tipo){
+  var exact=(_rhCtKit||[]).find(function(it){ return rhCtTipoEq(it.tipo_documento, tipo); });
+  if(exact) return exact;
+  return (_rhCtKit||[]).find(function(it){ return rhCtTipoParecido(it.tipo_documento, tipo); })||null;
+}
+/** Move arquivo do processo para o tipo classificado e remove do slot errado. */
+
+
+=====
+
+function rhCtKitAplicarArquivoNoTipo(tipo, opts){
+  opts=opts||{};
+  if(!tipo) return null;
+  if(typeof rhDocNomeCanonico==='function'){
+    try{ tipo=rhDocNomeCanonico(tipo)||tipo; }catch(e){}
+  }
+  if(typeof rhIaMapearTipoDocumento==='function'){
+    try{
+      var map=rhIaMapearTipoDocumento(tipo);
+      if(map&&map.ok&&map.tipo) tipo=map.tipo;
+    }catch(e2){}
+  }
+  if(!_rhCtKit) _rhCtKit=[];
+  var dest=rhCtFindItem(tipo);
+  if(!dest){
+    var r=typeof rhCtFindRegraTipo==='function'?rhCtFindRegraTipo(tipo):null;
+    if(r && typeof rhCtItemFromRegra==='function'){
+      dest=rhCtItemFromRegra(r,{mot:'Incluído pela classificação documental'});
+      _rhCtKit.push(dest);
+    }
+  }
+  if(!dest) return null;
+  var url=opts.arquivo_url||null;
+  var nome=opts.arquivo_nome||null;
+  var iaId=opts.ia_item_id||null;
+  (_rhCtKit||[]).forEach(function(it){
+    if(it===dest) return;
+    var sameUrl=url && it.arquivo_url && String(it.arquivo_url)===String(url);
+    var sameIa=iaId && it.ia_item_id && String(it.ia_item_id)===String(iaId);
+    var sameNome=nome && it.arquivo_nome && String(it.arquivo_nome)===String(nome) && !it.documento_id;
+    if(!(sameUrl||sameIa||sameNome)) return;
+    it.arquivo_url=null;
+    it.arquivo_nome=null;
+    it.ia_item_id=null;
+    if(['Recebido','Validado','Em conferencia','A vencer'].indexOf(it.status_kit)>=0){
+      it.status_kit='Pendente';
+      it.acao='Providenciar';
+    }
+  });
+  dest.arquivo_url=url;
+  dest.arquivo_nome=nome;
+  dest.ia_item_id=iaId||dest.ia_item_id||null;
+  if(['Nao se aplica','Dispensado','Pendente','','Atendido por documento equivalente'].indexOf(String(dest.status_kit||''))>=0
+      || !dest.status_kit){
+    dest.status_kit='Recebido';
+  } else if(dest.status_kit!=='Validado'){
+    dest.status_kit='Recebido';
+  }
+  dest.obrigatorio=true;
+  dest.acao=opts.acao||'IA · no processo até efetivação';
+  dest.motivo_exigencia=opts.motivo||('Classificado como '+tipo);
+  if(_rhCtAtual && rhCtTipoEq(tipo,'CNH')){
+    _rhCtAtual.possui_cnh=true;
+    dest.motivo_exigencia='CNH anexada/classificada no processo';
+  }
+  return dest;
+}
+async 

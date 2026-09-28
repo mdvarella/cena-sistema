@@ -93,7 +93,7 @@ assert("23 CLT/NOR-ATEST nao alterados no edge", !/NOR-ATEST/.test(edgeSrc) && !
 assert("migration metadata jsonb", /ADD COLUMN IF NOT EXISTS metadata jsonb/.test(mig));
 assert("nao db reset", !/RESET/.test(mig));
 assert("json cors proprio (nao muda docusign.ts)", /export function json/.test(zapSrc));
-assert("versao 8.1.161", /numero: '8\.1\.161'/.test(html));
+assert("versao 8.1.161 no changelog", /\{v:'8\.1\.161'/.test(html));
 
 const h = createHash("sha256").update("html-congelado").digest("hex");
 assert("hash helper shape", h.length === 64);

@@ -1,0 +1,10 @@
+'use strict';
+const fs = require('fs');
+const s = fs.readFileSync('index.html', 'utf8');
+const a = s.indexOf('function rhCtKitAcoesHtml');
+console.log(s.slice(a, a+2800));
+console.log('\n\n==== AFTER ANEXAR KIT FILE ====\n');
+const b = s.indexOf('async function rhCtAnexarKitArquivo');
+const c = s.indexOf('async function rhKitResolverUrlVisualizacao');
+console.log('anexar', b, 'resolver', c);
+console.log('\n==== RESOLVER HEAD ====\n', s.slice(c, c+600));

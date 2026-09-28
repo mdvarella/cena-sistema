@@ -89,7 +89,7 @@ ok('vaga mostra data agendada', /Entrevista/.test(sandbox.rhSelVagaAvisoHtml({ i
 ok('esconde botao se ativa', html.includes('if(pode && elegivel && !ativaEnt)'));
 ok('toast ja tem entrevista', html.includes('Já tem entrevista marcada'));
 ok('coluna proximo passo', html.includes('<th>Próximo passo</th>'));
-ok('versao 8.1.160', /numero: '8.1.160'/.test(html));
+ok('versao 8.1.160 no changelog', /\{v:'8\.1\.160'/.test(html));
 
 if (failed.length) {
   console.error('FAIL\n' + failed.join('\n'));
