@@ -53,7 +53,7 @@ ok('gravou granted', sandbox.portCamPermLer() === 'granted');
 
 ok('folha no overlay', src.indexOf('Permitir câmera da Portaria') >= 0 || src.indexOf('Permitir c\u00e2mera da Portaria') >= 0 || src.indexOf('id="port-cam-perm"') >= 0);
 ok('pedir de novo', src.indexOf('Pedir permissão de novo') >= 0 || src.indexOf('Pedir permiss') >= 0);
-ok('versao html', /numero: '8.1.159'/.test(html));
+ok('versao 8.1.160', /numero: '8.1.160'/.test(html));
 ok('cache camera', html.indexOf('portaria-camera.js?v=8.1.159') >= 0);
 
 if (failed.length) {
