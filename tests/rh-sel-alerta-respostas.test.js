@@ -28,39 +28,57 @@ function ok(name, cond, detail) {
   if (!cond) failed.push(name + (detail ? ' — ' + detail : ''));
 }
 
-sandbox._rhSelCandEntByCand['1'] = [{ status: 'CONCLUIDA', parecer: 'ok' }];
-ok('alerta quando testes e entrevista', !!sandbox.rhSelCandAlertaRespostasHtml({
-  status: 'TESTES_CONCLUIDOS', testes_concluidos_em: '2026-09-28'
-}, '1'));
+function alerta(c, cid) {
+  return sandbox.rhSelCandAlertaRespostasHtml(c, cid || '1');
+}
 
-sandbox._rhSelCandEntByCand['2'] = [{ status: 'AGENDADA' }];
-ok('sem alerta só testes', !sandbox.rhSelCandAlertaRespostasHtml({
-  status: 'TESTES_CONCLUIDOS', testes_concluidos_em: '2026-09-28'
-}, '2'));
+ok('Mauricio: ID + testes em andamento', !!alerta({
+  status: 'TESTES_EM_ANDAMENTO',
+  identificacao_concluida_em: '2026-09-28',
+  testes_iniciados_em: '2026-09-28'
+}));
 
-sandbox._rhSelCandEntByCand['3'] = [{ status: 'CONCLUIDA' }];
-ok('sem alerta só entrevista', !sandbox.rhSelCandAlertaRespostasHtml({
-  status: 'TESTES_EM_ANDAMENTO'
-}, '3'));
+ok('alerta com testes concluídos sem entrevista', !!alerta({
+  status: 'TESTES_CONCLUIDOS',
+  identificacao_concluida_em: '2026-09-28',
+  testes_concluidos_em: '2026-09-28'
+}));
 
-sandbox._rhSelCandEntByCand['4'] = [{ status: 'CONCLUIDA', parecer: 'ok' }];
-ok('some alerta após integridade', !sandbox.rhSelCandAlertaRespostasHtml({
-  status: 'INTEGRIDADE_EM_ANALISE', testes_concluidos_em: '2026-09-28', integridade_iniciada_em: '2026-09-28'
-}, '4'));
+ok('sem alerta só convite sem ID/testes', !alerta({
+  status: 'CONVITE_EMITIDO'
+}));
 
-const htmlAlerta = sandbox.rhSelCandAlertaRespostasHtml({
-  status: 'ENTREVISTAS_CONCLUIDAS', testes_concluidos_em: '2026-09-28'
-}, '1');
+ok('sem alerta só identificação', !alerta({
+  status: 'IDENTIFICACAO_CONCLUIDA',
+  identificacao_concluida_em: '2026-09-28'
+}));
+
+ok('some alerta após encaminhar', !alerta({
+  status: 'ENCAMINHADO_ADMISSAO',
+  identificacao_concluida_em: '2026-09-28',
+  testes_concluidos_em: '2026-09-28'
+}));
+
+ok('some alerta após integridade', !alerta({
+  status: 'INTEGRIDADE_EM_ANALISE',
+  identificacao_concluida_em: '2026-09-28',
+  testes_concluidos_em: '2026-09-28',
+  integridade_iniciada_em: '2026-09-28'
+}));
+
+const htmlAlerta = alerta({
+  status: 'TESTES_EM_ANDAMENTO',
+  identificacao_concluida_em: '2026-09-28',
+  testes_iniciados_em: '2026-09-28'
+});
 ok('texto Respostas enviadas', /Respostas enviadas/.test(htmlAlerta));
 ok('amarelo', /#FDE68A/.test(htmlAlerta));
-
 ok('lista usa col11', html.includes("'<td style=\"font-size:11px\">'+col11+'</td>'"));
-ok('linha amarela', html.includes('alertaHtml?\' style="background:#FFF8EB"\':\'\''));
-ok('versao 8.1.156', /numero: '8.1.156'/.test(html));
+ok('versao 8.1.157', /numero: '8.1.157'/.test(html));
 
 if (failed.length) {
   console.error('FAIL\n' + failed.join('\n'));
   process.exit(1);
 }
-console.log('ok ' + 8 + ' rh-sel-alerta-respostas');
+console.log('ok rh-sel-alerta-respostas');
 assert.ok(true);
