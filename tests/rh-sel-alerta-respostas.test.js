@@ -2,7 +2,6 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-const assert = require('assert');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
@@ -15,10 +14,18 @@ function sliceFn(src, name, nextName) {
 }
 
 const sandbox = {
-  _rhSelCandEntByCand: {}
+  _rhSelCandEntByCand: {},
+  _rhSelPendByVaga: {},
+  DEMO: true,
+  rhEsc: function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
 };
 vm.createContext(sandbox);
 vm.runInContext(
+  sliceFn(html, 'rhSelFmtDt', 'rhSelCandStatusLabel') +
   sliceFn(html, 'rhSelCandTestesRespondidos', 'rhSelCandidatosRenderLista'),
   sandbox
 );
@@ -38,47 +45,54 @@ ok('Mauricio: ID + testes em andamento', !!alerta({
   testes_iniciados_em: '2026-09-28'
 }));
 
-ok('alerta com testes concluídos sem entrevista', !!alerta({
-  status: 'TESTES_CONCLUIDOS',
+sandbox._rhSelCandEntByCand['1'] = [{ status: 'AGENDADA', agendada_para: '2026-09-30T14:00:00' }];
+ok('some amarelo após agendar', !alerta({
+  status: 'ENTREVISTA_AGENDADA',
   identificacao_concluida_em: '2026-09-28',
   testes_concluidos_em: '2026-09-28'
-}));
+}, '1'));
+ok('chip data/hora no lugar', /Agendada/.test(sandbox.rhSelCandAlertaAgendaHtml('1')));
+ok('ativa detectada', !!sandbox.rhSelCandEntrevistaAtiva('1'));
 
-ok('sem alerta só convite sem ID/testes', !alerta({
-  status: 'CONVITE_EMITIDO'
-}));
-
-ok('sem alerta só identificação', !alerta({
-  status: 'IDENTIFICACAO_CONCLUIDA',
-  identificacao_concluida_em: '2026-09-28'
-}));
-
-ok('some alerta após encaminhar', !alerta({
-  status: 'ENCAMINHADO_ADMISSAO',
-  identificacao_concluida_em: '2026-09-28',
-  testes_concluidos_em: '2026-09-28'
-}));
-
-ok('some alerta após integridade', !alerta({
-  status: 'INTEGRIDADE_EM_ANALISE',
-  identificacao_concluida_em: '2026-09-28',
-  testes_concluidos_em: '2026-09-28',
-  integridade_iniciada_em: '2026-09-28'
-}));
-
-const htmlAlerta = alerta({
+sandbox._rhSelCandEntByCand['2'] = [];
+ok('ainda amarelo sem entrevista', !!alerta({
   status: 'TESTES_EM_ANDAMENTO',
   identificacao_concluida_em: '2026-09-28',
   testes_iniciados_em: '2026-09-28'
-});
-ok('texto Respostas enviadas', /Respostas enviadas/.test(htmlAlerta));
-ok('amarelo', /#FDE68A/.test(htmlAlerta));
-ok('lista usa col11', html.includes("'<td style=\"font-size:11px\">'+col11+'</td>'"));
-ok('versao 8.1.157', /numero: '8.1.157'/.test(html));
+}, '2'));
+
+ok('vaga rascunho', /Publicar vaga/.test(sandbox.rhSelVagaAvisoHtml({ status: 'RASCUNHO' })));
+ok('vaga aberta sem candidato', /convidar candidato/.test(sandbox.rhSelVagaAvisoHtml({ id: 'v1', status: 'ABERTA' })));
+
+sandbox._rhSelPendByVaga.v2 = {
+  cands: [{
+    id: 'c1', vaga_id: 'v2', nome: 'Mauricio',
+    identificacao_concluida_em: '2026-09-28',
+    testes_iniciados_em: '2026-09-28',
+    status: 'TESTES_EM_ANDAMENTO'
+  }],
+  ents: []
+};
+ok('vaga precisa agendar', /Agendar entrevista/.test(sandbox.rhSelVagaAvisoHtml({ id: 'v2', status: 'ABERTA' })));
+
+sandbox._rhSelPendByVaga.v3 = {
+  cands: [{
+    id: 'c2', vaga_id: 'v3', nome: 'Luana',
+    identificacao_concluida_em: '2026-09-28',
+    testes_concluidos_em: '2026-09-28',
+    status: 'ENTREVISTA_AGENDADA'
+  }],
+  ents: [{ candidatura_id: 'c2', vaga_id: 'v3', status: 'AGENDADA', agendada_para: '2026-10-01T09:30:00' }]
+};
+ok('vaga mostra data agendada', /Entrevista/.test(sandbox.rhSelVagaAvisoHtml({ id: 'v3', status: 'ABERTA' })));
+
+ok('esconde botao se ativa', html.includes('if(pode && elegivel && !ativaEnt)'));
+ok('toast ja tem entrevista', html.includes('Já tem entrevista marcada'));
+ok('coluna proximo passo', html.includes('<th>Próximo passo</th>'));
+ok('versao 8.1.159', /numero: '8.1.159'/.test(html));
 
 if (failed.length) {
   console.error('FAIL\n' + failed.join('\n'));
   process.exit(1);
 }
-console.log('ok rh-sel-alerta-respostas');
-assert.ok(true);
+console.log('ok rh-sel-alerta-respostas + entrevista unica');

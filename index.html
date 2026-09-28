@@ -1983,7 +1983,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
 <script src="portaria-offline.js?v=8.1.153"></script>
-<script src="portaria-camera.js?v=8.1.151"></script>
+<script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.152"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
@@ -44641,10 +44641,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.157',
+  numero: '8.1.159',
   data:   '28/09/2026',
-  build:  '20260928-1137',
+  build:  '20260928-1214',
   log: [
+    {v:'8.1.159', d:'28/09/2026', itens:[
+      'Portaria: se o tablet negar a câmera, pede permissão de novo; autorizar fica para sempre e recusar pergunta na próxima foto. Sem SQL.',
+    ]},
+    {v:'8.1.158', d:'28/09/2026', itens:[
+      'RH Recrutamento: uma entrevista ativa por candidato; esconde Agendar e o alerta Respostas enviadas após marcar; mostra data/hora e o próximo passo na linha da vaga. Sem SQL.',
+    ]},
     {v:'8.1.157', d:'28/09/2026', itens:[
       'RH Recrutamento: alerta amarelo Respostas enviadas na inscrição após identificação e testes (mesmo em andamento), sem exigir entrevista. Sem SQL.',
     ]},
@@ -124690,6 +124696,8 @@ var _rhSelIntItens = {}; // integridade_id -> itens[]
 var _rhSelIntFiltro = ''; // filtro lista: '', NAO_INICIADA, EM_ANALISE, PENDENTE, CONCLUIDA
 var _rhSelResByCand = {}; // candidatura_id -> resultado
 var _rhSelResFiltro = ''; // filtro resultado lista
+var _rhSelPendByVaga = {};
+var _rhSelPendCarregado = false;
 function rhSelSqlHint(){ return 'Aplique SQLS/sql_rh_selecao_vagas_fase1a.sql e SQLS/sql_rh_selecao_vagas_fase_sel1a.sql no SQL Editor. O ERP não aplica SQL sozinho.'; }
 function rhSelPodeEditar(){
   if(typeof cadPodeEditarCargos==='function') return cadPodeEditarCargos();
@@ -124847,7 +124855,11 @@ function rhSelRender(){
   var wrap=document.getElementById('rh-vagas-wrap'); if(!wrap) return;
   if(!_rhSel.carregado){
     wrap.innerHTML='<div class="card"><div class="ch"><span class="ct">Recrutamento e Seleção</span></div><div style="padding:1.5rem;color:#888">Carregando…</div></div>';
-    rhGarantirLookups().then(function(){ return rhSelCarregar(); }).then(function(){ rhSelRender(); });
+    rhGarantirLookups().then(function(){ return rhSelCarregar(); }).then(function(){ return rhSelCarregarPendenciasLista(); }).then(function(){ rhSelRender(); });
+    return;
+  }
+  if(!_rhSelPendCarregado && _rhSel.view!=='ficha' && _rhSel.view!=='entrevistas' && _rhSel.view!=='entrevista_painel'){
+    rhSelCarregarPendenciasLista().then(function(){ rhSelRender(); });
     return;
   }
   if(_rhSel.view==='ficha'){ rhSelRenderFicha(); return; }
@@ -124879,22 +124891,25 @@ function rhSelRender(){
       return '<option value="'+p[0]+'"'+(fs===p[0]?' selected':'')+'>'+p[1]+'</option>';
     }).join('')+'</select>'
     +'</div>'
-    +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Código</th><th>Cargo</th><th>Filial</th><th>Contrato</th><th>Gestor</th><th>Qtd</th><th>Preenchidas</th><th>Status</th><th>Desejada</th><th>RH</th><th></th></tr></thead><tbody>'
+    +'<div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Código</th><th>Cargo</th><th>Filial</th><th>Contrato</th><th>Gestor</th><th>Qtd</th><th>Preenchidas</th><th>Status</th><th>Desejada</th><th>RH</th><th>Próximo passo</th><th></th></tr></thead><tbody>'
     +(rows.map(function(v){
       var id=String(v.id||'').replace(/'/g,'');
       var acoes='<button class="btn btn-sm" onclick="rhSelAbrir(\''+id+'\')">Abrir</button>';
       if(pode && v.status==='ABERTA') acoes+=' <button class="btn btn-sm" onclick="rhSelSetStatus(\''+id+'\',\'PAUSADA\')">Pausar</button>';
       if(pode && (v.status==='ABERTA'||v.status==='PAUSADA'||v.status==='SUSPENSA')) acoes+=' <button class="btn btn-sm" onclick="rhSelSetStatus(\''+id+'\',\'ENCERRADA\')">Encerrar</button>';
       if(pode && v.status!=='CANCELADA' && v.status!=='ENCERRADA') acoes+=' <button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" onclick="rhSelSetStatus(\''+id+'\',\'CANCELADA\')">Cancelar</button>';
-      return '<tr><td>'+rhEsc(v.codigo||'—')+'</td><td>'+rhEsc(v.cargo_nome||rhSelCargoNome(v.cargo_id))+'</td>'
+      var avisoVaga=typeof rhSelVagaAvisoHtml==='function'?rhSelVagaAvisoHtml(v):'';
+      var trVaga=avisoVaga&&avisoVaga.indexOf('#FDE68A')>=0?' style="background:#FFF8EB"':(avisoVaga&&avisoVaga.indexOf('#FDE8E8')>=0?' style="background:#FEF2F2"':'');
+      return '<tr'+trVaga+'><td>'+rhEsc(v.codigo||'—')+'</td><td>'+rhEsc(v.cargo_nome||rhSelCargoNome(v.cargo_id))+'</td>'
         +'<td>'+rhEsc(v.filial_nome||'—')+'</td><td>'+rhEsc(v.contrato_nome||'—')+'</td>'
         +'<td>'+rhEsc(v.gestor_nome||'—')+'</td>'
         +'<td>'+rhSelQtdPlan(v)+'</td><td>'+rhSelQtdPre(v)+'</td>'
         +'<td>'+rhEsc(rhSelStatusLabel(v.status))+'</td>'
         +'<td>'+rhEsc(v.data_desejada?String(v.data_desejada).slice(0,10):'—')+'</td>'
         +'<td>'+rhEsc(v.responsavel_rh_nome||'—')+'</td>'
+        +'<td style="font-size:11px">'+avisoVaga+'</td>'
         +'<td style="white-space:nowrap">'+acoes+'</td></tr>';
-    }).join('')||'<tr><td colspan="11" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma vaga. '+(pode?'Clique em Nova vaga.':'')+'</td></tr>')
+    }).join('')||'<tr><td colspan="12" style="padding:1.5rem;text-align:center;color:#aaa">Nenhuma vaga. '+(pode?'Clique em Nova vaga.':'')+'</td></tr>')
     +'</tbody></table></div></div>';
 }
 function rhSelFiltroStatus(st){
@@ -125617,11 +125632,113 @@ function rhSelCandProcessoJaMovimentado(c){
   if(c.integridade_iniciada_em||c.integridade_concluida_em||c.decisao_em||c.entrevistas_encerradas_em) return true;
   return st==='INTEGRIDADE_EM_ANALISE'||st==='INTEGRIDADE_CONCLUIDA'||st==='EM_DECISAO_FINAL'||st==='APROVADO_PARA_ADMISSAO'||st==='NAO_SELECIONADO'||st==='ENCAMINHADO_ADMISSAO';
 }
+function rhSelCandEntrevistaAtiva(cid){
+  var ents=_rhSelCandEntByCand[String(cid)]||[];
+  return ents.filter(function(e){ return e && (e.status==='AGENDADA'||e.status==='EM_ANDAMENTO'); })[0]||null;
+}
+function rhSelCandAlertaAgendaHtml(cid){
+  var e=rhSelCandEntrevistaAtiva(cid);
+  if(!e) return '';
+  var when=e.agendada_para&&typeof rhSelFmtDt==='function'?rhSelFmtDt(e.agendada_para):'';
+  var lab=e.status==='EM_ANDAMENTO'?'Em andamento':('Agendada'+(when?' · '+when:''));
+  return '<div title="Já tem entrevista marcada" style="display:inline-block;background:#DBEAFE;color:#1E3A5F;border:.5px solid #93C5FD;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:800;white-space:nowrap">📅 '+lab+'</div>';
+}
+function rhSelAvisoChip(txt,bg,fg,bd){
+  return '<div title="'+String(txt||'').replace(/"/g,'')+'" style="display:inline-block;max-width:260px;background:'+bg+';color:'+fg+';border:.5px solid '+(bd||fg)+';border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;line-height:1.35">'+rhEsc(txt)+'</div>';
+}
+function rhSelCarregarPendenciasLista(){
+  _rhSelPendCarregado=true;
+  if(typeof DEMO!=='undefined' && DEMO){ _rhSelPendByVaga={}; return Promise.resolve(); }
+  var ids=(_rhSel.lista||[]).filter(function(v){
+    var st=v&&v.status;
+    return st==='ABERTA'||st==='PAUSADA'||st==='SUSPENSA'||st==='RASCUNHO';
+  }).map(function(v){ return v.id; }).filter(Boolean).slice(0,250);
+  if(!ids.length){ _rhSelPendByVaga={}; return Promise.resolve(); }
+  var filt='vaga_id=in.('+ids.join(',')+')';
+  return Promise.all([
+    sbFetch('rh_vaga_candidatos',{filters:[filt,'ativo=eq.true'],limit:3000}).catch(function(){return [];}),
+    sbFetch('rh_candidato_entrevistas',{filters:[filt],limit:3000}).catch(function(){return [];}),
+    sbFetch('rh_candidato_integridade',{filters:[filt],limit:3000}).catch(function(){return [];}),
+    sbFetch('rh_candidato_resultado_selecao',{filters:[filt],limit:3000}).catch(function(){return [];})
+  ]).then(function(arr){
+    _rhSelPendByVaga={};
+    (arr[0]||[]).forEach(function(c){
+      var k=String(c.vaga_id||'');
+      if(!_rhSelPendByVaga[k]) _rhSelPendByVaga[k]={cands:[],ents:[]};
+      _rhSelPendByVaga[k].cands.push(c);
+    });
+    (arr[1]||[]).forEach(function(e){
+      var k=String(e.vaga_id||'');
+      if(!_rhSelPendByVaga[k]) _rhSelPendByVaga[k]={cands:[],ents:[]};
+      _rhSelPendByVaga[k].ents.push(e);
+    });
+    (arr[2]||[]).forEach(function(a){
+      var k=String(a.vaga_id||'');
+      if(!_rhSelPendByVaga[k]) _rhSelPendByVaga[k]={cands:[],ents:[],ints:{}};
+      _rhSelPendByVaga[k].ints=_rhSelPendByVaga[k].ints||{};
+      _rhSelPendByVaga[k].ints[String(a.candidatura_id)]=a;
+    });
+    (arr[3]||[]).forEach(function(r){
+      var k=String(r.vaga_id||'');
+      if(!_rhSelPendByVaga[k]) _rhSelPendByVaga[k]={cands:[],ents:[],ress:{}};
+      _rhSelPendByVaga[k].ress=_rhSelPendByVaga[k].ress||{};
+      _rhSelPendByVaga[k].ress[String(r.candidatura_id)]=r;
+    });
+  }).catch(function(){ _rhSelPendByVaga=_rhSelPendByVaga||{}; });
+}
+function rhSelVagaAvisoHtml(v){
+  if(!v) return '';
+  var st=v.status||'';
+  if(st==='ENCERRADA'||st==='CANCELADA') return '';
+  var hoje=new Date().toISOString().slice(0,10);
+  if(st==='RASCUNHO') return rhSelAvisoChip('Publicar vaga (rascunho)','#FEF3E2','#854F0B','#E5A84B');
+  if(st==='ABERTA' && v.data_desejada && String(v.data_desejada).slice(0,10)<hoje)
+    return rhSelAvisoChip('Data desejada vencida','#FDE8E8','#A32D2D','#E5A0A0');
+  var pack=_rhSelPendByVaga[String(v.id)]||{cands:[],ents:[]};
+  var cands=pack.cands||[];
+  var ents=pack.ents||[];
+  if(!cands.length && st==='ABERTA') return rhSelAvisoChip('Próximo: convidar candidato','#E8F1FB','#185FA5','#93C5FD');
+  var ativas=ents.filter(function(e){ return e && (e.status==='AGENDADA'||e.status==='EM_ANDAMENTO'); });
+  var nAgendar=0;
+  cands.forEach(function(c){
+    if(!c || c.status==='REVOGADO') return;
+    if(typeof rhSelCandProcessoJaMovimentado==='function' && rhSelCandProcessoJaMovimentado(c)) return;
+    var at=ativas.some(function(e){ return String(e.candidatura_id)===String(c.id); });
+    if(at) return;
+    var idOk=!!c.identificacao_concluida_em;
+    var testes=typeof rhSelCandTestesRespondidos==='function' && rhSelCandTestesRespondidos(c);
+    if(idOk && testes) nAgendar++;
+  });
+  function nomeCand(cid){
+    var c=cands.filter(function(x){ return String(x.id)===String(cid); })[0];
+    return c&&c.nome?c.nome:'';
+  }
+  var emAnd=ativas.filter(function(e){ return e.status==='EM_ANDAMENTO'; })[0];
+  var prox=ativas.filter(function(e){ return e.status==='AGENDADA' && e.agendada_para; }).sort(function(a,b){ return String(a.agendada_para).localeCompare(String(b.agendada_para)); })[0];
+  if(nAgendar){
+    var extra=prox?(' · próxima '+rhSelFmtDt(prox.agendada_para)):'';
+    return rhSelAvisoChip('Agendar entrevista ('+nAgendar+')'+extra,'#FDE68A','#854F0B','#F5C84C');
+  }
+  if(emAnd) return rhSelAvisoChip('Entrevista em andamento'+(nomeCand(emAnd.candidatura_id)?' · '+nomeCand(emAnd.candidatura_id):''),'#FEF3E2','#854F0B','#E5A84B');
+  if(prox) return rhSelAvisoChip('Entrevista '+rhSelFmtDt(prox.agendada_para)+(nomeCand(prox.candidatura_id)?' · '+nomeCand(prox.candidatura_id):''),'#DBEAFE','#1E3A5F','#93C5FD');
+  var nInt=cands.filter(function(c){ return c && (c.status==='ENTREVISTAS_CONCLUIDAS') && !c.integridade_iniciada_em; }).length;
+  if(nInt) return rhSelAvisoChip('Iniciar integridade ('+nInt+')','#FEF3E2','#854F0B','#E5A84B');
+  var nDec=cands.filter(function(c){ return c && (c.status==='INTEGRIDADE_CONCLUIDA'||c.status==='EM_DECISAO_FINAL'); }).length;
+  if(nDec) return rhSelAvisoChip('Decisão final ('+nDec+')','#FEF3E2','#854F0B','#E5A84B');
+  var nEnc=cands.filter(function(c){ return c && c.status==='APROVADO_PARA_ADMISSAO'; }).length;
+  if(nEnc) return rhSelAvisoChip('Encaminhar à admissão ('+nEnc+')','#E8F5E9','#3B6D11','#86B56A');
+  var nId=cands.filter(function(c){ return c && !c.identificacao_concluida_em && c.status!=='REVOGADO'; }).length;
+  if(nId) return rhSelAvisoChip('Aguardando identificação ('+nId+')','#F5F5F3','#555','#DDD');
+  var nTst=cands.filter(function(c){ return c && c.identificacao_concluida_em && (c.status==='TESTES_EM_ANDAMENTO'||(c.testes_iniciados_em&&!c.testes_concluidos_em)); }).length;
+  if(nTst) return rhSelAvisoChip('Aguardando testes ('+nTst+')','#F5F5F3','#555','#DDD');
+  return '';
+}
 function rhSelCandAlertaRespostasHtml(c,cid){
   if(!c) return '';
   if(rhSelCandProcessoJaMovimentado(c)) return '';
   var st=c.status||'';
-  if(st==='REVOGADO') return '';
+  if(st==='REVOGADO'||st==='ENTREVISTA_AGENDADA'||st==='ENTREVISTAS_EM_ANDAMENTO') return '';
+  if(rhSelCandEntrevistaAtiva(cid)) return '';
   var idOk=!!c.identificacao_concluida_em;
   var testes=rhSelCandTestesRespondidos(c);
   var ent=rhSelCandEntrevistaRespondida(cid);
@@ -125672,8 +125789,10 @@ function rhSelCandidatosRenderLista(){
       else if(c.status==='TESTES_EM_ANDAMENTO'||c.testes_iniciados_em) tstLab='Em andamento';
       else if(idOk) tstLab='Pendentes';
       var elegivel=typeof rhSelEntElegivel==='function' && rhSelEntElegivel(c).ok;
+      var ativaEnt=typeof rhSelCandEntrevistaAtiva==='function'?rhSelCandEntrevistaAtiva(id):null;
       var acoes='<button class="btn btn-sm" onclick="rhSelCandDetalhe(\''+id+'\')">Detalhe</button> ';
-      if(pode && elegivel) acoes+='<button class="btn btn-sm btn-pri" onclick="rhSelEntAbrirAgendar(\''+id+'\')">Agendar entrevista</button> ';
+      if(pode && elegivel && !ativaEnt) acoes+='<button class="btn btn-sm btn-pri" onclick="rhSelEntAbrirAgendar(\''+id+'\')">Agendar entrevista</button> ';
+      if(ativaEnt) acoes+=(typeof rhSelCandAlertaAgendaHtml==='function'?rhSelCandAlertaAgendaHtml(id):'')+' ';
       if(rhSelResPodeDecidir() && (c.status==='INTEGRIDADE_CONCLUIDA'||c.status==='EM_DECISAO_FINAL'||c.status==='APROVADO_PARA_ADMISSAO'||c.status==='NAO_SELECIONADO'||c.status==='ENCAMINHADO_ADMISSAO'))
         acoes+='<button class="btn btn-sm" onclick="rhSelCandDetalhe(\''+id+'\')">Resultado</button> ';
       if(pode){
@@ -125748,7 +125867,9 @@ function rhSelCandDetalheAtualizarAcoes(id, c, evidTestesOk){
     var podeEncerrar=pode && elig.ok && !c.entrevistas_encerradas_em && c.status!=='ENTREVISTAS_CONCLUIDAS'
       && c.status!=='INTEGRIDADE_EM_ANALISE' && c.status!=='INTEGRIDADE_CONCLUIDA';
     var podeIniciarInt=podeInt && rhSelIntElegivelIniciar(c);
-    elA.innerHTML=(pode && elig.ok?'<button class="btn btn-pri" type="button" onclick="rhSelEntAbrirAgendar(\''+cid+'\')">Agendar entrevista</button>':'')
+    var ativaEnt=typeof rhSelCandEntrevistaAtiva==='function'?rhSelCandEntrevistaAtiva(id):null;
+    elA.innerHTML=(pode && elig.ok && !ativaEnt?'<button class="btn btn-pri" type="button" onclick="rhSelEntAbrirAgendar(\''+cid+'\')">Agendar entrevista</button>':'')
+      +(ativaEnt?(typeof rhSelCandAlertaAgendaHtml==='function'?rhSelCandAlertaAgendaHtml(id):''):'')
       +(podeEncerrar?'<button class="btn" type="button" onclick="rhSelEntEncerrarEtapa(\''+cid+'\')">Encerrar etapa de entrevistas</button>':'')
       +(podeIniciarInt?'<button class="btn btn-pri" type="button" onclick="rhSelIntIniciar(\''+cid+'\')">Iniciar análise de integridade</button>':'')
       +'<button class="btn" type="button" onclick="rhSelCandDetalheFechar()">Fechar</button>';
@@ -126058,6 +126179,13 @@ function rhSelEntAbrirAgendar(candId, entIdReagendar){
   if(!c){ progShowToast('Candidato não encontrado.','erro'); return; }
   var elig=rhSelEntElegivel(c);
   if(!elig.ok && !entIdReagendar){ progShowToast(elig.motivo||'Não elegível.','erro'); return; }
+  if(!entIdReagendar){
+    var ja=typeof rhSelCandEntrevistaAtiva==='function'?rhSelCandEntrevistaAtiva(candId):null;
+    if(ja){
+      progShowToast('Já tem entrevista marcada'+(ja.agendada_para?' em '+rhSelFmtDt(ja.agendada_para):'')+'. Não é possível agendar outra.','erro');
+      return;
+    }
+  }
   var v=_rhSel.atual||{};
   var ent=null;
   if(entIdReagendar){
@@ -126120,6 +126248,10 @@ function rhSelEntSalvarAgendar(candId, entId){
   var link=(document.getElementById('rh-ent-link')||{}).value||'';
   var obs=(document.getElementById('rh-ent-obs')||{}).value||'';
   if(!tipo||!entIdCol||!quando||!mod){ progShowToast('Preencha tipo, entrevistador, data/hora e modalidade.','erro'); return; }
+  if(!entId){
+    var ja=typeof rhSelCandEntrevistaAtiva==='function'?rhSelCandEntrevistaAtiva(candId):null;
+    if(ja){ progShowToast('Já tem entrevista marcada. Não é possível agendar outra.','erro'); return; }
+  }
   var iso=new Date(quando).toISOString();
   var agora=new Date().toISOString();
   if(entId){
@@ -126136,6 +126268,7 @@ function rhSelEntSalvarAgendar(candId, entId){
       try{ auditLog('REAGENDOU_ENTREVISTA','rh_selecao','Reagendou entrevista',{candidatura_id:candId,vaga_id:v.id,entrevista_id:entId,tipo:tipo}); }catch(e){}
       progShowToast('Entrevista reagendada.','ok');
       rhSelEntFecharModal();
+      _rhSelPendCarregado=false;
       rhSelCandidatosCarregar(v.id);
       setTimeout(function(){ rhSelCandDetalhe(candId); }, 400);
     }).catch(function(e){ progShowToast((e&&e.message)||'Falha ao reagendar. Aplique SQL 1E.','erro'); });
@@ -126157,6 +126290,7 @@ function rhSelEntSalvarAgendar(candId, entId){
   }).then(function(){
     progShowToast('Entrevista agendada.','ok');
     rhSelEntFecharModal();
+    _rhSelPendCarregado=false;
     rhSelCandidatosCarregar(v.id);
     setTimeout(function(){ rhSelCandDetalhe(candId); }, 400);
   }).catch(function(e){ progShowToast((e&&e.message)||'Falha ao agendar. Aplique sql_rh_selecao_entrevistas_fase_sel1e.sql.','erro'); });

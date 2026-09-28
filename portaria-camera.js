@@ -9,8 +9,34 @@
   var MAX_JPEG=400;
   var Q_JPEG=0.55;
 
+  var PERM_KEY='cena_port_cam_perm'; /* granted | denied */
+
   function toast(m, t){
     try{ if(typeof global.progShowToast==='function') global.progShowToast(m, t||'info'); }catch(e){}
+  }
+  function permLer(){
+    try{ return String(localStorage.getItem(PERM_KEY)||''); }catch(e){ return ''; }
+  }
+  function permSalvar(v){
+    try{
+      if(v==='granted'||v==='denied') localStorage.setItem(PERM_KEY, v);
+      else localStorage.removeItem(PERM_KEY);
+    }catch(e){}
+  }
+  function permEhBloqueio(err){
+    var n=String((err&&err.name)||'');
+    var m=String((err&&err.message)||'');
+    return n==='NotAllowedError' || n==='PermissionDeniedError' || /notallowed|permission|denied|Permission/i.test(m);
+  }
+  function permConsultarNavegador(){
+    if(!navigator.permissions || !navigator.permissions.query) return Promise.resolve('');
+    return navigator.permissions.query({name:'camera'}).then(function(st){
+      return (st && st.state) ? String(st.state) : '';
+    }).catch(function(){ return ''; });
+  }
+  function permDevePedirFolha(){
+    /* Autorizou: não perguntar de novo (o tablet já guarda “sempre”). Recusou: perguntar sempre. */
+    return permLer()!=='granted';
   }
   function ehMovel(){
     var ua=String(navigator.userAgent||'');
@@ -105,20 +131,54 @@
     var wrap=document.createElement('div');
     wrap.id='port-cam-ov';
     wrap.setAttribute('style','position:fixed;inset:0;z-index:30000;background:#111;display:flex;flex-direction:column');
-    wrap.innerHTML='<video id="port-cam-v" playsinline webkit-playsinline autoplay muted style="flex:1;width:100%;object-fit:cover;background:#000"></video>'
-      +'<div style="padding:14px 12px calc(14px + env(safe-area-inset-bottom,0px));display:flex;gap:10px;justify-content:center;background:#000">'
+    wrap.innerHTML='<div id="port-cam-perm" style="display:none;flex:1;padding:24px 20px;color:#fff;align-items:center;justify-content:center">'
+      +'<div style="max-width:420px;width:100%">'
+      +'<div id="port-cam-perm-title" style="font-size:22px;font-weight:800;margin-bottom:10px">Câmera da Portaria</div>'
+      +'<div id="port-cam-perm-txt" style="font-size:15px;line-height:1.45;color:#ddd;margin-bottom:18px"></div>'
+      +'<div style="display:flex;flex-direction:column;gap:10px">'
+      +'<button type="button" id="port-cam-perm-ok" style="padding:14px 16px;border:0;border-radius:10px;background:#185FA5;color:#fff;font-weight:800;font-size:16px">Autorizar câmera</button>'
+      +'<button type="button" id="port-cam-perm-no" style="padding:12px 16px;border:0;border-radius:10px;background:#444;color:#fff;font-weight:700;font-size:15px">Não autorizar</button>'
+      +'</div></div></div>'
+      +'<video id="port-cam-v" playsinline webkit-playsinline autoplay muted style="flex:1;width:100%;object-fit:cover;background:#000;display:none"></video>'
+      +'<div id="port-cam-bar" style="display:none;padding:14px 12px calc(14px + env(safe-area-inset-bottom,0px));gap:10px;justify-content:center;background:#000">'
       +'<button type="button" id="port-cam-cancel" style="min-width:110px;padding:12px 16px;border:0;border-radius:10px;background:#444;color:#fff;font-weight:700;font-size:15px">Cancelar</button>'
       +'<button type="button" id="port-cam-shot" style="min-width:140px;padding:12px 16px;border:0;border-radius:10px;background:#185FA5;color:#fff;font-weight:700;font-size:15px">Fotografar</button>'
       +'</div>';
     document.body.appendChild(wrap);
     var video=wrap.querySelector('#port-cam-v');
-    function falhou(){
+    var permBox=wrap.querySelector('#port-cam-perm');
+    var bar=wrap.querySelector('#port-cam-bar');
+    var tit=wrap.querySelector('#port-cam-perm-title');
+    var txt=wrap.querySelector('#port-cam-perm-txt');
+    var btnOk=wrap.querySelector('#port-cam-perm-ok');
+    var btnNo=wrap.querySelector('#port-cam-perm-no');
+
+    function mostrarVideo(){
+      if(permBox) permBox.style.display='none';
+      if(video) video.style.display='block';
+      if(bar) bar.style.display='flex';
+    }
+    function mostrarFolha(modo){
+      if(video) video.style.display='none';
+      if(bar) bar.style.display='none';
+      if(permBox) permBox.style.display='flex';
+      if(modo==='bloqueada'){
+        if(tit) tit.textContent='Câmera bloqueada neste tablet';
+        if(txt) txt.textContent='A Portaria precisa da câmera para fotografar. Toque em Autorizar câmera de novo. Se o aviso do Android não aparecer, toque no cadeado (ou nos 3 pontos) → Informações do site → Câmera → Permitir e depois autorize de novo. Se não autorizar, perguntamos de novo na próxima foto.';
+        if(btnOk) btnOk.textContent='Pedir permissão de novo';
+      } else {
+        if(tit) tit.textContent='Permitir câmera da Portaria?';
+        if(txt) txt.textContent='O tablet vai pedir uso da câmera. Se autorizar, fica permitido para sempre neste app. Se não autorizar, perguntamos de novo na próxima foto.';
+        if(btnOk) btnOk.textContent='Autorizar câmera';
+      }
+    }
+    function falhouGenerico(){
       fecharOverlay();
       toast('Não foi possível abrir a câmera no app. Tente de novo.','erro');
       if(onFail) onFail();
     }
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-      falhou();
+      falhouGenerico();
       return;
     }
     var tentativas=[
@@ -126,24 +186,52 @@
       {audio:false, video:{ facingMode: facing||'environment' }},
       {audio:false, video:true}
     ];
-    function pedir(i){
-      if(i>=tentativas.length){ falhou(); return; }
-      navigator.mediaDevices.getUserMedia(tentativas[i]).then(function(stream){
-        global._portCamStream=stream;
-        try{
-          var track=stream.getVideoTracks()[0];
-          if(track && track.applyConstraints){
-            track.applyConstraints({width:{max:MAX_PREVIA}, height:{max:480}}).catch(function(){});
-          }
-        }catch(eC){}
-        video.srcObject=stream;
-        var p=video.play();
-        if(p && p.catch) p.catch(function(){});
-      }).catch(function(){ pedir(i+1); });
+    function ligarStream(stream){
+      permSalvar('granted');
+      global._portCamStream=stream;
+      mostrarVideo();
+      try{
+        var track=stream.getVideoTracks()[0];
+        if(track && track.applyConstraints){
+          track.applyConstraints({width:{max:MAX_PREVIA}, height:{max:480}}).catch(function(){});
+        }
+      }catch(eC){}
+      video.srcObject=stream;
+      var p=video.play();
+      if(p && p.catch) p.catch(function(){});
     }
-    pedir(0);
+    function pedir(i){
+      if(i>=tentativas.length){ falhouGenerico(); return; }
+      navigator.mediaDevices.getUserMedia(tentativas[i]).then(ligarStream).catch(function(err){
+        if(permEhBloqueio(err)){
+          permSalvar('denied');
+          mostrarFolha('bloqueada');
+          return;
+        }
+        pedir(i+1);
+      });
+    }
+    function iniciarPedido(){
+      /* Sempre chama getUserMedia no toque: o Android só reabre o aviso a partir deste clique. */
+      pedir(0);
+    }
 
+    if(btnOk) btnOk.onclick=function(){ iniciarPedido(); };
+    if(btnNo) btnNo.onclick=function(){
+      permSalvar('denied');
+      fecharOverlay();
+      toast('Câmera não autorizada. Na próxima foto perguntamos de novo.','info');
+    };
     wrap.querySelector('#port-cam-cancel').onclick=function(){ fecharOverlay(); };
+
+    if(permDevePedirFolha()){
+      permConsultarNavegador().then(function(st){
+        mostrarFolha(st==='denied'?'bloqueada':'pedir');
+      });
+    } else {
+      iniciarPedido();
+    }
+
     wrap.querySelector('#port-cam-shot').onclick=function(){
       var btn=wrap.querySelector('#port-cam-shot');
       if(btn) btn.disabled=true;
@@ -375,4 +463,8 @@
   global.portCamFechar=fecharOverlay;
   global.portCamSalvarRascunho=salvarRascunho;
   global.portCamAbrir=abrirParaInput;
+  global.portCamPermLer=permLer;
+  global.portCamPermSalvar=permSalvar;
+  global.portCamPermEhBloqueio=permEhBloqueio;
+  global.portCamPermDevePedirFolha=permDevePedirFolha;
 })(window);
