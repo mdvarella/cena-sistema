@@ -569,7 +569,31 @@
     });
     return o;
   }
+  var MODELO={
+    arquivo:'modelo_importacao_pedagios', aba:'Pedagios',
+    colunas:[
+      {h:'Data/hora', obrig:true, formato:'dd/mm/aaaa hh:mm', ex:'24/09/2026 08:32', obs:'Data e hora da passagem. Vazio: usa a data da importação.'},
+      {h:'Placa', obrig:true, formato:'ABC1D23 ou ABC-1234', ex:'ABC1D23', obs:'Placa do veículo. Para Mensalidade TAG em estoque pode ficar vazia (vira ESTOQUE).'},
+      {h:'Valor', obrig:true, formato:'número (R$)', ex:21.4, obs:'Maior que zero; linha sem valor é recusada.'},
+      {h:'Praça', formato:'texto', ex:'Praça Castelo', obs:''},
+      {h:'Rodovia', formato:'texto', ex:'SP-348', obs:''},
+      {h:'Estabelecimento', formato:'texto', ex:'CCR', obs:'Concessionária ou operadora da TAG (Sem Parar, ConectCar, Veloe…).'},
+      {h:'Centro de custo', formato:'texto', ex:'CC-001', obs:''},
+      {h:'Tipo', formato:'PASSAGEM / FATURA / Mensalidade TAG / Mensalidade TAG em estoque', ex:'PASSAGEM', obs:'Vazio ou outro valor vira PASSAGEM. FATURA não entra no custo.'},
+      {h:'Origem', formato:'texto', ex:'importacao', obs:'Vazio vira importacao.'},
+      {h:'Status', formato:'PENDENTE / VALIDADO / CONCILIADO / CANCELADO / DIVERGENTE', ex:'VALIDADO', obs:'Vazio vira VALIDADO.'},
+      {h:'Contrato', formato:'nome ou código', ex:'', obs:'Vazio: usa o contrato do veículo.'},
+      {h:'Observação', formato:'texto', ex:'', obs:''}
+    ],
+    notas:[
+      'Preencha a aba "Pedagios" a partir da linha 2, uma passagem por linha. Não altere os nomes das colunas.',
+      'Obrigatórias: Data/hora, Placa e Valor.',
+      'Linha igual a um pedágio já lançado é importada como POSSIVEL_DUPLICIDADE para conferência.',
+      'Importe em Frotas → Pedágios → 📊 Importar Excel.'
+    ]
+  };
   function baixarModelo(){
+    if(typeof global.frtBaixarModeloExcel==='function') return global.frtBaixarModeloExcel(MODELO);
     var heads=['Data/hora','Placa','Valor','Praca','Rodovia','Estabelecimento','Centro de custo','Tipo','Origem','Status','Contrato','Observacao'];
     var rows=[
       ['24/09/2026 08:32','ABC1D23',21.4,'Praca Castelo','SP-348','CCR','CC-001','PASSAGEM','importacao','VALIDADO','','Exemplo passagem'],
@@ -713,6 +737,7 @@
   global.frtPedAba=aba;
   global.frtPedAbrirImportar=abrirImportar;
   global.frtPedBaixarModelo=baixarModelo;
+  Ped.MODELO_IMPORTACAO=MODELO;
   global.frtPedConfirmarImportar=confirmarImportar;
   global.frtPedPlacaMudou=placaMudou;
   global.frtPedAbrirNovo=abrirNovo;
