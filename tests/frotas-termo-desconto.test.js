@@ -234,7 +234,7 @@ function montarTermo(extra) {
 }
 
 // ── 7) versão e asset ──
-ok('versão 8.1.167', /numero: '8\.1\.167'/.test(html) && /\{v:'8\.1\.167'/.test(html) && /'cena-8\.1\.167'/.test(sw));
+ok('versão 8.1.167 no changelog', /\{v:'8\.1\.167'/.test(html) && /'cena-8\.1\.\d+'/.test(sw));
 ok('logo branco do termo no repositório', fs.existsSync(path.join(raiz, 'assets', 'cena-logo-branco.png')));
 
 if (failed.length) {

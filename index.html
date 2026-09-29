@@ -44770,10 +44770,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.167',
+  numero: '8.1.168',
   data:   '29/09/2026',
-  build:  '20260929-1600',
+  build:  '20260929-1800',
   log: [
+    {v:'8.1.168', d:'29/09/2026', itens:[
+      'Programação: equipe cuja placa programada saiu pela portaria registrada em outra equipe (programação trocada depois da liberação) aparece como ⚠ Em campo como <equipe>, com botão ⇄ Transferir saída p/ esta equipe',
+      'Transferir saída: confere no servidor que a saída ainda está em campo e que a outra equipe não tem mais a placa, grava a troca na observação da saída e só confirma depois de reler o registro',
+      'Programação: aviso ao desprogramar ou remover o veículo de equipe que já saiu pela portaria, e ao programar placa que está em campo em outra equipe'
+    ]},
     {v:'8.1.167', d:'29/09/2026', itens:[
       'Frotas: botão 🖨 Termo de desconto nas telas de multa e de avaria/sinistro — abre o termo TD-FOL-001 (autorização de desconto em folha) já preenchido com colaborador, CPF, matrícula, placa e a linha da multa (AIT, infração, valor) ou da avaria (nº da ocorrência, descrição, custo)',
       'Termo de desconto: linhas editáveis (AIT / nº da ocorrência, descrição, valor), inserir e remover linhas, incluir outras multas ou avarias do mesmo colaborador e total somado automaticamente; só imprime com CPF válido e todas as linhas completas'
@@ -51020,6 +51025,51 @@ function progTmaPlacaProg(eqId, dia){
   }
   return placa.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
 }
+function progTmaNomeEquipeSaida(p){
+  if(typeof portNomeEquipeSaida==='function') return portNomeEquipeSaida(p);
+  return String((p&&p.equipe)||'outra equipe');
+}
+function progTmaMesmoInstante(a, b){
+  var ta=Date.parse(a||''), tb=Date.parse(b||'');
+  if(isNaN(ta)||isNaN(tb)) return String(a||'')===String(b||'');
+  return Math.abs(ta-tb)<60000;
+}
+/** Saída aberta no dia com a placa programada desta equipe, mas gravada em OUTRA equipe que não tem mais essa placa
+ *  programada (programação trocada depois da liberação). Não conta como "Em Campo" desta equipe: só sinaliza. */
+function progTmaSaidaOutraEquipe(eqId, data){
+  var dia=progTmaDiaISO(data);
+  if(!eqId || !dia) return null;
+  var placa=progTmaPlacaProg(eqId, dia);
+  if(!placa) return null;
+  var abertas=(frt_portaria||[]).filter(function(p){
+    if(!p || p.deleted_at || p.status==='Cancelado') return false;
+    if(!p.equipe_id || String(p.equipe_id)===String(eqId)) return false;
+    var ds=typeof portDiaLocal==='function'?portDiaLocal(p.data_saida):String(p.data_saida||'').slice(0,10);
+    if(ds!==dia) return false;
+    if(String(p.placa||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase()!==placa) return false;
+    if(progTmaPortariaRetornou(p)) return false;
+    return typeof portEstaEmCampo==='function' ? portEstaEmCampo(p) : (p.status==='Em campo' && !p.data_retorno);
+  }).filter(function(p){
+    return progTmaPlacaProg(p.equipe_id, dia)!==placa;
+  });
+  if(!abertas.length) return null;
+  abertas.sort(function(a,b){ return String(b.data_saida||'').localeCompare(String(a.data_saida||'')); });
+  var rec=abertas[0];
+  var origem=progTmaNomeEquipeSaida(rec);
+  return {status:'outra_equipe', label:'Em campo como '+origem, data_saida:rec.data_saida, data_retorno:null, registro:rec,
+    hora:progTmaFmtHora(rec.data_saida), equipe_origem:origem, equipe_origem_id:String(rec.equipe_id)};
+}
+/** Aviso para quem vai desprogramar ou trocar veículo de equipe que já saiu pela portaria. */
+function progTmaAvisoEmCampo(eqId, data){
+  var st=progTmaStatusPortaria(eqId, data);
+  if(!st || st.status!=='em_campo' || !st.registro) return null;
+  var r=st.registro;
+  var base='Esta equipe já saiu pela portaria'+(st.hora?' às '+st.hora:'')+(r.placa?' com '+r.placa:'')+' e está em campo.';
+  var txt=base+' Trocar integrantes ou veículo na programação não altera a saída da portaria. Se o pessoal ou o veículo passar para outra equipe, programe a outra equipe e use "Transferir saída" no quadro dela.';
+  var html='<div style="background:#FEF3E2;border:.5px solid #F59E0B;border-radius:8px;padding:8px 10px;font-size:12px;color:#854F0B;margin-bottom:.75rem">⚠ '
+    +escHtml(base)+' Trocar integrantes ou veículo na programação <b>não altera a saída da portaria</b>. Se o pessoal ou o veículo passar para outra equipe, programe a outra equipe e use <b>⇄ Transferir saída</b> no quadro dela.</div>';
+  return {txt:txt, html:html, status:st};
+}
 function progTmaStatusPortaria(eqId, data){
   var dia=progTmaDiaISO(data);
   var vazio={status:'aguardando', label:'Aguardando Portaria', data_saida:null, data_retorno:null, registro:null, hora:''};
@@ -51043,7 +51093,7 @@ function progTmaStatusPortaria(eqId, data){
     return typeof portEstaEmCampo==='function' ? portEstaEmCampo(p) : (p.status==='Em campo' && !p.data_retorno);
   });
   var rec=aberta||cands[0]||null;
-  if(!rec) return vazio;
+  if(!rec) return progTmaSaidaOutraEquipe(eqId, dia)||vazio;
   // Retorno do MESMO registro de saída (pode ser no dia seguinte — não exige data_retorno === dia).
   if(progTmaPortariaRetornou(rec)){
     var tsRet=rec.data_retorno||rec.hora_retorno;
@@ -51132,7 +51182,9 @@ function progTmaGetOperacaoEquipe(eqId, data){
       saida:port.data_saida||null,
       retorno:port.data_retorno||null,
       hora:port.hora||'',
-      registro:port.registro||null
+      registro:port.registro||null,
+      equipe_origem:port.equipe_origem||'',
+      equipe_origem_id:port.equipe_origem_id||''
     },
     diario:{
       iniciado:!!(sess && sess.login_ts),
@@ -51156,8 +51208,12 @@ function progTmaHtmlOperacao(eqId, data){
   var p=op.portaria;
   var d=op.diario;
   var o=op.ordem;
-  var pCor=p.status==='em_campo'?'#3B6D11':p.status==='retornou'?'#185FA5':'#888';
-  var pIcon=p.status==='em_campo'?'🟢':p.status==='retornou'?'🔵':'⚪';
+  var pCor=p.status==='em_campo'?'#3B6D11':p.status==='retornou'?'#185FA5':p.status==='outra_equipe'?'#854F0B':'#888';
+  var pIcon=p.status==='em_campo'?'🟢':p.status==='retornou'?'🔵':p.status==='outra_equipe'?'⚠':'⚪';
+  var pExtra=p.status==='outra_equipe'
+    ? '<div style="color:#854F0B;font-size:8px">Saída registrada em outra equipe</div>'
+      +'<button type="button" class="btn btn-sm" onclick="progTmaTransferirSaida(\''+escHtml(String(eqId))+'\',\''+escHtml(progTmaDiaISO(data))+'\')" style="font-size:9px;padding:1px 5px;margin-top:2px;color:#854F0B;border-color:#854F0B;white-space:nowrap">⇄ Transferir saída p/ esta equipe</button>'
+    : '';
   var pTxt=p.label+(p.hora?' · '+p.hora:'');
   var aIcon, aTxt, aCor;
   if(d.encerrado){
@@ -51186,11 +51242,108 @@ function progTmaHtmlOperacao(eqId, data){
   return '<div data-prog-tma-ops="'+escHtml(String(eqId))+'" style="font-size:9px;line-height:1.35;text-align:left">'
     +'<div style="font-size:8px;color:#888;font-weight:700;letter-spacing:.02em">PORTARIA</div>'
     +'<div style="color:'+pCor+';font-weight:600">'+pIcon+' '+escHtml(pTxt)+'</div>'
+    +pExtra
     +'<div style="font-size:8px;color:#888;font-weight:700;margin-top:3px">APP</div>'
     +'<div style="color:'+aCor+';font-weight:600">'+aIcon+' '+escHtml(aTxt)+'</div>'
     +'<div style="font-size:8px;color:#888;font-weight:700;margin-top:3px">'+(o && PROG_TMA_OS_ATIVA.indexOf(o.status)<0?'ÚLTIMA OS':'OS')+'</div>'
     +osHtml
     +'</div>';
+}
+var _progTmaTransferindo={};
+/** Passa a saída aberta (e seus clones do mesmo instante) da equipe de origem para esta equipe.
+ *  Fail-closed: relê no servidor antes (ainda em campo, origem sem a placa) e depois (equipe realmente trocada). */
+async function progTmaTransferirSaida(eqId, data){
+  var dia=progTmaDiaISO(data);
+  var st=progTmaSaidaOutraEquipe(eqId, dia);
+  if(!st || !st.registro){ progShowToast('Não há saída de outra equipe para transferir.','erro'); return false; }
+  var chave=String(eqId)+'_'+dia;
+  if(_progTmaTransferindo[chave]) return false;
+  var rec=st.registro;
+  var origemId=st.equipe_origem_id, origem=st.equipe_origem;
+  var placa=String(rec.placa||'');
+  var placaNorm=placa.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+  var eqDest=typeof portBuscarEquipe==='function'?portBuscarEquipe(eqId):null;
+  var nomeDest=eqDest&&typeof portNomeEquipe==='function'?portNomeEquipe(eqDest,''):'';
+  if(!nomeDest || nomeDest==='—'){ progShowToast('Equipe de destino não encontrada.','erro'); return false; }
+  if(!confirm('Transferir a saída da portaria de '+(st.hora||'hoje')+' ('+placa+(rec.motorista?', motorista '+rec.motorista:'')+') da equipe '+origem+' para a '+nomeDest+'?\n\n'
+    +'A '+origem+' não tem mais essa placa programada hoje. A troca fica registrada na observação da saída e na auditoria.')) return false;
+  var quem=(typeof usuarioLogado!=='undefined'&&usuarioLogado&&usuarioLogado.nome)||'usuário';
+  var nota='Equipe transferida de '+origem+' para '+nomeDest+' pela Programação em '
+    +new Date().toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})+' por '+quem;
+  function aplicarMemoria(ids){
+    (frt_portaria||[]).forEach(function(p){
+      if(p && ids.indexOf(String(p.id))>=0){ p.equipe_id=String(eqId); p.equipe=nomeDest; }
+    });
+  }
+  function reRender(){
+    if(typeof portInvalidarCacheSaidas==='function') portInvalidarCacheSaidas(dia);
+    if(typeof progRenderQuadroDebounced==='function') progRenderQuadroDebounced();
+  }
+  if(DEMO){
+    var idsDemo=(frt_portaria||[]).filter(function(p){
+      return p && !p.deleted_at && String(p.equipe_id)===origemId && progTmaMesmoInstante(p.data_saida, rec.data_saida)
+        && String(p.placa||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase()===placaNorm;
+    }).map(function(p){ return String(p.id); });
+    aplicarMemoria(idsDemo);
+    reRender();
+    progShowToast('✅ Saída transferida de '+origem+' para '+nomeDest+'.');
+    return true;
+  }
+  _progTmaTransferindo[chave]=true;
+  try{
+    var janela=typeof portFiltrosDataSaida==='function'
+      ? portFiltrosDataSaida(dia, dia)
+      : ['deleted_at=is.null','data_saida=gte.'+dia,'data_saida=lt.'+progTmaAmanha(dia)];
+    var rows=await sbFetch('frotas_portaria_saidas',{
+      filters:janela.concat(['placa=eq.'+encodeURIComponent(placa),'equipe_id=eq.'+origemId]),
+      order:'data_saida.desc', limit:50
+    });
+    if(!Array.isArray(rows)){ progShowToast('Não foi possível confirmar a saída no servidor. Nada foi transferido.','erro'); return false; }
+    var mesma=rows.filter(function(p){
+      if(!p || p.deleted_at || !p.id) return false;
+      var ds=typeof portDiaLocal==='function'?portDiaLocal(p.data_saida):String(p.data_saida||'').slice(0,10);
+      return ds===dia && progTmaMesmoInstante(p.data_saida, rec.data_saida);
+    });
+    var aindaAberta=mesma.some(function(p){
+      if(progTmaPortariaRetornou(p)) return false;
+      return typeof portEstaEmCampo==='function' ? portEstaEmCampo(p) : (p.status==='Em campo' && !p.data_retorno);
+    });
+    if(!aindaAberta){
+      if(rows.length && typeof portMesclarSaidas==='function') portMesclarSaidas(rows);
+      reRender();
+      progShowToast('A saída não está mais em campo como '+origem+' (retornou ou foi alterada). Nada foi transferido.','erro');
+      return false;
+    }
+    if(progTmaPlacaProg(origemId, dia)===placaNorm){
+      progShowToast('A '+origem+' voltou a ter '+placa+' programada. Nada foi transferido.','erro');
+      return false;
+    }
+    for(var i=0;i<mesma.length;i++){
+      var p=mesma[i];
+      var obs=String(p.obs||'').trim();
+      await sbUpdate('frotas_portaria_saidas',{equipe_id:String(eqId), equipe:nomeDest, obs:(obs?obs+' | ':'')+nota},'id=eq.'+p.id);
+    }
+    var ids=mesma.map(function(p){ return String(p.id); });
+    var conf=await sbFetch('frotas_portaria_saidas',{filters:['id=in.('+ids.join(',')+')'], limit:50});
+    if(!Array.isArray(conf)){ progShowToast('Não foi possível conferir a transferência no servidor. Atualize a tela e confira.','erro'); return false; }
+    var trocados=conf.filter(function(p){ return String(p.equipe_id)===String(eqId); }).map(function(p){ return String(p.id); });
+    aplicarMemoria(trocados);
+    if(typeof portMesclarSaidas==='function') portMesclarSaidas(conf);
+    aplicarMemoria(trocados);
+    reRender();
+    if(trocados.length!==ids.length){
+      progShowToast('O servidor não aceitou a transferência ('+trocados.length+' de '+ids.length+' registros). Verifique a permissão ou peça à portaria para corrigir.','erro');
+      return false;
+    }
+    progShowToast('✅ Saída transferida de '+origem+' para '+nomeDest+'.');
+    return true;
+  }catch(e){
+    console.error('progTmaTransferirSaida', e);
+    progShowToast('Erro ao transferir a saída. Nada foi confirmado — atualize a tela e confira.','erro');
+    return false;
+  }finally{
+    delete _progTmaTransferindo[chave];
+  }
 }
 function progTmaOpsFetchPromise(data){
   var dia=progTmaDiaISO(data);
@@ -51525,6 +51678,7 @@ function progRenderEquipeRow(eq, data){
   var opsTma=typeof progTmaGetOperacaoEquipe==='function'?progTmaGetOperacaoEquipe(eq.id, data):null;
   var stPort=opsTma&&opsTma.portaria?opsTma.portaria.status:'';
   var trBg = stPort==='em_campo' ? 'background:#F3FAEE;border-left:3px solid #3B6D11;border-bottom:.5px solid #d5e8c8'
+    : stPort==='outra_equipe' ? 'background:#FEF8EC;border-left:3px solid #854F0B;border-bottom:.5px solid #f0dcb8'
     : stPort==='retornou' ? 'background:#EDF5FD;border-left:3px solid #185FA5;border-bottom:.5px solid #c3dff7'
     : 'border-bottom:.5px solid #f5f5f3';
   return '<tr style="'+trBg+';vertical-align:top" id="row-eq-'+eq.id+'">'
@@ -51730,8 +51884,10 @@ function progSalvarTodas(){
 }
 
 function progDesprogramarEquipe(eqId){
+  var _avEmCampo=typeof progTmaAvisoEmCampo==='function'?progTmaAvisoEmCampo(eqId, progGetData()):null;
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:380px">'
     +'<h3 style="margin-bottom:.75rem">↩ Desprogramar equipe</h3>'
+    +(_avEmCampo?_avEmCampo.html:'')
     +'<p style="font-size:13px;color:#555;margin-bottom:1rem">A equipe voltará ao status <b>Completa</b> e poderá ter integrantes e veículo alterados.<br>Deseja continuar?</p>'
     +'<div class="ma">'
     +'<button class="btn" onclick="closeModal()">Cancelar</button>'
@@ -82141,6 +82297,19 @@ function progSetVeiculo(eqId, data, veiculoObj){
   _progVeiculos[progVeiculoKey(eqId, data)] = veiculoObj;
   progPersistVeiculosLocal(data);
   window._veicEscCache = {}; // Invalida cache de status
+  if(veiculoObj && veiculoObj.placa && typeof progTmaSaidaOutraEquipe==='function'){
+    var _outraSaida=progTmaSaidaOutraEquipe(eqId, data);
+    if(_outraSaida){
+      progShowToast('⚠ '+veiculoObj.placa+' está em campo como '+_outraSaida.equipe_origem+(_outraSaida.hora?' desde '+_outraSaida.hora:'')+'. Se o veículo está com esta equipe, use ⇄ Transferir saída no quadro.');
+    } else {
+      var _propria=progTmaStatusPortaria(eqId, data);
+      var _placaNova=String(veiculoObj.placa).replace(/[^A-Za-z0-9]/g,'').toUpperCase();
+      var _placaSaida=_propria&&_propria.registro?String(_propria.registro.placa||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase():'';
+      if(_propria && _propria.status==='em_campo' && _placaSaida && _placaSaida!==_placaNova){
+        progShowToast('⚠ Esta equipe saiu pela portaria com '+_propria.registro.placa+(_propria.hora?' às '+_propria.hora:'')+'. Trocar a placa na programação não altera a saída.');
+      }
+    }
+  }
 
   // Verificar conflito de horário de veículo compartilhado
   if(veiculoObj && veiculoObj.id){
@@ -82867,7 +83036,8 @@ function progRemoverVeiculo(eqId, data){
     progShowToast('🔒 Equipe já programada — desprograme antes de remover a placa.','erro');
     return;
   }
-  if(!confirm('Remover veículo desta equipe?')) return;
+  var _avEmCampo=typeof progTmaAvisoEmCampo==='function'?progTmaAvisoEmCampo(eqId, d):null;
+  if(!confirm(_avEmCampo?(_avEmCampo.txt+'\n\nRemover o veículo desta equipe mesmo assim?'):'Remover veículo desta equipe?')) return;
 
   delete _progVeiculos[progVeiculoKey(eqId, d)];
   progPersistVeiculosLocal(d);
