@@ -44770,10 +44770,19 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.163',
+  numero: '8.1.164',
   data:   '28/09/2026',
-  build:  '20260928-1630',
+  build:  '20260928-2130',
   log: [
+    {v:'8.1.164', d:'28/09/2026', itens:[
+      'Almoxarifado-CENA: fluxo Aprovada → Em separação → Separada → Entregue → Recebimento confirmado; aprovada, em separação e separada continuam reservadas',
+      'Almoxarifado-CENA: aprovação reserva no banco (fn_alm_req_aprovar) — tudo ou nada, sem baixar o saldo físico; mostra saldo físico, reservado, disponível, solicitado e faltante quando bloqueia',
+      'Almoxarifado-CENA: separar só aparta o material (fn_alm_req_separar_item) — não baixa estoque nem gera movimentação; o separado continua reservado',
+      'Almoxarifado-CENA: entregar faz a saída física (fn_alm_req_entregar_item) — baixa, movimentação e consumo da reserva na mesma transação, protegida contra duplo clique',
+      'Almoxarifado-CENA: confirmar recebimento só aparece depois da entrega e só registra quem/quando (fn_alm_req_confirmar_recebimento); separadas pela regra antiga (saída já feita) não baixam de novo',
+      'Almoxarifado-CENA: cancelar antes da entrega libera a reserva sem mexer no saldo físico; depois de entregue, só pelo fluxo de devolução',
+      'Almoxarifado-CENA: sem a atualização do banco, aprovação, separação, entrega e recebimento ficam bloqueados (fail-closed)'
+    ]},
     {v:'8.1.163', d:'28/09/2026', itens:[
       'App: no 1º acesso pelo celular/tablet, depois do login, sugere instalar o aplicativo da Landtec (botão Instalar do navegador ou instruções no iPhone/iPad). “Agora não” não pergunta mais neste aparelho. Sem SQL.',
     ]},
@@ -102081,12 +102090,12 @@ function almReqTipoLabel(cod){
 }
 function almReqStLabel(s){
   var m={rascunho:'Rascunho',solicitada:'Solicitada',aprovada:'Aprovada',recusada:'Recusada',cancelada:'Cancelada',
-    separacao:'Separação',parcialmente_atendida:'Parcialmente separada',atendida:'Separada',separada:'Separada',recebida:'Recebida'};
+    separacao:'Em separação',parcialmente_atendida:'Parcialmente entregue',atendida:'Separada (regra antiga)',separada:'Separada',entregue:'Entregue',recebida:'Recebimento confirmado'};
   return m[s]||s||'—';
 }
 function almReqStCls(s){
-  if(s==='aprovada'||s==='atendida'||s==='separada'||s==='recebida') return 'ok';
-  if(s==='solicitada'||s==='separacao'||s==='parcialmente_atendida') return 'warn';
+  if(s==='aprovada'||s==='atendida'||s==='entregue'||s==='recebida') return 'ok';
+  if(s==='solicitada'||s==='separacao'||s==='separada'||s==='parcialmente_atendida') return 'warn';
   if(s==='recusada'||s==='cancelada') return 'danger';
   return 'gray';
 }
@@ -102110,7 +102119,7 @@ function almReqItemTotalmenteAtendido(it){
   var atd=Number(it.quantidade_atendida)||0;
   if(atd>0 && atd+1e-9>=apr) return true;
   var st=String(it.status||'');
-  return st==='separado'||st==='recebido'||st==='atendido';
+  return st==='entregue'||st==='recebido'||st==='atendido';
 }
 function almReqItemBloqueiaNovaBaixa(it){
   if(!it) return {bloqueado:false};
@@ -102122,17 +102131,59 @@ function almReqItemBloqueiaNovaBaixa(it){
   }
   return {bloqueado:false};
 }
-function almReqItemQtdReservada(it){
+/** Reserva do item = aprovada − entregue (mesma regra de fn_alm_req_reservado). Separado e ainda não entregue continua reservado. */
+function almReqItemQtdReservada(it, r){
   if(!it) return 0;
-  if(almReqItemTotalmenteAtendido(it)) return 0;
   var st=String(it.status||'');
-  if(st==='separado'||st==='recebido'||st==='atendido'||st==='cancelado'||st==='recusado') return 0;
+  if(st==='cancelado'||st==='recusado'||st==='entregue'||st==='recebido') return 0;
+  if(r && r.status==='separada' && it.quantidade_separada==null) return 0;
   var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
   var atd=Number(it.quantidade_atendida)||0;
   return Math.max(0, apr-atd);
 }
 function almReqStEhReservaAberta(s){
-  return s==='aprovada'||s==='separacao'||s==='parcialmente_atendida';
+  return s==='aprovada'||s==='separacao'||s==='separada'||s==='parcialmente_atendida';
+}
+/** Separado efetivo: na regra antiga a saída era feita na separação, então o atendido também conta como separado. */
+function almReqItemQtdSeparada(it){
+  if(!it) return 0;
+  return Math.max(Number(it.quantidade_separada)||0, Number(it.quantidade_atendida)||0);
+}
+function almReqItemEncerrado(it){
+  var s=String((it&&it.status)||'');
+  return s==='cancelado'||s==='recusado'||s==='entregue'||s==='recebido';
+}
+function almReqItemPendenteSeparar(it){
+  if(!it || almReqItemEncerrado(it)) return 0;
+  var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+  return Math.max(0, apr-almReqItemQtdSeparada(it));
+}
+function almReqItemPendenteEntrega(it){
+  if(!it || almReqItemEncerrado(it)) return 0;
+  var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+  return Math.max(0, Math.min(almReqItemQtdSeparada(it), apr)-(Number(it.quantidade_atendida)||0));
+}
+function almReqItensDe(d){
+  return (d && (d.itens||(_almReq.itens&&d.id&&_almReq.itens[d.id]))) || [];
+}
+/** Separada pela regra antiga: a saída física já foi feita na separação (itens sem quantidade_separada). */
+function almReqEhLegadoBaixado(d){
+  if(!d || (d.status!=='separada' && d.status!=='atendida')) return false;
+  var itens=almReqItensDe(d).filter(function(it){ var s=String(it.status||''); return s!=='cancelado'&&s!=='recusado'; });
+  if(!itens.length) return false;
+  return itens.every(function(it){
+    var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+    var atd=Number(it.quantidade_atendida)||0;
+    return it.quantidade_separada==null && atd>0 && atd+1e-9>=apr;
+  });
+}
+function almReqTemSeparadoAEntregar(d){
+  if(!d || (d.status!=='separada' && d.status!=='parcialmente_atendida')) return false;
+  return almReqItensDe(d).some(function(it){ return almReqItemPendenteEntrega(it)>0; });
+}
+/** Confirmar recebimento só depois da entrega (ou separada antiga, cuja saída já foi feita). Nunca para separada nova. */
+function almReqPodeReceber(d){
+  return !!d && (d.status==='entregue' || almReqEhLegadoBaixado(d));
 }
 function almReqMovsDaReq(d){
   var num=String((d&&d.numero)||'');
@@ -102154,7 +102205,8 @@ function almReqTemBaixaReal(d){
   if(!d) return {temBaixa:false, motivos:[], regra:null};
   var itens=d.itens||(_almReq.itens&&d.id&&_almReq.itens[d.id])||[];
   var motivos=[], st=String(d.status||'');
-  if(['parcialmente_atendida','separada','atendida','recebida'].indexOf(st)>=0) motivos.push('status_'+st);
+  if(['parcialmente_atendida','entregue','atendida','recebida'].indexOf(st)>=0) motivos.push('status_'+st);
+  if(st==='separada' && almReqEhLegadoBaixado(d)) motivos.push('status_separada_regra_antiga');
   if(d.recebido_em || d.recebido_por) motivos.push('recebimento_destino');
   itens.forEach(function(it){
     if((Number(it.quantidade_atendida)||0)>0 && motivos.indexOf('quantidade_atendida')<0) motivos.push('quantidade_atendida');
@@ -102175,7 +102227,7 @@ function almReqOpcoesRetroagirInterno(d){
   if(st==='solicitada') opts=['rascunho'];
   else if(st==='aprovada') opts=['solicitada','rascunho'];
   else if(st==='separacao') opts=['aprovada','solicitada'];
-  else if(st==='parcialmente_atendida'||st==='separada'||st==='atendida') opts=['aprovada','solicitada'];
+  else if(st==='parcialmente_atendida'||st==='separada'||st==='atendida'||st==='entregue') opts=['aprovada','solicitada'];
   else if(st==='recebida') opts=['aprovada','solicitada'];
   else if(st==='recusada') opts=['solicitada','rascunho'];
   return opts;
@@ -102214,8 +102266,8 @@ function almReqStEhReserva(s){
 function almReqReserva(itemId, codigo, depId, nome){
   return almReqReservaEstoque(itemId, codigo, depId, nome);
 }
-/** Reserva da grade: aprovada/separação ainda aberta. Nunca reserva item já atendido. Nunca negativa. */
-function almReqReservaEstoque(itemId, codigo, depId, nome){
+/** Reserva da grade: aprovada / em separação / separada, ainda não entregue. Nunca negativa. */
+function almReqReservaEstoque(itemId, codigo, depId, nome, excluirReqId){
   var tot=0, cid=String(itemId||''), cod=String(codigo||'').toLowerCase(), nom=String(nome||'').trim().toLowerCase();
   var seenReq={}, seenIt={};
   almReqDedupLista(_almReq.lista||[]).forEach(function(r){
@@ -102223,6 +102275,7 @@ function almReqReservaEstoque(itemId, codigo, depId, nome){
     var rid=String(r.id);
     if(seenReq[rid]) return;
     seenReq[rid]=1;
+    if(excluirReqId && rid===String(excluirReqId)) return;
     if(!almReqStEhReservaAberta(r.status)) return;
     if(depId && String(r.deposito_id||'')!==String(depId)) return;
     (_almReq.itens[r.id]||[]).forEach(function(it){
@@ -102233,7 +102286,7 @@ function almReqReservaEstoque(itemId, codigo, depId, nome){
         || (nom && String(it.item_descricao||'').toLowerCase()===nom);
       if(!ok) return;
       if(kid) seenIt[kid]=1;
-      tot+=almReqItemQtdReservada(it);
+      tot+=almReqItemQtdReservada(it, r);
     });
   });
   return Math.max(0, tot);
@@ -102247,16 +102300,87 @@ function almReqItemStatusParaCab(stCab){
     recusada:'recusado',cancelada:'cancelado'};
   return m[stCab]||'rascunho';
 }
-function almReqDisponivel(itemId, codigo, depId){
-  var est=almReqSaldo(itemId, codigo, depId);
-  var res=almReqReserva(itemId, codigo, depId);
-  return Math.max(0, est-res);
+function almReqDisponivel(itemId, codigo, depId, nome){
+  return almReqSaldo(itemId, codigo, depId, nome) - almReqReserva(itemId, codigo, depId, nome);
 }
-function almReqColsEstoqueHtml(it, depId){
-  var est=almReqSaldo(it.item_id, it.item_codigo, depId);
-  var res=almReqReserva(it.item_id, it.item_codigo, depId);
-  var disp=Math.max(0, est-res);
-  return '<td style="text-align:right">'+est+'</td><td style="text-align:right;color:#854F0B">'+res+'</td><td style="text-align:right;font-weight:700;color:'+(disp<=0?'#A32D2D':'#3B6D11')+'">'+disp+'</td>';
+/** Reserva ainda aberta desta requisição para o item (aprovado − separado). */
+function almReqReservaPropria(d, it){
+  if(!d || !almReqStEhReservaAberta(d.status)) return 0;
+  return almReqItemQtdReservada(it, d);
+}
+function almReqColsEstoqueHtml(it, depId, d, faseSep){
+  var fis=almReqSaldo(it.item_id, it.item_codigo, depId, it.item_descricao);
+  var res=almReqReserva(it.item_id, it.item_codigo, depId, it.item_descricao);
+  var disp=fis-res;
+  var html='<td style="text-align:right">'+fis+'</td><td style="text-align:right;color:#854F0B">'+res+'</td><td style="text-align:right;font-weight:700;color:'+(disp<=0?'#A32D2D':'#3B6D11')+'">'+disp+'</td>';
+  if(!faseSep) return html;
+  var propria=almReqReservaPropria(d, it);
+  var podeSep=Math.min(propria, Math.max(0, fis-(res-propria)));
+  return html+'<td style="text-align:right;font-weight:700;color:#185FA5">'+propria
+    +(propria>0 && podeSep<propria?'<div style="font-size:10px;font-weight:400;color:#A32D2D">saldo físico cobre '+podeSep+'</div>':'')+'</td>';
+}
+var ALM_REQ_MSG_DB_PENDENTE='Atualização do controle de estoque pendente.\nEsta operação está temporariamente indisponível até a atualização do banco ser concluída.';
+var ALM_REQ_MSG_LEGADO_RECEB='Esta requisição possui saída registrada pela regra anterior.\nConfirme o recebimento somente se o material foi efetivamente recebido.';
+function almReqAvisoDbPendente(){
+  progShowToast(ALM_REQ_MSG_DB_PENDENTE.replace('\n',' '),'erro');
+  alert(ALM_REQ_MSG_DB_PENDENTE);
+}
+/** RPC do controle de reservas. Fail-closed: qualquer falha devolve ok:false; nunca cai para lógica antiga. */
+async function almReqRpcReserva(fn, params){
+  var h={'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
+  var r, txt, js=null;
+  try{
+    r=await fetch(SB.url+'/rest/v1/rpc/'+fn,{method:'POST',headers:h,body:JSON.stringify(params||{})});
+    txt=await r.text();
+  }catch(e){
+    return {ok:false, rede:true, msg:'Sem conexão com o banco. A operação não foi concluída; tente de novo.'};
+  }
+  try{ js=txt?JSON.parse(txt):null; }catch(_){ js=null; }
+  if(!r.ok){
+    var code=String((js&&js.code)||'');
+    if(r.status===404||code==='PGRST202'||code==='42883'||code==='42P01'||code==='42703'){
+      return {ok:false, pendente:true, msg:ALM_REQ_MSG_DB_PENDENTE};
+    }
+    console.error('almReqRpcReserva', fn, r.status, txt);
+    return {ok:false, erro:true, msg:String((js&&js.message)||('Falha no controle de estoque ('+r.status+').')).replace(/^ALM_REQ[_A-Z]*:\s*/,'')};
+  }
+  if(!js || typeof js!=='object' || typeof js.ok!=='boolean'){
+    return {ok:false, erro:true, msg:'Resposta inválida do controle de estoque. A operação não foi concluída.'};
+  }
+  return js;
+}
+function almReqMostrarFaltaSaldo(d, rr){
+  var linhas=(rr.itens||[]).map(function(x){
+    var f=Number(x.faltante)||0;
+    return '<tr'+(f>0?' style="background:#FCEBEB"':'')+'><td>'+_escapeHtml(x.material||'')+'</td>'
+      +'<td style="text-align:right">'+(Number(x.saldo_fisico)||0)+'</td>'
+      +'<td style="text-align:right">'+(Number(x.reservado)||0)+'</td>'
+      +'<td style="text-align:right">'+(Number(x.disponivel)||0)+'</td>'
+      +'<td style="text-align:right">'+(Number(x.solicitado)||0)+'</td>'
+      +'<td style="text-align:right;font-weight:700;color:'+(f>0?'#A32D2D':'#3B6D11')+'">'+f+'</td></tr>';
+  }).join('');
+  var old=document.getElementById('arq-falta-box'); if(old) old.remove();
+  var box=document.createElement('div');
+  box.id='arq-falta-box';
+  box.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px';
+  box.innerHTML='<div style="background:#fff;border-radius:10px;max-width:760px;width:100%;max-height:85vh;overflow:auto;padding:16px">'
+    +'<div style="font-weight:700;color:#A32D2D;margin-bottom:6px">Aprovação bloqueada — '+_escapeHtml(d.numero||'')+'</div>'
+    +'<div style="font-size:12px;color:#444;margin-bottom:10px">Disponível insuficiente em ao menos um item. <b>Nenhum item foi reservado.</b> Disponível = saldo físico − reservado por outras requisições aprovadas, em separação ou separadas (ainda não entregues).</div>'
+    +'<table class="tbl" style="font-size:11px;width:100%"><thead><tr><th>Material</th><th>Saldo físico</th><th>Reservado</th><th>Disponível</th><th>Solicitado</th><th>Faltante</th></tr></thead><tbody>'+linhas+'</tbody></table>'
+    +'<div style="text-align:right;margin-top:12px"><button class="btn btn-pri" onclick="var b=document.getElementById(\'arq-falta-box\'); if(b) b.remove();">Entendi</button></div></div>';
+  document.body.appendChild(box);
+}
+/** Reflete na memória a saída gravada pelo banco (a verdade está no banco; só evita recarregar tudo). */
+function almReqAplicarMovsLocais(d, it, rr, obs){
+  (rr.movimentos||[]).forEach(function(m){
+    var row=(typeof estoque!=='undefined'?estoque:[]).find(function(e){ return String(e.id)===String(m.estoque_id); });
+    if(row) row.saldo=(Number(row.saldo)||0)-(Number(m.quantidade)||0);
+    if(typeof movimentacoes_itens!=='undefined' && Array.isArray(movimentacoes_itens)){
+      movimentacoes_itens.push({id:m.mov_id, item_id:it.item_id, tipo_mov:'entrega', quantidade:Number(m.quantidade)||0,
+        deposito_id:(row&&row.deposito_id)||d.deposito_id, contrato_id:d.contrato_id, data_mov:dataHoje(), status:'Em uso',
+        motivo:'Entrega requisição CENA', obs:obs+' · estoque_id:'+m.estoque_id+' · requisicao:'+(d.numero||'')});
+    }
+  });
 }
 function almReqSqlC2Hint(){ return 'Aplique sql_alm_requisicao_c2.sql no SQL Editor do Supabase. O ERP não aplica SQL sozinho.'; }
 function almReqUsuarioDepositos(u){
@@ -102283,7 +102407,9 @@ function almReqAlertas(){
     var meDest=verTudo||ids.indexOf(dest)>=0;
     if(r.status==='separacao' && meOrig)
       out.push({tipo:'separar', id:r.id, msg:(r.numero||'')+' — separar no depósito '+(r.deposito_nome||''), status:r.status, numero:r.numero||''});
-    if((r.status==='separada'||r.status==='atendida') && meDest)
+    if(meOrig && almReqTemSeparadoAEntregar(r))
+      out.push({tipo:'entregar_origem', id:r.id, msg:(r.numero||'')+' — entregar (saída física) no depósito '+(r.deposito_nome||''), status:r.status, numero:r.numero||''});
+    if(almReqPodeReceber(r) && meDest)
       out.push({tipo:'receber', id:r.id, msg:(r.numero||'')+' — confirmar recebimento em '+(r.dest_deposito_nome||r.deposito_nome||''), status:r.status, numero:r.numero||''});
     if(r.status==='recebida' && meDest && (_almReq.itens[r.id]||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); }))
       out.push({tipo:'entregar', id:r.id, msg:(r.numero||'')+' — entregar ao colaborador (assinatura)', status:r.status, numero:r.numero||''});
@@ -102318,6 +102444,7 @@ function almReqAlertasPodarVistos(list){
 }
 function almReqAlertaBtnMeta(tipo){
   if(tipo==='receber') return {label:'Confirmar', bg:'#3B6D11', border:'#3B6D11', color:'#fff'};
+  if(tipo==='entregar_origem') return {label:'Entregar', bg:'#5B3E96', border:'#5B3E96', color:'#fff'};
   if(tipo==='entregar') return {label:'Entregar', bg:'#185FA5', border:'#185FA5', color:'#fff'};
   return {label:'Separar', bg:'#854F0B', border:'#854F0B', color:'#fff'};
 }
@@ -102607,13 +102734,20 @@ function almReqBuscarColabs(q){
 function almReqUsuarioNome(){
   return (usuarioLogado&&(usuarioLogado.nome||usuarioLogado.email))||'sistema';
 }
-function almReqSaldo(itemId, codigo, depId){
-  var tot=0, cid=String(itemId||''), cod=String(codigo||'').toLowerCase();
+/** Saldo físico no depósito origem — mesma regra da baixa (almMatchEstoqueRef + legado sem depósito da mesma filial). */
+function almReqSaldo(itemId, codigo, depId, nome){
+  var cid=String(itemId||'');
+  var cat=cid?((typeof itens_catalogo!=='undefined'&&itens_catalogo)||[]).find(function(c){ return c&&String(c.id)===cid; }):null;
+  var ref=cat?{nome:cat.nome, codigo:cat.codigo, sku:cat.sku}:{nome:nome||'', codigo:codigo||''};
+  if(!String(ref.nome||'').trim() && !String(ref.codigo||'').trim() && !String(ref.sku||'').trim()) return 0;
+  var dep=depId?(typeof depositos!=='undefined'?depositos:[]).find(function(x){ return String(x.id)===String(depId); }):null;
+  var filId=dep?dep.filial_id:null;
+  var tot=0;
   (typeof estoque!=='undefined'?estoque:[]).forEach(function(e){
-    if(!e) return;
-    if(depId && String(e.deposito_id||'')!==String(depId)) return;
-    var ok=(cid && String(e.item_id||'')===cid) || (cod && String(e.codigo||'').toLowerCase()===cod);
-    if(ok) tot+=Number(e.saldo)||0;
+    if(!e || !almMatchEstoqueRef(e, ref)) return;
+    if(depId && e.deposito_id && String(e.deposito_id)!==String(depId)) return;
+    if(depId && filId && e.filial_id && String(e.filial_id)!==String(filId)) return;
+    tot+=Number(e.saldo)||0;
   });
   return tot;
 }
@@ -102738,7 +102872,7 @@ function almReqFiltroStatusArr(){
   return [];
 }
 function almReqStatusOpcoes(){
-  return ['rascunho','solicitada','aprovada','separacao','parcialmente_atendida','separada','recebida','recusada','cancelada'];
+  return ['rascunho','solicitada','aprovada','separacao','separada','parcialmente_atendida','entregue','recebida','recusada','cancelada'];
 }
 function almReqStatusMatchFiltro(st, selected){
   if(!selected || !selected.length) return true;
@@ -102844,13 +102978,14 @@ function almReqRender(){
   wrap.innerHTML='<div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;flex-wrap:wrap">'
     +'<button onclick="showMain(\'almoxarifado\')" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border:0.5px solid #e0dfd8;border-radius:8px;background:#fff;cursor:pointer;font-size:12px;font-weight:600;color:#555;">◀ Almoxarifado CENA</button>'
     +'<span style="font-size:13px;font-weight:600">📥 Requisição — estoque CENA</span>'
-    +'<span style="font-size:11px;color:#888">Aprovada → Separação → Separada (informa base/depósito destino) → Recebimento no destino → Entregar colaborador (assinatura). SQL: sql_alm_requisicao_c2.sql.</span>'
+    +'<span style="font-size:11px;color:#888">Aprovada → Em separação (informa base/depósito destino) → Separada (continua reservada, sem baixa) → Entregue (saída física) → Recebimento confirmado no destino → Entregar colaborador (assinatura).</span>'
     +(typeof almCorrBadgeHtml==='function'?almCorrBadgeHtml():'')
     +'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.6rem">'
     +almReqChipSt('aprovada','Fila: aprovadas')
     +almReqChipSt('separacao','Em separação')
     +almReqChipSt('separada','Separadas')
+    +almReqChipSt('entregue','Entregues')
     +almReqChipSt('recebida','Recebidas')
     +'<button class="btn btn-sm" onclick="almReqSetFiltroStatus(\'\')">Todas</button>'
     +'</div>'
@@ -102954,14 +103089,21 @@ function almReqGuiaHtml(d){
   var quem=almReqUsuarioNome();
   var precisaEnt=(d.itens||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); });
   var msg='', cor='#185FA5', bg='#E6F1FB', bd='#85B7EB';
+  var destTxt=_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''));
   if(d.status==='aprovada'){
-    msg='Próximo passo: enviar para separação no depósito origem.';
-  } else if(d.status==='separacao'||d.status==='parcialmente_atendida'){
+    msg='Material reservado. Próximo passo: <b>Iniciar separação</b> no depósito origem.';
+  } else if(d.status==='separacao'||(d.status==='parcialmente_atendida' && !almReqTemSeparadoAEntregar(d))){
     if(!destOk){ msg='Preencha a <b>base</b> e o <b>depósito destino</b> destacados e depois separe os itens.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
-    else msg='Separe as quantidades. Em seguida o almoxarifado destino confirma o recebimento em '+(d.dest_deposito_nome||'')+'.';
-  } else if(d.status==='separada'||d.status==='atendida'){
+    else msg='Separe as quantidades. Separar não baixa o estoque: o material continua reservado até a entrega.';
+  } else if(almReqEhLegadoBaixado(d)){
     if(!destOk){ msg='Para confirmar o recebimento, preencha a <b>base</b> e o <b>depósito destino</b>.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
-    else msg='Passo atual: confirmar o recebimento neste aparelho (<b>'+_escapeHtml(quem)+'</b>) em <b>'+_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''))+'</b>.';
+    else { msg=_escapeHtml(ALM_REQ_MSG_LEGADO_RECEB).replace('\n','<br>')+'<br>Recebimento em <b>'+destTxt+'</b>, neste aparelho (<b>'+_escapeHtml(quem)+'</b>). Não há nova entrega nem nova baixa.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+  } else if(d.status==='separada'||d.status==='parcialmente_atendida'){
+    if(!destOk){ msg='Preencha a <b>base</b> e o <b>depósito destino</b> antes de entregar.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+    else msg='Material separado e ainda reservado no estoque. Próximo passo: <b>Entregar</b> (saída física do depósito origem para '+destTxt+').';
+  } else if(d.status==='entregue'){
+    if(!destOk){ msg='Para confirmar o recebimento, preencha a <b>base</b> e o <b>depósito destino</b>.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
+    else msg='Material entregue (saída física registrada). Passo atual: confirmar o recebimento neste aparelho (<b>'+_escapeHtml(quem)+'</b>) em <b>'+destTxt+'</b>.';
   } else if(d.status==='recebida'){
     if(precisaEnt){ msg='Recebimento ok. Próximo passo: entregar ao colaborador e coletar a assinatura.'; cor='#854F0B'; bg='#FEF3E2'; bd='#E8B931'; }
     else { msg='Recebimento concluído. Não há entrega com assinatura pendente.'; cor='#3B6D11'; bg='#EAF3DE'; bd='#85C440'; }
@@ -102997,13 +103139,19 @@ function almReqDirigirPasso(opts){
     if(x.tagName==='BUTTON'){ x.style.background=''; x.style.color=''; }
   });
   var st=d.status;
-  if(st==='separada'||st==='atendida'){
+  if(almReqPodeReceber(d)){
     if(!d.dest_base_id){ almReqFocoEl(document.getElementById('arq-dest-base'), opts.toast?'Selecione a base destino.':''); return; }
     if(!d.dest_deposito_id){ almReqFocoEl(document.getElementById('arq-dest-dep'), opts.toast?'Selecione o depósito destino.':''); return; }
     var box=document.getElementById('arq-receber-box');
     var btn=document.getElementById('arq-btn-receber');
     if(box && box.scrollIntoView) box.scrollIntoView({behavior:'smooth', block:'center'});
     almReqFocoEl(btn, opts.toast?'Destino preenchido. Confirme o recebimento neste aparelho.':'');
+    return;
+  }
+  if(almReqTemSeparadoAEntregar(d)){
+    if(!d.dest_base_id){ almReqFocoEl(document.getElementById('arq-dest-base'), opts.toast?'Informe a base destino.':''); return; }
+    if(!d.dest_deposito_id){ almReqFocoEl(document.getElementById('arq-dest-dep'), opts.toast?'Informe o depósito destino.':''); return; }
+    almReqFocoEl(document.getElementById('arq-btn-entregar-todos')||document.querySelector('[id^="arq-ent-"]'), opts.toast?'Material separado. Próximo passo: entregar (saída física).':'');
     return;
   }
   if(st==='separacao'||st==='parcialmente_atendida'){
@@ -103036,42 +103184,50 @@ function almReqModal(){
     return '<option value="'+_escapeHtml(String(e.id))+'">'+_escapeHtml(e.codigo||e.nome||e.nome_equipe||'')+'</option>';
   }).join('');
   var itensHtml;
-  var faseSep=d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='atendida'||d.status==='separada'||d.status==='recebida';
+  var faseSep=d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='atendida'||d.status==='separada'||d.status==='entregue'||d.status==='recebida';
   if(!(d.itens||[]).length) itensHtml='<div style="font-size:12px;color:#888;padding:.5rem 0">Nenhum item. Adicione abaixo.</div>';
   else if(faseSep){
-    itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Estoque</th><th>Reserva</th><th>Disponível</th><th>Destino</th><th></th></tr></thead><tbody>'
+    itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Saldo físico</th><th>Reservado</th><th>Disponível</th><th>Reservado p/ esta requisição</th><th>Destino</th><th></th></tr></thead><tbody>'
       +d.itens.map(function(it,idx){
         var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
         var atd=Number(it.quantidade_atendida)||0;
-        var pend=Math.max(0, apr-atd);
+        var sep=almReqItemQtdSeparada(it);
+        var pendSep=almReqItemPendenteSeparar(it);
+        var pendEnt=almReqItemPendenteEntrega(it);
+        var legado=it.quantidade_separada==null && atd>0 && (d.status==='separada'||d.status==='atendida');
         var tagEnt=typeof almReqEntregaTagGet==='function'?almReqEntregaTagGet(it.observacao):'';
-        var aguardEnt=pend<=0 && typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it);
-        var btn;
-        if(pend>0 && (d.status==='separacao'||d.status==='parcialmente_atendida')){
-          btn='<div style="display:flex;gap:4px;align-items:center">'
-            +'<input class="inp" id="arq-atd-'+idx+'" type="number" min="0.0001" step="any" value="'+pend+'" style="width:72px">'
+        var aguardEnt=typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it);
+        var btn='';
+        if(pendSep>0 && (d.status==='separacao'||d.status==='parcialmente_atendida')){
+          btn+='<div style="display:flex;gap:4px;align-items:center">'
+            +'<input class="inp" id="arq-atd-'+idx+'" type="number" min="1" step="1" value="'+pendSep+'" style="width:64px">'
             +'<button class="btn btn-sm btn-pri" onclick="btnBusy(this,function(){return almReqSepararItem('+idx+');},\'Separando…\')">Separar</button></div>';
-        } else if(d.status==='separada'){
-          btn='<span class="bdg ok">Separado</span>';
-        } else if(aguardEnt){
-          btn='<span class="bdg warn">Aguardando assinatura</span>';
-        } else if(tagEnt.indexOf('ASSINADA')===0){
-          btn='<span class="bdg ok">Ficha assinada</span>';
-        } else if(d.status==='recebida'){
-          btn='<span class="bdg ok">Recebido</span>';
-        } else {
-          btn='<span class="bdg ok">Separado</span>';
+        }
+        if(pendEnt>0 && !legado && (d.status==='separada'||d.status==='parcialmente_atendida')){
+          btn+='<div style="display:flex;gap:4px;align-items:center;margin-top:3px">'
+            +'<input class="inp" id="arq-ent-'+idx+'" type="number" min="1" step="1" value="'+pendEnt+'" style="width:64px">'
+            +'<button class="btn btn-sm" style="background:#3B6D11;border-color:#3B6D11;color:#fff" onclick="btnBusy(this,function(){return almReqEntregarItem('+idx+');},\'Entregando…\')">Entregar</button></div>';
+        }
+        if(!btn){
+          if(legado && d.status!=='recebida') btn='<span class="bdg warn" title="Saída física feita na separação pela regra antiga. Conciliação pendente.">Saída registrada (regra antiga)</span>';
+          else if(aguardEnt) btn='<span class="bdg warn">Aguardando assinatura</span>';
+          else if(tagEnt.indexOf('ASSINADA')===0) btn='<span class="bdg ok">Ficha assinada</span>';
+          else if(it.status==='recebido'||d.status==='recebida') btn='<span class="bdg ok">Recebido</span>';
+          else if(it.status==='cancelado') btn='<span class="bdg danger">Cancelado</span>';
+          else if(atd>0 && atd+1e-9>=apr) btn='<span class="bdg ok">Entregue</span>';
+          else if(sep>0 && sep+1e-9>=apr) btn='<span class="bdg warn">Separado — aguardando entrega</span>';
+          else btn='<span class="bdg gray">Aguardando separação</span>';
         }
         if(!corrigindo && typeof almCorrBtnItemHtml==='function') btn+=almCorrBtnItemHtml(it, idx);
         return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+(corrigindo
           ? '<input class="inp arq-corr-desc" data-idx="'+idx+'" style="width:100%;min-width:160px" value="'+_escapeHtml(it.item_descricao||'')+'">'
           : _escapeHtml(it.item_descricao||''))+'</td>'
-          +'<td>'+apr+(atd?(' / '+atd):'')+'</td>'
-          +almReqColsEstoqueHtml(it, d.deposito_id)
+          +'<td>'+apr+'<div style="font-size:10px;color:#666;white-space:nowrap">separado '+sep+' · entregue '+atd+'</div></td>'
+          +almReqColsEstoqueHtml(it, d.deposito_id, d, true)
           +'<td>'+almReqDestCellHtml(it, idx)+'</td><td>'+btn+'</td></tr>';
       }).join('')+'</tbody></table>'
-      +'<div style="font-size:11px;color:#666;margin-top:.4rem">Estoque = saldo no depósito origem. Reserva = soma das requisições Solicitada/Aprovada/em Separação. Disponível = estoque − reserva. Separar baixa o origem e informa o destino da transferência. SQL: sql_alm_requisicao_c2.sql.</div>';
-  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Estoque</th><th>Reserva</th><th>Disponível</th>'+(roItens?'':'<th></th>')+'</tr></thead><tbody>'
+      +'<div style="font-size:11px;color:#666;margin-top:.4rem">Saldo físico = estoque no depósito origem. Reservado = aprovado − entregue nas requisições abertas (inclui esta e o que já foi separado e ainda não foi entregue). Disponível = saldo físico − reservado. <b>Separar</b> só aparta o material: não baixa o saldo físico nem gera movimentação. <b>Entregar</b> faz a saída física (baixa + movimentação) e consome a reserva. <b>Confirmar recebimento</b> só registra quem recebeu.</div>';
+  } else itensHtml='<table class="tbl" style="font-size:11px"><thead><tr><th>Tipo</th><th>Item</th><th>Qtd</th><th>Colaborador / destino</th><th>Saldo físico</th><th>Reservado</th><th>Disponível</th>'+(roItens?'':'<th></th>')+'</tr></thead><tbody>'
     +d.itens.map(function(it,idx){
       return '<tr><td>'+almReqTipoLabel(it.tipo_item)+'</td><td>'+(corrigindo
         ? '<input class="inp arq-corr-desc" data-idx="'+idx+'" style="width:100%;min-width:160px" value="'+_escapeHtml(it.item_descricao||'')+'">'
@@ -103108,10 +103264,10 @@ function almReqModal(){
     acoes+='<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="btnBusy(this,almReqRecusar,\'Processando…\')">Recusar</button>';
   }
   if(!corrigindo && d.status==='aprovada'){
-    acoes+='<button class="btn btn-pri" onclick="btnBusy(this,almReqSeparar,\'Processando…\')">Enviar para separação</button>';
+    acoes+='<button class="btn btn-pri" onclick="btnBusy(this,almReqSeparar,\'Processando…\')">Iniciar separação</button>';
   }
-  if(d.status==='separada'||d.status==='atendida'){
-    /* botão de confirmar fica no painel destacado arq-receber-box */
+  if(!corrigindo && almReqTemSeparadoAEntregar(d)){
+    acoes+='<button class="btn btn-pri" id="arq-btn-entregar-todos" style="background:#3B6D11;border-color:#3B6D11;color:#fff" onclick="btnBusy(this,almReqEntregarTodos,\'Entregando…\')">Entregar</button>';
   }
   if(!corrigindo && d.status==='recebida'
     && (d.itens||[]).some(function(it){ return typeof almReqItemAguardaEntrega==='function' && almReqItemAguardaEntrega(it); })){
@@ -103120,6 +103276,10 @@ function almReqModal(){
   if(!corrigindo && (d.status==='rascunho'||d.status==='solicitada')){
     acoes+='<button class="btn" onclick="almReqCancelar()">Cancelar</button>';
   }
+  if(!corrigindo && almReqStEhReservaAberta(d.status)){
+    var temSaidaCanc=(d.itens||[]).some(function(it){ return (Number(it.quantidade_atendida)||0)>0; });
+    acoes+='<button class="btn" style="color:#A32D2D;border-color:#A32D2D" onclick="btnBusy(this,almReqCancelar,\'Cancelando…\')">'+(temSaidaCanc?'Cancelar saldo pendente':'Cancelar e liberar reserva')+'</button>';
+  }
   if(!corrigindo && almReqExibeBotaoRetroagir(d)){
     acoes+='<button class="btn" style="border-color:#854F0B;color:#854F0B" onclick="almReqAbrirRetroagir()">↩ Retroagir status</button>';
   }
@@ -103127,7 +103287,7 @@ function almReqModal(){
     acoes+='<button class="btn" style="border-color:#185FA5;color:#185FA5" onclick="almReqAbrirCorrigirInfo()">✎ Corrigir informações</button>';
   }
   var receberHtml='';
-  if(!corrigindo && (d.status==='separada'||d.status==='atendida')){
+  if(!corrigindo && almReqPodeReceber(d)){
     var destOkRec=!!(d.dest_base_id&&d.dest_deposito_id);
     var quemRec=_escapeHtml(almReqUsuarioNome()+' · '+((usuarioLogado&&usuarioLogado.email)||''));
     receberHtml='<div id="arq-receber-box" style="margin-top:.85rem;padding:12px;border-radius:8px;border:2px solid '+(destOkRec?'#3B6D11':'#E8B931')+';background:'+(destOkRec?'#EAF3DE':'#FEF3E2')+'">'
@@ -103138,6 +103298,7 @@ function almReqModal(){
       +(destOkRec
         ? ('<br>Receber em: <b>'+_escapeHtml((d.dest_base_nome||'')+' / '+(d.dest_deposito_nome||''))+'</b>')
         : '<br>Preencha a <b>base destino</b> e o <b>depósito destino</b> destacados acima — depois este botão avança.')
+      +(almReqEhLegadoBaixado(d)?'<br><span style="color:#854F0B;font-weight:700">'+_escapeHtml(ALM_REQ_MSG_LEGADO_RECEB).replace('\n','<br>')+'</span>':'<br>A saída física já foi registrada na entrega. Confirmar o recebimento não baixa o estoque de novo.')
       +'</div>'
       +'<button class="btn btn-pri" id="arq-btn-receber" onclick="btnBusy(this,almReqConfirmarRecebimento,\'Confirmando…\')" style="background:#1a1a18;color:#fff;border-color:#1a1a18;font-weight:700">Confirmar recebimento</button>'
       +'</div>';
@@ -103180,7 +103341,7 @@ function almReqModal(){
     +(String(d.centro_custo||'').trim()?'<div><label style="font-size:11px;font-weight:600">Centro de custo</label><input class="inp" id="arq-cc" style="width:100%" value="'+_escapeHtml(d.centro_custo||'')+'"'+dis+'></div>':'')
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:600">Contrato *</label><select class="inp" id="arq-cont" style="width:100%" onchange="_almReq._contratoEscolhido=!!this.value;almReqLerCabecalho()" autocomplete="off"'+dis+'>'+contOpts+'</select></div>'
     +(function(){
-          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
+          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='entregue'||d.status==='recebida'||d.status==='atendida';
           var destJaEscolhido=!!d.dest_deposito_id;
           var showDest=stAvancado || destJaEscolhido || (corrigindo && stAvancado);
           if(showDest) return '<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqOnDepOrigem()"'+dis+'>'+depOpts+'</select></div>';
@@ -103188,15 +103349,15 @@ function almReqModal(){
             +'<div><label style="font-size:11px;font-weight:600">Depósito origem *</label><select class="inp" id="arq-dep" style="width:100%" onchange="almReqOnDepOrigem()" autocomplete="off"'+dis+'>'+depOpts+'</select></div>';
         })()
     +(function(){
-          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='recebida'||d.status==='atendida';
+          var stAvancado=d.status==='aprovada'||d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='entregue'||d.status==='recebida'||d.status==='atendida';
           var destJaEscolhido=!!d.dest_deposito_id;
           var showDest=stAvancado || destJaEscolhido || (corrigindo && stAvancado);
           if(!showDest) return '';
           var destFaltando=!d.dest_base_id||!d.dest_deposito_id;
           var destRo='';
           if(corrigindo || almReqStatusEditavel(d.status)) destRo='';
-          else if(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida') && !destFaltando)) destRo=' disabled';
-          var destHl=!corrigindo && destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida');
+          else if(d.status==='recebida' || ((d.status==='separada'||d.status==='atendida'||d.status==='entregue') && !destFaltando)) destRo=' disabled';
+          var destHl=!corrigindo && destFaltando && (d.status==='separacao'||d.status==='parcialmente_atendida'||d.status==='separada'||d.status==='atendida'||d.status==='entregue');
           var destBaseOpts=almReqSelectOpts(almReqListaFiliais(), d.dest_base_id, d.dest_base_nome, function(b){ return b.nome||''; }, 'Selecione a base...');
           var destDepOpts=almReqSelectOpts(d.dest_base_id?almReqListaDepositos(d.dest_base_id):[], d.dest_deposito_id, d.dest_deposito_nome, function(x){ return x.nome||''; }, 'Selecione o depósito...');
           return '<div id="arq-dest-wrap" style="grid-column:span 2;display:grid;grid-template-columns:1fr 1fr;gap:.6rem;padding:10px;border-radius:8px;border:2px solid '+(destHl?'#E8B931':'#d8d6ce')+';background:'+(destHl?'#FEF3E2':'#fafaf8')+'">'
@@ -103312,10 +103473,11 @@ function almReqAtualizaSaldo(){
   var el=document.getElementById('arq-saldo'); if(!el) return;
   var it=_almReq.pickItem; var d=_almReq.draft||{};
   if(!it){ el.textContent=''; return; }
-  var n=almReqSaldo(it.id, it.codigo, d.deposito_id||((document.getElementById('arq-dep')||{}).value));
-  var res=almReqReserva(it.id, it.codigo, d.deposito_id||((document.getElementById('arq-dep')||{}).value));
-  var disp=Math.max(0, n-res);
-  el.textContent='Estoque: '+n+' · Reserva: '+res+' · Disponível: '+disp+' '+(it.unidade_medida||it.unidade||'');
+  var depSel=d.deposito_id||((document.getElementById('arq-dep')||{}).value);
+  var n=almReqSaldo(it.id, it.codigo, depSel, it.nome);
+  var res=almReqReserva(it.id, it.codigo, depSel, it.nome);
+  var disp=n-res;
+  el.textContent='Saldo físico: '+n+' · Reservado: '+res+' · Disponível para requisição: '+disp+' '+(it.unidade_medida||it.unidade||'');
 }
 function almReqBuscaColab(){
   var q=(document.getElementById('arq-colab-q')||{}).value||'';
@@ -103580,27 +103742,48 @@ async function almReqSalvarRascunhoSilencioso(){
   await almReqLogEvento(d.id,'criada','Rascunho '+d.numero);
 }
 
+function almReqAssinaturaItens(itens){
+  return (itens||[]).map(function(it){
+    return [it.id||'', it.item_id||'', it.item_descricao||'', it.quantidade_solicitada, it.quantidade_aprovada, it.colaborador_id||'', it.equipe_id||''].join('|');
+  }).sort().join('#');
+}
 async function almReqAprovar(){
   var d=_almReq.draft; if(!d||!d.id){ progShowToast('Abra a requisição.','erro'); return; }
   if(d.status!=='solicitada'){ progShowToast('Só requisição Solicitada pode ser aprovada.','erro'); return; }
-  if(!confirm('Aprovar a requisição '+d.numero+'? A baixa de estoque só ocorre no atendimento.')) return;
-  var agora=new Date().toISOString();
-  (d.itens||[]).forEach(function(it){
-    it.quantidade_aprovada=it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada;
-    it.status='aprovado';
-  });
-  d.status='aprovada'; d.aprovado_por=almReqUsuarioNome(); d.aprovado_em=agora;
+  if(_almReq.aprovando) return;
+  if(!confirm('Aprovar a requisição '+d.numero+'? As quantidades ficam reservadas no depósito origem. O saldo físico só baixa na entrega.')) return;
   if(DEMO){
+    (d.itens||[]).forEach(function(it){
+      it.quantidade_aprovada=it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada;
+      it.status='aprovado';
+    });
+    d.status='aprovada'; d.aprovado_por=almReqUsuarioNome(); d.aprovado_em=new Date().toISOString();
     await almReqLogEvento(d.id,'aprovada','Aprovada — aguardando separação');
-    progShowToast('Aprovada: '+d.numero+' — próximo passo: Enviar para separação');
+    progShowToast('Aprovada: '+d.numero+' — próximo passo: Iniciar separação');
     closeModal(); almReqRender(); return;
   }
-  var ok=await sbUpdate('alm_requisicoes',{status:'aprovada', aprovado_por:d.aprovado_por, aprovado_em:agora},'id=eq.'+d.id);
-  if(!ok){ progShowToast('Falha ao aprovar.','erro'); return; }
-  await almReqGravarItens(d.id, d.itens, 'aprovado');
-  await almReqLogEvento(d.id,'aprovada','Aprovada — aguardando separação');
-  progShowToast('Aprovada: '+d.numero+' — próximo passo: Enviar para separação');
-  closeModal(); await almReqCarregar();
+  _almReq.aprovando=true;
+  try{
+    if(almReqAssinaturaItens(d.itens)!==almReqAssinaturaItens(_almReq.itens[d.id])){
+      var okIt=await almReqGravarItens(d.id, d.itens, 'solicitado');
+      if(!okIt){ progShowToast('Falha ao salvar os itens antes de aprovar.','erro'); return; }
+    }
+    var rr=await almReqRpcReserva('fn_alm_req_aprovar',{
+      p_requisicao_id:d.id,
+      p_usuario:almReqUsuarioNome(),
+      p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null
+    });
+    if(!rr.ok){
+      if(rr.pendente){ almReqAvisoDbPendente(); return; }
+      if(rr.codigo==='SALDO_INSUFICIENTE'){ almReqMostrarFaltaSaldo(d, rr); return; }
+      progShowToast(rr.msg||'Falha ao aprovar.','erro');
+      return;
+    }
+    progShowToast(rr.idempotente ? rr.msg : ('Aprovada: '+d.numero+' — quantidades reservadas. Próximo passo: Iniciar separação'));
+    closeModal(); await almReqCarregar();
+  }finally{
+    _almReq.aprovando=false;
+  }
 }
 async function almReqRecusar(){
   var d=_almReq.draft; if(!d||!d.id) return;
@@ -103626,6 +103809,7 @@ async function almReqRecusar(){
 }
 async function almReqCancelar(){
   var d=_almReq.draft; if(!d||!d.id){ closeModal(); return; }
+  if(almReqStEhReservaAberta(d.status)) return almReqCancelarComReserva(d);
   if(d.status!=='rascunho' && d.status!=='solicitada'){ progShowToast('Não é possível cancelar neste status.','erro'); return; }
   if(!confirm('Cancelar a requisição '+d.numero+'?')) return;
   var agora=new Date().toISOString();
@@ -103641,6 +103825,41 @@ async function almReqCancelar(){
   await almReqLogEvento(d.id,'cancelada','Cancelada');
   progShowToast('Cancelada: '+d.numero);
   closeModal(); await almReqCarregar();
+}
+/** Cancelamento antes da saída: libera a reserva no banco; com separação parcial libera só o restante. */
+async function almReqCancelarComReserva(d){
+  if(_almReq.cancelando) return;
+  var parcial=(d.itens||[]).some(function(it){ return (Number(it.quantidade_atendida)||0)>0; });
+  var motivo=prompt(parcial
+    ? 'Cancelar o saldo pendente da requisição '+d.numero+'?\nO que já foi entregue continua registrado; só a reserva restante é liberada (o que estava separado volta para a prateleira). O saldo físico não muda.\n\nMotivo (obrigatório):'
+    : 'Cancelar a requisição '+d.numero+'?\nA reserva é liberada; se havia material separado, ele volta para a prateleira. O saldo físico não muda.\n\nMotivo (obrigatório):');
+  if(motivo==null) return;
+  motivo=String(motivo).trim();
+  if(!motivo){ progShowToast('Informe o motivo do cancelamento.','erro'); return; }
+  if(DEMO){
+    (d.itens||[]).forEach(function(it){ it.status=(Number(it.quantidade_atendida)||0)>0?'entregue':'cancelado'; });
+    d.status=parcial?'entregue':'cancelada';
+    await almReqLogEvento(d.id,'cancelada',(parcial?'Saldo pendente cancelado':'Cancelada')+' — reserva liberada. Motivo: '+motivo);
+    almReqSyncListaDraft(); closeModal(); almReqRender(); return;
+  }
+  _almReq.cancelando=true;
+  try{
+    var rr=await almReqRpcReserva('fn_alm_req_cancelar',{
+      p_requisicao_id:d.id,
+      p_usuario:almReqUsuarioNome(),
+      p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null,
+      p_motivo:motivo
+    });
+    if(!rr.ok){
+      if(rr.pendente){ almReqAvisoDbPendente(); return; }
+      progShowToast(rr.msg||'Falha ao cancelar.','erro');
+      return;
+    }
+    progShowToast((d.numero||'')+': '+(rr.msg||'Cancelada.'));
+    closeModal(); await almReqCarregar();
+  }finally{
+    _almReq.cancelando=false;
+  }
 }
 
 function almReqAbrirRetroagir(){
@@ -104061,23 +104280,24 @@ async function almReqPersistItem(it){
   return sbUpdate('alm_requisicao_itens', payload, 'id=eq.'+it.id);
 }
 function almReqHeaderStatusPorItens(itens){
-  var list=itens||[];
+  var list=(itens||[]).filter(function(it){ var s=String(it.status||''); return s!=='cancelado'&&s!=='recusado'; });
   if(!list.length) return 'separacao';
-  var all=list.every(function(it){
-    var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
-    return (Number(it.quantidade_atendida)||0)+1e-9>=apr;
-  });
-  if(all) return 'separada';
-  var some=list.some(function(it){ return (Number(it.quantidade_atendida)||0)>0; });
-  return some?'parcialmente_atendida':'separacao';
+  function aprDe(it){ return Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0; }
+  if(list.every(function(it){
+    var s=String(it.status||'');
+    return (Number(it.quantidade_atendida)||0)+1e-9>=aprDe(it) || s==='entregue' || s==='recebido';
+  })) return 'entregue';
+  if(list.some(function(it){ return (Number(it.quantidade_atendida)||0)>0; })) return 'parcialmente_atendida';
+  if(list.every(function(it){ return almReqItemQtdSeparada(it)+1e-9>=aprDe(it); })) return 'separada';
+  return 'separacao';
 }
 
 async function almReqSeparar(){
   var d=_almReq.draft; if(!d||!d.id) return;
-  if(d.status!=='aprovada'){ progShowToast('Só requisição Aprovada vai para separação.','erro'); return; }
+  if(d.status!=='aprovada'){ progShowToast('Só requisição Aprovada pode iniciar a separação.','erro'); return; }
   almReqLerCabecalho();
   if(!d.deposito_id){ progShowToast('Defina o depósito origem antes de separar.','erro'); return; }
-  if(!confirm('Enviar '+d.numero+' para separação no depósito '+((d.deposito_nome)||'')+'? Ainda sem baixa.')) return;
+  if(!confirm('Iniciar a separação de '+d.numero+' no depósito '+((d.deposito_nome)||'')+'?\nO material continua reservado; o estoque só baixa na entrega.')) return;
   d.status='separacao';
   (d.itens||[]).forEach(function(it){ if(it.status==='aprovado'||it.status==='solicitado') it.status='separacao'; });
   almReqSyncListaDraft();
@@ -104090,19 +104310,20 @@ async function almReqSeparar(){
       payloadSep.dest_deposito_nome=d.dest_deposito_nome||null;
     }
     var ok=await sbUpdate('alm_requisicoes',payloadSep,'id=eq.'+d.id);
-    if(!ok){ progShowToast('Falha ao enviar para separação.','erro'); return; }
+    if(!ok){ progShowToast('Falha ao iniciar a separação.','erro'); return; }
     for(var i=0;i<(d.itens||[]).length;i++) await almReqPersistItem(d.itens[i]);
   }
-  await almReqLogEvento(d.id,'status','Enviada para separação no depósito '+(d.deposito_nome||''));
+  await almReqLogEvento(d.id,'status','Separação iniciada no depósito '+(d.deposito_nome||''));
   progShowToast('Em separação: '+d.numero+' — informe o destino e separe os itens');
   almReqModal();
 }
 
 async function almReqSepararItem(idx){ return almReqAtenderItem(idx); }
+/** Separar: aparta o material no almoxarifado. Não baixa estoque, não gera movimentação, não consome reserva. */
 async function almReqAtenderItem(idx){
   var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]) return;
   if(d.status!=='separacao' && d.status!=='parcialmente_atendida'){
-    progShowToast('Envie para separação antes de separar o item.','erro'); return;
+    progShowToast('Inicie a separação antes de separar o item.','erro'); return;
   }
   almReqLerCabecalho();
   if(!d.dest_base_id || !d.dest_deposito_id){
@@ -104110,81 +104331,69 @@ async function almReqAtenderItem(idx){
   }
   if(_almReq.atendendo) return;
   var it=d.itens[idx];
-  var blk=almReqItemBloqueiaNovaBaixa(it);
-  if(blk.bloqueado){ progShowToast(blk.msg,'erro'); return; }
   var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
-  var atd=Number(it.quantidade_atendida)||0;
-  var pend=Math.max(0, apr-atd);
-  if(pend<=0){
-    progShowToast('Este item já possui atendimento/baixa registrada. Para atender novamente, primeiro estorne ou ajuste o atendimento anterior.','erro');
-    return;
-  }
+  var pend=almReqItemPendenteSeparar(it);
+  if(pend<=0){ progShowToast('Este item já está totalmente separado.','erro'); return; }
   var qtd=parseFloat((document.getElementById('arq-atd-'+idx)||{}).value);
   if(!(qtd>0)){ progShowToast('Informe a quantidade a separar.','erro'); return; }
-  if(qtd>pend+1e-9){ progShowToast('Quantidade maior que o pendente ('+pend+').','erro'); return; }
-  if(!it.item_id){ progShowToast('Item sem vínculo ao catálogo. Não é possível baixar estoque.','erro'); return; }
+  if(qtd>pend+1e-9){ progShowToast('Quantidade maior que o reservado a separar nesta requisição ('+pend+').','erro'); return; }
+  if(Math.floor(qtd)!==qtd){ progShowToast('O saldo físico é controlado em unidades inteiras. Informe uma quantidade inteira.','erro'); return; }
+  if(!it.item_id){ progShowToast('Item sem vínculo ao catálogo. Não será possível entregar.','erro'); return; }
   if(!d.deposito_id){ progShowToast('Requisição sem depósito origem.','erro'); return; }
-  if(!d.contrato_id){ progShowToast('Informe o contrato no cabeçalho para dar baixa no estoque.','erro'); return; }
   if(almReqExigeColab(it) && !(it.colaborador_id||it.colaborador_nome)){
     progShowToast('Informe o colaborador: uniforme/EPI individual precisa da ficha assinada.','erro'); return;
   }
-  if(typeof almRegistrarEntregaPatrimonio!=='function'){
-    progShowToast('Função de entrega do Almoxarifado indisponível.','erro'); return;
-  }
-  var dep=(depositos||[]).find(function(x){ return String(x.id)===String(d.deposito_id); });
-  var filId=dep?dep.filial_id:null;
+  var rr=null;
   _almReq.atendendo=true;
   try{
-  var obs='Requisição CENA '+(d.numero||'')+' · separado para '+(d.dest_deposito_nome||'')+' · '+(it.item_descricao||'');
-  var r=await almRegistrarEntregaPatrimonio({
-    item_id:it.item_id,
-    quantidade:qtd,
-    deposito_id:d.deposito_id,
-    filial_id:filId,
-    contrato_id:d.contrato_id,
-    colaborador_id:it.colaborador_id||null,
-    equipe_id:it.equipe_id||null,
-    data_mov:dataHoje(),
-    obs:obs,
-    motivo:'Separação requisição CENA'
-  });
-  if(!r||!r.ok){
-    progShowToast((r&&r.msg)||'Falha ao baixar estoque origem.','erro');
-    return;
-  }
-  it.quantidade_atendida=atd+qtd;
-  it.status=(it.quantidade_atendida+1e-9>=apr)?'separado':'parcial';
-  d.status=almReqHeaderStatusPorItens(d.itens);
-  d.atendido_por=almReqUsuarioNome();
-  d.atendido_em=new Date().toISOString();
-  _almReq.filaStale=true;
-  almReqSyncListaDraft();
-  if(!DEMO){
-    var okIt=await almReqPersistItem(it);
-    if(!okIt){
-      it.status='atendido';
-      await almReqPersistItem(it);
-    }
-    var okCab=await sbUpdate('alm_requisicoes',{
-      status:d.status,
-      dest_base_id:d.dest_base_id, dest_base_nome:d.dest_base_nome,
-      dest_deposito_id:d.dest_deposito_id, dest_deposito_nome:d.dest_deposito_nome,
-      atendido_por:d.atendido_por, atendido_em:d.atendido_em
-    },'id=eq.'+d.id);
-    if(!okCab){
-      if(d.status==='separada'){
-        d.status='atendida';
-        await sbUpdate('alm_requisicoes',{status:'atendida', atendido_por:d.atendido_por, atendido_em:d.atendido_em},'id=eq.'+d.id);
+    if(DEMO){
+      it.quantidade_separada=almReqItemQtdSeparada(it)+qtd;
+      it.status=(it.quantidade_separada+1e-9>=apr)?'separado':'separacao';
+      d.status=almReqHeaderStatusPorItens(d.itens);
+      await almReqLogEvento(d.id,'status','Separado '+qtd+' × '+(it.item_descricao||'')+' — apartado no almoxarifado (sem saída física)',{
+        tipo:'separacao', item_id:it.item_id, qtd:qtd, estoque_alterado:false
+      });
+    } else {
+      if(!_almReq.chaveSep) _almReq.chaveSep={};
+      var kItem=String(it.id);
+      var chave=_almReq.chaveSep[kItem]||('sep:'+d.id+':'+it.id+':'+Date.now().toString(36)+Math.random().toString(36).slice(2,8));
+      _almReq.chaveSep[kItem]=chave;
+      rr=await almReqRpcReserva('fn_alm_req_separar_item',{
+        p_requisicao_id:d.id,
+        p_item_req_id:it.id,
+        p_quantidade:qtd,
+        p_chave:chave,
+        p_usuario:almReqUsuarioNome(),
+        p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null,
+        p_dest_base_id:d.dest_base_id||null,
+        p_dest_base_nome:d.dest_base_nome||null,
+        p_dest_deposito_id:d.dest_deposito_id||null,
+        p_dest_deposito_nome:d.dest_deposito_nome||null
+      });
+      if(!rr.ok){
+        if(!rr.rede) delete _almReq.chaveSep[kItem];
+        if(rr.pendente){ almReqAvisoDbPendente(); return; }
+        progShowToast(rr.msg||'Falha ao separar.','erro');
+        return;
       }
-      progShowToast(almReqSqlC2Hint(),'erro');
+      delete _almReq.chaveSep[kItem];
+      if(rr.idempotente){
+        progShowToast(rr.msg);
+        closeModal(); await almReqCarregar(); almReqAbrir(d.id);
+        return;
+      }
+      it.quantidade_separada=Number(rr.quantidade_separada);
+      it.status=rr.item_status||it.status;
+      d.status=rr.status||d.status;
+      if(!_almReq.eventos[d.id]) _almReq.eventos[d.id]=[];
+      _almReq.eventos[d.id].unshift({criado_em:new Date().toISOString(), requisicao_id:d.id, evento:'status',
+        descricao:'Separado '+qtd+' × '+(it.item_descricao||'')+' — apartado no almoxarifado (sem saída física)', usuario:almReqUsuarioNome()});
     }
-  }
-  await almReqLogEvento(d.id,'status','Separado '+qtd+' × '+(it.item_descricao||'')+' · origem '+(d.deposito_nome||'')+' → destino '+(d.dest_deposito_nome||''),{
-    item_id:it.item_id, qtd:qtd, dest_deposito_id:d.dest_deposito_id, estoque_id:r.estoque_id||null
-  });
-  progShowToast('Separado: '+qtd+' × '+(it.item_descricao||'')+' · destino '+(d.dest_deposito_nome||''));
-  almReqModal();
-  almReqRenderAlertas();
+    _almReq.filaStale=true;
+    almReqSyncListaDraft();
+    progShowToast('Separado: '+qtd+' × '+(it.item_descricao||'')+'. Continua reservado e no estoque até a entrega.');
+    almReqModal();
+    almReqRenderAlertas();
   }catch(e){
     console.error('almReqAtenderItem', e);
     progShowToast('Erro ao separar item.','erro');
@@ -104193,10 +104402,147 @@ async function almReqAtenderItem(idx){
   }
 }
 
+/** Entregar: saída física do que foi separado (baixa + movimentação + consumo da reserva), tudo no banco. */
+async function almReqEntregarItem(idx, opts){
+  opts=opts||{};
+  var d=_almReq.draft; if(!d||!d.itens||!d.itens[idx]) return {ok:false};
+  if(d.status!=='separada' && d.status!=='parcialmente_atendida'){
+    progShowToast('Só é possível entregar depois que a requisição estiver Separada.','erro'); return {ok:false};
+  }
+  almReqLerCabecalho();
+  if(!d.dest_base_id || !d.dest_deposito_id){
+    almReqDirigirPasso({toast:true}); return {ok:false};
+  }
+  if(_almReq.atendendo && !opts.lote) return {ok:false};
+  var it=d.itens[idx];
+  var apr=Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0;
+  var pend=almReqItemPendenteEntrega(it);
+  if(pend<=0){ progShowToast('Não há quantidade separada pendente de entrega neste item.','erro'); return {ok:false}; }
+  var qtd=opts.qtd!=null?Number(opts.qtd):parseFloat((document.getElementById('arq-ent-'+idx)||{}).value);
+  if(!(qtd>0)){ progShowToast('Informe a quantidade a entregar.','erro'); return {ok:false}; }
+  if(qtd>pend+1e-9){ progShowToast('Quantidade maior que o separado ainda não entregue ('+pend+').','erro'); return {ok:false}; }
+  if(Math.floor(qtd)!==qtd){ progShowToast('O saldo físico é controlado em unidades inteiras. Informe uma quantidade inteira.','erro'); return {ok:false}; }
+  if(!it.item_id){ progShowToast('Item sem vínculo ao catálogo. Não é possível baixar estoque.','erro'); return {ok:false}; }
+  if(!d.deposito_id){ progShowToast('Requisição sem depósito origem.','erro'); return {ok:false}; }
+  if(!d.contrato_id){ progShowToast('Informe o contrato no cabeçalho para dar baixa no estoque.','erro'); return {ok:false}; }
+  var obs='Requisição CENA '+(d.numero||'')+' · entregue para '+(d.dest_deposito_nome||'')+' · '+(it.item_descricao||'');
+  var rr=null;
+  if(!opts.lote) _almReq.atendendo=true;
+  try{
+    if(DEMO){
+      var dep=(depositos||[]).find(function(x){ return String(x.id)===String(d.deposito_id); });
+      var r=await almRegistrarEntregaPatrimonio({
+        item_id:it.item_id, quantidade:qtd, deposito_id:d.deposito_id, filial_id:dep?dep.filial_id:null,
+        contrato_id:d.contrato_id, colaborador_id:it.colaborador_id||null, equipe_id:it.equipe_id||null,
+        data_mov:dataHoje(), obs:obs, motivo:'Entrega requisição CENA'
+      });
+      if(!r||!r.ok){ progShowToast((r&&r.msg)||'Falha ao baixar estoque origem.','erro'); return {ok:false}; }
+      it.quantidade_separada=almReqItemQtdSeparada(it);
+      it.quantidade_atendida=(Number(it.quantidade_atendida)||0)+qtd;
+      it.status=(it.quantidade_atendida+1e-9>=apr)?'entregue':'separado';
+      d.status=almReqHeaderStatusPorItens(d.itens);
+      d.atendido_por=almReqUsuarioNome();
+      d.atendido_em=new Date().toISOString();
+      await almReqLogEvento(d.id,'status','Entregue '+qtd+' × '+(it.item_descricao||'')+' — saída física e consumo da reserva',{
+        tipo:'saida_fisica', item_id:it.item_id, qtd:qtd, dest_deposito_id:d.dest_deposito_id, estoque_id:r.estoque_id||null, estoque_alterado:true
+      });
+    } else {
+      if(!_almReq.chaveEnt) _almReq.chaveEnt={};
+      var kItem=String(it.id);
+      var chave=_almReq.chaveEnt[kItem]||('ent:'+d.id+':'+it.id+':'+Date.now().toString(36)+Math.random().toString(36).slice(2,8));
+      _almReq.chaveEnt[kItem]=chave;
+      rr=await almReqRpcReserva('fn_alm_req_entregar_item',{
+        p_requisicao_id:d.id,
+        p_item_req_id:it.id,
+        p_quantidade:qtd,
+        p_chave:chave,
+        p_usuario:almReqUsuarioNome(),
+        p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null,
+        p_data_mov:dataHoje(),
+        p_obs:obs
+      });
+      if(!rr.ok){
+        if(!rr.rede) delete _almReq.chaveEnt[kItem];
+        if(rr.pendente){ almReqAvisoDbPendente(); return {ok:false, pendente:true}; }
+        progShowToast(rr.msg||'Falha ao entregar.','erro');
+        return {ok:false};
+      }
+      delete _almReq.chaveEnt[kItem];
+      if(rr.idempotente){
+        progShowToast(rr.msg);
+        if(!opts.lote){ closeModal(); await almReqCarregar(); almReqAbrir(d.id); }
+        return {ok:true, idempotente:true};
+      }
+      it.quantidade_atendida=Number(rr.quantidade_atendida);
+      it.status=rr.item_status||it.status;
+      d.status=rr.status||d.status;
+      d.atendido_por=almReqUsuarioNome();
+      d.atendido_em=new Date().toISOString();
+      almReqAplicarMovsLocais(d, it, rr, obs);
+      if(!_almReq.eventos[d.id]) _almReq.eventos[d.id]=[];
+      _almReq.eventos[d.id].unshift({criado_em:d.atendido_em, requisicao_id:d.id, evento:'status',
+        descricao:'Entregue '+qtd+' × '+(it.item_descricao||'')+' — saída física e consumo da reserva', usuario:d.atendido_por});
+    }
+    _almReq.filaStale=true;
+    almReqSyncListaDraft();
+    if(!opts.lote){
+      progShowToast('Entregue: '+qtd+' × '+(it.item_descricao||'')+' — saída física registrada no depósito '+(d.deposito_nome||'')
+        +(rr&&rr.reserva_restante!=null?' · reserva restante do item: '+rr.reserva_restante:''));
+      almReqModal();
+      almReqRenderAlertas();
+      if(d.status==='entregue') setTimeout(function(){ almReqDirigirPasso({toast:true}); }, 80);
+    }
+    return {ok:true};
+  }catch(e){
+    console.error('almReqEntregarItem', e);
+    progShowToast('Erro ao entregar item.','erro');
+    return {ok:false};
+  }finally{
+    if(!opts.lote) _almReq.atendendo=false;
+  }
+}
+async function almReqEntregarTodos(){
+  var d=_almReq.draft; if(!d||!d.itens) return;
+  if(_almReq.atendendo) return;
+  var alvo=[];
+  d.itens.forEach(function(it, idx){
+    var p=almReqItemPendenteEntrega(it);
+    if(p>0) alvo.push({idx:idx, qtd:p, desc:it.item_descricao||''});
+  });
+  if(!alvo.length){ progShowToast('Não há itens separados pendentes de entrega.','erro'); return; }
+  if(!confirm('Entregar '+d.numero+'?\n\n'+alvo.map(function(a){ return a.qtd+' × '+a.desc; }).join('\n')
+    +'\n\nIsto registra a saída física (baixa) no depósito '+(d.deposito_nome||'')+'.')) return;
+  _almReq.atendendo=true;
+  var feitos=0, falhou=null, recarregar=false;
+  try{
+    for(var i=0;i<alvo.length;i++){
+      var r=await almReqEntregarItem(alvo[i].idx, {lote:true, qtd:alvo[i].qtd});
+      if(!r || !r.ok){ falhou=alvo[i]; break; }
+      if(r.idempotente) recarregar=true;
+      feitos++;
+    }
+  }finally{
+    _almReq.atendendo=false;
+  }
+  if(recarregar){ closeModal(); await almReqCarregar(); almReqAbrir(d.id); return; }
+  if(falhou){
+    if(feitos) progShowToast('Entregues '+feitos+' de '+alvo.length+'. Parou em: '+falhou.desc+'.','erro');
+  } else {
+    progShowToast('Entregue: '+d.numero+' — saída física registrada no depósito '+(d.deposito_nome||''));
+  }
+  almReqModal();
+  almReqRenderAlertas();
+  if(!falhou && d.status==='entregue') setTimeout(function(){ almReqDirigirPasso({toast:true}); }, 80);
+}
+
+/** Confirmar recebimento: o banco só registra quem/quando (sem baixa, sem reserva, sem movimento na origem). */
 async function almReqConfirmarRecebimento(){
   var d=_almReq.draft; if(!d||!d.id) return;
-  if(d.status!=='separada' && d.status!=='atendida'){
-    progShowToast('Só requisição Separada pode confirmar recebimento.','erro'); return;
+  if(!almReqPodeReceber(d)){
+    progShowToast(d.status==='separada'||d.status==='parcialmente_atendida'
+      ? 'O material ainda não foi entregue. Entregue primeiro (saída física) e depois confirme o recebimento.'
+      : 'Só requisição Entregue pode confirmar recebimento.','erro');
+    return;
   }
   almReqLerCabecalho();
   if(!d.dest_base_id || !d.dest_deposito_id){
@@ -104205,61 +104551,102 @@ async function almReqConfirmarRecebimento(){
   if(!almReqUserPodeDep(d.dest_deposito_id)){
     progShowToast('Confirme no aparelho de um responsável pelo depósito destino.','erro'); return;
   }
+  if(_almReq.recebendo) return;
   var mesmo=String(d.dest_deposito_id)===String(d.deposito_id);
   var quem=almReqUsuarioNome()+' · '+(usuarioLogado&&usuarioLogado.email||'');
-  if(!mesmo && typeof almRegistrarEntradaPatrimonio==='function'){
-    var destDep=(depositos||[]).find(function(x){ return String(x.id)===String(d.dest_deposito_id); });
-    var filDest=destDep?destDep.filial_id:null;
-    for(var i=0;i<(d.itens||[]).length;i++){
-      var it=d.itens[i];
-      var qtd=Number(it.quantidade_atendida)||0;
-      if(!(qtd>0) || !it.item_id) continue;
-      var ent=await almRegistrarEntradaPatrimonio({
-        item_id:it.item_id, quantidade:qtd, deposito_id:d.dest_deposito_id, filial_id:filDest,
-        data_mov:dataHoje(), motivo:'Transferência requisição CENA',
-        obs:'Recebimento '+d.numero+' · origem '+(d.deposito_nome||'')
+  var legado=almReqEhLegadoBaixado(d);
+  if(legado && !confirm(ALM_REQ_MSG_LEGADO_RECEB+'\n\nO material foi efetivamente recebido em '+(d.dest_deposito_nome||'')+'?')) return;
+  var itensRec=[];
+  _almReq.recebendo=true;
+  try{
+    if(DEMO){
+      itensRec=(d.itens||[]).filter(function(it){ return (Number(it.quantidade_atendida)||0)>0; })
+        .map(function(it){ return {item_req_id:it.id, item_id:it.item_id, quantidade:Number(it.quantidade_atendida)||0}; });
+    } else {
+      var rr=await almReqRpcReserva('fn_alm_req_confirmar_recebimento',{
+        p_requisicao_id:d.id,
+        p_usuario:quem,
+        p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null
       });
-      if(!ent||!ent.ok){
-        progShowToast((ent&&ent.msg)||'Falha na entrada no depósito destino.','erro'); return;
+      if(!rr.ok){
+        if(rr.pendente){ almReqAvisoDbPendente(); return; }
+        progShowToast(rr.msg||'Falha ao confirmar recebimento.','erro');
+        return;
+      }
+      if(rr.idempotente){
+        progShowToast(rr.msg);
+        closeModal(); await almReqCarregar(); almReqAbrir(d.id);
+        return;
+      }
+      itensRec=Array.isArray(rr.itens)?rr.itens:[];
+      legado=!!rr.legado;
+    }
+    (d.itens||[]).forEach(function(it){
+      if((Number(it.quantidade_atendida)||0)>0 && it.status!=='cancelado' && it.status!=='recusado') it.status='recebido';
+    });
+    d.status='recebida';
+    d.recebido_por=quem;
+    d.recebido_em=new Date().toISOString();
+    almReqSyncListaDraft();
+    var falhaEntrada='';
+    if(!mesmo && typeof almRegistrarEntradaPatrimonio==='function'){
+      var destDep=(depositos||[]).find(function(x){ return String(x.id)===String(d.dest_deposito_id); });
+      var filDest=destDep?destDep.filial_id:null;
+      for(var i=0;i<itensRec.length;i++){
+        var x=itensRec[i];
+        var qtd=Number(x.quantidade)||0;
+        if(!(qtd>0) || !x.item_id) continue;
+        var tagRec='receb:'+String(x.item_req_id||x.item_id);
+        var jaEntrou=(movimentacoes_itens||[]).some(function(m){
+          return m && !m.deleted_at && String(m.tipo_mov||'')==='entrada' && String(m.obs||'').indexOf(tagRec)>=0;
+        });
+        if(jaEntrou) continue;
+        var ent=await almRegistrarEntradaPatrimonio({
+          item_id:x.item_id, quantidade:qtd, deposito_id:d.dest_deposito_id, filial_id:filDest,
+          data_mov:dataHoje(), motivo:'Transferência requisição CENA — entrada por recebimento',
+          origem_tipo:'transferencia_requisicao', contrato_origem_id:d.id,
+          obs:'Entrada por recebimento '+(d.numero||'')+' · origem '+(d.deposito_nome||'')+' · '+tagRec
+        });
+        if(!ent||!ent.ok){ falhaEntrada=(ent&&ent.msg)||'falha na entrada'; break; }
       }
     }
-  }
-  (d.itens||[]).forEach(function(it){
-    if((Number(it.quantidade_atendida)||0)>0) it.status='recebido';
-    if(almReqExigeColab(it) && (Number(it.quantidade_atendida)||0)>0){
-      var tag=almReqEntregaTagGet(it.observacao);
-      if(tag.indexOf('ASSINADA')!==0) it.observacao=almReqEntregaTagSet(it.observacao,'PENDENTE');
-    }
-  });
-  d.status='recebida';
-  d.recebido_por=quem;
-  d.recebido_em=new Date().toISOString();
-  almReqSyncListaDraft();
-  if(!DEMO){
     for(var j=0;j<(d.itens||[]).length;j++){
-      var okIt=await almReqPersistItem(d.itens[j]);
-      if(!okIt && d.itens[j].status==='recebido'){
-        d.itens[j].status='atendido';
-        await almReqPersistItem(d.itens[j]);
-      }
+      var it=d.itens[j];
+      if(!almReqExigeColab(it) || !((Number(it.quantidade_atendida)||0)>0)) continue;
+      var tag=almReqEntregaTagGet(it.observacao);
+      if(tag.indexOf('ASSINADA')===0) continue;
+      it.observacao=almReqEntregaTagSet(it.observacao,'PENDENTE');
+      if(!DEMO && it.id) await sbUpdate('alm_requisicao_itens',{observacao:it.observacao},'id=eq.'+it.id);
     }
-    var okR=await sbUpdate('alm_requisicoes',{
-      status:'recebida', recebido_por:d.recebido_por, recebido_em:d.recebido_em
-    },'id=eq.'+d.id);
-    if(!okR) progShowToast(almReqSqlC2Hint(),'erro');
+    almReqSyncListaDraft();
+    if(DEMO){
+      await almReqLogEvento(d.id,'status','Recebimento confirmado por '+quem+' em '+(d.dest_deposito_nome||''),{
+        tipo:'recebimento', legado_regra_antiga:legado, dest_deposito_id:d.dest_deposito_id, estoque_alterado:false
+      });
+    } else {
+      if(!_almReq.eventos[d.id]) _almReq.eventos[d.id]=[];
+      _almReq.eventos[d.id].unshift({criado_em:d.recebido_em, requisicao_id:d.id, evento:'status',
+        descricao:'Recebimento confirmado por '+quem, usuario:quem});
+    }
+    if(falhaEntrada){
+      progShowToast('Recebimento confirmado, mas a entrada no depósito destino falhou ('+falhaEntrada+'). Registre a entrada no destino manualmente.','erro');
+    } else {
+      progShowToast('Recebimento confirmado em '+(d.dest_deposito_nome||'')+'.'+(legado?' Saída registrada pela regra antiga — nenhuma nova baixa.':''));
+    }
+    almReqRenderAlertas();
+    var precisaEnt=(d.itens||[]).some(function(it){ return almReqItemAguardaEntrega(it); });
+    if(precisaEnt){
+      almReqIrEntregarColab();
+      return;
+    }
+    almReqModal();
+    setTimeout(function(){ almReqDirigirPasso({toast:true}); }, 80);
+  }catch(e){
+    console.error('almReqConfirmarRecebimento', e);
+    progShowToast('Erro ao confirmar recebimento.','erro');
+  }finally{
+    _almReq.recebendo=false;
   }
-  await almReqLogEvento(d.id,'status','Recebimento confirmado por '+quem+' em '+(d.dest_deposito_nome||''),{
-    dest_deposito_id:d.dest_deposito_id, usuario_id:usuarioLogado&&usuarioLogado.id
-  });
-  progShowToast('Recebido em '+(d.dest_deposito_nome||'')+'. Próximo passo: entregar ao colaborador.');
-  almReqRenderAlertas();
-  var precisaEnt=(d.itens||[]).some(function(it){ return almReqItemAguardaEntrega(it); });
-  if(precisaEnt){
-    almReqIrEntregarColab();
-    return;
-  }
-  almReqModal();
-  setTimeout(function(){ almReqDirigirPasso({toast:true}); }, 80);
 }
 
 function almReqEntregaTagGet(obs){
@@ -144033,7 +144420,7 @@ function estAbrirDetalheReserva(el){
         || (cs.codigoRaw && String(it.item_codigo||'').toLowerCase()===String(cs.codigoRaw).toLowerCase())
         || (e.nome && String(it.item_descricao||'').toLowerCase()===String(e.nome).toLowerCase());
       if(!ok) return;
-      var q=almReqItemQtdReservada(it);
+      var q=almReqItemQtdReservada(it, r);
       if(!(q>0)) return;
       linhas.push({num:r.numero||'', st:almReqStLabel(r.status), qtd:q, apr:Number(it.quantidade_aprovada!=null?it.quantidade_aprovada:it.quantidade_solicitada)||0, atd:Number(it.quantidade_atendida)||0});
     });
@@ -144041,7 +144428,7 @@ function estAbrirDetalheReserva(el){
   var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:560px">'
     +'<h3 style="font-size:15px;margin:0 0 .4rem">Reservado — não é saída</h3>'
     +'<div style="font-size:12px;color:#555;margin-bottom:.75rem">'+escHtml(e.nome||'')+' · '+escHtml(e.codigo||'')+'</div>'
-    +'<div style="background:#FEF3E2;border-radius:8px;padding:8px 10px;font-size:11px;color:#854F0B;margin-bottom:.6rem">Reserva = quantidade aprovada − atendida, em requisições abertas. Não baixa o saldo físico.</div>';
+    +'<div style="background:#FEF3E2;border-radius:8px;padding:8px 10px;font-size:11px;color:#854F0B;margin-bottom:.6rem">Reserva = quantidade aprovada − entregue, em requisições abertas (inclui o que já foi separado e ainda não foi entregue). Não baixa o saldo físico.</div>';
   if(!linhas.length){
     html+='<div style="padding:1rem;color:#888;font-size:13px">Nenhuma reserva aberta neste item/depósito.</div>';
   } else {
@@ -144934,7 +145321,7 @@ async function estAuditarDivergenciasCena(){
           sugestao:estSugestaoDivergencia('atendida_sem_saida')
         });
       }
-      var res=almReqItemQtdReservada(it);
+      var res=almReqItemQtdReservada(it, r);
       if(almReqItemTotalmenteAtendido(it) && res>0){
         addRow({
           codigo:it.item_codigo||'', descricao:it.item_descricao||'', deposito:r.deposito_nome||'',
