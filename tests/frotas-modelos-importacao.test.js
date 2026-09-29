@@ -147,7 +147,7 @@ function conferirModelo(nomeArq, arq, abaDados, obrigatorias) {
   ok('Combustível: modal de importação com Baixar modelo', /onclick="frtCombBaixarModelo\(\)">⬇ Baixar modelo</.test(html));
   ok('Pedágios: botões Importar Excel e Modelo Excel', /onclick="frtPedAbrirImportar\(\)"[^>]*>📊 Importar Excel</.test(html) && /onclick="frtPedBaixarModelo\(\)"[^>]*>⬇ Modelo Excel</.test(html));
   ok('Multas: botão Modelo Excel', /onclick="fdocMultaBaixarModelo\(\)"[^>]*>⬇ Modelo Excel</.test(html));
-  ok('versão 8.1.166', /numero: '8\.1\.166'/.test(html) && /\{v:'8\.1\.166'/.test(html) && /'cena-8\.1\.166'/.test(sw));
+  ok('versão 8.1.166 no changelog', /\{v:'8\.1\.166'/.test(html) && /'cena-8\.1\.\d+'/.test(sw));
   ok('cache do pedagios.js renovado', /pedagios\.js\?v=8\.1\.166/.test(html));
 
   if (failed.length) { console.error('FALHOU:\n- ' + failed.join('\n- ')); process.exit(1); }

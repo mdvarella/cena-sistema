@@ -44770,10 +44770,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.166',
+  numero: '8.1.167',
   data:   '29/09/2026',
-  build:  '20260929-1400',
+  build:  '20260929-1600',
   log: [
+    {v:'8.1.167', d:'29/09/2026', itens:[
+      'Frotas: botão 🖨 Termo de desconto nas telas de multa e de avaria/sinistro — abre o termo TD-FOL-001 (autorização de desconto em folha) já preenchido com colaborador, CPF, matrícula, placa e a linha da multa (AIT, infração, valor) ou da avaria (nº da ocorrência, descrição, custo)',
+      'Termo de desconto: linhas editáveis (AIT / nº da ocorrência, descrição, valor), inserir e remover linhas, incluir outras multas ou avarias do mesmo colaborador e total somado automaticamente; só imprime com CPF válido e todas as linhas completas'
+    ]},
     {v:'8.1.166', d:'29/09/2026', itens:[
       'Frotas: botão ⬇ Modelo Excel em Combustível, Pedágios e Multas — planilha com as colunas que o importador reconhece e aba Instruções (obrigatória, formato, exemplo)',
       'Frotas > Pedágios: botão 📊 Importar Excel na tela (a importação já existia, mas não tinha botão)'
@@ -91385,6 +91389,7 @@ function fdocAbrirModal(d, isMulta){
     +'</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +(isMulta?'<button type="button" class="btn" onclick="frtTermoAbrir(\'multa\',\''+escHtml(String(d.id||''))+'\')" title="Gerar termo de desconto em folha com os dados desta multa">🖨 Termo de desconto</button>':'')
     +(!isNew&&isMulta?'<button type="button" class="btn" id="fdoc-excluir-btn" style="color:#A32D2D;border-color:#A32D2D">Excluir</button>':'')
     +'<button class="btn btn-pri" id="fdoc-salvar-btn" style="flex:2">Salvar</button>'
     +'</div></div></div>');
@@ -96888,6 +96893,485 @@ var FRT_AVAR_STATUS=['Aberto','Em andamento','Concluído','Mau uso'];
 
 function frtAbrirNovaAvaria(){ frtAbrirAvaria(null); }
 
+// ══ Termo de desconto em folha (TD-FOL-001) — pré-preenchido a partir da multa ou avaria aberta; só impressão, não grava nada ══
+var FRT_TERMO_CFG={
+  modelo:'TD-FOL-001', revisao:'Rev. 1', dataRevisao:'29/09/2026',
+  empresa:'LAND SOLUÇÕES LTDA.', cnpj:'28.390.966/0001-00',
+  endereco:'Rua Coaquira, 154 — Vila Anastácio — São Paulo/SP — CEP 06554-010',
+  aprovacao:'Marcos Varella', logo:'assets/cena-logo-branco.png'
+};
+var FRT_TERMO_MESES=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+var _frtTermo=null;
+
+function frtTermoEsc(s){
+  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function frtTermoParseValor(v){
+  if(typeof v==='number') return isFinite(v)?Math.round(v*100)/100:null;
+  var s=String(v==null?'':v).replace(/R\$|\s/g,'');
+  if(!s) return null;
+  if(s.indexOf(',')>=0) s=s.replace(/\./g,'').replace(',','.');
+  else if(/^\d{1,3}(\.\d{3})+$/.test(s)) s=s.replace(/\./g,'');
+  if(!/^-?\d+(\.\d+)?$/.test(s)) return null;
+  var n=parseFloat(s);
+  return isFinite(n)?Math.round(n*100)/100:null;
+}
+function frtTermoFmtValor(n){
+  return (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function frtTermoFmtCpf(v){
+  var d=String(v||'').replace(/\D/g,'');
+  return d.length===11?d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4'):String(v||'').trim();
+}
+function frtTermoCpfValido(v){
+  var d=String(v||'').replace(/\D/g,'');
+  if(d.length!==11||/^(\d)\1{10}$/.test(d)) return false;
+  var s=0,i;
+  for(i=0;i<9;i++) s+=Number(d[i])*(10-i);
+  if((s*10)%11%10!==Number(d[9])) return false;
+  s=0;
+  for(i=0;i<10;i++) s+=Number(d[i])*(11-i);
+  return (s*10)%11%10===Number(d[10]);
+}
+function frtTermoDataBr(iso){
+  var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso||''));
+  return m?(m[3]+'/'+m[2]+'/'+m[1]):'';
+}
+function frtTermoDataExtenso(iso){
+  var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso||''));
+  if(!m||!FRT_TERMO_MESES[Number(m[2])-1]) return '';
+  return Number(m[3])+' de '+FRT_TERMO_MESES[Number(m[2])-1]+' de '+m[1];
+}
+function frtTermoNormNome(s){
+  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+}
+function frtTermoAcharColab(id, nome){
+  var lista=(typeof colaboradores!=='undefined'&&colaboradores)||[];
+  var c=null;
+  if(id) c=lista.find(function(x){return x&&String(x.id)===String(id);})||null;
+  if(!c&&nome){
+    var n=frtTermoNormNome(nome);
+    var hits=lista.filter(function(x){return x&&frtTermoNormNome(x.nome)===n;});
+    if(hits.length===1) c=hits[0];
+  }
+  return c;
+}
+function frtTermoDescMulta(r){
+  r=r||{};
+  var inf=String(r.tipo_infracao||'').trim()||'Infração de trânsito';
+  if(String(r.codigo_infracao||'').trim()) inf+=' (cód. '+String(r.codigo_infracao).trim()+')';
+  var p=[inf];
+  var quando=[frtTermoDataBr(r.data_infracao), String(r.hora_infracao||'').slice(0,5)].filter(Boolean).join(' ');
+  if(quando) p.push(quando);
+  var onde=[r.local_infracao, r.municipio_infracao].map(function(x){return String(x||'').trim();}).filter(Boolean).join(' — ');
+  if(onde) p.push(onde);
+  return p.join(' · ');
+}
+function frtTermoDescAvaria(r){
+  r=r||{};
+  var p=[[r.tipo, r.descricao].map(function(x){return String(x||'').trim();}).filter(Boolean).join(' — ')];
+  var dt=frtTermoDataBr(r.data);
+  if(dt) p.push(dt);
+  return p.filter(Boolean).join(' · ');
+}
+function frtTermoRefAvaria(r){
+  var suf=String((r&&r.id)||'').replace(/[^a-z0-9]/gi,'').slice(-6).toUpperCase();
+  if(!suf) return '';
+  var ano=String((r&&r.data)||'').slice(0,4);
+  if(!/^\d{4}$/.test(ano)) ano=String(new Date().getFullYear());
+  return 'OC-'+ano+'-'+suf;
+}
+function frtTermoValorAvaria(r){
+  var fin=frtTermoParseValor(r&&r.custo_final);
+  if(fin!=null&&fin>0) return fin;
+  var est=frtTermoParseValor(r&&r.custo_estimado);
+  return est!=null&&est>0?est:null;
+}
+function frtTermoItemMulta(r){
+  r=r||{};
+  return {ref:String(r.numero_auto||'').trim(), desc:frtTermoDescMulta(r), valor:frtTermoParseValor(r.valor), origem:r.id?('multa:'+r.id):''};
+}
+function frtTermoItemAvaria(r){
+  r=r||{};
+  return {ref:frtTermoRefAvaria(r), desc:frtTermoDescAvaria(r), valor:frtTermoValorAvaria(r), origem:r.id?('avaria:'+r.id):''};
+}
+function frtTermoLinhaVazia(it){
+  return !it||(!String(it.ref||'').trim()&&!String(it.desc||'').trim()&&!(it.valor>0)&&!String(it.valorTxt||'').trim());
+}
+function frtTermoItensPreenchidos(itens){
+  return (itens||[]).filter(function(it){return !frtTermoLinhaVazia(it);});
+}
+function frtTermoTotal(itens){
+  var s=(itens||[]).reduce(function(acc,it){return acc+(it&&it.valor>0?it.valor:0);},0);
+  return Math.round(s*100)/100;
+}
+function frtTermoPlacas(txt){
+  return String(txt||'').split(/\s*[,;\/]\s*|\s+e\s+/i).map(function(s){return s.trim().toUpperCase();}).filter(Boolean);
+}
+function frtTermoJuntarPlaca(atual, nova){
+  var lst=frtTermoPlacas(atual);
+  var n=String(nova||'').trim().toUpperCase();
+  var norm=function(x){return x.replace(/[^A-Z0-9]/g,'');};
+  if(n&&!lst.some(function(x){return norm(x)===norm(n);})) lst.push(n);
+  return lst.join(', ');
+}
+function frtTermoNumero(st, agora){
+  agora=agora||new Date();
+  var pad=function(n){return String(n).padStart(2,'0');};
+  var mat=String((st&&st.matricula)||'').replace(/\D/g,'');
+  mat=mat?mat.padStart(6,'0'):'000000';
+  var suf=String((st&&st.origem_id)||'').replace(/[^a-z0-9]/gi,'').slice(-6).toUpperCase();
+  if(!suf) suf=pad(agora.getHours())+pad(agora.getMinutes())+pad(agora.getSeconds());
+  return 'TD-'+agora.getFullYear()+'-'+mat+'-'+((st&&st.tipo)==='avaria'?'A':'M')+suf;
+}
+function frtTermoLerModalOrigem(tipo, id){
+  var g=function(k){ var el=document.getElementById(k); return el?String(el.value||'').trim():''; };
+  if(tipo==='multa'){
+    var ti=document.getElementById('fdoc-tipo-inf');
+    var tiTxt='';
+    if(ti&&ti.value){ var op=ti.options&&ti.options[ti.selectedIndex]; tiTxt=String((op&&op.text)||ti.value).trim(); }
+    var r={id:id||'', numero_auto:g('fdoc-num-auto'), tipo_infracao:tiTxt, codigo_infracao:g('fdoc-cod-inf'),
+      data_infracao:g('fdoc-data-inf'), hora_infracao:g('fdoc-hora-inf'), local_infracao:g('fdoc-local-inf'),
+      municipio_infracao:g('fdoc-municipio'), valor:g('fdoc-valor')};
+    return {placa:g('fdoc-placa'), colaborador_id:g('fdoc-colab-id'), nome:g('fdoc-condutor')||g('fdoc-condutor-busca'), item:frtTermoItemMulta(r)};
+  }
+  var veicId=g('favar-veic');
+  var veic=((typeof frt_veiculos!=='undefined'&&frt_veiculos)||[]).find(function(v){return v&&String(v.id)===String(veicId);})||null;
+  var placa=veic?String(veic.placa||''):'';
+  if(!placa){
+    var vs=document.getElementById('favar-veic');
+    var vo=vs&&vs.value&&vs.options&&vs.options[vs.selectedIndex];
+    if(vo) placa=String(vo.text||'').split(' — ')[0].trim();
+  }
+  var ra={id:id||'', tipo:g('favar-tipo'), descricao:g('favar-desc'), data:g('favar-data'),
+    custo_final:g('favar-custo-final'), custo_estimado:g('favar-custo')};
+  return {placa:placa, colaborador_id:g('favar-colab-id'), nome:g('favar-mot'), item:frtTermoItemAvaria(ra)};
+}
+function frtTermoCandidatos(st){
+  if(!st) return [];
+  var usados={};
+  (st.itens||[]).forEach(function(it){ if(it&&it.origem) usados[it.origem]=1; });
+  var nomeN=frtTermoNormNome(st.nome);
+  var mesmo=function(colId, nome){
+    if(st.colaborador_id&&colId&&String(colId)===String(st.colaborador_id)) return true;
+    return !!nomeN&&frtTermoNormNome(nome)===nomeN;
+  };
+  var out=[];
+  if(st.tipo==='avaria'){
+    ((typeof frt_avarias!=='undefined'&&frt_avarias)||[]).forEach(function(a){
+      if(!a||!a.id||usados['avaria:'+a.id]||!mesmo(a.colaborador_id, a.motorista)) return;
+      var it=frtTermoItemAvaria(a);
+      out.push({chave:'avaria:'+a.id, placa:a.placa||'', item:it,
+        rotulo:(it.ref||'s/ nº')+' · '+(a.placa||'—')+' · '+(frtTermoDataBr(a.data)||'—')+' · R$ '+frtTermoFmtValor(it.valor||0)});
+    });
+  } else {
+    ((typeof frt_documentos!=='undefined'&&frt_documentos)||[]).forEach(function(d){
+      if(!d||d.tipo!=='Multa'||!d.id||usados['multa:'+d.id]||!mesmo(d.colaborador_id, d.condutor_responsavel)) return;
+      var it=frtTermoItemMulta(d);
+      out.push({chave:'multa:'+d.id, placa:d.placa||'', item:it,
+        rotulo:(it.ref||'s/ AIT')+' · '+(d.placa||'—')+' · '+(frtTermoDataBr(d.data_infracao)||'—')+' · R$ '+frtTermoFmtValor(it.valor||0)});
+    });
+  }
+  return out;
+}
+function frtTermoValidar(st){
+  if(!st) return ['Termo não iniciado.'];
+  var e=[];
+  var multa=st.tipo!=='avaria';
+  if(!String(st.nome||'').trim()) e.push('Informe o nome do colaborador.');
+  if(!frtTermoCpfValido(st.cpf)) e.push('Informe um CPF válido do colaborador.');
+  if(!String(st.nacionalidade||'').trim()) e.push('Informe a nacionalidade.');
+  if(!frtTermoPlacas(st.placa).length) e.push('Informe a placa do veículo.');
+  if(!String(st.cidade||'').trim()) e.push('Informe a cidade.');
+  if(!frtTermoDataExtenso(st.data)) e.push('Informe a data da assinatura.');
+  var n=0;
+  (st.itens||[]).forEach(function(it,i){
+    if(frtTermoLinhaVazia(it)) return;
+    n++;
+    var p='Linha '+(i+1)+': ';
+    if(!String(it.ref||'').trim()) e.push(p+'informe o '+(multa?'AIT':'nº da ocorrência')+'.');
+    if(!String(it.desc||'').trim()) e.push(p+'informe a descrição.');
+    if(!(it.valor>0)) e.push(p+'informe um valor maior que zero.');
+  });
+  if(!n) e.push('Inclua ao menos uma linha com '+(multa?'AIT':'nº da ocorrência')+', descrição e valor.');
+  return e;
+}
+function frtTermoMontarHtml(st, opts){
+  opts=opts||{};
+  var E=frtTermoEsc, C=FRT_TERMO_CFG;
+  var agora=opts.agora||new Date();
+  var pad=function(n){return String(n).padStart(2,'0');};
+  var multa=st.tipo!=='avaria';
+  var itens=frtTermoItensPreenchidos(st.itens);
+  var total=frtTermoTotal(itens);
+  var num=frtTermoNumero(st, agora);
+  var placas=frtTermoPlacas(st.placa);
+  var cpf=frtTermoFmtCpf(st.cpf);
+  var geradoEm=pad(agora.getDate())+'/'+pad(agora.getMonth()+1)+'/'+agora.getFullYear()+' '+pad(agora.getHours())+':'+pad(agora.getMinutes());
+  var v=function(t){ return '<b class="v">'+E(t)+'</b>'; };
+  var placaTxt=placas.length>1?('nos veículos placas '+placas.map(v).join(', ')):('no veículo placa '+v(placas[0]||''));
+  var caixa=function(titulo, ativo){ return '<div class="nat'+(ativo?' on':'')+'"><span class="mk">'+(ativo?'✕':'')+'</span><span class="nt">'+titulo+'</span></div>'; };
+  var testemunha=function(n){
+    return '<div><div class="lbl2" style="padding-bottom:30px">Testemunha '+n+'</div><div class="ass">Assinatura</div>'
+      +'<div class="ln"><span class="lbl2">Nome</span><span class="fill"></span></div>'
+      +'<div class="ln"><span class="lbl2">CPF</span><span class="fill"></span></div></div>';
+  };
+  var linhas=itens.map(function(it,i){
+    return '<tr'+(i%2?' class="alt"':'')+'><td class="mono">'+E(it.ref)+'</td><td>'+E(it.desc)+'</td><td class="mono r">'+frtTermoFmtValor(it.valor)+'</td></tr>';
+  }).join('');
+  var controle=[['Assunto','Autorização de desconto em folha de pagamento'],['Elaboração','Sistema CENA'],['Aprovação',C.aprovacao],['Data · revisão',C.dataRevisao+' · '+C.revisao]]
+    .map(function(c){ return '<div><span class="lbl">'+E(c[0])+'</span><span class="cv">'+E(c[1])+'</span></div>'; }).join('');
+  var css='*{box-sizing:border-box}'
+    +'body{margin:0;background:#EFEDE7;font-family:"IBM Plex Sans",system-ui,Arial,sans-serif;color:#111A17;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    +'.mono{font-family:"IBM Plex Mono",ui-monospace,Consolas,monospace}'
+    +'.bar{display:flex;gap:8px;justify-content:center;padding:10px;background:#1D3B34}'
+    +'.bar button{border:0;border-radius:999px;padding:8px 16px;font:600 12.5px "IBM Plex Sans",Arial,sans-serif;cursor:pointer;background:#EFEDE7;color:#12241F}'
+    +'.folha{width:210mm;min-height:297mm;margin:16px auto;background:#fff;padding:14mm 18mm;font-size:9.8pt;line-height:1.62;box-shadow:0 2px 12px rgba(0,0,0,.12)}'
+    +'.hdr{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:38px;background:#1D3B34;color:#EFEDE7;padding:0 12px}'
+    +'.logo{font-weight:700;letter-spacing:.2em;font-size:10pt}.logo img{height:16px;width:auto;display:block}'
+    +'.hdr-t{text-align:right;font-size:7pt;line-height:1.35;letter-spacing:.02em}.hdr-a{font-weight:700;letter-spacing:.1em}.hdr-b{color:#A9BAB2}'
+    +'.tit{padding:22px 0 16px;border-bottom:1.5pt solid #1D3B34}'
+    +'.tag{font-size:7pt;letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#EFEDE7;background:#2F6D5C;padding:2px 7px;margin-right:9px}'
+    +'.emp{font-size:7.5pt;letter-spacing:.16em;text-transform:uppercase;color:#5A6B63;font-weight:700}'
+    +'h1{margin:8px 0 0;font-size:14pt;font-weight:700;letter-spacing:-.01em;line-height:1.22;color:#12241F}'
+    +'.sub{font-size:7.5pt;color:#6B7D74;padding-top:8px}'
+    +'.ctl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-bottom:.75pt solid #C9C4B8;margin-bottom:4px}'
+    +'.ctl>div{padding:7px 10px 7px 0;display:flex;flex-direction:column;gap:1px;min-width:0}'
+    +'.lbl{font-size:6.8pt;letter-spacing:.12em;text-transform:uppercase;color:#7C8880;font-weight:700}'
+    +'.lbl2{font-size:8pt;letter-spacing:.14em;text-transform:uppercase;color:#5A6B63;font-weight:700}'
+    +'.cv{font-size:8.6pt;font-weight:600;color:#3C4A44;overflow-wrap:anywhere}'
+    +'section{margin:18px 0 0}.nb{break-inside:avoid}'
+    +'h2{margin:0 0 9px;display:flex;align-items:baseline;gap:9px;font-size:8.6pt;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#12241F;border-bottom:.75pt solid #1D3B34;padding-bottom:5px;break-after:avoid}'
+    +'h2 .n{color:#2F6D5C}'
+    +'.nats{display:grid;grid-template-columns:1fr 1fr;gap:12px}'
+    +'.nat{display:flex;align-items:center;gap:10px;border:.75pt solid #C9C4B8;background:#FAF9F5;padding:11px 13px}'
+    +'.nat.on{border-color:#1D3B34;background:#F4FAF7}'
+    +'.mk{width:17px;height:17px;flex:none;display:flex;align-items:center;justify-content:center;border:1pt solid #9A968C;background:#fff;font-size:10pt;font-weight:700;color:#1D3B34;line-height:1}'
+    +'.nat.on .mk{border-color:#1D3B34;background:#E3EDE7}'
+    +'.nt{font-size:10pt;font-weight:700;letter-spacing:.02em;color:#4A5A53}.nat.on .nt{color:#12241F}'
+    +'.aut{margin:0 0 12px;text-align:justify;text-align-last:left}.v{font-weight:600;color:#111A17}'
+    +'table.it{width:100%;table-layout:fixed;border-collapse:collapse;font-size:8.8pt;break-inside:avoid}'
+    +'table.it th{padding:5px 8px;background:#1D3B34;color:#EFEDE7;font-size:7pt;letter-spacing:.09em;text-transform:uppercase;font-weight:700;text-align:left}'
+    +'table.it td{padding:7px 8px;border-bottom:.75pt solid #E0DCD1;vertical-align:top;overflow-wrap:anywhere}'
+    +'table.it td.mono{font-size:8.4pt}table.it tr.alt td{background:#FAF9F5}.r{text-align:right !important}'
+    +'table.it tr.tot td{border-bottom:0;border-top:1pt solid #1D3B34;padding:8px;font-weight:700;color:#12241F;background:#fff}'
+    +'table.it tr.tot td:first-child{font-size:7.6pt;letter-spacing:.1em;text-transform:uppercase}'
+    +'.nota{font-size:8pt;color:#5A6B63;line-height:1.45;padding-top:7px}.ld{margin:24px 0 0;text-align:center}'
+    +'.emp-ass{display:flex;justify-content:center;padding:34px 0 0}.emp-ass>div{width:62%;text-align:center}'
+    +'.emp-ass .nome{border-top:.75pt solid #3C4A44;padding-top:6px;font-size:9.5pt;font-weight:700}.emp-ass .cpf{font-size:9pt;padding-top:3px}'
+    +'.tsts{display:grid;grid-template-columns:1fr 1fr;gap:34px;padding:40px 0 0}'
+    +'.ass{border-top:.75pt solid #3C4A44;padding-top:5px;font-size:8.5pt;color:#3C4A44}'
+    +'.ln{display:flex;align-items:flex-end;gap:8px;padding-top:13px}.ln .lbl2{font-size:7.5pt;letter-spacing:.1em;flex:none}'
+    +'.fill{flex:1;border-bottom:.75pt solid #9A968C;height:14px}'
+    +'.autent{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:.75pt solid #C9C4B8;margin-top:26px;padding-top:7px;font-size:7pt;color:#5A6B63;line-height:1.5;break-inside:avoid}'
+    +'.rod{margin-top:14px;padding-top:5px;border-top:.75pt solid #9A968C;font-size:7pt;color:#5A6B63}'
+    +'@page{size:A4;margin:12mm 14mm 14mm;@bottom-right{content:"Página " counter(page) " de " counter(pages);font-family:"IBM Plex Mono",monospace;font-size:7pt;color:#5A6B63}}'
+    +'@media print{body{background:#fff}.noprint{display:none !important}.folha{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}}';
+  return '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Termo de desconto '+E(num)+'</title>'
+    +'<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">'
+    +'<style>'+css+'</style></head><body>'
+    +'<div class="bar noprint"><button onclick="window.print()">🖨 Imprimir</button><button onclick="window.close()">Fechar</button></div>'
+    +'<div class="folha">'
+    +'<div class="hdr"><span class="logo"><img src="'+E(opts.logo||C.logo)+'" alt="CENA" onerror="this.parentNode.textContent=\'CENA\'"></span>'
+    +'<div class="hdr-t"><div class="hdr-a">TERMO DE DESCONTO — AUTORIZAÇÃO DE DESCONTO EM FOLHA DE PAGAMENTO</div>'
+    +'<div class="mono hdr-b">'+E(num)+' · '+E(C.modelo)+' · '+E(C.revisao)+'</div></div></div>'
+    +'<div class="tit"><div><span class="tag">Termo de desconto</span><span class="emp">'+E(C.empresa)+'</span></div>'
+    +'<h1>Autorização de Desconto em Folha de Pagamento</h1>'
+    +'<div class="mono sub">Termo nº '+E(num)+' · modelo '+E(C.modelo)+' · revisão 1</div></div>'
+    +'<div class="ctl">'+controle+'</div>'
+    +'<section class="nb"><h2><span class="mono n">01</span><span>Natureza do desconto</span></h2>'
+    +'<div class="nats">'+caixa('Avarias',!multa)+caixa('Multa de trânsito',multa)+'</div></section>'
+    +'<section><h2><span class="mono n">02</span><span>Autorização</span></h2>'
+    +'<p class="aut">Pelo presente instrumento, eu '+v(st.nome)+', '+v(st.nacionalidade)+', inscrito(a) no CPF '+v(cpf)
+    +', autorizo a <b>'+E(C.empresa)+'</b> a efetuar o desconto em folha de pagamento da importância total de R$&nbsp;'+v(frtTermoFmtValor(total))
+    +', referente à '+v(multa?'MULTA DE TRÂNSITO':'AVARIA')+' '+placaTxt+' por mim causada, descrita abaixo:</p>'
+    +'<table class="it"><thead><tr><th style="width:24%">'+(multa?'AIT':'Nº da ocorrência')+'</th><th>Descrição</th><th class="r" style="width:20%">Valor (R$)</th></tr></thead><tbody>'
+    +linhas
+    +'<tr class="tot"><td colspan="2" class="r">Importância total autorizada</td><td class="mono r">'+frtTermoFmtValor(total)+'</td></tr></tbody></table>'
+    +'<div class="nota">A importância total corresponde à soma dos itens acima.</div></section>'
+    +'<p class="ld">'+E(String(st.cidade||'').trim())+', '+E(frtTermoDataExtenso(st.data))+'.</p>'
+    +'<section class="nb"><h2><span class="mono n">03</span><span>Assinaturas</span></h2>'
+    +'<div class="emp-ass"><div><div class="nome">'+E(st.nome)+'</div><div class="cpf">CPF '+E(cpf)+'</div><div class="lbl2" style="padding-top:5px">Empregado(a)</div></div></div>'
+    +'<div class="tsts">'+testemunha(1)+testemunha(2)+'</div></section>'
+    +'<div class="mono autent"><span>Termo nº '+E(num)+'</span><span>Matrícula '+E(String(st.matricula||'').trim()||'—')+'</span><span>Gerado pelo Sistema CENA em '+geradoEm+'</span></div>'
+    +'<div class="rod">CENA — '+E(C.empresa)+' · CNPJ '+E(C.cnpj)+' · '+E(C.endereco)+'</div>'
+    +'</div></body></html>';
+}
+function frtTermoAbrir(tipo, id){
+  tipo=tipo==='avaria'?'avaria':'multa';
+  var o=frtTermoLerModalOrigem(tipo, id);
+  var col=frtTermoAcharColab(o.colaborador_id, o.nome);
+  var st={
+    tipo:tipo, origem_id:String(id||''), placa:String(o.placa||'').toUpperCase(),
+    colaborador_id:o.colaborador_id||(col&&col.id?String(col.id):''),
+    nome:(col&&col.nome)||o.nome||'',
+    cpf:col?frtTermoFmtCpf(col.cpf||col.cpf_cnpj||''):'',
+    matricula:col?String(col.re||col.matricula||''):'',
+    nacionalidade:'brasileiro(a)', cidade:'São Paulo', data:dataHojeLocal(),
+    itens:[frtTermoLinhaVazia(o.item)?{ref:'',desc:'',valor:null,origem:''}:o.item]
+  };
+  _frtTermo=st;
+  frtTermoRender();
+  var podeBuscar=!col&&o.colaborador_id&&typeof DEMO!=='undefined'&&!DEMO&&typeof sbFetch==='function'
+    &&(typeof isUUID!=='function'||isUUID(o.colaborador_id));
+  if(podeBuscar){
+    sbFetch('colaboradores',{filters:['id=eq.'+o.colaborador_id],limit:1}).then(function(rows){
+      var c=rows&&rows[0];
+      if(!c||_frtTermo!==st) return;
+      frtTermoLerForm();
+      if(!String(st.nome||'').trim()) st.nome=c.nome||'';
+      if(!String(st.cpf||'').trim()) st.cpf=frtTermoFmtCpf(c.cpf||c.cpf_cnpj||'');
+      if(!String(st.matricula||'').trim()) st.matricula=String(c.re||c.matricula||'');
+      frtTermoRender();
+    }).catch(function(e){ console.warn('frtTermoAbrir colaborador:', e); });
+  }
+}
+function frtTermoLerForm(){
+  var st=_frtTermo;
+  var ov=document.getElementById('frt-termo-overlay');
+  if(!st||!ov) return st;
+  [['nome','frt-termo-nome'],['cpf','frt-termo-cpf'],['nacionalidade','frt-termo-nac'],['matricula','frt-termo-mat'],
+   ['placa','frt-termo-placa'],['cidade','frt-termo-cidade'],['data','frt-termo-data']].forEach(function(p){
+    var el=document.getElementById(p[1]);
+    if(el) st[p[0]]=String(el.value||'');
+  });
+  var tp=ov.querySelector('input[name="frt-termo-tipo"]:checked');
+  if(tp) st.tipo=tp.value==='avaria'?'avaria':'multa';
+  st.itens=(st.itens||[]).map(function(it,i){
+    var r=ov.querySelector('[data-termo-ref="'+i+'"]');
+    var d=ov.querySelector('[data-termo-desc="'+i+'"]');
+    var v=ov.querySelector('[data-termo-valor="'+i+'"]');
+    if(!r||!d||!v) return it;
+    var raw=String(v.value||'');
+    return {ref:String(r.value||''), desc:String(d.value||''), valor:frtTermoParseValor(raw), valorTxt:raw, origem:(it&&it.origem)||''};
+  });
+  return st;
+}
+function frtTermoRender(){
+  var st=_frtTermo;
+  if(!st) return;
+  var ov=document.getElementById('frt-termo-overlay');
+  if(!ov){
+    ov=document.createElement('div');
+    ov.id='frt-termo-overlay';
+    ov.className='modal-bg';
+    ov.style.zIndex='6000';
+    (document.body||document.documentElement).appendChild(ov);
+  }
+  var E=frtTermoEsc, multa=st.tipo!=='avaria', rotRef=multa?'AIT':'Nº da ocorrência';
+  var lab='font-size:11px;display:block;margin-bottom:3px';
+  var th='padding:5px;background:#1D3B34;color:#EFEDE7;font-size:11px;font-weight:600;';
+  var campo=function(rot, id, val, extra){
+    return '<div><label style="'+lab+'">'+rot+'</label><input class="inp" id="'+id+'" value="'+E(val)+'" style="width:100%"'+(extra||'')+'/></div>';
+  };
+  var radio=function(val, rot){
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer"><input type="radio" name="frt-termo-tipo" value="'+val+'"'
+      +(st.tipo===val?' checked':'')+' onchange="frtTermoTrocarTipo()"/> '+rot+'</label>';
+  };
+  var linhas=(st.itens||[]).map(function(it,i){
+    var vtxt=it.valorTxt!=null?it.valorTxt:(it.valor!=null?frtTermoFmtValor(it.valor):'');
+    return '<tr>'
+      +'<td style="padding:3px"><input class="inp" data-termo-ref="'+i+'" value="'+E(it.ref)+'" style="width:100%;font-family:monospace"/></td>'
+      +'<td style="padding:3px"><textarea class="inp" data-termo-desc="'+i+'" rows="2" style="width:100%;resize:vertical;font-size:12px;font-family:inherit">'+E(it.desc)+'</textarea></td>'
+      +'<td style="padding:3px"><input class="inp" data-termo-valor="'+i+'" value="'+E(vtxt)+'" inputmode="decimal" placeholder="0,00" style="width:100%;text-align:right" oninput="frtTermoAtualizarTotal()"/></td>'
+      +'<td style="padding:3px;text-align:center"><button type="button" class="btn" onclick="frtTermoRemoverLinha('+i+')" title="Remover linha" style="padding:3px 8px;color:#A32D2D">✕</button></td>'
+      +'</tr>';
+  }).join('');
+  var cands=frtTermoCandidatos(st);
+  ov.innerHTML='<div class="modal" style="max-width:780px;width:100%;max-height:92vh;overflow-y:auto">'
+    +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:.5rem">'
+    +'<h3 style="margin:0;font-size:15px">🖨 Termo de desconto em folha</h3><span style="font-size:10px;color:#888">'+E(FRT_TERMO_CFG.modelo)+'</span>'
+    +'<button type="button" class="btn" onclick="frtTermoFechar()" style="margin-left:auto;padding:3px 9px">✕</button></div>'
+    +'<p style="font-size:11px;color:#666;margin:0 0 .75rem">Pré-preenchido com os dados da tela aberta. Confira, edite ou inclua linhas antes de imprimir — o termo não altera o registro.</p>'
+    +'<div style="display:flex;gap:16px;margin-bottom:.75rem">'+radio('avaria','Avarias')+radio('multa','Multa de trânsito')+'</div>'
+    +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">'
+    +campo('Colaborador *','frt-termo-nome',st.nome)+campo('CPF *','frt-termo-cpf',st.cpf,' inputmode="numeric" placeholder="000.000.000-00"')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">'
+    +campo('Nacionalidade *','frt-termo-nac',st.nacionalidade)+campo('Matrícula (RE)','frt-termo-mat',st.matricula)+campo('Placa do veículo *','frt-termo-placa',st.placa)+'</div>'
+    +'<div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:12px">'
+    +campo('Cidade *','frt-termo-cidade',st.cidade)
+    +'<div><label style="'+lab+'">Data da assinatura *</label><input class="inp" type="date" id="frt-termo-data" value="'+E(st.data)+'" style="width:100%"/></div></div>'
+    +'<div style="font-size:12px;font-weight:600;margin-bottom:4px">Itens do desconto</div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    +'<th style="'+th+'text-align:left;width:22%">'+rotRef+'</th><th style="'+th+'text-align:left">Descrição</th>'
+    +'<th style="'+th+'text-align:right;width:18%">Valor (R$)</th><th style="'+th+'width:40px"></th></tr></thead><tbody>'+linhas+'</tbody>'
+    +'<tfoot><tr><td colspan="2" style="padding:6px;text-align:right;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em">Importância total</td>'
+    +'<td id="frt-termo-total" style="padding:6px;text-align:right;font-weight:700;font-family:monospace">R$ '+frtTermoFmtValor(frtTermoTotal(st.itens))+'</td><td></td></tr></tfoot></table>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 12px">'
+    +'<button type="button" class="btn" onclick="frtTermoAddLinha()">+ Inserir linha</button>'
+    +(cands.length
+      ?'<select class="inp" id="frt-termo-cand" data-nosort style="flex:1;min-width:220px"><option value="">Outras '+(multa?'multas':'avarias')+' deste colaborador…</option>'
+        +cands.map(function(c){return '<option value="'+E(c.chave)+'">'+E(c.rotulo)+'</option>';}).join('')
+        +'</select><button type="button" class="btn" onclick="frtTermoAddDoSistema()">Adicionar</button>'
+      :'')
+    +'</div>'
+    +'<div id="frt-termo-erro" style="display:none;font-size:11px;color:#A32D2D;background:#FCEBEB;border:.5px solid #F09595;border-radius:6px;padding:8px;margin-bottom:10px"></div>'
+    +'<div style="display:flex;gap:8px"><button type="button" class="btn" onclick="frtTermoFechar()" style="flex:1">Fechar</button>'
+    +'<button type="button" class="btn btn-pri" onclick="frtTermoImprimir()" style="flex:2">🖨 Imprimir termo</button></div>'
+    +'</div>';
+}
+function frtTermoAtualizarTotal(){
+  var st=frtTermoLerForm();
+  var el=document.getElementById('frt-termo-total');
+  if(st&&el) el.textContent='R$ '+frtTermoFmtValor(frtTermoTotal(st.itens));
+}
+function frtTermoTrocarTipo(){
+  frtTermoLerForm();
+  frtTermoRender();
+}
+function frtTermoAddLinha(){
+  var st=frtTermoLerForm();
+  if(!st) return;
+  st.itens.push({ref:'',desc:'',valor:null,origem:''});
+  frtTermoRender();
+  var el=document.querySelector('[data-termo-ref="'+(st.itens.length-1)+'"]');
+  if(el&&el.focus) el.focus();
+}
+function frtTermoRemoverLinha(i){
+  var st=frtTermoLerForm();
+  if(!st) return;
+  st.itens.splice(i,1);
+  if(!st.itens.length) st.itens.push({ref:'',desc:'',valor:null,origem:''});
+  frtTermoRender();
+}
+function frtTermoAddDoSistema(){
+  var st=frtTermoLerForm();
+  var sel=document.getElementById('frt-termo-cand');
+  if(!st||!sel||!sel.value) return;
+  var c=frtTermoCandidatos(st).find(function(x){return x.chave===sel.value;});
+  if(!c) return;
+  st.itens=frtTermoItensPreenchidos(st.itens);
+  st.itens.push(Object.assign({}, c.item));
+  if(c.placa) st.placa=frtTermoJuntarPlaca(st.placa, c.placa);
+  frtTermoRender();
+}
+function frtTermoLogoUrl(){
+  try{ return new URL(FRT_TERMO_CFG.logo, location.href).href; }
+  catch(e){ return FRT_TERMO_CFG.logo; }
+}
+function frtTermoImprimir(){
+  var st=frtTermoLerForm();
+  if(!st) return;
+  var erros=frtTermoValidar(st);
+  var box=document.getElementById('frt-termo-erro');
+  if(erros.length){
+    if(box){ box.style.display='block'; box.innerHTML=erros.map(function(e){return '• '+frtTermoEsc(e);}).join('<br>'); }
+    if(typeof progShowToast==='function') progShowToast(erros[0],'erro');
+    return;
+  }
+  if(box) box.style.display='none';
+  var w=window.open('','_blank');
+  if(!w){ if(typeof progShowToast==='function') progShowToast('Permita pop-ups para imprimir o termo.','erro'); return; }
+  w.document.open();
+  w.document.write(frtTermoMontarHtml(st,{logo:frtTermoLogoUrl()}));
+  w.document.close();
+}
+function frtTermoFechar(){
+  var ov=document.getElementById('frt-termo-overlay');
+  if(ov&&ov.parentNode) ov.parentNode.removeChild(ov);
+  _frtTermo=null;
+}
+
 function frtAvarMontarPayload(orig){
   var g=function(id){return (document.getElementById(id)||{}).value||'';};
   var vs=document.getElementById('favar-veic');
@@ -97003,6 +97487,7 @@ function frtAbrirAvaria(id){
     +'<input class="inp" id="favar-custo-final" type="number" step="0.01" style="width:100%" value="'+escHtml(String((orig&&orig.custo_final)!=null?orig.custo_final:''))+'"/></div>'
     +'</div></div>'
     +'<div style="display:flex;gap:8px;align-items:center">'
+    +'<button type="button" class="btn" onclick="frtTermoAbrir(\'avaria\',\''+escHtml(String((orig&&orig.id)||''))+'\')" title="Gerar termo de desconto em folha com os dados desta avaria">🖨 Termo de desconto</button>'
     +(isNew?'':'<button type="button" class="btn" id="favar-excluir" style="color:#A32D2D;border-color:#A32D2D">Excluir</button>')
     +'<button type="button" class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
     +'<button type="button" class="btn btn-pri" id="favar-salvar" style="flex:1">'+(isNew?'Registrar':'Salvar')+'</button>'
