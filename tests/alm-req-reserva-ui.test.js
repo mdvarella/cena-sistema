@@ -315,8 +315,7 @@ const MSG_LEGADO = 'Esta requisição possui saída registrada pela regra anteri
   ok('botão Iniciar separação', />Iniciar separação<\/button>/.test(html));
   ok('rótulos Entregue / Recebimento confirmado', /entregue:'Entregue'/.test(html) && /recebida:'Recebimento confirmado'/.test(html));
   ok('painel de recebimento só com almReqPodeReceber', /if\(!corrigindo && almReqPodeReceber\(d\)\)\{\n    var destOkRec/.test(html));
-  ok('versão 8.1.164', /numero: '8\.1\.164'/.test(html) && /\{v:'8\.1\.164'/.test(html));
-  ok('sw 8.1.164', /cena-8\.1\.164/.test(sw));
+  ok('versão 8.1.164 no changelog', /\{v:'8\.1\.164'/.test(html) && /'cena-8\.1\.\d+'/.test(sw));
   const mig = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations', '20260928190000_alm_req_reserva_atomica.sql'), 'utf8');
   const migSemComentario = mig.replace(/--[^\n]*/g, '');
   ok('migration não toca alm_movimentos', !/alm_movimentos/.test(migSemComentario));

@@ -44770,10 +44770,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.164',
-  data:   '28/09/2026',
-  build:  '20260928-2130',
+  numero: '8.1.165',
+  data:   '29/09/2026',
+  build:  '20260929-1200',
   log: [
+    {v:'8.1.165', d:'29/09/2026', itens:[
+      'Almoxarifado-CENA: transferência com colaborador — a saída na origem é só transferência (sem colaborador); o recebimento dá entrada no destino; a entrega ao colaborador baixa o estoque do destino no nome dele na assinatura da ficha (fn_alm_req_entregar_colaborador)',
+      'Almoxarifado-CENA: sem saldo no depósito destino a assinatura da ficha é bloqueada e nada é baixado; o recebido aguardando entrega ao colaborador fica reservado no destino',
+      'Almoxarifado-CENA: fichas da regra anterior (saída já no nome do colaborador) só documentam, sem nova baixa'
+    ]},
     {v:'8.1.164', d:'28/09/2026', itens:[
       'Almoxarifado-CENA: fluxo Aprovada → Em separação → Separada → Entregue → Recebimento confirmado; aprovada, em separação e separada continuam reservadas',
       'Almoxarifado-CENA: aprovação reserva no banco (fn_alm_req_aprovar) — tudo ou nada, sem baixar o saldo físico; mostra saldo físico, reservado, disponível, solicitado e faltante quando bloqueia',
@@ -102144,6 +102149,13 @@ function almReqItemQtdReservada(it, r){
 function almReqStEhReservaAberta(s){
   return s==='aprovada'||s==='separacao'||s==='separada'||s==='parcialmente_atendida';
 }
+/** Recebido no destino e ainda não entregue ao colaborador (mesma regra de fn_alm_req_reservado). NULL = regra anterior. */
+function almReqItemPendenteColab(it){
+  if(!it || it.quantidade_entregue_colab==null) return 0;
+  var st=String(it.status||'');
+  if(st==='cancelado'||st==='recusado') return 0;
+  return Math.max(0, (Number(it.quantidade_atendida)||0)-(Number(it.quantidade_entregue_colab)||0));
+}
 /** Separado efetivo: na regra antiga a saída era feita na separação, então o atendido também conta como separado. */
 function almReqItemQtdSeparada(it){
   if(!it) return 0;
@@ -102266,7 +102278,7 @@ function almReqStEhReserva(s){
 function almReqReserva(itemId, codigo, depId, nome){
   return almReqReservaEstoque(itemId, codigo, depId, nome);
 }
-/** Reserva da grade: aprovada / em separação / separada, ainda não entregue. Nunca negativa. */
+/** Reserva da grade: aprovada / em separação / separada, ainda não entregue; no destino, recebido aguardando entrega ao colaborador. Nunca negativa. */
 function almReqReservaEstoque(itemId, codigo, depId, nome, excluirReqId){
   var tot=0, cid=String(itemId||''), cod=String(codigo||'').toLowerCase(), nom=String(nome||'').trim().toLowerCase();
   var seenReq={}, seenIt={};
@@ -102276,8 +102288,10 @@ function almReqReservaEstoque(itemId, codigo, depId, nome, excluirReqId){
     if(seenReq[rid]) return;
     seenReq[rid]=1;
     if(excluirReqId && rid===String(excluirReqId)) return;
-    if(!almReqStEhReservaAberta(r.status)) return;
-    if(depId && String(r.deposito_id||'')!==String(depId)) return;
+    var resOrig=almReqStEhReservaAberta(r.status) && (!depId || String(r.deposito_id||'')===String(depId));
+    var resDest=r.status==='recebida' && String(r.dest_deposito_id||'')!==String(r.deposito_id||'')
+      && (!depId || String(r.dest_deposito_id||'')===String(depId));
+    if(!resOrig && !resDest) return;
     (_almReq.itens[r.id]||[]).forEach(function(it){
       var kid=it&&it.id!=null?String(it.id):'';
       if(kid && seenIt[kid]) return;
@@ -102286,7 +102300,7 @@ function almReqReservaEstoque(itemId, codigo, depId, nome, excluirReqId){
         || (nom && String(it.item_descricao||'').toLowerCase()===nom);
       if(!ok) return;
       if(kid) seenIt[kid]=1;
-      tot+=almReqItemQtdReservada(it, r);
+      tot+=resOrig?almReqItemQtdReservada(it, r):almReqItemPendenteColab(it);
     });
   });
   return Math.max(0, tot);
@@ -102378,7 +102392,10 @@ function almReqAplicarMovsLocais(d, it, rr, obs){
     if(typeof movimentacoes_itens!=='undefined' && Array.isArray(movimentacoes_itens)){
       movimentacoes_itens.push({id:m.mov_id, item_id:it.item_id, tipo_mov:'entrega', quantidade:Number(m.quantidade)||0,
         deposito_id:(row&&row.deposito_id)||d.deposito_id, contrato_id:d.contrato_id, data_mov:dataHoje(), status:'Em uso',
-        motivo:'Entrega requisição CENA', obs:obs+' · estoque_id:'+m.estoque_id+' · requisicao:'+(d.numero||'')});
+        colaborador_id:rr.transferencia?null:(it.colaborador_id||null),
+        motivo:rr.transferencia?'Transferência requisição CENA — saída':'Entrega requisição CENA',
+        obs:obs+(rr.transferencia?' · transferência para '+(d.dest_deposito_nome||d.dest_deposito_id||''):'')
+          +' · estoque_id:'+m.estoque_id+' · requisicao:'+(d.numero||'')});
     }
   });
 }
@@ -104580,6 +104597,11 @@ async function almReqConfirmarRecebimento(){
       }
       itensRec=Array.isArray(rr.itens)?rr.itens:[];
       legado=!!rr.legado;
+      itensRec.forEach(function(x){
+        if(!x || !x.entrega_colaborador_pendente) return;
+        var alvo=(d.itens||[]).find(function(it){ return String(it.id)===String(x.item_req_id); });
+        if(alvo && alvo.quantidade_entregue_colab==null) alvo.quantidade_entregue_colab=0;
+      });
     }
     (d.itens||[]).forEach(function(it){
       if((Number(it.quantidade_atendida)||0)>0 && it.status!=='cancelado' && it.status!=='recusado') it.status='recebido';
@@ -104631,7 +104653,9 @@ async function almReqConfirmarRecebimento(){
     if(falhaEntrada){
       progShowToast('Recebimento confirmado, mas a entrada no depósito destino falhou ('+falhaEntrada+'). Registre a entrada no destino manualmente.','erro');
     } else {
-      progShowToast('Recebimento confirmado em '+(d.dest_deposito_nome||'')+'.'+(legado?' Saída registrada pela regra antiga — nenhuma nova baixa.':''));
+      var temColab=(d.itens||[]).some(function(it){ return almReqItemPendenteColab(it)>0; });
+      progShowToast('Recebimento confirmado em '+(d.dest_deposito_nome||'')+'.'+(legado?' Saída registrada pela regra antiga — nenhuma nova baixa.':'')
+        +(temColab?' A entrega ao colaborador baixa o estoque do destino na assinatura da ficha.':''));
     }
     almReqRenderAlertas();
     var precisaEnt=(d.itens||[]).some(function(it){ return almReqItemAguardaEntrega(it); });
@@ -104680,7 +104704,7 @@ function almReqFilaEntregas(){
           key:key, requisicao_id:r.id, numero:r.numero||'',
           contrato_id:r.contrato_id||it.contrato_id||'',
           contrato_nome:r.contrato_nome||'',
-          deposito_nome:r.deposito_nome||'',
+          deposito_nome:r.dest_deposito_nome||r.deposito_nome||'',
           colaborador_id:it.colaborador_id||'',
           colaborador_nome:it.colaborador_nome||'',
           colaborador_re:it.colaborador_re||'',
@@ -104746,7 +104770,7 @@ function almReqRenderFilaEntrega(){
     }).join('');
     box.innerHTML='<div class="card" style="margin-bottom:1rem">'
       +'<div class="ch"><span class="ct">📥 Fila Requisição CENA — entrega ao colaborador ('+grupos.length+')</span></div>'
-      +'<div style="padding:.45rem .9rem;font-size:11px;color:#185FA5;background:#EBF4FD">Estoque já baixado no depósito. Gere a ficha e colete a assinatura no tablet ou no celular do colaborador para confirmar a retirada.</div>'
+      +'<div style="padding:.45rem .9rem;font-size:11px;color:#185FA5;background:#EBF4FD">Gere a ficha e colete a assinatura no tablet ou no celular do colaborador. Na assinatura, o estoque do depósito é baixado no nome do colaborador; sem saldo no depósito, a assinatura é bloqueada. Itens do mesmo depósito ou da regra anterior já tiveram a baixa na saída.</div>'
       +'<div style="overflow-x:auto"><table class="tbl" style="font-size:12px"><thead><tr>'
       +'<th>Requisição</th><th>Colaborador</th><th>Itens</th><th>Depósito</th><th>Situação</th><th></th>'
       +'</tr></thead><tbody>'+linhas+'</tbody></table></div></div>';
@@ -104821,7 +104845,7 @@ function almReqModalDocEntrega(ficha){
     +' pronta. O colaborador precisa assinar confirmando a retirada.</div>'
     +itensDoc
     +'<div style="background:#EBF4FD;border-radius:8px;padding:.55rem .75rem;margin-bottom:.85rem;font-size:11px;color:#185FA5">'
-    +'Assine neste tablet ou abra a tela cheia e passe o celular para o colaborador. O item só entra na ficha do colaborador depois da assinatura. Estoque do depósito já foi baixado.</div>'
+    +'Assine neste tablet ou abra a tela cheia e passe o celular para o colaborador. O item só entra na ficha do colaborador depois da assinatura. A baixa no depósito, no nome do colaborador, é feita ao confirmar a assinatura; sem saldo, a assinatura é bloqueada.</div>'
     +'<div style="display:flex;flex-direction:column;gap:8px">'
     +'<button class="btn btn-pri" onclick="almReqAssinarFichaEntrega(\''+String(ficha.id).replace(/'/g,'')+'\')">✍ Assinar neste tablet</button>'
     +'<button class="btn" onclick="almReqTelaAssinaturaCelular(\''+String(ficha.id).replace(/'/g,'')+'\')">📱 Abrir no celular (tela cheia)</button>'
@@ -104957,15 +104981,90 @@ async function almReqGarantirEpisDaFicha(fi){
   }
   return out.concat(livres);
 }
+/** Itens da requisição cobertos pela ficha (mesmo critério de almReqMarcarFilaAssinada). */
+function almReqItensDaFicha(fi){
+  var fid=fi&&fi.id, out=[];
+  (_almReq.lista||[]).forEach(function(r){
+    (_almReq.itens[r.id]||[]).forEach(function(it){
+      var tag=almReqEntregaTagGet(it.observacao);
+      if(tag==='FICHA:'+fid || (fi&&fi._reqKey && almReqFilaKey(r.id, it.colaborador_id||it.colaborador_re||it.colaborador_nome||'')===fi._reqKey)){
+        out.push({r:r, it:it});
+      }
+    });
+  });
+  return out;
+}
+/** Baixa no depósito destino, no nome do colaborador, antes de aceitar a assinatura. Tudo ou nada; fail-closed. */
+async function almReqBaixarEntregaColab(fi){
+  var alvo=almReqItensDaFicha(fi).filter(function(x){ return almReqItemPendenteColab(x.it)>0; });
+  if(!alvo.length) return {ok:true, semBaixa:true};
+  if(DEMO){
+    alvo.forEach(function(x){ x.it.quantidade_entregue_colab=Number(x.it.quantidade_atendida)||0; });
+    return {ok:true};
+  }
+  var porReq={}, ordem=[];
+  alvo.forEach(function(x){
+    var k=String(x.r.id);
+    if(!porReq[k]){ porReq[k]={r:x.r, itens:[]}; ordem.push(k); }
+    porReq[k].itens.push(x.it);
+  });
+  var quem=almReqUsuarioNome()+' · '+(usuarioLogado&&usuarioLogado.email||'');
+  for(var g=0;g<ordem.length;g++){
+    var grp=porReq[ordem[g]];
+    var rr=await almReqRpcReserva('fn_alm_req_entregar_colaborador',{
+      p_requisicao_id:grp.r.id,
+      p_item_req_ids:grp.itens.map(function(it){ return it.id; }),
+      p_chave:'colab:'+fi.id,
+      p_ficha_id:String(fi.id),
+      p_usuario:quem,
+      p_usuario_id:(usuarioLogado&&usuarioLogado.id)?String(usuarioLogado.id):null
+    });
+    if(!rr.ok){
+      if(rr.pendente){ almReqAvisoDbPendente(); return {ok:false}; }
+      var msg=rr.msg||'Falha na baixa do estoque do destino. A ficha não foi assinada.';
+      progShowToast(msg,'erro');
+      alert(msg);
+      return {ok:false};
+    }
+    if(rr.idempotente){
+      grp.itens.forEach(function(it){ it.quantidade_entregue_colab=Number(it.quantidade_atendida)||0; });
+      continue;
+    }
+    (rr.itens||[]).forEach(function(ri){
+      var it=grp.itens.find(function(x){ return String(x.id)===String(ri.item_req_id); });
+      if(!it) return;
+      it.quantidade_entregue_colab=(Number(it.quantidade_entregue_colab)||0)+(Number(ri.quantidade)||0);
+      (ri.movimentos||[]).forEach(function(m){
+        var row=(typeof estoque!=='undefined'?estoque:[]).find(function(e){ return String(e.id)===String(m.estoque_id); });
+        if(row) row.saldo=(Number(row.saldo)||0)-(Number(m.quantidade)||0);
+        if(typeof movimentacoes_itens!=='undefined' && Array.isArray(movimentacoes_itens)){
+          movimentacoes_itens.push({id:m.mov_id, item_id:it.item_id, tipo_mov:'entrega', quantidade:Number(m.quantidade)||0,
+            deposito_id:(row&&row.deposito_id)||grp.r.dest_deposito_id, contrato_id:grp.r.contrato_id, data_mov:dataHoje(),
+            status:'Em uso', colaborador_id:it.colaborador_id||null, motivo:'Entrega ao colaborador — requisição CENA',
+            obs:'Entrega ao colaborador '+(it.colaborador_nome||'')+' · ficha:'+fi.id+' · estoque_id:'+m.estoque_id+' · requisicao:'+(grp.r.numero||'')});
+        }
+      });
+    });
+  }
+  return {ok:true};
+}
 async function almReqConfirmarAssinaturaFicha(fi, b64){
-  var nome=fi.colaborador_nome||'Colaborador';
-  var criados=await almReqGarantirEpisDaFicha(fi);
-  if(typeof aplicarAssinaturaEpis==='function' && criados.length) aplicarAssinaturaEpis(criados, b64, nome);
-  if(typeof aplicarAssinaturaFicha==='function') aplicarAssinaturaFicha(fi, b64, nome);
-  await almReqMarcarFilaAssinada(fi);
-  if(typeof closeModal==='function') closeModal();
-  if(typeof renderNR6==='function') renderNR6();
-  almReqRenderFilaEntrega();
+  if(_almReq.assinando){ progShowToast('Assinatura em processamento. Aguarde.','erro'); return; }
+  _almReq.assinando=true;
+  try{
+    var baixa=await almReqBaixarEntregaColab(fi);
+    if(!baixa.ok){ almReqRenderFilaEntrega(); return; }
+    var nome=fi.colaborador_nome||'Colaborador';
+    var criados=await almReqGarantirEpisDaFicha(fi);
+    if(typeof aplicarAssinaturaEpis==='function' && criados.length) aplicarAssinaturaEpis(criados, b64, nome);
+    if(typeof aplicarAssinaturaFicha==='function') aplicarAssinaturaFicha(fi, b64, nome);
+    await almReqMarcarFilaAssinada(fi);
+    if(typeof closeModal==='function') closeModal();
+    if(typeof renderNR6==='function') renderNR6();
+    almReqRenderFilaEntrega();
+  }finally{
+    _almReq.assinando=false;
+  }
 }
 function almReqAssinarFichaEntrega(fichaId){
   var fi=(_epiFichas||[]).find(function(x){ return String(x.id)===String(fichaId); });
