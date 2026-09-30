@@ -10,16 +10,6 @@
 
 BEGIN;
 
-CREATE TEMP TABLE _port_dup_2909 (grupo int NOT NULL, id text PRIMARY KEY, completa boolean NOT NULL) ON COMMIT DROP;
-INSERT INTO _port_dup_2909 (grupo, id, completa) VALUES
-    (1, '9659cb18-de11-4d2d-aa60-77693909d558', true ), -- 29/09 07:24 EJN300 DZH7G12 (completa)
-    (1, '4c2a9b72-e9f3-483b-b31e-242e64db8682', false), -- 29/09 07:24 EJN300 DZH7G12
-    (2, '73dd88f3-ddf6-4a2b-887b-5264e3163f7d', true ), -- 29/09 07:59 EIN330 STC8B57 (completa)
-    (2, '39aa348e-6f10-4afd-b74e-1676852791ad', false), -- 29/09 07:59 EIN330 STC8B57
-    (3, '5fce3b43-7942-41a1-aa0b-b1f435012a9d', true ), -- 29/09 11:39 EJN173 TTM8E99 (completa)
-    (3, '3d82895a-e63b-4ca4-b66c-7082cf4bd42a', false)  -- 29/09 11:39 EJN173 TTM8E99
-;
-
 DO $$
 DECLARE
   v_esperado_grupos int := 3;
@@ -37,6 +27,18 @@ DECLARE
   v_copias jsonb;
   v_upd int;
 BEGIN
+  -- Lista criada dentro do bloco: funciona mesmo se o editor rodar só o DO ou usar outra conexão.
+  DROP TABLE IF EXISTS _port_dup_2909;
+  CREATE TEMP TABLE _port_dup_2909 (grupo int NOT NULL, id text PRIMARY KEY, completa boolean NOT NULL) ON COMMIT DROP;
+  INSERT INTO _port_dup_2909 (grupo, id, completa) VALUES
+      (1, '9659cb18-de11-4d2d-aa60-77693909d558', true ), -- 29/09 07:24 EJN300 DZH7G12 (completa)
+      (1, '4c2a9b72-e9f3-483b-b31e-242e64db8682', false), -- 29/09 07:24 EJN300 DZH7G12
+      (2, '73dd88f3-ddf6-4a2b-887b-5264e3163f7d', true ), -- 29/09 07:59 EIN330 STC8B57 (completa)
+      (2, '39aa348e-6f10-4afd-b74e-1676852791ad', false), -- 29/09 07:59 EIN330 STC8B57
+      (3, '5fce3b43-7942-41a1-aa0b-b1f435012a9d', true ), -- 29/09 11:39 EJN173 TTM8E99 (completa)
+      (3, '3d82895a-e63b-4ca4-b66c-7082cf4bd42a', false)  -- 29/09 11:39 EJN173 TTM8E99
+  ;
+
   IF (SELECT count(DISTINCT grupo) FROM _port_dup_2909) <> v_esperado_grupos
      OR (SELECT count(*) FROM _port_dup_2909) <> v_esperado_linhas THEN
     RAISE EXCEPTION 'PARAR: lista com % grupos / % linhas; esperado % / %.',

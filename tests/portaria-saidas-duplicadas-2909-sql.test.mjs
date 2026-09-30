@@ -79,6 +79,18 @@ for (const tipo of ['uuid', 'text']) {
     ok(T + 'desfazer restaura as cópias', await n(db, 'select count(*) n from public.frotas_portaria_saidas where deleted_at is null') === 6);
   }
   {
+    // SQL Editor rodando só o bloco DO (sem BEGIN/COMMIT nem conexão compartilhada)
+    const db = await banco(tipo);
+    const soDo = mig.slice(mig.indexOf('DO $$'), mig.indexOf('END $$;') + 'END $$;'.length);
+    let erro = null;
+    try { await db.exec(soDo); } catch (e) { erro = e.message; }
+    ok(T + 'só o bloco DO: aplica sem erro', erro === null, erro);
+    ok(T + 'só o bloco DO: 3 cópias excluídas', await n(db, 'select count(*) n from public.frotas_portaria_saidas where deleted_at is not null') === 3);
+    let erro2 = null;
+    try { await db.exec(soDo); } catch (e) { erro2 = e.message; }
+    ok(T + 'só o bloco DO duas vezes na mesma sessão: segunda para', erro2 && /nenhuma cópia pendente/.test(erro2), erro2);
+  }
+  {
     // Porteiro fechou a cópia antes da migration: ela fica e recebe os campos da original, que sai
     const g = GRUPOS[2];
     const db = await banco(tipo, `update public.frotas_portaria_saidas set data_retorno='2026-09-30T15:00:00-03:00', status='Retornado' where id::text='${copia(g)}';`);

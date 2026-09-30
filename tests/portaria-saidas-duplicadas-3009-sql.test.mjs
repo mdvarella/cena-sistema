@@ -99,6 +99,15 @@ for (const tipo of ['uuid', 'text']) {
     ok(T + 'desfazer não mexe nas completas', (await linha(db, completa(GRUPOS[0]))).modelo === 'VW/DELIVERY');
   }
   {
+    // SQL Editor rodando só o bloco DO (sem BEGIN/COMMIT nem conexão compartilhada)
+    const db = await banco(tipo);
+    const soDo = mig.slice(mig.indexOf('DO $$'), mig.indexOf('END $$;') + 'END $$;'.length);
+    let erro = null;
+    try { await db.exec(soDo); } catch (e) { erro = e.message; }
+    ok(T + 'só o bloco DO: aplica sem erro', erro === null, erro);
+    ok(T + 'só o bloco DO: 22 cópias excluídas', await excluidas(db) === 22);
+  }
+  {
     // Porteiro registrou o retorno na CÓPIA incompleta: ela fica, a completa aberta sai e empresta os campos
     const g = GRUPOS[0];
     const db = await banco(tipo, retorno(copias(g)[0]));
