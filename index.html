@@ -44770,10 +44770,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.170',
-  data:   '29/09/2026',
-  build:  '20260929-2200',
+  numero: '8.1.171',
+  data:   '30/09/2026',
+  build:  '20260930-0900',
   log: [
+    {v:'8.1.171', d:'30/09/2026', itens:[
+      'Portaria: ao confirmar a Vistoria de Saída, relê do servidor a placa programada da equipe; se a programação trocou o veículo depois que a tela carregou, atualiza a placa, avisa o porteiro e exige conferir e liberar de novo (sem conexão, pede confirmação da placa)',
+      'Programação TMA: coluna OPERAÇÃO avisa ⚠ Saiu com <placa> · prog. <placa> quando a portaria registrou uma placa diferente da programada'
+    ]},
     {v:'8.1.170', d:'29/09/2026', itens:[
       'Programação de Projetos: coluna OPERAÇÃO por equipe — PORTARIA (Aguardando saída / 🟢 Em campo — saída HH:MM / 🔵 Retornou — HH:MM) lida de frotas_portaria_saidas e APP (🟢 Logado / ✅ Encerrado) lido de plpt_sessoes; somente leitura, data futura nunca mostra Em campo',
       'Programação de Projetos: painel de disponibilidade com badges clicáveis (Todos / Disponível / Faltou / Férias / Afastado / Treinamento / Observação…), bloco Em treinamento com data de volta, Indisponíveis com filtros só dos status existentes e filtro Todas as escalas',
@@ -51238,6 +51242,11 @@ function progTmaHtmlOperacao(eqId, data){
     ? '<div style="color:#854F0B;font-size:8px">Saída registrada em outra equipe</div>'
       +'<button type="button" class="btn btn-sm" onclick="progTmaTransferirSaida(\''+escHtml(String(eqId))+'\',\''+escHtml(progTmaDiaISO(data))+'\')" style="font-size:9px;padding:1px 5px;margin-top:2px;color:#854F0B;border-color:#854F0B;white-space:nowrap">⇄ Transferir saída p/ esta equipe</button>'
     : '';
+  var placaProgOp=progTmaPlacaProg(eqId, progTmaDiaISO(data));
+  var placaSaidaOp=p.registro?String(p.registro.placa||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase():'';
+  if((p.status==='em_campo'||p.status==='retornou') && placaProgOp && placaSaidaOp && placaProgOp!==placaSaidaOp){
+    pExtra+='<div style="color:#A32D2D;font-size:8px;font-weight:700" title="A portaria registrou na saída uma placa diferente da programada">⚠ Saiu com '+escHtml(String(p.registro.placa))+' · prog. '+escHtml(placaProgOp)+'</div>';
+  }
   var pTxt=p.label+(p.hora?' · '+p.hora:'');
   var aIcon, aTxt, aCor;
   if(d.encerrado){
@@ -87581,6 +87590,7 @@ function portAbrirLiberacaoEquipe(eqId, data){
   var eq   = portBuscarEquipe(eqId)||{codigo:'—'};
   var _pv  = (typeof _progVeiculos!=='undefined'?_progVeiculos[eqId+'_'+data]:null)||null;
   var placa  = portPlacaProgramada(eqId, data) || (comp&&comp.placa) || (_pv&&_pv.placa) || '';
+  var placaAbertura = placa;
   var modelo = (_pv&&_pv.modelo)||'';
   if(!modelo && placa && frt_veiculos){
     var veic = frt_veiculos.find(function(v){return v.placa===placa;});
@@ -87671,10 +87681,11 @@ function portAbrirLiberacaoEquipe(eqId, data){
     // Equipe / veículo / colaboradores
     +'<div style="background:#EAF3DE;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:12px">'
     +'<div style="font-weight:700;font-size:13px">'+escHtml(portNomeEquipe(eq))+'</div>'
-    +(placa?'<div style="font-family:monospace;font-weight:600;color:#1a1a18">'+escHtml(placa)
+    +(placa?'<div id="lib-eq-placa" style="font-family:monospace;font-weight:600;color:#1a1a18">'+escHtml(placa)
       +(modelo?' <span style="font-family:sans-serif;font-weight:400;color:#888;font-size:11px">'+escHtml(modelo)+'</span>':'')+'</div>':'')
     +(nomesColab.length?'<div style="color:#555;margin-top:3px;font-size:11px">👥 '+nomesColab.map(escHtml).join(' · ')+'</div>':'')
     +'</div>'
+    +'<div id="lib-eq-placa-aviso"></div>'
     + cnhHtml
     // Lista de materiais
     + listaMatHtml
@@ -87756,103 +87767,170 @@ function portAbrirLiberacaoEquipe(eqId, data){
         else if(_v.av && _v.av.nivel==='aviso') progShowToast(_v.av.msg);
       }
 
-      var contId  = ((document.getElementById('lib-eq-contrato')||{}).value||'').trim();
-      var km      = parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
-      var quem    = ((document.getElementById('lib-eq-quem')||{}).value||'').trim();
-      var obs     = ((document.getElementById('lib-eq-obs')||{}).value||'').trim();
-      var fotoB64 = portFotoLer('lib-foto-b64') || ((document.getElementById('lib-foto-b64')||{}).value||'');
-      var fotosExtra = portFotosExtraColetar();
+      function _prosseguir(){
+        var contId  = ((document.getElementById('lib-eq-contrato')||{}).value||'').trim();
+        var km      = parseInt((document.getElementById('lib-eq-km')||{}).value||'0')||0;
+        var quem    = ((document.getElementById('lib-eq-quem')||{}).value||'').trim();
+        var obs     = ((document.getElementById('lib-eq-obs')||{}).value||'').trim();
+        var fotoB64 = portFotoLer('lib-foto-b64') || ((document.getElementById('lib-foto-b64')||{}).value||'');
+        var fotosExtra = portFotosExtraColetar();
 
-      if(!contId){ progShowToast('⚠ Selecione o contrato.','erro'); return; }
-      var contObj=(contratos||[]).find(function(c){ return String(c.id)===String(contId); })||{};
-      var contNome=contObj.nome||contObj.codigo||contObj.numero||'—';
-      var destino=contNome; // destino legado = nome do contrato
+        if(!contId){ progShowToast('⚠ Selecione o contrato.','erro'); return; }
+        var contObj=(contratos||[]).find(function(c){ return String(c.id)===String(contId); })||{};
+        var contNome=contObj.nome||contObj.codigo||contObj.numero||'—';
+        var destino=contNome; // destino legado = nome do contrato
 
-      var kmMeta=portKmPrepararLiberacao(placa, km, {fotoObrigatoria:true});
-      if(!kmMeta) return;
+        var kmMeta=portKmPrepararLiberacao(placa, km, {fotoObrigatoria:true});
+        if(!kmMeta) return;
 
-      // Foto SEMPRE obrigatória
-      if(!fotoB64){
-        progShowToast('⚠ Obrigatório: tire a foto do baú/caçamba/porta-malas antes de liberar.','erro');
-        return;
-      }
-
-      // Verificar se todos os itens foram conferidos (quando tem materiais)
-      if(temMateriais){
-        var naoConferidos = todosItens.filter(function(it){
-          var chk = document.getElementById('port-mat-chk-'+it.idx);
-          return chk && !chk.checked;
-        });
-        if(naoConferidos.length){
-          progShowToast('⚠ Confira todos os itens da lista ('+naoConferidos.length+' pendente(s)).','erro');
+        // Foto SEMPRE obrigatória
+        if(!fotoB64){
+          progShowToast('⚠ Obrigatório: tire a foto do baú/caçamba/porta-malas antes de liberar.','erro');
           return;
         }
+
+        // Verificar se todos os itens foram conferidos (quando tem materiais)
+        if(temMateriais){
+          var naoConferidos = todosItens.filter(function(it){
+            var chk = document.getElementById('port-mat-chk-'+it.idx);
+            return chk && !chk.checked;
+          });
+          if(naoConferidos.length){
+            progShowToast('⚠ Confira todos os itens da lista ('+naoConferidos.length+' pendente(s)).','erro');
+            return;
+          }
+        }
+
+        var _cfgPort=portConfigAtiva();
+        var saida = {
+          id:                    Date.now().toString(),
+          placa:                 placa,
+          modelo:                modelo||'',
+          tipo_liberacao:        'equipe',
+          destino:               destino,
+          contrato_id:           contId,
+          contrato_nome:         contNome,
+          km_saida:              km,
+          data_saida:            new Date().toISOString(),
+          status:                'Em campo',
+          equipe:                portNomeEquipe(eq, eqId)||'—',
+          equipe_id:             eq.id||eqId||null,
+          motorista:             quem,
+          quem_saiu:             quem,
+          base_saida:            (_cfgPort.nome||_cfgPort.base||null),
+          liberado_por:          portNomePorteiroAtual(),
+          obs:                   obs||null,
+          foto_carga_saida_b64:  fotoB64||null,
+          foto_carga_saida_ts:   fotoB64 ? new Date().toISOString() : null,
+          tem_materiais_saida:   temMateriais,
+          fotos_carga_extras:    fotosExtra.length?fotosExtra:[]
+        };
+        portKmAnexarSaida(saida, kmMeta);
+        var _jaEmCampo = frt_portaria.some(function(p){
+          return p.status==='Em campo' &&
+                 (String(p.equipe_id||'')===String(eqId) || p.equipe===eqId || (placa&&portNormPlaca(p.placa)===portNormPlaca(placa))) &&
+                 portDiaLocal(p.data_saida)===dataHojeLocal();
+        });
+        if(_jaEmCampo){ progShowToast('⚠️ Esta equipe/veículo já está Em Campo hoje.','erro'); return; }
+        frt_portaria.unshift(saida);
+        portKmAposRegistrar(placa, saida, km, kmMeta);
+        (composicao_dia||[]).forEach(function(cx){
+          if(String(cx.equipe_id)===String(eqId) && (portDiaISO(cx.data)===portDiaISO(data) || portDiaISO(cx.data)===dataHojeLocal()))
+            cx._portaria_liberado=true;
+        });
+        portInvalidarCacheSaidas(saida.data_saida);
+        btn.disabled=true;
+        var _lbl=btn.textContent;
+        btn.textContent='⏳ Salvando fotos...';
+        // Fila offline (resiste a queda de rede, guarda foto e sincroniza sozinho);
+        // fallback ao insert direto só se o módulo offline não estiver carregado.
+        var _salvar=(!DEMO)
+          ? (typeof portOffRegistrarSaida==='function' ? portOffRegistrarSaida(saida) : portInsertSaidaDB(saida))
+          : Promise.resolve();
+        _salvar.then(function(){
+          portKmResetOcr();
+          closeModal();
+          portRenderEquipesDia();
+          portRenderAguardando();
+          if(typeof portRenderRetorno==='function') portRenderRetorno();
+          progShowToast('✅ Saída liberada'+(fotoB64?' com foto':'')+(temMateriais?' — '+todosItens.length+' item(ns) conferido(s)':'')+' · '+(placa||portNomeEquipe(eq)||''));
+        }).catch(function(e){
+          console.warn('[Portaria] equipe saida',e);
+          btn.disabled=false;
+          btn.textContent=_lbl;
+          progShowToast('Não foi possível gravar a saída. Tente de novo.','erro');
+        });
+        _portCnhExcecao=null;
       }
 
-      var _cfgPort=portConfigAtiva();
-      var saida = {
-        id:                    Date.now().toString(),
-        placa:                 placa,
-        modelo:                modelo||'',
-        tipo_liberacao:        'equipe',
-        destino:               destino,
-        contrato_id:           contId,
-        contrato_nome:         contNome,
-        km_saida:              km,
-        data_saida:            new Date().toISOString(),
-        status:                'Em campo',
-        equipe:                portNomeEquipe(eq, eqId)||'—',
-        equipe_id:             eq.id||eqId||null,
-        motorista:             quem,
-        quem_saiu:             quem,
-        base_saida:            (_cfgPort.nome||_cfgPort.base||null),
-        liberado_por:          portNomePorteiroAtual(),
-        obs:                   obs||null,
-        foto_carga_saida_b64:  fotoB64||null,
-        foto_carga_saida_ts:   fotoB64 ? new Date().toISOString() : null,
-        tem_materiais_saida:   temMateriais,
-        fotos_carga_extras:    fotosExtra.length?fotosExtra:[]
-      };
-      portKmAnexarSaida(saida, kmMeta);
-      var _jaEmCampo = frt_portaria.some(function(p){
-        return p.status==='Em campo' &&
-               (String(p.equipe_id||'')===String(eqId) || p.equipe===eqId || (placa&&portNormPlaca(p.placa)===portNormPlaca(placa))) &&
-               portDiaLocal(p.data_saida)===dataHojeLocal();
-      });
-      if(_jaEmCampo){ progShowToast('⚠️ Esta equipe/veículo já está Em Campo hoje.','erro'); return; }
-      frt_portaria.unshift(saida);
-      portKmAposRegistrar(placa, saida, km, kmMeta);
-      (composicao_dia||[]).forEach(function(cx){
-        if(String(cx.equipe_id)===String(eqId) && (portDiaISO(cx.data)===portDiaISO(data) || portDiaISO(cx.data)===dataHojeLocal()))
-          cx._portaria_liberado=true;
-      });
-      portInvalidarCacheSaidas(saida.data_saida);
+      // A programação pode ter trocado o veículo depois que esta tela carregou: grava só a placa vigente no servidor.
       btn.disabled=true;
-      var _lbl=btn.textContent;
-      btn.textContent='⏳ Salvando fotos...';
-      // Fila offline (resiste a queda de rede, guarda foto e sincroniza sozinho);
-      // fallback ao insert direto só se o módulo offline não estiver carregado.
-      var _salvar=(!DEMO)
-        ? (typeof portOffRegistrarSaida==='function' ? portOffRegistrarSaida(saida) : portInsertSaidaDB(saida))
-        : Promise.resolve();
-      _salvar.then(function(){
-        portKmResetOcr();
-        closeModal();
-        portRenderEquipesDia();
-        portRenderAguardando();
-        if(typeof portRenderRetorno==='function') portRenderRetorno();
-        progShowToast('✅ Saída liberada'+(fotoB64?' com foto':'')+(temMateriais?' — '+todosItens.length+' item(ns) conferido(s)':'')+' · '+(placa||portNomeEquipe(eq)||''));
-      }).catch(function(e){
-        console.warn('[Portaria] equipe saida',e);
+      var _lblConf=btn.textContent;
+      btn.textContent='⏳ Conferindo programação...';
+      portReconferirPlacaProgramada(eqId, data).then(function(r){
         btn.disabled=false;
-        btn.textContent=_lbl;
-        progShowToast('Não foi possível gravar a saída. Tente de novo.','erro');
+        btn.textContent=_lblConf;
+        if(r.ok && portNormPlaca(r.placa)!==portNormPlaca(placa)){
+          var placaAntes=placa;
+          placa=r.placa;
+          modelo=r.modelo||'';
+          if(!modelo && placa && frt_veiculos){
+            var vNovo=frt_veiculos.find(function(v){ return portNormPlaca(v.placa)===portNormPlaca(placa); });
+            if(vNovo) modelo=vNovo.modelo||vNovo.tipo||'';
+          }
+          window._portKmPlacaCtx=placa;
+          if(placa && typeof portRefrescarSaidasPlaca==='function') portRefrescarSaidasPlaca(placa);
+          var elPl=document.getElementById('lib-eq-placa');
+          if(elPl) elPl.innerHTML=escHtml(placa||'SEM VEÍCULO')+(modelo?' <span style="font-family:sans-serif;font-weight:400;color:#888;font-size:11px">'+escHtml(modelo)+'</span>':'');
+          var elAv=document.getElementById('lib-eq-placa-aviso');
+          if(elAv) elAv.innerHTML='<div style="background:#FCEBEB;border:.5px solid #A32D2D;border-radius:8px;padding:8px 12px;margin-bottom:.75rem;font-size:12px;color:#A32D2D">'
+            +'<b>⚠ A programação trocou o veículo desta equipe.</b><br>'
+            +'Antes: <b style="font-family:monospace">'+escHtml(placaAntes||'—')+'</b> → Agora: <b style="font-family:monospace">'+escHtml(placa||'sem veículo')+'</b>.<br>'
+            +(placa?'Confira a placa do veículo que está saindo e o KM, e clique em Liberar de novo.':'Peça à programação para definir o veículo antes de liberar.')
+            +'</div>';
+          progShowToast('⚠ A programação trocou o veículo: '+(placaAntes||'—')+' → '+(placa||'sem veículo')+'. Confira e libere de novo.','erro');
+          return;
+        }
+        if(r.ok && !r.placa && placaAbertura){
+          progShowToast('⚠ A programação desta equipe está sem veículo. Peça para definir o veículo antes de liberar.','erro');
+          return;
+        }
+        if(!r.ok && !confirm('Sem conexão para reconferir a placa programada.\n\nConfirme que o veículo que está saindo é '+(placa||'(sem placa)')+'.')) return;
+        _prosseguir();
       });
-      _portCnhExcecao=null;
     };
   },50);
 }
 
+
+/** Relê do servidor a placa programada da equipe no dia (prog_veiculos_dia slot 1 → composicao_dia) e atualiza a memória.
+ *  {ok:true, placa, modelo} — placa '' quando a programação está sem veículo; {ok:false} quando não conseguiu ler. */
+function portReconferirPlacaProgramada(eqId, data){
+  var d=portDiaISO(data);
+  if(DEMO || typeof sbFetch!=='function' || !eqId || !d) return Promise.resolve({ok:false});
+  return Promise.all([
+    sbFetch('prog_veiculos_dia',{filters:['equipe_id=eq.'+eqId,'data=eq.'+d,'deleted_at=is.null'],limit:10}),
+    sbFetch('composicao_dia',{select:'id,equipe_id,data,placa,veiculo_id,modelo',filters:['equipe_id=eq.'+eqId,'data=eq.'+d],limit:5})
+  ]).then(function(res){
+    if(res[0]===null || res[1]===null) return {ok:false};
+    var pv=(res[0]||[]).filter(function(r){ return r && String(r.placa||'').trim() && (r.slot==null || Number(r.slot)===1); })[0]||null;
+    var cp=(res[1]||[]).filter(function(c){ return c && String(c.placa||'').trim(); })[0]||null;
+    var placa=String((pv&&pv.placa)||(cp&&cp.placa)||'').trim();
+    var modelo=(pv&&pv.modelo)||(cp&&cp.modelo)||'';
+    if(typeof _progVeiculos!=='undefined'){
+      var k=eqId+'_'+d;
+      if(pv) _progVeiculos[k]=Object.assign({}, _progVeiculos[k]||{}, {placa:pv.placa, modelo:pv.modelo||'', id:pv.veiculo_id||null, veiculo_id:pv.veiculo_id||null});
+      else if(!placa) delete _progVeiculos[k];
+    }
+    (composicao_dia||[]).forEach(function(c){
+      if(String(c.equipe_id)!==String(eqId) || portDiaISO(c.data)!==d) return;
+      c.placa=cp?cp.placa:(placa||null);
+      if(cp && cp.veiculo_id) c.veiculo_id=cp.veiculo_id;
+      if(cp && cp.modelo) c.modelo=cp.modelo;
+    });
+    return {ok:true, placa:placa, modelo:modelo};
+  }).catch(function(){ return {ok:false}; });
+}
 
 function portLiberarEquipe(eqId, data){
   portAbrirLiberacaoEquipe(eqId, data);

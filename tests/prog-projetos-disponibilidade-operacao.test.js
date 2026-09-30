@@ -313,7 +313,7 @@ function testesEstaticos() {
   const ops = OPS_FUNCS.map(fn).join('\n');
   ok('módulo Operação sem escrita', !/sbInsert|sbUpdate|sbUpsert|sbDelete|method:\s*'(POST|PATCH|DELETE)'/.test(ops));
   ok('módulo Operação sem sessoes_disponibilidade', !/sessoes_disponibilidade|sessoes_disp\b/.test(ops));
-  ok('versão 8.1.170 no log', /\{v:'8\.1\.170'/.test(html) && /numero: '8\.1\.170'/.test(html));
+  ok('versão 8.1.170 no log', /\{v:'8\.1\.170'/.test(html) && /numero: '8\.1\.\d+'/.test(html));
   ok('sw.js versionado', /'cena-8\.1\.\d+'/.test(sw));
 
   let base = null;
@@ -322,11 +322,14 @@ function testesEstaticos() {
   if (!base) { ok('base 8.1.169 disponível para comparar TMA', false); return; }
   const nomesTma = [...new Set([...base.matchAll(/\nfunction (progTma\w*)\(/g)].map(m => m[1]))]
     .concat(['progRenderPainelDisp', 'progRenderEquipeRow', 'progValidarComposicao', 'progEfetuarDrop', 'progRenderQuadro', 'progRenderResumo', 'progFiltrarColsProgramacao', 'progMenuSlot']);
+  // 8.1.171: aviso de placa divergente (saída da portaria × programação) — coberto em portaria-placa-reconferencia.test.js.
+  const ALTERADAS_DEPOIS = ['progTmaHtmlOperacao'];
   const difs = nomesTma.filter(n => {
+    if (ALTERADAS_DEPOIS.includes(n)) return false;
     const re = new RegExp('\\n(?:async )?function ' + n + '\\(');
     return blocoEm(base, re) !== blocoEm(html, re);
   });
-  ok('TMA: ' + nomesTma.length + ' funções idênticas à 8.1.169', difs.length === 0, difs);
+  ok('TMA: ' + (nomesTma.length - ALTERADAS_DEPOIS.length) + ' funções idênticas à 8.1.169', difs.length === 0, difs);
   ok('TMA: PROG_STATUS/BLOQ_STATUS inalterados', blocoEm(base, /\nvar PROG_STATUS\s*=/) === blocoEm(html, /\nvar PROG_STATUS\s*=/)
     && /var BLOQ_STATUS = (\[[^\]]*\])/.exec(base)[1] === bloqMatch[1]);
 }

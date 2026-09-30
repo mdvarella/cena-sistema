@@ -5,7 +5,7 @@
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.170';
+const SW_VERSION   = 'cena-8.1.171';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
