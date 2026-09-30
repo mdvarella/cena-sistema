@@ -44770,10 +44770,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.168',
+  numero: '8.1.170',
   data:   '29/09/2026',
-  build:  '20260929-1800',
+  build:  '20260929-2200',
   log: [
+    {v:'8.1.170', d:'29/09/2026', itens:[
+      'Programação de Projetos: coluna OPERAÇÃO por equipe — PORTARIA (Aguardando saída / 🟢 Em campo — saída HH:MM / 🔵 Retornou — HH:MM) lida de frotas_portaria_saidas e APP (🟢 Logado / ✅ Encerrado) lido de plpt_sessoes; somente leitura, data futura nunca mostra Em campo',
+      'Programação de Projetos: painel de disponibilidade com badges clicáveis (Todos / Disponível / Faltou / Férias / Afastado / Treinamento / Observação…), bloco Em treinamento com data de volta, Indisponíveis com filtros só dos status existentes e filtro Todas as escalas',
+      'Programação de Projetos: Observação continua escalável; folga não é mais inferida pelo calendário da TMA (só status explícito). TMA sem alteração'
+    ]},
     {v:'8.1.168', d:'29/09/2026', itens:[
       'Programação: equipe cuja placa programada saiu pela portaria registrada em outra equipe (programação trocada depois da liberação) aparece como ⚠ Em campo como <equipe>, com botão ⇄ Transferir saída p/ esta equipe',
       'Transferir saída: confere no servidor que a saída ainda está em campo e que a outra equipe não tem mais a placa, grava a troca na observação da saída e só confirma depois de reler o registro',
@@ -79916,6 +79921,7 @@ function progProjCarregarStatusBanco(data, cb){
 function progProjAtualizarQuadro(){
   _progStatusDateCache = null;
   _progVeiculosDateCache = null;
+  ppOpsInvalidar();
   var btn = document.querySelector('[onclick="progProjAtualizarQuadro()"]');
   if(btn){ btn.textContent = '⏳ Atualizando...'; btn.disabled = true; }
   var data = progProjGetData();
@@ -80368,6 +80374,7 @@ function _progProjRenderQuadroInterno(data, cid){
           +'<th style="padding:6px 10px;text-align:left;min-width:120px">🚗 Veículo</th>'
           +'<th style="padding:6px 10px;text-align:left;min-width:150px">📋 Projetos</th>'
           +'<th style="padding:6px 10px;text-align:center;width:90px">Status</th>'
+          +'<th style="padding:6px 10px;text-align:left;min-width:170px">Operação</th>'
           +'<th style="padding:6px 10px;width:120px"></th>'
           +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
       }).join('')
@@ -80415,6 +80422,7 @@ function _progProjRenderQuadroInterno(data, cid){
   })();
   // Bindar botões de status e filtro dos veículos (re-render só do painel)
   setTimeout(function(){ progBindVeicPainel(wrap, cid, data); },80);
+  ppOpsSincronizar(data, cid, false);
 }
 
 function _ppSetFiltroTurno(t){
@@ -80623,6 +80631,7 @@ function progProjetoCoreRenderEquipeRow(eq, data, cid, maxSlots){
     +'</td>'
     +'<td style="padding:4px 6px;vertical-align:top">'+ppPH+'</td>'
     +'<td style="padding:4px 8px;text-align:center;vertical-align:top"><span style="background:'+stBg+';color:'+stTxt+';font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px">'+st+'</span></td>'
+    +'<td style="padding:4px 8px;vertical-align:top" id="pp-op-cell-'+eq.id+'" data-pp-op-eq="'+eq.id+'">'+ppHtmlOperacaoEquipe(eq.id, data)+'</td>'
     +'<td style="padding:4px 6px;vertical-align:top;display:flex;flex-direction:column;gap:3px">'
     +(emFolgaEq&&!heAuth
       ?'<button onclick="ppAutorizarHoraExtra(\''+eq.id+'\')" style="font-size:10px;padding:3px 6px;border:.5px solid #854F0B;color:#854F0B;background:#fff;border-radius:4px;cursor:pointer;white-space:nowrap">⚠ HE</button>'
@@ -80851,130 +80860,464 @@ function ppConfirmarDesprogramar(eqId){
 }
 
 
+/** Status não impeditivos: continuam escaláveis (entram em "Disponíveis não escalados"). */
+var PP_DISP_LIVRE_ST = ['disponivel','observacao'];
+var PP_DISP_INDISP_ST = ['falta','folga','ferias','afastado','integracao','patio','verificar','fraude','demitido','inapto'];
+var PP_DISP_BADGE_ORDEM = ['disponivel','falta','ferias','afastado','treinamento','observacao','folga','integracao','patio','verificar','fraude','demitido','inapto'];
+
+function ppDispStatusColab(c){
+  var st = progProjetoCoreStatusColab(c.id);
+  if(st==='faltou') st='falta';
+  return PROG_STATUS[st] ? st : 'disponivel';
+}
+function ppDispEscaladosDia(data){
+  var dia = String(data||'').split('T')[0];
+  var ids = {}, res = {}, porId = {};
+  (colaboradores||[]).forEach(function(c){ if(c&&c.id) porId[String(c.id)] = c; });
+  (composicao_dia||[]).forEach(function(comp){
+    if(!comp || comp.deleted_at || comp._deleted) return;
+    if(String(comp.data||'').split('T')[0]!==dia) return;
+    parseJsonField(comp.colaborador_ids,[]).forEach(function(id){
+      if(!id) return;
+      ids[String(id).trim()] = true;
+      var col = porId[String(id).trim()];
+      var re = col ? String(col.re||'').replace(/\D/g,'') : '';
+      if(re) res[re] = true;
+    });
+  });
+  return {ids:ids, res:res};
+}
+/** Agrupa os colaboradores do contrato/dia: cada um entra em no máximo um grupo (sem duplicar contagem). */
+function ppDispCalcular(cols, data, filtroEscala){
+  var esc = ppDispEscaladosDia(data);
+  function escalado(c){
+    if(esc.ids[String(c.id).trim()]) return true;
+    var re = String(c.re||'').replace(/\D/g,'');
+    return !!(re && esc.res[re]);
+  }
+  var base = (cols||[]).filter(function(c){
+    return !filtroEscala || String(c.escala_id||'')===String(filtroEscala);
+  });
+  var livres = [], indisp = [], treino = [], porStatus = {}, contagem = {};
+  base.forEach(function(c){
+    var st = ppDispStatusColab(c);
+    if(PP_DISP_LIVRE_ST.indexOf(st)>=0){
+      if(escalado(c)) return;
+      livres.push(c);
+    } else if(st==='treinamento'){
+      treino.push(c);
+    } else if(PP_DISP_INDISP_ST.indexOf(st)>=0){
+      indisp.push(c);
+    } else return;
+    if(!porStatus[st]) porStatus[st] = [];
+    porStatus[st].push(c);
+    contagem[st] = (contagem[st]||0) + 1;
+  });
+  return {base:base, livres:livres, indisp:indisp, treino:treino, porStatus:porStatus, contagem:contagem};
+}
+function ppDispPonto(c, data){
+  if(typeof pontoCacheGet==='function') return pontoCacheGet(c.re, data);
+  var cache = (typeof _pontoCache!=='undefined' && _pontoCache) ? _pontoCache : {};
+  return cache[(c.re||'')+'_'+data];
+}
+function ppDispPresente(c, data){
+  var p = ppDispPonto(c, data);
+  return !!(p && (p.entrada || (p.todas_marcacoes && p.todas_marcacoes.some(function(x){ return x.tipo==='Entrada'; }))));
+}
+function ppDispFiltrarPonto(lista, data, filtro){
+  if(filtro==='presentes') return lista.filter(function(c){ return ppDispPresente(c, data); });
+  if(filtro==='ausentes') return lista.filter(function(c){ return !ppDispPresente(c, data); });
+  return lista;
+}
+function ppDispBadgePontoHtml(c, data){
+  var p = ppDispPonto(c, data);
+  if(!p) return '';
+  if(ppDispPresente(c, data)) return '<span style="background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">✓ '+escHtml(p.entrada||'')+'</span>';
+  if(p.status==='falta'){
+    var hp = p.horario_previsto||{};
+    if(hp.entrada && typeof pontoHorarioPassou==='function' && pontoHorarioPassou(hp, data))
+      return '<span style="background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">● Aus</span>';
+  }
+  return '';
+}
+function ppDispEscalasUsadas(cols){
+  var usadas = {};
+  (cols||[]).forEach(function(c){
+    if(!c.escala_id || usadas[c.escala_id]) return;
+    var e = typeof getEscala==='function' ? getEscala(c.escala_id) : null;
+    if(e) usadas[c.escala_id] = e;
+  });
+  return usadas;
+}
+function ppDispChipLivreHtml(c, data){
+  var st = ppDispStatusColab(c);
+  var sObs = st==='observacao';
+  var sI = PROG_STATUS[st] || PROG_STATUS.disponivel;
+  var info = progProjetoCoreStatusInfoColab(c.id);
+  var obs = sObs ? String(info.obs||'').trim() : '';
+  var autor = sObs ? progStatusAutor(info) : '';
+  var bg = sObs ? sI.bg : '#EAF3DE', bd = sObs ? sI.cor+'66' : '#3B6D1144', fg = sObs ? sI.cor : '#3B6D11';
+  var esc = (c.escala_id && typeof getEscala==='function') ? getEscala(c.escala_id) : null;
+  return '<div class="pp-colab-chip" draggable="true" id="pp-chip-'+c.id+'" data-colab="'+c.id+'" '
+    +'ondragstart="ppDragStart(event,\''+c.id+'\',null)" '
+    +'style="display:inline-flex;align-items:center;gap:4px;background:'+bg+';'
+    +'border:.5px solid '+bd+';border-radius:6px;padding:4px 8px;font-size:11px;cursor:grab;margin:2px">'
+    +'<span style="color:'+fg+';font-weight:500">'+escHtml(nomeAbrev(c.nome))+'</span>'
+    +'<span style="color:#aaa;font-size:9px">'+escHtml(c.re||'')+'</span>'
+    +(sObs?'<span title="'+escHtml(obs)+(autor?' — 👤 '+escHtml(autor):'')+'" style="background:'+sI.cor+';color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;cursor:help">📝 '+escHtml((obs||'Obs').slice(0,22))+(obs.length>22?'…':'')+'</span>':'')
+    +(esc?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+escHtml(esc.tipo||'')+'</span>':'')
+    +ppDispBadgePontoHtml(c, data)
+    +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
+    +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
+    +'ondragstart="event.stopPropagation()">⋮</span>'
+    +'</div>';
+}
+function ppDispChipStatusHtml(c, data){
+  var st = ppDispStatusColab(c);
+  var s = PROG_STATUS[st] || {label:st, cor:'#555', bg:'#f5f5f3'};
+  var info = progProjetoCoreStatusInfoColab(c.id);
+  var obs = info.obs || info.justificativa || '';
+  var ret = info.retorno ? ' · retorno '+fmtD(info.retorno) : '';
+  return '<div style="display:inline-flex;flex-direction:column;background:'+s.bg+';border:.5px solid '+ppDispCorHex(s.cor)+'44;border-radius:6px;padding:4px 8px;font-size:11px;max-width:230px;margin:2px">'
+    +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
+    +'<span style="color:'+s.cor+';font-weight:500">'+escHtml(nomeAbrev(c.nome))+'</span>'
+    +'<span style="color:'+s.cor+';font-size:9px;font-weight:600">'+escHtml(s.label)+ret+'</span>'
+    +ppDispBadgePontoHtml(c, data)
+    +(st==='verificar'?'<span onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
+    +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
+    +'</div>'
+    +(obs?progObsLinhaHtml(obs, info, s):'')
+    +'</div>';
+}
+/** Expande #rgb → #rrggbb para permitir sufixo de transparência (cor+'44'). */
+function ppDispCorHex(cor){
+  var c = String(cor||'#555');
+  return /^#[0-9a-f]{3}$/i.test(c) ? '#'+c[1]+c[1]+c[2]+c[2]+c[3]+c[3] : c;
+}
+function ppDispBotaoFiltroHtml(onclick, label, ativo, cor, bg, id){
+  cor = ppDispCorHex(cor);
+  return '<button type="button"'+(id?' id="'+id+'"':'')+' onclick="'+onclick+'" '
+    +'style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;font-size:11px;cursor:pointer;'
+    +'font-weight:600;background:'+(ativo?cor:bg)+';color:'+(ativo?'#fff':cor)+';border:.5px solid '+cor+(ativo?'':'44')+'">'
+    +label+'</button>';
+}
 function ppRenderPainelDisp(eqs, data, cid){
-  // Usar _progStatus (compartilhado com Prog. Equipes) para manter status sincronizado
-  var statusRef = _progStatus; // fonte única — _progStatus é a verdade
-
   var cols = progFiltrarColsProgramacao(cid);
+  var escalasUsadas = ppDispEscalasUsadas(cols);
+  var filtroEscala = _pp.filtroEscalaColab || '';
+  if(filtroEscala && !escalasUsadas[filtroEscala]) filtroEscala = '';
+  var calc = ppDispCalcular(cols, data, filtroEscala);
 
-  // Agrupar por status
-  var grupos_st = {};
-  Object.keys(PROG_STATUS).forEach(function(k){ grupos_st[k]=[]; });
-  cols.forEach(function(c){
-    var st = statusRef[c.id]||'disponivel';
-    if(grupos_st[st]) grupos_st[st].push(c);
-    else grupos_st['disponivel'].push(c);
-  });
+  var filtroSt = _pp.filtroDispStatus || 'todos';
+  if(filtroSt!=='todos' && !calc.contagem[filtroSt]) filtroSt = 'todos';
+  var filtroPonto = _pp.filtroPonto || 'todos';
+  if(filtroPonto!=='presentes' && filtroPonto!=='ausentes') filtroPonto = 'todos';
+  var diaTxt = data===dataHojeLocal() ? 'hoje' : 'em '+fmtD(data);
 
-  // Quem já está escalado hoje
-  var escalados = {};
-  composicao_dia.forEach(function(comp){
-    var cd=(comp.data||'').split('T')[0];
-    if(cd!==data && comp.data!==data) return;
-    parseJsonField(comp.colaborador_ids,[]).filter(Boolean).forEach(function(id){ escalados[id]=true; });
-  });
-
-  var disp  = grupos_st['disponivel'];
-  var livres = disp.filter(function(c){ return !escalados[c.id]; });
-
-  // Indisponíveis (status bloqueante: verificar, falta, férias, etc.) — exibidos com observação abaixo do nome
-  var INDISP_ST = ['folga','ferias','afastado','treinamento','falta','faltou','integracao','patio','verificar','fraude','demitido'];
-  var indisp = cols.filter(function(c){ return INDISP_ST.indexOf(statusRef[c.id]||'disponivel')>=0; });
-  var indispHtml = indisp.length
-    ? '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">'
-      +'<div style="font-size:13px;font-weight:600;color:#888;margin-bottom:.5rem">Indisponíveis ('+indisp.length+')</div>'
+  // ── Em treinamento ──
+  var treinoHtml = calc.treino.length
+    ? '<div id="pp-sec-treino" style="background:#EEEDFE;border:.5px solid #534AB744;border-radius:8px;padding:.6rem .75rem;margin-bottom:1rem">'
+      +'<div style="font-size:12px;font-weight:700;color:#534AB7;margin-bottom:.4rem">📚 Em treinamento ('+calc.treino.length+')</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
-      +indisp.map(function(c){
-          var st=statusRef[c.id]||'disponivel';
-          var s=PROG_STATUS[st]||{label:st,cor:'#555',bg:'#f5f5f3'};
-          var info=(_progStatusInfo||{})[c.id]||{};
-          var obs=info.obs||info.justificativa||'';
-          var ret=info.retorno?' · retorno '+fmtD(info.retorno):'';
-          return '<div style="display:inline-flex;flex-direction:column;background:'+s.bg+';border:.5px solid '+s.cor+'44;border-radius:6px;padding:4px 8px;font-size:11px;max-width:230px">'
-            +'<div style="display:flex;align-items:center;gap:4px">'
-            +'<span style="color:'+s.cor+';font-weight:500">'+nomeAbrev(c.nome)+'</span>'
-            +'<span style="color:'+s.cor+';font-size:9px;font-weight:600">'+s.label+ret+'</span>'
-            +(st==='verificar'?'<span onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
-            +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
-            +'</div>'
-            +(obs?progObsLinhaHtml(obs, info, s):'')
-            +'</div>';
-        }).join('')
+      +calc.treino.map(function(c){
+        var info = progProjetoCoreStatusInfoColab(c.id);
+        var volta = info.retorno ? ' · volta '+fmtD(info.retorno) : '';
+        var obs = info.obs ? ' · '+escHtml(info.obs) : '';
+        return '<div style="background:#fff;border:.5px solid #534AB744;border-radius:6px;padding:3px 8px;font-size:11px;color:#534AB7">'
+          +'<b>'+escHtml(nomeAbrev(c.nome))+'</b><span style="font-size:9px;color:#7a72c9">'+volta+obs+'</span> '
+          +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" style="cursor:pointer;color:#888" title="Alterar status">⋮</span></div>';
+      }).join('')
       +'</div></div>'
     : '';
 
-  // Badges de contagem por status
-  var countHtml = Object.keys(PROG_STATUS).map(function(k){
-    var n = grupos_st[k].length;
-    if(!n) return '';
-    var s = PROG_STATUS[k];
-    return '<div onclick="ppMostrarListaStatus(\''+k+'\')" '
-      +'style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:'+s.bg
-      +';border-radius:6px;font-size:11px;color:'+s.cor+';font-weight:600;cursor:pointer;'
-      +'border:.5px solid '+s.cor+'44">'+n+' '+s.label+' ▾</div>';
-  }).join('');
-
-  // Filtro de ponto nos disponíveis (botões — select "Todos" não disparava onchange se já parecia selecionado)
-  var _filtroPontoDisp = _pp.filtroPonto || 'todos';
-  if(_filtroPontoDisp!=='presentes' && _filtroPontoDisp!=='ausentes') _filtroPontoDisp='todos';
-  var livresFiltrados = livres;
-  if(_filtroPontoDisp === 'presentes'){
-    livresFiltrados = livres.filter(function(c){
-      var p=(typeof pontoCacheGet==='function')?pontoCacheGet(c.re,data):_pontoCache[(c.re||'')+'_'+data];
-      return p&&(p.entrada||(p.todas_marcacoes&&p.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})));
-    });
-  } else if(_filtroPontoDisp === 'ausentes'){
-    livresFiltrados = livres.filter(function(c){
-      var p=(typeof pontoCacheGet==='function')?pontoCacheGet(c.re,data):_pontoCache[(c.re||'')+'_'+data];
-      return !p||(!p.entrada&&!(p.todas_marcacoes&&p.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})));
-    });
-  }
-  // Chips dos disponíveis
-  var livresHtml = livresFiltrados.length
-    ? livresFiltrados.map(function(c){
-        return '<div class="pp-colab-chip" draggable="true" id="pp-chip-'+c.id+'" '
-          +'data-colab="'+c.id+'" '
-          +'ondragstart="ppDragStart(event,\''+c.id+'\',null)" '
-          +'style="display:inline-flex;align-items:center;gap:4px;background:#EAF3DE;'
-          +'border:.5px solid #3B6D1144;border-radius:6px;padding:4px 8px;font-size:11px;cursor:grab;margin:2px">'
-          +'<span style="color:#3B6D11;font-weight:500">'+nomeAbrev(c.nome)+'</span>'
-          +'<span style="color:#aaa;font-size:9px">'+(c.re||'')+'</span>'
-          +(function(){ var _p=(typeof pontoCacheGet==='function')?pontoCacheGet(c.re,data):_pontoCache[(c.re||'')+'_'+data]; if(!_p) return ''; var _e=_p.entrada||(_p.todas_marcacoes&&_p.todas_marcacoes.some(function(x){return x.tipo==='Entrada';})); if(_e) return '<span style="background:#3B6D11;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">✓ '+(_p.entrada||'')+'</span>'; if(_p.status==='falta'){var _hp=_p.horario_previsto||{};if(_hp.entrada&&pontoHorarioPassou(_hp,data))return '<span style="background:#A32D2D;color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">● Aus</span>';} return ''; }())
-          +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
-          +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
-          +'ondragstart="event.stopPropagation()">⋮</span>'
-          +'</div>';
+  // ── Indisponíveis (filtros só dos status presentes nos dados) ──
+  var indPorSt = {};
+  calc.indisp.forEach(function(c){ var st = ppDispStatusColab(c); (indPorSt[st] = indPorSt[st] || []).push(c); });
+  var filtroInd = _pp.filtroIndisp || 'todos';
+  if(filtroInd!=='todos' && !indPorSt[filtroInd]) filtroInd = 'todos';
+  var indLista = ppDispFiltrarPonto(filtroInd==='todos' ? calc.indisp : indPorSt[filtroInd], data, filtroPonto);
+  var indispHtml = calc.indisp.length
+    ? '<div id="pp-sec-indisp" style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">'
+      +'<div style="font-size:13px;font-weight:600;color:#888;margin-bottom:.5rem">Indisponíveis '+diaTxt+' ('+indLista.length+'/'+calc.indisp.length+')</div>'
+      +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:.5rem">'
+      +ppDispBotaoFiltroHtml("ppSetFiltroIndisp('todos')", 'Todos', filtroInd==='todos', '#185FA5', '#fff', 'pp-indisp-todos')
+      +PP_DISP_INDISP_ST.filter(function(st){ return indPorSt[st]; }).map(function(st){
+        var s = PROG_STATUS[st];
+        return ppDispBotaoFiltroHtml("ppSetFiltroIndisp('"+st+"')", indPorSt[st].length+' '+s.label, filtroInd===st, s.cor, s.bg, 'pp-indisp-'+st);
       }).join('')
-    : '<div style="color:#aaa;font-size:12px">'
-      +(_filtroPontoDisp==='presentes'?'Nenhum presente no ponto entre os disponíveis.'
-        :(_filtroPontoDisp==='ausentes'?'Nenhum ausente no ponto entre os disponíveis.'
-          :'Todos escalados'))
-      +'</div>';
+      +'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+      +(indLista.length ? indLista.map(function(c){ return ppDispChipStatusHtml(c, data); }).join('')
+        : '<div style="color:#aaa;font-size:12px">Nenhum colaborador neste filtro.</div>')
+      +'</div></div>'
+    : '';
 
-  function _ppBtnPonto(val, label){
-    var on=_filtroPontoDisp===val;
+  // ── Badges clicáveis (filtro do painel) ──
+  var badgesHtml = ppDispBotaoFiltroHtml("ppSetFiltroDispStatus('todos')", 'Todos', filtroSt==='todos', '#185FA5', '#fff', 'pp-count-todos')
+    + PP_DISP_BADGE_ORDEM.map(function(k){
+      var n = calc.contagem[k] || 0;
+      if(!n) return '';
+      var s = PROG_STATUS[k];
+      return ppDispBotaoFiltroHtml("ppSetFiltroDispStatus('"+k+"')", n+' '+s.label, filtroSt===k, s.cor, s.bg, 'pp-count-'+k);
+    }).join('');
+
+  var escIds = Object.keys(escalasUsadas);
+  var escalaHtml = escIds.length
+    ? '<select id="pp-filtro-escala-colab" class="inp" style="font-size:11px;padding:3px 8px;border-radius:6px;min-width:140px" onchange="ppSetFiltroEscalaColab(this.value)">'
+      +'<option value="">Todas as escalas</option>'
+      +escIds.map(function(id){
+        var e = escalasUsadas[id];
+        return '<option value="'+escHtml(id)+'"'+(filtroEscala===id?' selected':'')+'>⏰ '+escHtml(e.tipo||'')+(e.inicio?' ('+escHtml(e.inicio)+'-'+escHtml(e.fim||'')+')':'')+'</option>';
+      }).join('')
+      +'</select>'
+    : '';
+
+  function btnPonto(val, label){
+    var on = filtroPonto===val;
     return '<button type="button" onclick="ppSetFiltroPonto(\''+val+'\')" '
       +'style="font-size:11px;padding:3px 8px;border-radius:6px;cursor:pointer;'
       +'border:.5px solid '+(on?'#185FA5':'#e0dfd8')+';background:'+(on?'#185FA5':'#fff')+';'
       +'color:'+(on?'#fff':'#555')+';font-weight:'+(on?'600':'400')+'">'+label+'</button>';
   }
 
-  return indispHtml
+  // ── Lista do painel conforme o filtro de status ──
+  var poolLivre = filtroSt==='todos' || PP_DISP_LIVRE_ST.indexOf(filtroSt)>=0;
+  var listaBase = filtroSt==='todos' ? calc.livres : (calc.porStatus[filtroSt] || []);
+  var lista = ppDispFiltrarPonto(listaBase, data, filtroPonto);
+  var vazio = filtroPonto==='presentes' ? 'Nenhum presente no ponto neste filtro.'
+    : (filtroPonto==='ausentes' ? 'Nenhum ausente no ponto neste filtro.'
+    : (filtroSt==='todos' ? 'Todos escalados' : 'Nenhum colaborador neste filtro.'));
+  var listaHtml = lista.length
+    ? lista.map(function(c){ return poolLivre ? ppDispChipLivreHtml(c, data) : ppDispChipStatusHtml(c, data); }).join('')
+    : '<div style="color:#aaa;font-size:12px">'+vazio+'</div>';
+  var filtroInfo = filtroSt==='todos' ? ''
+    : '<div id="pp-disp-filtro-info" style="font-size:11px;color:'+PROG_STATUS[filtroSt].cor+';margin-bottom:4px">Filtro: <b>'+escHtml(PROG_STATUS[filtroSt].label)+'</b> ('+lista.length+(lista.length!==listaBase.length?'/'+listaBase.length:'')+')</div>';
+  var nLivresF = filtroSt==='todos' ? lista.length : ppDispFiltrarPonto(calc.livres, data, filtroPonto).length;
+
+  return treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem" id="pp-painel-disp">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;flex-wrap:wrap;gap:6px">'
-    +'<span style="font-size:13px;font-weight:600">Colaboradores disponíveis não escalados ('+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+')</span>'
-    +'<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">'+countHtml
-    +_ppBtnPonto('todos','👥 Todos')
-    +_ppBtnPonto('presentes','✓ Presentes')
-    +_ppBtnPonto('ausentes','● Ausentes')
+    +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:6px">'
+    +'<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b id="pp-disp-total">'+nLivresF+(nLivresF!==calc.livres.length?'/'+calc.livres.length:'')+'</b>)</span>'
+    +'<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">'+badgesHtml+'</div>'
     +'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">'
+    +escalaHtml
+    +btnPonto('todos','👥 Todos')
+    +btnPonto('presentes','✓ Presentes')
+    +btnPonto('ausentes','● Ausentes')
     +'</div>'
+    +filtroInfo
     +'<div style="display:flex;flex-wrap:wrap;gap:4px;min-height:40px;padding:8px;'
     +'background:#f9f9f7;border-radius:6px;border:.5px solid #e0dfd8" '
     +'id="pp-pool" ondragover="ppDragOver(event)" ondrop="ppDropPool(event)">'
-    +livresHtml
+    +listaHtml
     +'</div></div>';
 }
+function ppSetFiltroDispStatus(st){
+  _pp.filtroDispStatus = (st && st!=='todos' && PROG_STATUS[st]) ? st : 'todos';
+  progProjRenderQuadro();
+}
+function ppSetFiltroIndisp(st){
+  _pp.filtroIndisp = (st && st!=='todos' && PROG_STATUS[st]) ? st : 'todos';
+  progProjRenderQuadro();
+}
+function ppSetFiltroEscalaColab(id){
+  _pp.filtroEscalaColab = id || '';
+  progProjRenderQuadro();
+}
+
+/**
+ * Operação da equipe (PORTARIA + APP) na Programação de Projetos — somente leitura.
+ * Portaria: frotas_portaria_saidas (saída/retorno físico). APP: plpt_sessoes (app das equipes de projeto).
+ * Logout do app nunca é retorno e retorno da portaria nunca é logout. Data futura não consulta nada.
+ */
+var PP_OPS_TTL_MS = 60000;
+var _ppOps = {chave:'', data:'', eqIds:{}, saidas:[], sessoes:[], futuro:false, erroPortaria:false, erroApp:false, ts:0, token:0, promessa:null, chaveCarregando:''};
+
+function ppOpsTs(v){
+  if(v==null || v==='') return null;
+  if(typeof v==='number') return isFinite(v) ? v : null;
+  var s = String(v).trim();
+  if(/^\d{10,}$/.test(s)) return Number(s);
+  var t = Date.parse(s);
+  return isNaN(t) ? null : t;
+}
+function ppOpsDiaLocal(v){
+  if(v==null || v==='') return '';
+  var s = String(v);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  var t = ppOpsTs(v);
+  if(t==null) return s.slice(0,10);
+  var d = new Date(t);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function ppOpsHora(v){
+  var t = ppOpsTs(v);
+  if(t==null) return /^\d{2}:\d{2}/.test(String(v||'')) ? String(v).slice(0,5) : '';
+  var d = new Date(t);
+  return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+function ppOpsAddDias(dia, n){
+  var d = new Date(dia+'T12:00:00');
+  d.setDate(d.getDate()+n);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function ppOpsEhFuturo(dia){ return !!dia && dia > dataHojeLocal(); }
+function ppOpsNormPlaca(p){ return String(p||'').replace(/[^A-Za-z0-9]/g,'').toUpperCase(); }
+function ppOpsSaidaRetornou(p){ return !!(p && (p.data_retorno || p.hora_retorno || p.status==='Retornado')); }
+function ppOpsSaidaAberta(p){ return !!(p && !ppOpsSaidaRetornou(p) && p.status==='Em campo'); }
+function ppOpsInvalidar(){ _ppOps.ts = 0; }
+
+function ppOpsCarregar(data, cid, opts){
+  opts = opts || {};
+  var dia = String(data||'').slice(0,10);
+  if(!dia || !cid) return Promise.resolve(_ppOps);
+  var chave = dia+'|'+cid;
+  var eqIds = {};
+  (progProjetoCoreGetEquipes(cid) || []).forEach(function(e){ if(e && e.id) eqIds[String(e.id)] = true; });
+  var ids = Object.keys(eqIds);
+  function aplicar(token, saidas, sessoes, erroPort, erroApp, futuro){
+    if(token!==_ppOps.token) return _ppOps;
+    _ppOps = {chave:chave, data:dia, eqIds:eqIds, saidas:saidas||[], sessoes:sessoes||[], futuro:!!futuro,
+      erroPortaria:!!erroPort, erroApp:!!erroApp, ts:Date.now(), token:token, promessa:null, chaveCarregando:''};
+    return _ppOps;
+  }
+  if(ppOpsEhFuturo(dia)) return Promise.resolve(aplicar(++_ppOps.token, [], [], false, false, true));
+  var fresco = _ppOps.chave===chave && _ppOps.ts && (dia < dataHojeLocal() || Date.now()-_ppOps.ts < PP_OPS_TTL_MS);
+  if(!opts.forcar && fresco) return Promise.resolve(_ppOps);
+  if(!opts.forcar && _ppOps.promessa && _ppOps.chaveCarregando===chave) return _ppOps.promessa;
+  var token = ++_ppOps.token;
+  if(DEMO || !ids.length) return Promise.resolve(aplicar(token, [], [], false, false, false));
+  var lista = '('+ids.join(',')+')';
+  var p = Promise.all([
+    sbFetch('frotas_portaria_saidas',{filters:['equipe_id=in.'+lista,'data_saida=gte.'+ppOpsAddDias(dia,-1),'data_saida=lt.'+ppOpsAddDias(dia,2),'deleted_at=is.null'], order:'data_saida.desc', limit:2000}),
+    sbFetch('plpt_sessoes',{filters:['equipe_id=in.'+lista,'data=eq.'+dia,'deleted_at=is.null'], limit:2000})
+  ]).then(function(res){
+    return aplicar(token, res[0]||[], res[1]||[], res[0]===null, res[1]===null, false);
+  }).catch(function(){
+    return aplicar(token, [], [], true, true, false);
+  });
+  _ppOps.promessa = p;
+  _ppOps.chaveCarregando = chave;
+  return p;
+}
+function ppOpsEstadoFonte(eqId, dia, fonte){
+  if(ppOpsEhFuturo(dia)) return 'futuro';
+  if(_ppOps.data!==dia || !_ppOps.ts || !_ppOps.eqIds[String(eqId)]) return 'carregando';
+  if(fonte==='portaria' ? _ppOps.erroPortaria : _ppOps.erroApp) return 'sem_leitura';
+  return 'ok';
+}
+function ppGetStatusPortariaEquipe(eqId, data){
+  var dia = String(data||'').slice(0,10);
+  var r = {status:'', label:'', hora:'', saida:null, retorno:null, registro:null};
+  var est = ppOpsEstadoFonte(eqId, dia, 'portaria');
+  if(est==='futuro'){ r.status='futuro'; r.label='Data futura — sem saída'; return r; }
+  if(est==='carregando'){ r.status='carregando'; r.label='Carregando…'; return r; }
+  if(est==='sem_leitura'){ r.status='sem_leitura'; r.label='Sem leitura da Portaria'; return r; }
+  var hoje = dataHojeLocal(), ontem = ppOpsAddDias(dia,-1);
+  var cands = (_ppOps.saidas||[]).filter(function(p){
+    if(!p || p.deleted_at || p.status==='Cancelado') return false;
+    if(String(p.equipe_id)!==String(eqId)) return false;
+    var ds = ppOpsDiaLocal(p.data_saida);
+    if(ds===dia) return true;
+    return dia===hoje && ds===ontem && ppOpsSaidaAberta(p);
+  });
+  var retornadas = cands.filter(ppOpsSaidaRetornou);
+  var abertas = cands.filter(function(p){
+    if(!ppOpsSaidaAberta(p)) return false;
+    var tp = ppOpsTs(p.data_saida);
+    // clone duplicado de uma saída que já retornou (mesma placa e mesmo instante) não conta como em campo
+    return !retornadas.some(function(x){
+      var tx = ppOpsTs(x.data_saida);
+      return ppOpsNormPlaca(x.placa)===ppOpsNormPlaca(p.placa) && tp!=null && tx!=null && Math.abs(tp-tx)<=60000;
+    });
+  });
+  if(abertas.length){
+    abertas.sort(function(a,b){ return (ppOpsTs(b.data_saida)||0)-(ppOpsTs(a.data_saida)||0); });
+    var a = abertas[0];
+    r.status='em_campo'; r.label='Em campo'; r.hora=ppOpsHora(a.data_saida); r.saida=a.data_saida; r.registro=a;
+    return r;
+  }
+  if(retornadas.length){
+    retornadas.sort(function(x,y){ return (ppOpsTs(y.data_retorno||y.hora_retorno)||0)-(ppOpsTs(x.data_retorno||x.hora_retorno)||0); });
+    var ret = retornadas[0];
+    var tsR = ret.data_retorno || ret.hora_retorno || null;
+    r.status='retornou'; r.label='Retornou'; r.hora=ppOpsHora(tsR); r.saida=ret.data_saida; r.retorno=tsR; r.registro=ret;
+    return r;
+  }
+  if(progEquipeProgramadaNoDia(eqId, dia)){ r.status='aguardando'; r.label='Aguardando saída'; return r; }
+  r.status='sem_saida'; r.label='Sem saída registrada';
+  return r;
+}
+function ppGetStatusAppEquipe(eqId, data){
+  var dia = String(data||'').slice(0,10);
+  var r = {status:'', label:'', hora:'', login_ts:null, logout_ts:null};
+  var est = ppOpsEstadoFonte(eqId, dia, 'app');
+  if(est==='futuro'){ r.status='futuro'; r.label='—'; return r; }
+  if(est==='carregando'){ r.status='carregando'; r.label='Carregando…'; return r; }
+  if(est==='sem_leitura'){ r.status='sem_leitura'; r.label='Sem leitura do app'; return r; }
+  var sess = (_ppOps.sessoes||[]).filter(function(s){
+    return s && !s.deleted_at && String(s.equipe_id)===String(eqId)
+      && String(s.data||'').slice(0,10)===dia && ppOpsTs(s.login_ts)!=null;
+  });
+  if(!sess.length){ r.status='sem_sessao'; r.label='Não iniciado'; return r; }
+  var abertas = sess.filter(function(s){ return ppOpsTs(s.logout_ts)==null; });
+  if(abertas.length){
+    abertas.sort(function(a,b){ return ppOpsTs(b.login_ts)-ppOpsTs(a.login_ts); });
+    r.status='logado'; r.label='Logado'; r.hora=ppOpsHora(abertas[0].login_ts); r.login_ts=abertas[0].login_ts;
+    return r;
+  }
+  sess.sort(function(a,b){ return ppOpsTs(b.logout_ts)-ppOpsTs(a.logout_ts); });
+  r.status='encerrado'; r.label='Encerrado'; r.hora=ppOpsHora(sess[0].logout_ts); r.login_ts=sess[0].login_ts; r.logout_ts=sess[0].logout_ts;
+  return r;
+}
+var PP_OPS_VISUAL = {
+  aguardando:{icon:'⏳', cor:'#854F0B'}, em_campo:{icon:'🟢', cor:'#3B6D11'}, retornou:{icon:'🔵', cor:'#185FA5'},
+  sem_saida:{icon:'', cor:'#888'}, futuro:{icon:'', cor:'#888'}, carregando:{icon:'', cor:'#aaa'}, sem_leitura:{icon:'⚠', cor:'#A32D2D'},
+  logado:{icon:'🟢', cor:'#3B6D11'}, encerrado:{icon:'✅', cor:'#185FA5'}, sem_sessao:{icon:'', cor:'#888'}
+};
+function ppHtmlOperacaoEquipe(eqId, data){
+  var port = ppGetStatusPortariaEquipe(eqId, data);
+  var app = ppGetStatusAppEquipe(eqId, data);
+  var txtPort = port.status==='em_campo' ? 'Em campo'+(port.hora?' — saída '+port.hora:'')
+    : (port.status==='retornou' ? 'Retornou'+(port.hora?' — '+port.hora:'') : port.label);
+  var txtApp = (app.status==='logado' || app.status==='encerrado') ? app.label+(app.hora?' — '+app.hora:'') : app.label;
+  var titPort = port.registro ? 'Portaria: '+(port.registro.placa||'')+(port.saida?' · saída '+ppOpsHora(port.saida):'')+(port.retorno?' · retorno '+ppOpsHora(port.retorno):'') : '';
+  function linha(rotulo, st, txt, tit){
+    var v = PP_OPS_VISUAL[st] || {icon:'', cor:'#888'};
+    return '<div style="display:flex;gap:4px;align-items:baseline;white-space:nowrap">'
+      +'<span style="font-size:8px;font-weight:700;color:#888;letter-spacing:.3px;min-width:50px">'+rotulo+'</span>'
+      +'<span data-pp-op-st="'+st+'" style="font-size:10px;font-weight:600;color:'+v.cor+'"'+(tit?' title="'+escHtml(tit)+'"':'')+'>'
+      +(v.icon?v.icon+' ':'')+escHtml(txt)+'</span></div>';
+  }
+  return '<div style="display:flex;flex-direction:column;gap:2px">'
+    +linha('PORTARIA', port.status, txtPort, titPort)
+    +linha('APP', app.status, txtApp, '')
+    +'</div>';
+}
+function ppOpsAtualizarCelulas(data, cid){
+  if(progProjGetData()!==data || progProjGetCid()!==cid) return;
+  var pg = document.getElementById('pg-programacao-projetos');
+  if(!pg) return;
+  pg.querySelectorAll('[data-pp-op-eq]').forEach(function(td){
+    td.innerHTML = ppHtmlOperacaoEquipe(td.getAttribute('data-pp-op-eq'), data);
+  });
+}
+function ppOpsSincronizar(data, cid, forcar){
+  if(!data || !cid) return Promise.resolve();
+  return ppOpsCarregar(data, cid, {forcar:!!forcar}).then(function(){ ppOpsAtualizarCelulas(data, cid); });
+}
+function ppOpsRegistrarVisibilidade(){
+  if(typeof document==='undefined' || !document.addEventListener || window.__ppOpsVisReg) return;
+  window.__ppOpsVisReg = true;
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState!=='visible') return;
+    var pg = document.getElementById('pg-programacao-projetos');
+    if(!pg || pg.classList.contains('hidden')) return;
+    ppOpsSincronizar(progProjGetData(), progProjGetCid(), false);
+  });
+}
+ppOpsRegistrarVisibilidade();
 function ppSetFiltroPonto(val){
   var v=(val||'todos').toString();
   if(v!=='presentes' && v!=='ausentes') v='todos';
@@ -81457,12 +81800,11 @@ function ppEnviarWhatsAppTodos(){
 function ppVinculadosDisponiveisEq(eqId, data, cid, emEscala){
   emEscala = emEscala || {};
   var STATUS_BLOQ = BLOQ_STATUS;
-  var corDia = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  // Projetos não inferem folga pelo calendário/cor de escala da TMA — só status explícito conta.
   return progFiltrarColsProgramacao(cid).filter(function(c){
     if(String(c.equipe_id)!==String(eqId)) return false;
     var st = progProjetoCoreStatusColab(c.id);
     if(STATUS_BLOQ.indexOf(st)>=0) return false;
-    if(corDia && c.cor_escala && c.cor_escala===corDia && st==='disponivel') return false;
     if(emEscala[c.id]) return false;
     return true;
   }).sort(function(a,b){ return (a.nome||'').localeCompare(b.nome||''); });

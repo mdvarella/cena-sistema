@@ -227,8 +227,8 @@ function cenarioEjn102(opts) {
   const sv = fn('progSetVeiculo');
   ok('programar veículo: avisa placa em campo em outra equipe', /progTmaSaidaOutraEquipe\(eqId, data\)/.test(sv) && /use ⇄ Transferir saída no quadro/.test(sv));
   ok('programar veículo: avisa troca de placa de equipe em campo', /Trocar a placa na programação não altera a saída/.test(sv));
-  ok('versão 8.1.168 no changelog', /numero: '8\.1\.168'/.test(html) && /\{v:'8\.1\.168'/.test(html));
-  ok('sw.js cena-8.1.168', /'cena-8\.1\.168'/.test(sw));
+  ok('versão 8.1.168 no changelog', /\{v:'8\.1\.168'/.test(html));
+  ok('sw.js versionado', /'cena-8\.1\.\d+'/.test(sw));
 
   if (failed.length) { console.error('FALHOU ' + failed.length + '/' + total + ':\n - ' + failed.join('\n - ')); process.exit(1); }
   console.log('prog-portaria-outra-equipe: ' + total + ' verificações OK');
