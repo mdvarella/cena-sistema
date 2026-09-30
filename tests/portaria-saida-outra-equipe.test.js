@@ -117,8 +117,9 @@ ok('outra: código de outra equipe', c.portSaidaDeOutraEquipe({ equipe: 'EBN143'
 ok('outra: sem equipe', c.portSaidaDeOutraEquipe({ equipe: '' }, eon) === false);
 ok('outra: texto desconhecido', c.portSaidaDeOutraEquipe({ equipe: 'VISITA' }, eon) === false);
 
-ok('versão 8.1.180', /numero:\s*'8\.1\.180'/.test(html));
-ok('sw.js 8.1.180', sw.includes("SW_VERSION   = 'cena-8.1.180'"));
+ok('versão 8.1.180 no log', html.includes("{v:'8.1.180'"));
+var numAtual = (html.match(/numero:\s*'([\d.]+)'/) || [])[1];
+ok('sw.js acompanha a versão atual', !!numAtual && sw.includes("SW_VERSION   = 'cena-" + numAtual + "'"), numAtual);
 
 if (failed.length) { console.log('portaria-saida-outra-equipe: FALHOU ' + failed.length + '/' + total); failed.forEach(f => console.log('  ✗ ' + f)); process.exit(1); }
 console.log('portaria-saida-outra-equipe: OK ' + total + ' checagens');
