@@ -269,7 +269,7 @@
       +'<input class="inp" id="apt-fil-busca" placeholder="Nome / RE" style="width:180px" oninput="if(typeof renderAptidao===\'function\')renderAptidao()"></div>'
       +'<div id="apt-lista"></div>');
     page('pg-sesmt-treinamentos', hdr('🎓 Treinamentos / NRs','<button class="btn btn-pri" onclick="if(typeof openTreinamento===\'function\')openTreinamento()">+ Treinamento</button>')
-      +'<div class="card"><div class="ch"><span class="ct">Treinamentos</span></div>'+tbl('tbody-trein',['Colaborador','NR / Curso','Validade','Status',''])+'</div>');
+      +'<div class="card"><div class="ch"><span class="ct">Treinamentos</span></div>'+tbl('tbody-trein',['Colaborador','NR','Treinamento','Abertura','Validade','Status','EPIs liberados','Ações'])+'</div>');
     page('pg-sesmt-turmas', hdr('👥 Turmas de Treinamento','<button class="btn btn-pri" onclick="if(typeof openTurmaModal===\'function\')openTurmaModal()">+ Turma</button>')
       +'<div id="turmas-container"></div>');
     page('pg-sesmt-nr6', hdr('📋 Ficha NR-6')

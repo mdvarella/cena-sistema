@@ -2068,7 +2068,7 @@ body.insp-campo-ativo #app-content-area {
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
 <script src="portaria-offline.js?v=8.1.173"></script>
 <script src="portaria-camera.js?v=8.1.159"></script>
-<script src="sesmt-alm-shell.js?v=8.1.152"></script>
+<script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
@@ -45061,10 +45061,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.174',
+  numero: '8.1.175',
   data:   '30/09/2026',
-  build:  '20260930-1200',
+  build:  '20260930-1300',
   log: [
+    {v:'8.1.175', d:'30/09/2026', itens:[
+      'SESMT Treinamentos: Importar planilha (ASO / treinamentos) e Renovar voltaram — tinham sido cortados na 8.1.108 e os botões davam erro. Também voltam as funções de RE/sigla usadas pelo filtro por treinamento, pelo registro de ASO na Evolução e pelo treinamento no celular',
+      'Importação: lê a lista completa de treinamentos, colaboradores e funcionários (antes vinham só 1000 de 6498 treinamentos e o que não vinha era gravado de novo, duplicando). Se alguma leitura falhar, a prévia para e nada é gravado',
+      'Importação e Renovar: registro recusado pelo banco aparece como falha na mensagem; Renovar só muda a validade na tela depois que o banco confirma',
+      'Treinamentos: cabeçalho da tabela com as 8 colunas que a lista mostra'
+    ]},
     {v:'8.1.174', d:'30/09/2026', itens:[
       'SESMT: as abas ENEL e COMGÁS (Inspeções de Campo, Não Conformidades, Planos de Ação, CDI, REM) voltaram. O código tinha sido cortado junto com o fim do index.html na 8.1.108 e as telas mostravam só um casco vazio',
       'Inspeção de Campo (vistoria com NC única e plano de ação automático) e painel do gestor restaurados; a nota de Segurança da avaliação do colaborador volta a considerar as NCs de campo',
@@ -147490,6 +147496,341 @@ function sesmtCarregarTurmas(cb){
     if(cb) cb();
     _carregarAdmissoes(function(){ _turmaInvalidateCaches(); if(typeof renderTurmas==='function') renderTurmas(); });
   }).catch(function(e){ console.warn('turmas:',e); _sesmtTurmasCarregado=true; if(cb)cb(); });
+}
+
+// ── IMPORTAÇÃO EM MASSA: ASO / Treinamentos (planilha Excel) ─────────────────
+function trLimpo(v){ return String(v==null?'':v).replace(/\s+/g,' ').trim(); }
+function trNormRe(re){
+  if(re==null||re==='') return '';
+  var s=String(re).replace(/\D/g,'');
+  if(!s) return String(re).trim().toLowerCase();
+  return s.replace(/^0+/,'')||'0';
+}
+function trNormSigla(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
+/** FK treinamentos.funcionario_id → colaboradores.id (nunca funcionarios.id) */
+function sesmtTreinamentoColabId(id){
+  if(id==null||id==='') return null;
+  var sid=String(id);
+  var list=typeof colaboradores!=='undefined'?colaboradores:[];
+  var col=list.find(function(c){ return String(c.id)===sid; });
+  if(col) return col.id;
+  var flist=typeof funcs!=='undefined'?funcs:[];
+  var func=flist.find(function(f){ return String(f.id)===sid; });
+  if(func){
+    var k=trNormRe(func.matricula||func.re||'');
+    if(k){
+      col=list.find(function(c){ return trNormRe(c.re||c.matricula||'')===k; });
+      if(col) return col.id;
+    }
+  }
+  return null;
+}
+function trParseData(v){
+  if(v==null||v==='') return null;
+  if(v instanceof Date && !isNaN(v.getTime())) return v;
+  var s=String(v).trim();
+  var m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if(m){ var y=m[3].length===2?('20'+m[3]):m[3]; return new Date(+y,+m[2]-1,+m[1]); }
+  m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m) return new Date(+m[1],+m[2]-1,+m[3]);
+  var d=new Date(s); return isNaN(d.getTime())?null:d;
+}
+function trISO(d){ if(!d) return null; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function trAddValidade(d, per, tipo){
+  if(!d||!per) return null;
+  var nd=new Date(d.getTime()); var p=parseInt(per,10); if(!p) return null;
+  if(/ano/i.test(tipo||'')) nd.setFullYear(nd.getFullYear()+p);
+  else nd.setMonth(nd.getMonth()+p);
+  return nd;
+}
+function trMapasImportacao(funcRows, colabRows){
+  var funcByRe={}, colabByRe={};
+  (funcRows||[]).forEach(function(f){
+    var k=trNormRe(f.matricula||f.re||''); if(k) funcByRe[k]=f;
+  });
+  (colabRows||[]).forEach(function(c){
+    if(c.dispensado) return;
+    var k=trNormRe(c.re||c.matricula||''); if(k&&!colabByRe[k]) colabByRe[k]={id:c.id,nome:c.nome,re:c.re,ativo:c.ativo};
+  });
+  return {funcByRe:funcByRe, colabByRe:colabByRe};
+}
+function trResolverRE(reRaw, mapas){
+  var k=trNormRe(reRaw); if(!k) return null;
+  var col=mapas.colabByRe[k];
+  if(col) return {fid:col.id, nome:col.nome, re:trLimpo(reRaw), via:'colaborador', inativo:col.ativo===false};
+  return null;
+}
+function trIdsRelacionados(reRaw, fid, mapas){
+  var ids={};
+  var k=trNormRe(reRaw);
+  if(k&&mapas.colabByRe[k]) ids[String(mapas.colabByRe[k].id)]=true;
+  if(fid!=null){
+    var cid=sesmtTreinamentoColabId(fid);
+    if(cid) ids[String(cid)]=true;
+    else ids[String(fid)]=true;
+  }
+  if(k&&mapas.funcByRe[k]) ids[String(mapas.funcByRe[k].id)]=true;
+  return ids;
+}
+function trFindTreinExistente(c, nrKey, tRows, mapas){
+  var ids=trIdsRelacionados(c.re, c.fid, mapas);
+  return tRows.find(function(t){
+    return ids[String(t.funcionario_id)] && trNormSigla(t.nr)===nrKey;
+  });
+}
+
+/** Lê a tabela inteira em páginas de 1000; null se qualquer página falhar (sem lista parcial). */
+async function trBuscarTudo(tabela, filtros){
+  var out=[];
+  for(var off=0; off<200000; off+=1000){
+    var pg=await sbFetch(tabela,{filters:(filtros||[]).concat(['offset='+off]), order:'id.asc', limit:1000});
+    if(!Array.isArray(pg)) return null;
+    out=out.concat(pg);
+    if(pg.length<1000) return out;
+  }
+  return null;
+}
+
+var _trImportRows=null;
+
+function trAbrirImportacao(){
+  var html='<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+    +'<div class="modal" style="max-width:760px">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">'
+    +'<h3 style="margin:0">⬆ Importar ASO / Treinamentos</h3>'
+    +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer">✕</button></div>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:.6rem;line-height:1.5">Selecione a planilha (<b>.xlsx</b> ou <b>.csv</b>). O sistema detecta se é <b>ASO</b> ou <b>Treinamento</b>, casa pelo <b>RE (matrícula)</b> — <b>incluindo afastados</b> — calcula a validade pelo cadastro do curso e mostra uma <b>prévia</b> antes de gravar. Mantém só o registro <b>mais recente</b> por colaborador e curso; reimportar a mesma planilha <b>não duplica</b>.</div>'
+    +'<input type="file" id="tr-imp-file" accept=".xlsx,.xls,.csv" class="inp" style="width:100%;margin-bottom:.6rem"/>'
+    +'<div id="tr-imp-preview" style="font-size:12px"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="tr-imp-btn" style="flex:2;display:none" onclick="trExecutarImportacao()">Confirmar importação</button>'
+    +'</div></div></div>';
+  setModal(html);
+  setTimeout(function(){
+    var f=document.getElementById('tr-imp-file');
+    if(f) f.onchange=function(e){ trLerArquivo(e.target.files[0]); };
+  },50);
+}
+
+function trLerArquivo(file){
+  if(!file) return;
+  var prev=document.getElementById('tr-imp-preview');
+  if(prev) prev.innerHTML='<div style="color:#888;padding:.5rem">Processando arquivo...</div>';
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      if(typeof XLSX==='undefined'){ if(prev) prev.innerHTML='<div style="color:#A32D2D">Biblioteca de Excel não carregada.</div>'; return; }
+      var wb=XLSX.read(e.target.result,{type:'array',cellDates:true});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      var rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+      trPrepararPreview(rows);
+    }catch(err){
+      if(prev) prev.innerHTML='<div style="color:#A32D2D">Erro ao ler o arquivo: '+escHtml(String(err&&err.message||err))+'</div>';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function trPrepararPreview(rows){
+  var prev=document.getElementById('tr-imp-preview');
+  var btn=document.getElementById('tr-imp-btn');
+  if(btn) btn.style.display='none';
+  _trImportRows=null;
+  if(!rows||!rows.length){ if(prev)prev.innerHTML='<div style="color:#A32D2D">Planilha vazia.</div>'; return; }
+
+  var headers=Object.keys(rows[0]);
+  function findCol(re){ for(var i=0;i<headers.length;i++){ if(re.test(headers[i])) return headers[i]; } return null; }
+  var colRE=findCol(/^\s*re\s*$|matric/i) || findCol(/\bre\b/i);
+  var colData=findCol(/data|emiss/i);
+  var isASO=headers.some(function(h){ return /tipo\s*exame|resultado/i.test(h); });
+  if(!colRE){ if(prev)prev.innerHTML='<div style="color:#A32D2D">Não encontrei a coluna <b>RE</b> na planilha.</div>'; return; }
+  if(!colData){ if(prev)prev.innerHTML='<div style="color:#A32D2D">Não encontrei a coluna <b>DATA</b> na planilha.</div>'; return; }
+
+  var colTipo,colRes,colMed,colCli,colInst,cursoCol;
+  if(isASO){
+    colTipo=findCol(/tipo\s*exame/i); colRes=findCol(/resultado/i);
+    colMed=findCol(/m.dico/i); colCli=findCol(/cl.nica/i);
+  }else{
+    colInst=findCol(/institu/i);
+    for(var i=0;i<headers.length;i++){ var h=headers[i];
+      if(h!==colRE && h!==colData && h!==colInst){ cursoCol=h; break; } }
+  }
+
+  if(prev) prev.innerHTML='<div style="color:#888;padding:.5rem">Casando com funcionários, colaboradores (incl. afastados) e cursos do banco...</div>';
+  var fRows=await trBuscarTudo('funcionarios',[]);
+  var cRowsColab=await trBuscarTudo('colaboradores',['dispensado=eq.false']);
+  var cRows=await trBuscarTudo('sesmt_cursos',[]);
+  var tRows=await trBuscarTudo('treinamentos',['deleted_at=is.null']);
+  if(!fRows||!cRowsColab||!cRows||!tRows){
+    if(prev) prev.innerHTML='<div style="color:#A32D2D">Não foi possível ler do banco a lista completa de funcionários, colaboradores, cursos e treinamentos. Nada foi importado — tente novamente.</div>';
+    return;
+  }
+  var mapas=trMapasImportacao(fRows, cRowsColab);
+
+  var cursoBySigla={}; cRows.forEach(function(c){ var k=trNormSigla(c.sigla); if(k)cursoBySigla[k]=c; });
+
+  var cand={}; var semMat={}; var semData=0; var viaColab=0; var viaInativo=0;
+  rows.forEach(function(r){
+    var reRaw=r[colRE];
+    var p=trResolverRE(reRaw, mapas);
+    if(!p){ if(trLimpo(reRaw)) semMat[trLimpo(reRaw)]=true; return; }
+    if(p.via==='colaborador') viaColab++;
+    if(p.inativo) viaInativo++;
+    var dt=trParseData(r[colData]);
+    if(!dt){ semData++; return; }
+    var sigla,titulo,extras={};
+    if(isASO){
+      sigla='ASO';
+      var tipo=trLimpo(colTipo?r[colTipo]:'');
+      titulo='ASO'+(tipo?(' '+tipo):'');
+      if(colRes) extras.resultado=trLimpo(r[colRes]);
+      if(colMed) extras.medico=trLimpo(r[colMed]);
+      if(colCli) extras.clinica=trLimpo(r[colCli]);
+    }else{
+      sigla=trLimpo(cursoCol?r[cursoCol]:'')||trLimpo(cursoCol);
+      var curT=cursoBySigla[trNormSigla(sigla)];
+      titulo=curT?curT.nome:sigla;
+      if(colInst) extras.instituicao=trLimpo(r[colInst]);
+    }
+    var nrKey=trNormSigla(sigla);
+    if(!nrKey) return;
+    var key=p.fid+'|'+nrKey;
+    if(!cand[key] || dt.getTime()>cand[key]._dt.getTime()){
+      var cur=cursoBySigla[nrKey];
+      var val=(cur && !(typeof cadCursoNaoVence==='function' && cadCursoNaoVence(cur)))?trAddValidade(dt,cur.periodicidade,cur.tipo_validade):null;
+      cand[key]={fid:p.fid,nome:p.nome,re:p.re,nr:sigla,titulo:titulo,_dt:dt,data:trISO(dt),validade:trISO(val),extras:extras,semCurso:!cur};
+    }
+  });
+
+  var novos=[],atualizar=[],pular=0,semCurso={};
+  Object.keys(cand).forEach(function(k){
+    var c=cand[k];
+    if(c.semCurso) semCurso[c.nr]=true;
+    var nrKey=trNormSigla(c.nr);
+    var ex=trFindTreinExistente(c, nrKey, tRows, mapas);
+    if(!ex){ c._acao='novo'; novos.push(c); return; }
+    var exd=trParseData(ex.data)||trParseData(ex.validade);
+    if(exd && c._dt.getTime()<=exd.getTime()){ pular++; }
+    else { c._id=ex.id; c._acao='atualizar'; atualizar.push(c); }
+  });
+
+  _trImportRows={novos:novos,atualizar:atualizar,pular:pular};
+
+  var tipoLbl=isASO?'ASO (exames)':'Treinamento'+(cursoCol?(' — '+escHtml(trLimpo(cursoCol)||'?')):'');
+  var semMatArr=Object.keys(semMat), semCursoArr=Object.keys(semCurso);
+  var totalAcao=novos.length+atualizar.length;
+  var h='';
+  if(pular>0 && totalAcao===0){
+    h+='<div style="background:#EAF3DE;border:1.5px solid #3B6D11;border-radius:10px;padding:.85rem 1rem;margin-bottom:.65rem;font-size:13px;color:#2d5016;line-height:1.5">'
+      +'<div style="font-weight:700;font-size:14px;margin-bottom:4px">✅ Nada será duplicado</div>'
+      +'Todos os <b>'+pular+'</b> registro(s) desta planilha <b>já existem</b> no sistema com data igual ou mais recente. '
+      +'Nenhuma gravação será feita — pode importar a mesma planilha quantas vezes quiser.</div>';
+  }else if(pular>0){
+    h+='<div style="background:#FFFAE0;border:1px solid #E8C840;border-radius:8px;padding:.6rem .75rem;margin-bottom:.5rem;font-size:12px;color:#5c4a00">'
+      +'⚪ <b>'+pular+'</b> registro(s) serão <b>ignorados</b> (já atualizados) — não duplicam.</div>';
+  }
+  h+='<div style="background:#f7f9fb;border:.5px solid #e3e8ee;border-radius:8px;padding:.6rem .75rem;margin-bottom:.5rem">'
+    +'<div style="font-size:12px;margin-bottom:.3rem">Tipo detectado: <b>'+tipoLbl+'</b></div>'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;align-items:center">'
+    +'<span>🟢 Novos: <b>'+novos.length+'</b></span>'
+    +'<span>🔵 Atualizar (mais recente): <b>'+atualizar.length+'</b></span>'
+    +'<span style="'+(pular>0?'background:#EAF3DE;padding:2px 8px;border-radius:6px;font-weight:600;':'')+'">⚪ Pular (já atual): <b>'+pular+'</b></span>'
+    +'<span>🩶 Linhas sem data: <b>'+semData+'</b></span>'
+    +'</div>'
+    +(viaColab?'<div style="font-size:10px;color:#666;margin-top:4px">↳ '+viaColab+' RE(s) casados via colaborador (incl. afastados)</div>':'')
+    +(viaInativo?'<div style="font-size:10px;color:#666;margin-top:2px">↳ '+viaInativo+' RE(s) de colaborador afastado/inativo incluídos</div>':'')
+    +'</div>';
+  if(semMatArr.length){
+    h+='<div style="color:#A32D2D;font-size:11px;margin-bottom:.4rem">⚠ '+semMatArr.length+' RE(s) sem colaborador no cadastro (serão ignorados): '+escHtml(semMatArr.slice(0,40).join(', '))+(semMatArr.length>40?'…':'')+'</div>';
+  }
+  if(semCursoArr.length){
+    h+='<div style="color:#854F0B;font-size:11px;margin-bottom:.4rem">⚠ Curso(s) não encontrado(s) no cadastro (importa sem validade): '+escHtml(semCursoArr.join(', '))+'</div>';
+  }
+  var amostra=novos.concat(atualizar).slice(0,6);
+  if(amostra.length){
+    h+='<div style="overflow-x:auto;max-height:190px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:#f5f5f3"><th style="padding:4px 6px;text-align:left">Ação</th><th style="padding:4px 6px;text-align:left">Colaborador</th><th style="padding:4px 6px;text-align:left">Curso</th><th style="padding:4px 6px;text-align:left">Data</th><th style="padding:4px 6px;text-align:left">Validade</th></tr></thead><tbody>'
+      +amostra.map(function(c){ return '<tr><td style="padding:3px 6px;border-bottom:.5px solid #f0efe8">'+(c._acao==='novo'?'novo':'atualizar')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:.5px solid #f0efe8">'+escHtml(c.nome||('RE '+c.re))+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:.5px solid #f0efe8">'+escHtml(c.nr)+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:.5px solid #f0efe8">'+escHtml(c.data||'—')+'</td>'
+        +'<td style="padding:3px 6px;border-bottom:.5px solid #f0efe8">'+escHtml(c.validade||'—')+'</td></tr>'; }).join('')
+      +'</tbody></table></div>';
+  }
+  if(prev) prev.innerHTML=h;
+  var btn2=document.getElementById('tr-imp-btn');
+  if(btn2){
+    if(novos.length||atualizar.length){
+      btn2.style.display='';
+      btn2.textContent='Confirmar — gravar '+(novos.length+atualizar.length)+' registro(s)'
+        +(pular?' ('+pular+' ignorados, sem duplicar)':'');
+    }else{
+      btn2.style.display='none';
+      if(pular>0 && prev){
+        var ok=document.createElement('div');
+        ok.style.cssText='margin-top:.75rem;text-align:center;font-size:12px;color:#3B6D11;font-weight:600';
+        ok.textContent='✓ Prévia concluída — feche o modal ou importe outra planilha.';
+        prev.appendChild(ok);
+      }
+    }
+  }
+}
+
+async function trExecutarImportacao(){
+  if(!_trImportRows){ return; }
+  var btn=document.getElementById('tr-imp-btn');
+  if(btn){ btn.disabled=true; btn.textContent='Gravando...'; }
+  function payloadDe(c){
+    var colId=sesmtTreinamentoColabId(c.fid);
+    if(!colId) return null;
+    var p={funcionario_id:colId, nr:c.nr, titulo:c.titulo, data:c.data, validade:c.validade, criado_em:new Date().toISOString()};
+    if(c.extras.instituicao) p.instituicao=c.extras.instituicao;
+    if(c.extras.resultado) p.resultado=c.extras.resultado;
+    if(c.extras.medico) p.medico=c.extras.medico;
+    if(c.extras.clinica) p.clinica=c.extras.clinica;
+    return p;
+  }
+  var okIns=0, okUpd=0, skipFk=0, falhas=0;
+  var novos=_trImportRows.novos||[], atualizar=_trImportRows.atualizar||[];
+  if(novos.length){
+    var batch=novos.map(payloadDe).filter(function(p){ if(!p){ skipFk++; return false; } return true; });
+    if(batch.length){
+      var res=await sbInsert('treinamentos', batch);
+      if(res&&res.length){ okIns=res.length; res.forEach(function(row){ if(row&&row.id) treinamentos.push(row); }); }
+      else falhas+=batch.length;
+    }
+  }
+  for(var i=0;i<atualizar.length;i++){
+    var c=atualizar[i]; var patch=payloadDe(c);
+    if(!patch){ skipFk++; continue; }
+    delete patch.criado_em;
+    if(!c._id || !isUUID(c._id)){ falhas++; continue; }
+    if(!(await sbUpdate('treinamentos', patch, 'id=eq.'+c._id))){ falhas++; continue; }
+    okUpd++;
+    var idx=treinamentos.findIndex(function(t){ return String(t.id)===String(c._id); });
+    if(idx>=0) treinamentos[idx]=Object.assign({},treinamentos[idx],patch);
+  }
+  closeModal();
+  _turmaInvalidateCaches();
+  if(typeof renderTreinamentos==='function') renderTreinamentos();
+  if(typeof renderTurmas==='function' && document.getElementById('turmas-container')) renderTurmas();
+  var pul=_trImportRows.pular||0;
+  var msg=(falhas?'⚠ Importação com falha — '+falhas+' registro(s) não gravado(s) no banco · ':'✅ Importação concluída — ')+okIns+' novo(s), '+okUpd+' atualizado(s)';
+  if(pul) msg+=' · '+pul+' ignorado(s) (sem duplicar)';
+  if(skipFk) msg+=' · '+skipFk+' sem colaborador válido (FK)';
+  progShowToast(msg, falhas?'erro':undefined);
+}
+
+async function renovarTrein(id){
+  var t=treinamentos.find(function(x){return x.id===id;});if(!t)return;
+  var nova=isoD(365);
+  if(!DEMO && !(await sbUpdate('treinamentos',{validade:nova},'id=eq.'+id))){
+    progShowToast('⚠ Não foi possível renovar '+(t.nr||'o treinamento')+' no banco. Nada foi alterado.','erro');
+    return;
+  }
+  t.val=nova;t.validade=nova;
+  renderTreinamentos();alert('Treinamento '+t.nr+' renovado.');
 }
 
 function renderTurmas(){
