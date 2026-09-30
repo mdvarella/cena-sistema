@@ -155,7 +155,7 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
   const EPIS = ['Detector de tensão de capacete', 'Protetor auricular', 'Balaclava antichama', 'Protetor facial para arco elétrico', 'Luva isolante de borracha', 'Luva de cobertura',
     'Luva de vaqueta', 'Manga isolante de borracha', 'Cinturão paraquedista', 'Talabarte / dispositivo de conexão adequado', 'Trava-quedas', 'Máscara respiratória PFF2', 'Protetor solar'];
   ok('Colaborador: 13 EPIs novos', EPIS.every(e => B.colaborador.itens.includes(e)), EPIS.filter(e => !B.colaborador.itens.includes(e)));
-  ok('foto em NC só em Veículo e Canteiro', B.veiculo.fotoNc === true && B.canteiro.fotoNc === true && !B.documentos.fotoNc && !B.epcs.fotoNc && !B.colaborador.fotoNc);
+  ok('foto em NC em todos os blocos menos Documentos', B.veiculo.fotoNc === true && B.canteiro.fotoNc === true && B.epcs.fotoNc === true && B.colaborador.fotoNc === true && !B.documentos.fotoNc);
   ok('ordem dos blocos', JSON.stringify(val(c, 'INSP_CAMPO_BLOCOS_ORDEM')) === '["documentos","veiculo","epcs","canteiro"]');
   const prefixos = Object.keys(B).filter(k => B[k].prefixo).map(k => B[k].prefixo);
   ok('prefixos distintos por bloco', new Set(prefixos).size === 4, prefixos);
@@ -177,7 +177,8 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
   const form = E(c, 'comgas-checklist-form').innerHTML;
   const pos = ['📄 Documentos', '🚗 Veículo', '🛡️ EPCs', '🏗️ Canteiro', '👷 Fulano'].map(t => form.indexOf(t));
   ok('wizard: blocos na ordem, com EPCs', pos.every((p, i) => p >= 0 && (i === 0 || p > pos[i - 1])), pos);
-  ok('wizard: aviso de foto só em Veículo e Canteiro', (form.match(/NC exige foto/g) || []).length === 2);
+  ok('wizard: aviso de foto em Veículo, EPCs, Canteiro e no colaborador', (form.match(/NC exige foto/g) || []).length === 4);
+  ok('wizard: colaborador com área de foto', /id="ic_col_c1_0_fotos"/.test(form) && !/id="ic_doc_0_fotos"/.test(form));
   ok('wizard: local no cabeçalho', /<b>Local:<\/b> Rua A, 10/.test(form));
 
   // ── salvar: foto obrigatória ──
@@ -193,6 +194,22 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
   ok('NC no Canteiro sem foto: não grava', c.inserts.length === 0 && c.alerts[0] && c.alerts[0].includes('Canteiro — Layout'), c.alerts);
 
   c = cenario(); metaBase(c);
+  E(c, 'ic_epc_9_s').value = 'NC';
+  val(c, 'inspCampoSalvarWizard()');
+  ok('NC em EPC sem foto: não grava', c.inserts.length === 0 && c.alerts[0] && c.alerts[0].includes('EPCs — Detector multigases'), c.alerts);
+
+  c = cenario(); metaBase(c);
+  E(c, 'ic_col_c1_7_s').value = 'NC';
+  val(c, 'inspCampoSalvarWizard()');
+  ok('NC no colaborador sem foto: não grava', c.inserts.length === 0 && c.alerts[0] && c.alerts[0].includes('Colaborador — Fulano — Balaclava antichama'), c.alerts);
+
+  c = cenario(); metaBase(c);
+  E(c, 'ic_doc_2_s').value = 'NC';
+  val(c, 'inspCampoSalvarWizard()');
+  await esperar();
+  ok('NC em Documentos sem foto: grava', c.alerts.length === 0 && c.inserts.map(i => i[0]).join() === 'comgas_inspecoes,comgas_ncs,comgas_pa', [c.alerts, c.inserts.map(i => i[0])]);
+
+  c = cenario(); metaBase(c);
   val(c, '_inspCampoFotosEnviando = 1');
   val(c, 'inspCampoSalvarWizard()');
   ok('foto ainda enviando: não grava', c.inserts.length === 0 && /Aguarde o envio/.test(c.alerts[0] || ''));
@@ -200,7 +217,11 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
   c = cenario(); 
   metaBase(c, { geo: { lat: -23.56, lng: -46.65, precisao_m: 12, capturado_em: '2026-09-30T14:00:00Z', endereco_gps: 'Rua A, 10', local_editado: false } });
   const URL1 = 'https://x.supabase.co/storage/v1/object/public/cena-docs/evidencias/inspecao_campo/comgas/insp_t1/ic_veic_4_1.jpg';
+  const URL2 = 'https://x.supabase.co/storage/v1/object/public/cena-docs/evidencias/inspecao_campo/comgas/insp_t1/ic_epc_9_1.jpg';
+  const URL3 = 'https://x.supabase.co/storage/v1/object/public/cena-docs/evidencias/inspecao_campo/comgas/insp_t1/ic_col_c1_7_1.jpg';
   val(c, "_inspCampoMeta.rascunho['ic_veic_4'] = {status:'NC', fotos:['" + URL1 + "']}");
+  val(c, "_inspCampoMeta.rascunho['ic_epc_9'] = {status:'NC', fotos:['" + URL2 + "']}");
+  val(c, "_inspCampoMeta.rascunho['ic_col_c1_7'] = {status:'NC', fotos:['" + URL3 + "']}");
   E(c, 'ic_veic_4_s').value = 'NC'; E(c, 'ic_veic_4_obs').value = 'Laudo vencido';
   E(c, 'ic_epc_9_s').value = 'NC';
   E(c, 'ic_col_c1_7_s').value = 'NC';
@@ -216,10 +237,11 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
   ok('inspeção: GPS gravado em obs_geral', og.geo && og.geo.lat === -23.56 && og.geo.precisao_m === 12);
   ok('inspeção: 3 NCs contadas', insp.nao_conformes === 3 && insp.conformes === 1, [insp.nao_conformes, insp.conformes]);
   const nc = (c.inserts.find(i => i[0] === 'comgas_ncs') || [])[1] || {};
-  ok('NC: coluna fotos com a foto do Veículo', JSON.stringify(nc.fotos) === JSON.stringify([URL1]), nc.fotos);
+  ok('NC: coluna fotos com as fotos de Veículo, EPC e colaborador', JSON.stringify(nc.fotos) === JSON.stringify([URL1, URL2, URL3]), nc.fotos);
   const itens = JSON.parse(nc.observacao || '{}').itens || [];
-  ok('NC: foto no item do Veículo; EPC e colaborador sem foto', itens.length === 3 && JSON.stringify(itens[0].fotos) === JSON.stringify([URL1])
-    && itens[0].grupo === 'Veículo' && itens[1].grupo === 'EPCs' && itens[1].fotos.length === 0 && itens[2].item === 'Balaclava antichama', itens);
+  ok('NC: cada item com a sua foto', itens.length === 3 && JSON.stringify(itens[0].fotos) === JSON.stringify([URL1]) && itens[0].grupo === 'Veículo'
+    && itens[1].grupo === 'EPCs' && JSON.stringify(itens[1].fotos) === JSON.stringify([URL2])
+    && itens[2].item === 'Balaclava antichama' && JSON.stringify(itens[2].fotos) === JSON.stringify([URL3]), itens);
   c.inspRow = JSON.parse(JSON.stringify(insp)); c.ncRow = JSON.parse(JSON.stringify(nc));
   val(c, 'comgas_inspecoes = [inspCampoUnpackObsGeral(inspRow)]; comgas_ncs = [ncRow];');
   ok('NC: item mostra a miniatura', /<img src="https:\/\/x\.supabase\.co/.test(val(c, 'inspCampoNcItensHtml(comgas_ncs[0])')));
