@@ -33,7 +33,7 @@ const escHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').repl
 // ─────────────────────────── OPERAÇÃO (Portaria + APP) ───────────────────────────
 const OPS_FUNCS = ['ppOpsTs', 'ppOpsDiaLocal', 'ppOpsHora', 'ppOpsAddDias', 'ppOpsEhFuturo', 'ppOpsNormPlaca', 'ppOpsSaidaRetornou',
   'ppOpsSaidaAberta', 'ppOpsInvalidar', 'ppOpsCarregar', 'ppOpsEstadoFonte', 'ppGetStatusPortariaEquipe', 'ppGetStatusAppEquipe',
-  'ppOpsOsVisual', 'ppOpsOsEventos', 'ppOpsOsTs', 'ppOpsOsUltimoTs', 'ppGetOrdemEquipe', 'ppHtmlOperacaoEquipe'];
+  'ppOpsOsVisual', 'ppOpsOsEventos', 'ppOpsOsTs', 'ppOpsOsUltimoTs', 'ppGetOrdemEquipe', 'ppProjetosSelecionadosEquipe', 'ppHtmlOperacaoEquipe'];
 const opsCodigo = [vr('PP_OPS_TTL_MS'), vr('_ppOps'), vr('PP_OPS_VISUAL'), vr('PP_OPS_OS_ATIVA'), vr('PP_OPS_OS_FIM'), vr('PP_OPS_OS_EV')]
   .concat(OPS_FUNCS.map(fn)).join('\n');
 
@@ -46,6 +46,10 @@ function ctxOps(opts) {
     progProjetoCoreGetEquipes: () => ['eqA', 'eqB', 'eqC', 'eqE', 'eqG', 'eqN', 'eqO'].map(id => ({ id })),
     programadas: opts.programadas || {},
     progEquipeProgramadaNoDia(eqId, dia) { return !!ctx.programadas[eqId + '_' + dia]; },
+    composicao_dia: opts.composicao || [],
+    parseJsonField(v, d) { if (!v) return d; if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return d; } } return v; },
+    progProjGetCid: () => 'cid-1',
+    progProjGetProjetos: cid => (cid === 'cid-1' ? PROJETOS : []),
     fetches: [], escritas: 0,
     sbInsert() { ctx.escritas++; }, sbUpdate() { ctx.escritas++; }, sbUpsert() { ctx.escritas++; }, sbDelete() { ctx.escritas++; },
     async sbFetch(tabela, o) {
@@ -97,9 +101,27 @@ const ORDENS = [
   { id: 'o-y', equipe_id: 'eqA', data: '2026-09-27', numero_ordem: '2', status: 'a_caminho', eventos: [] }
 ];
 
+const PROJETOS = [
+  { id: 'pj-1', nome: 'DAC/S.SUL.22.00031', status: 'Em execução', origem: 'sot' },
+  { id: 'pj-2', nome: 'OBRA <2>', status: 'Em execução', origem: 'sot' }
+];
+const COMPOSICAO = [
+  // O: sem OS, dois projetos selecionados (string JSON, como no banco)
+  { equipe_id: 'eqO', data: HOJE, projeto_ids: JSON.stringify(['pj-1', 'pj-2']) },
+  // B: OS ativa + projeto selecionado → mostra a OS
+  { equipe_id: 'eqB', data: HOJE, projeto_ids: ['pj-1'] },
+  // N: projeto que não existe no cadastro do contrato
+  { equipe_id: 'eqN', data: HOJE, projeto_ids: '["pj-x"]' },
+  // A: projeto só em outra data; composição excluída não conta
+  { equipe_id: 'eqA', data: '2026-09-28', projeto_ids: '["pj-1"]' },
+  { equipe_id: 'eqC', data: HOJE, projeto_ids: '["pj-1"]', deleted_at: '2026-09-29T09:00:00-03:00' },
+  // E: composição sem projeto
+  { equipe_id: 'eqE', data: HOJE, projeto_ids: '[]' }
+];
+
 async function testesOperacao() {
   const tabelas = { frotas_portaria_saidas: SAIDAS, plpt_sessoes: SESSOES, ordens_diario: ORDENS };
-  const ctx = ctxOps({ tabelas, programadas: { eqA_2026_09_29: false, 'eqA_2026-09-29': true, 'eqE_2026-09-29': true, 'eqB_2026-09-29': true } });
+  const ctx = ctxOps({ tabelas, composicao: COMPOSICAO, programadas: { eqA_2026_09_29: false, 'eqA_2026-09-29': true, 'eqE_2026-09-29': true, 'eqB_2026-09-29': true } });
   await ctx.ppOpsCarregar(HOJE, 'cid-1');
   const tabs = ctx.fetches.map(f => f[0]).sort();
   ok('leitura: frotas_portaria_saidas, ordens_diario e plpt_sessoes', JSON.stringify(tabs) === JSON.stringify(['frotas_portaria_saidas', 'ordens_diario', 'plpt_sessoes']), tabs);
@@ -149,6 +171,16 @@ async function testesOperacao() {
   ok('OS: turno da noite (OS do dia seguinte) → 📍 No local · 22:40', H('eqG').includes('📍 Cheguei / No local · 22:40'), H('eqG'));
   ok('OS: excluída não conta', O('eqE').status === 'sem_os' && H('eqE').includes('Sem OS em atendimento'), O('eqE'));
   ok('OS: OS de outro dia não conta', O('eqA').status === 'sem_os', O('eqA'));
+  // Projeto selecionado no lugar de "Sem OS em atendimento"
+  ok('projeto: sem OS mostra rótulo PROJETO e os projetos selecionados', H('eqO').includes('>PROJETO</div>') && H('eqO').includes('📋 DAC/S.SUL.22.00031')
+    && H('eqO').includes('📋 OBRA &lt;2&gt;') && !H('eqO').includes('Sem OS em atendimento'), H('eqO'));
+  ok('projeto: data-pp-op-proj com o id real', H('eqO').includes('data-pp-op-proj="pj-1"') && H('eqO').includes('data-pp-op-proj="pj-2"'));
+  ok('projeto: OS ativa continua no lugar do projeto', H('eqB').includes('>OS 54321<') && !H('eqB').includes('PROJETO') && !H('eqB').includes('data-pp-op-proj'), H('eqB'));
+  ok('projeto: id fora do cadastro não aparece (Sem OS)', H('eqN').includes('Sem OS em atendimento') && !H('eqN').includes('pj-x') && !H('eqN').includes('PROJETO'), H('eqN'));
+  ok('projeto: de outra data não vaza', H('eqA').includes('Sem OS em atendimento') && !H('eqA').includes('data-pp-op-proj'), H('eqA'));
+  ok('projeto: composição excluída não conta', ctx.ppProjetosSelecionadosEquipe('eqC', HOJE).length === 0);
+  ok('projeto: lista vazia → Sem OS em atendimento', H('eqE').includes('Sem OS em atendimento') && !H('eqE').includes('PROJETO'), H('eqE'));
+  ok('projeto: data futura não mostra projeto no bloco OS', !ctx.ppHtmlOperacaoEquipe('eqO', '2026-09-30').includes('data-pp-op-proj'));
   ok('visual TMA: rótulos PORTARIA/APP/OS empilhados', /PORTARIA<\/div><div data-pp-op-st="em_campo"[^>]*>🟢 Em Campo · 07:12<\/div><div[^>]*>APP<\/div>/.test(H('eqB')), H('eqB'));
   // cancelada / sem programação
   ok('saída cancelada ignorada; sem programação → sem_saida', P('eqN').status === 'sem_saida', P('eqN'));
@@ -343,6 +375,10 @@ function testesEstaticos() {
   ok('linha da equipe com célula Operação', fn('progProjetoCoreRenderEquipeRow').includes('data-pp-op-eq="\'+eq.id+\'">\'+ppHtmlOperacaoEquipe(eq.id, data)'));
   ok('Atualizar invalida leitura', fn('progProjAtualizarQuadro').includes('ppOpsInvalidar();'));
   const linhaPP = fn('progProjetoCoreRenderEquipeRow');
+  ok('ações da linha sem Conf. saída e WhatsApp', !/ppSupConfirmar\(|ppEnviarWhatsApp\(|Conf\. saída|Saída OK|📲/.test(linhaPP));
+  ok('ações da linha mantêm Desprog., HE, Auto Escalar e Salvar', ['ppDesprogramarEquipe(', 'ppAutorizarHoraExtra(', 'ppAutoEscalarEquipe(', 'ppSalvarEquipe('].every(t => linhaPP.includes(t)));
+  ok('funções ppSupConfirmar e ppEnviarWhatsApp preservadas', /\nfunction ppSupConfirmar\(/.test(html) && /\nfunction ppEnviarWhatsApp\(/.test(html));
+  ok('versão 8.1.184 no log e sw.js da versão atual', /\{v:'8\.1\.184'/.test(html) && sw.includes("'cena-" + /numero: '(8\.1\.\d+)'/.exec(html)[1] + "'"));
   ok('slots de Projetos sem laranja a partir do T3', !/isFolg2|#FFF0E0|#E65C00|pos>=2/.test(linhaPP));
   ok('slot usa a cor do status em todas as posições', linhaPP.includes("background:'+stI.bg+';") && linhaPP.includes("color:'+stI.cor+';margin-top:2px\">'+stI.label"));
   ok('retorno à página (visibilitychange)', fn('ppOpsRegistrarVisibilidade').includes("'visibilitychange'") && /\nppOpsRegistrarVisibilidade\(\);/.test(html));
