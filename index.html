@@ -45064,10 +45064,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.179',
+  numero: '8.1.180',
   data:   '30/09/2026',
-  build:  '20260930-1700',
+  build:  '20260930-1800',
   log: [
+    {v:'8.1.180', d:'30/09/2026', itens:[
+      'Portaria: saída gravada em outra equipe não aparece mais na equipe que tem a mesma placa programada (EON124 aparecia em campo com a saída da EBN143 e ficava sem o botão Liberar)',
+      'Portaria: placa programada de ontem só identifica saída de ontem (virada da noite), não a de hoje',
+    ]},
     {v:'8.1.179', d:'30/09/2026', itens:[
       'Portaria: troca de veículo/escala na Programação aparece na hora (Realtime em prog_veiculos_dia e composicao_dia; polling de 20s se o Realtime não entregar)',
       'Portaria: memória do dia é substituída pelo servidor (antes carregava uma vez e mostrava placa antiga); leitura que falhar não apaga nada',
@@ -86463,6 +86467,14 @@ function portMatchSaidaEquipe(p, eq){
     || (nome && pe===nome)
     || pe===String(eq.id||'').toUpperCase();
 }
+/** Saída gravada em OUTRA equipe (id ou código conhecido). Mesma placa não a torna desta equipe. */
+function portSaidaDeOutraEquipe(p, eq){
+  if(!p || !eq) return false;
+  if(portMatchSaidaEquipe(p, eq)) return false;
+  if(p.equipe_id) return true;
+  var pe=String(p.equipe||'').trim();
+  return !!(pe && pe!=='null' && portBuscarEquipe(pe));
+}
 function portEstaEmCampo(p){
   if(!p || p.deleted_at || p.status==='Cancelado') return false;
   if(p.status==='Retornado') return false;
@@ -86523,6 +86535,7 @@ function portSaidaDaEquipe(eq, data, placaHint){
   }
   function matchEqPlaca(p){
     if(portMatchSaidaEquipe(p, eq)) return true;
+    if(portSaidaDeOutraEquipe(p, eq)) return false;
     return !!(placa && portNormPlaca(p.placa)===placa);
   }
   // 1) Em campo no turno (hoje, ou ontem se ainda não retornou) — não pega saída antiga esquecida
@@ -86629,6 +86642,7 @@ function portSaidaEquipeDia(eq, dataProg, dataRef){
   return (frt_portaria||[]).find(function(p){
     if(!portEstaEmCampo(p) || !portSaidaDoTurno(p, dataProg||data)) return false;
     if(!portMatchSaidaEquipe(p, eq)){
+      if(portSaidaDeOutraEquipe(p, eq)) return false;
       var placaProg='';
       var compDia=portFindCompProgramada(eq.id, dataProg||data);
       if(compDia && compDia.placa) placaProg=compDia.placa;
@@ -86715,30 +86729,35 @@ function portSaidaAbertaEquipe(eq, dataRef){
   var ontemSel=portDiaOntemDe(data);
   var dias=[data];
   if(ontemSel && ontemSel!==data) dias.push(ontemSel);
-  var placaSet={};
+  // Placa programada de um dia só identifica saída daquele dia (a de ontem serve para a virada da noite)
+  var placasDia={};
   dias.forEach(function(d){
+    var set={};
     var c=typeof portFindCompProgramada==='function'?portFindCompProgramada(eq.id, d):null;
     if(c){
       var pc=portNormPlaca(c.placa||c.veiculo_placa);
-      if(pc) placaSet[pc]=true;
+      if(pc) set[pc]=true;
     }
     if(typeof portPlacaProgramada==='function'){
       var pp=portNormPlaca(portPlacaProgramada(eq.id, d));
-      if(pp) placaSet[pp]=true;
+      if(pp) set[pp]=true;
     }
     if(typeof _progVeiculos!=='undefined'){
       var pv=_progVeiculos[eq.id+'_'+d];
       if(pv){
         var pvn=portNormPlaca(pv.placa);
-        if(pvn) placaSet[pvn]=true;
+        if(pvn) set[pvn]=true;
       }
     }
+    placasDia[d]=set;
   });
   var list=(frt_portaria||[]).filter(function(p){
     if(!portEstaEmCampo(p) || !portSaidaDoTurno(p, data)) return false;
     if(portMatchSaidaEquipe(p, eq)) return true;
+    if(portSaidaDeOutraEquipe(p, eq)) return false;
     var pl=portNormPlaca(p.placa);
-    return !!(pl && placaSet[pl]);
+    var set=placasDia[portDiaLocal(p.data_saida)];
+    return !!(pl && set && set[pl]);
   });
   list.sort(function(a,b){ return String(b.data_saida||'').localeCompare(String(a.data_saida||'')); });
   return list[0]||null;

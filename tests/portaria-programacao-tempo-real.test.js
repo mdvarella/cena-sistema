@@ -327,7 +327,7 @@ async function main() {
   ok('migration: PARAR sem publicação', /PARAR: publicação supabase_realtime não existe/.test(mig));
   ok('migration: sem DELETE/UPDATE/DROP fora do desfazer', !/^\s*(DELETE|UPDATE|DROP|TRUNCATE)\b/im.test(mig.split('-- Para desfazer')[0]));
   const ver = /numero:\s*'([\d.]+)'/.exec(html)[1];
-  ok('versão 8.1.179', ver === '8.1.179', ver);
+  ok('log da versão 8.1.179', html.includes("{v:'8.1.179'"));
   ok('sw.js acompanha a versão', sw.includes("SW_VERSION   = 'cena-" + ver + "'"));
 
   if (failed.length) { console.log('portaria-programacao-tempo-real: FALHOU ' + failed.length + '/' + total); failed.forEach(f => console.log('  ✗ ' + f)); process.exit(1); }
