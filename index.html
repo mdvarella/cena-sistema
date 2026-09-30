@@ -44779,6 +44779,11 @@ var APP_VERSAO = {
       'Programação de Projetos: painel de disponibilidade com badges clicáveis (Todos / Disponível / Faltou / Férias / Afastado / Treinamento / Observação…), bloco Em treinamento com data de volta, Indisponíveis com filtros só dos status existentes e filtro Todas as escalas',
       'Programação de Projetos: Observação continua escalável; folga não é mais inferida pelo calendário da TMA (só status explícito). TMA sem alteração'
     ]},
+    {v:'8.1.169', d:'29/09/2026', itens:[
+      'Programação TMA — indicadores: Total equipes = colaboradores de campo com batida de entrada no ponto ÷ 2; Programadas = equipes salvas com 2 colaboradores ativos',
+      'Indicadores: Completas → Em Campo (liberadas pela portaria e ainda fora), Incompletas → Logadas (iniciaram o app no dia, mesmo encerradas), Não prog. → Retornaram (saíram e já voltaram pela portaria)',
+      'Indicadores: Folga = colaboradores de folga escalados em alguma equipe; Escalados = colaboradores escalados no dia; Hora Extra removido; Aproveitamento mantido'
+    ]},
     {v:'8.1.168', d:'29/09/2026', itens:[
       'Programação: equipe cuja placa programada saiu pela portaria registrada em outra equipe (programação trocada depois da liberação) aparece como ⚠ Em campo como <equipe>, com botão ⇄ Transferir saída p/ esta equipe',
       'Transferir saída: confere no servidor que a saída ainda está em campo e que a outra equipe não tem mais a placa, grava a troca na observação da saída e só confirma depois de reler o registro',
@@ -49465,32 +49470,14 @@ function progRenderQuadro(){
     porTurno[turno][tNome].equipes.push(eq);
   });
 
-  // Resumo
-  // Calcular colaboradores em folga corretamente:
-  // total folga (manual + calendário) MENOS os que foram escalados no dia
-  var corDiaResume = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
-  var escNodia = {};
-  composicao_dia.forEach(function(comp){
-    if((comp.data||'').split('T')[0]!==data&&comp.data!==data) return;
-    parseColabIds(comp.colaborador_ids).forEach(function(id){if(id)escNodia[id]=true;});
-  });
-  // Apenas colaboradores ativos de campo do contrato — mesma base da tela de programação
+  // Resumo — base de presença: colaboradores ativos de campo do contrato
   var colsContrato = colaboradores.filter(function(c){
     if(c.ativo===false || c.ativo===0 || c.ativo==='false') return false;
     if(cid && c.contrato_id!==cid) return false;
     if((c.vinculo||'campo')!=='campo') return false; // excluir escritório/interno/externo
     return true;
   });
-  var nFolgaReal = colsContrato.filter(function(c){
-    var st = _progStatus[c.id]||'disponivel';
-    var folgaManual = st==='folga'||st==='ferias'||st==='afastado';
-    if(st==='demitido') return false; // demitidos não contam como folga nem disponível
-    var folgaCal = corDiaResume && c.cor_escala && c.cor_escala===corDiaResume && st==='disponivel';
-    if(!folgaManual && !folgaCal) return false;
-    return !escNodia[c.id]; // só conta se NÃO escalado no dia
-  }).length;
-
-  var resumoHtml = progRenderResumo(ativas, data, nFolgaReal);
+  var resumoHtml = progRenderResumo(ativas, data, colsContrato, eqs);
 
   // Quadro por turno → tipo
   var turnoIcons={'Manhã':'🌅','Tarde':'☀️','Noite':'🌙','Noite 1':'🌙','Noite 2':'🌑'};
@@ -49562,6 +49549,7 @@ function progRenderQuadro(){
     var _dataBadge = progGetData();
     function _progRefreshBadgesPonto(){
       if(typeof progCarregarBadgesPonto==='function') progCarregarBadgesPonto();
+      if(typeof progResumoAtualizarTotal==='function') progResumoAtualizarTotal();
     }
     if(typeof progCarregarPontoDoSupabase!=='function') return;
     if(_pontoCacheTemDia(_dataBadge)){
@@ -50595,70 +50583,101 @@ function _progVeicSolicitarDestino(st, vid, vx){
   },50);
 }
 
-function progRenderResumo(eqs, data, nFolga){
-  var total=0, programadas=0, completas=0, incompletas=0, paradas=0;
-  eqs.forEach(function(eq){
-    total++;
-    var comp = composicao_dia.find(function(c){
+var _progResumoPresenca={data:'', cols:[]};
+/** Colaboradores de campo com batida real de entrada no ponto no dia (selo ✓ Presente). */
+function progResumoPresentes(data, cols){
+  if(typeof pontoCacheGet!=='function' || typeof _pontoTemEntrada!=='function') return 0;
+  return (cols||[]).filter(function(c){
+    if(!c || !c.re) return false;
+    if((_progStatus[c.id]||'disponivel')==='demitido') return false;
+    return _pontoTemEntrada(pontoCacheGet(c.re, data));
+  }).length;
+}
+function progResumoValorHtml(v, cor, sub){
+  return '<div style="font-size:18px;font-weight:700;color:'+cor+'">'+v+'</div>'
+    +(sub?'<div style="font-size:9px;color:#888;margin-top:2px;white-space:nowrap">'+sub+'</div>':'');
+}
+function progResumoTotal(data, cols){
+  var n=progResumoPresentes(data, cols);
+  return {v:Math.floor(n/2), sub:n+' presente'+(n===1?'':'s')};
+}
+/** Recalcula só o card "Total equipes" quando o ponto chega depois do render. */
+function progResumoAtualizarTotal(){
+  var el=document.getElementById('prog-res-total-eq');
+  if(!el || !_progResumoPresenca.data) return;
+  var t=progResumoTotal(_progResumoPresenca.data, _progResumoPresenca.cols);
+  el.innerHTML=progResumoValorHtml(t.v, '#555', t.sub);
+}
+function progRenderResumo(eqs, data, colsPresenca, todasEqs){
+  var eqsDia=todasEqs||eqs;
+  var bloq=typeof BLOQ_STATUS!=='undefined'?BLOQ_STATUS:[];
+  function compDe(eqId){
+    return composicao_dia.find(function(c){
       var cd=(c.data||'').split('T')[0];
-      return c.equipe_id===eq.id && (cd===data||c.data===data);
+      return c.equipe_id===eqId && !c.deleted_at && (cd===data||c.data===data);
     });
-    if(!comp){ paradas++; return; }
-    var raw = comp.colaborador_ids;
-    var ids = Array.isArray(raw) ? raw.filter(Boolean)
-      : (function(){ try{return JSON.parse(raw||'[]').filter(Boolean);}catch(e){return[];} })();
-    if(!ids.length){ paradas++; return; }
-    if(comp.confirmada){ programadas++; return; }
-    var minColResumo = progMinColaboradoresEquipe(eq);
-    if(ids.length >= minColResumo){ completas++; return; }
-    else if(ids.length > 0 && ids.length < minColResumo){ incompletas++; return; }
-    else paradas++;
+  }
+
+  // Aproveitamento: (salvas + completas não salvas) / equipes do quadro
+  var totalQuadro=0, salvas=0, completas=0, programadas=0;
+  eqs.forEach(function(eq){
+    totalQuadro++;
+    var comp=compDe(eq.id);
+    if(!comp) return;
+    var ids=parseColabIds(comp.colaborador_ids).filter(Boolean);
+    if(!ids.length) return;
+    if(comp.confirmada){
+      salvas++;
+      var ativos=ids.filter(function(id){ return bloq.indexOf(_progStatus[id]||'disponivel')<0; }).length;
+      if(ativos>=2) programadas++;
+      return;
+    }
+    if(ids.length>=progMinColaboradoresEquipe(eq)) completas++;
   });
-  var pct = total ? Math.round((programadas+completas)/total*100) : 0;
-  var corPct = pct>=90?'#3B6D11':pct>=70?'#854F0B':'#A32D2D';
+  var pct=totalQuadro ? Math.round((salvas+completas)/totalQuadro*100) : 0;
+  var corPct=pct>=90?'#3B6D11':pct>=70?'#854F0B':'#A32D2D';
 
-  // Calcular escalados e hora extra corretamente
-  var data = _progData||dataHojeLocal();
-  var corDiaInd = (_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
-  // cid não disponível aqui — usar colaboradores completo (filtro feito via escaladosSet)
-
-  var _escaladosSet = {};
-  var _horaExtraSet = {};
-  composicao_dia.forEach(function(c){
-    if(c.data!==data && (c.data||'').split('T')[0]!==data) return;
-    parseColabIds(c.colaborador_ids).filter(Boolean).forEach(function(id){
-      _escaladosSet[id] = true;
-    });
-  });
-
-  // Hora extra = escalados que seriam folguistas (manual ou calendário)
-  Object.keys(_escaladosSet).forEach(function(id){
-    var col = colaboradores.find(function(c){return c.id===id;});
-    if(!col) return;
-    var st = _progStatus[id]||'disponivel';
-    var folgaManual = st==='folga';
-    var folgaCal = corDiaInd && col.cor_escala && col.cor_escala===corDiaInd && st==='disponivel';
-    if(folgaManual || folgaCal) _horaExtraSet[id] = true;
+  var emCampo=0, retornaram=0, logadas=0;
+  eqsDia.forEach(function(eq){
+    var st=typeof progTmaStatusPortaria==='function'?progTmaStatusPortaria(eq.id, data).status:'';
+    if(st==='em_campo') emCampo++;
+    else if(st==='retornou') retornaram++;
+    var sess=typeof progTmaSessaoEquipe==='function'?progTmaSessaoEquipe(eq.id, data):null;
+    if(sess && sess.login_ts) logadas++;
   });
 
-  var nEscalados = Object.keys(_escaladosSet).length;
-  var nHoraExtra = Object.keys(_horaExtraSet).length;
+  var corDiaInd=(_calDados&&_calDados[data]) || CAL_CORES_2026[data] || '';
+  var escalados={};
+  eqsDia.forEach(function(eq){
+    var comp=compDe(eq.id);
+    if(comp) parseColabIds(comp.colaborador_ids).filter(Boolean).forEach(function(id){ escalados[id]=true; });
+  });
+  var nEscalados=Object.keys(escalados).length;
+  var nFolga=Object.keys(escalados).filter(function(id){
+    var col=colaboradores.find(function(c){ return c.id===id; });
+    if(!col) return false;
+    var st=_progStatus[id]||'disponivel';
+    if(st==='folga') return true;
+    return !!(corDiaInd && col.cor_escala && col.cor_escala===corDiaInd && st==='disponivel');
+  }).length;
+
+  _progResumoPresenca={data:data, cols:colsPresenca||[]};
+  var tot=progResumoTotal(data, colsPresenca);
 
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:1rem">'
     + [
-        {l:'Total equipes',  v:total,       c:'#555'},
-        {l:'✓ Programadas',  v:programadas, c:'#3B6D11'},
-        {l:'Completas',      v:completas,   c:'#185FA5'},
-        {l:'Incompletas',    v:incompletas, c:'#854F0B'},
-        {l:'Não prog.',      v:paradas,     c:'#A32D2D'},
-        {l:'🏖 Folga',       v:nFolga||0,  c:'#888'},
-        {l:'👷 Escalados',   v:nEscalados,  c:'#185FA5'},
-        {l:'⏰ Hora Extra',  v:nHoraExtra,  c:'#533AB7'},
-        {l:'Aproveitamento', v:pct+'%',     c:corPct}
+        {l:'Total equipes',  v:tot.v, sub:tot.sub, c:'#555', id:'prog-res-total-eq', t:'Colaboradores de campo com batida de entrada no ponto no dia, divididos por 2'},
+        {l:'✓ Programadas',  v:programadas, c:'#3B6D11', t:'Equipes salvas com 2 colaboradores ativos'},
+        {l:'🟢 Em Campo',    v:emCampo,     c:'#3B6D11', t:'Equipes liberadas pela portaria que ainda não retornaram'},
+        {l:'📱 Logadas',     v:logadas,     c:'#185FA5', t:'Equipes que iniciaram o app no dia, mesmo que já tenham encerrado'},
+        {l:'🔵 Retornaram',  v:retornaram,  c:'#185FA5', t:'Equipes que saíram a campo e já retornaram pela portaria'},
+        {l:'🏖 Folga',       v:nFolga,      c:'#888',    t:'Colaboradores de folga que foram escalados em alguma equipe'},
+        {l:'👷 Escalados',   v:nEscalados,  c:'#185FA5', t:'Colaboradores escalados no dia'},
+        {l:'Aproveitamento', v:pct+'%',     c:corPct,    t:'Equipes salvas ou completas sobre o total de equipes do quadro'}
       ].map(function(m){
-        return '<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.6rem .5rem;text-align:center">'
+        return '<div title="'+escHtml(m.t)+'" style="background:#fff;border:.5px solid #e0dfd8;border-radius:10px;padding:.6rem .5rem;text-align:center">'
           +'<div style="font-size:9px;color:#888;margin-bottom:4px;white-space:nowrap">'+m.l+'</div>'
-          +'<div style="font-size:18px;font-weight:700;color:'+m.c+'">'+m.v+'</div>'
+          +'<div'+(m.id?' id="'+m.id+'"':'')+'>'+progResumoValorHtml(m.v, m.c, m.sub)+'</div>'
           +'</div>';
       }).join('')
     + '</div>';
@@ -53313,6 +53332,7 @@ function progCarregarBadgesPonto(){
           return;
         }
         pontoConsultar(re, data, function(ponto){
+          if(ponto && typeof progResumoAtualizarTotal==='function') progResumoAtualizarTotal();
           var el2 = document.getElementById('ponto-badge-'+colabId);
           if(!el2||!ponto) return;
           el2.innerHTML = _pontoBadgeHtml(ponto, data, false);

@@ -317,15 +317,16 @@ function testesEstaticos() {
   ok('sw.js versionado', /'cena-8\.1\.\d+'/.test(sw));
 
   let base = null;
-  try { base = execSync('git show 46ce410:index.html', { cwd: raiz, maxBuffer: 64 * 1024 * 1024 }).toString('utf8').replace(/\r\n/g, '\n'); } catch (e) { base = null; }
-  if (!base) { ok('base 8.1.168 disponível para comparar TMA', false); return; }
+  // Base = 8.1.169 (última alteração aprovada da TMA: indicadores).
+  try { base = execSync('git show 63eb865:index.html', { cwd: raiz, maxBuffer: 64 * 1024 * 1024 }).toString('utf8').replace(/\r\n/g, '\n'); } catch (e) { base = null; }
+  if (!base) { ok('base 8.1.169 disponível para comparar TMA', false); return; }
   const nomesTma = [...new Set([...base.matchAll(/\nfunction (progTma\w*)\(/g)].map(m => m[1]))]
-    .concat(['progRenderPainelDisp', 'progRenderEquipeRow', 'progValidarComposicao', 'progEfetuarDrop', 'progRenderQuadro', 'progFiltrarColsProgramacao', 'progMenuSlot']);
+    .concat(['progRenderPainelDisp', 'progRenderEquipeRow', 'progValidarComposicao', 'progEfetuarDrop', 'progRenderQuadro', 'progRenderResumo', 'progFiltrarColsProgramacao', 'progMenuSlot']);
   const difs = nomesTma.filter(n => {
     const re = new RegExp('\\n(?:async )?function ' + n + '\\(');
     return blocoEm(base, re) !== blocoEm(html, re);
   });
-  ok('TMA: ' + nomesTma.length + ' funções idênticas à 8.1.168', difs.length === 0, difs);
+  ok('TMA: ' + nomesTma.length + ' funções idênticas à 8.1.169', difs.length === 0, difs);
   ok('TMA: PROG_STATUS/BLOQ_STATUS inalterados', blocoEm(base, /\nvar PROG_STATUS\s*=/) === blocoEm(html, /\nvar PROG_STATUS\s*=/)
     && /var BLOQ_STATUS = (\[[^\]]*\])/.exec(base)[1] === bloqMatch[1]);
 }
