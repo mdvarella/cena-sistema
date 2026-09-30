@@ -6302,6 +6302,9 @@ function cenaAuthStopAuthenticatedLoops(){
   try{
     if(typeof chatEncerrarRealtime === 'function') chatEncerrarRealtime();
   }catch(e3){}
+  try{
+    if(typeof portSyncProgParar === 'function') portSyncProgParar();
+  }catch(e4){}
   console.log('[Auth] loops autenticados interrompidos');
 }
 
@@ -45061,10 +45064,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.178',
+  numero: '8.1.179',
   data:   '30/09/2026',
-  build:  '20260930-1615',
+  build:  '20260930-1700',
   log: [
+    {v:'8.1.179', d:'30/09/2026', itens:[
+      'Portaria: troca de veículo/escala na Programação aparece na hora (Realtime em prog_veiculos_dia e composicao_dia; polling de 20s se o Realtime não entregar)',
+      'Portaria: memória do dia é substituída pelo servidor (antes carregava uma vez e mostrava placa antiga); leitura que falhar não apaga nada',
+      'Portaria: veículo do slot 2 não sobrescreve mais o veículo principal da equipe',
+    ]},
     {v:'8.1.178', d:'30/09/2026', itens:[
       'SESMT Inspeção de Campo: EPCs com Kit Ambiental e Kit Rota de Fuga',
     ]},
@@ -85125,7 +85133,8 @@ function frtInit(subpage){
         if(!DEMO && Object.keys(_progVeiculos).filter(function(k){return k.endsWith('_'+hoje);}).length===0){
           sbFetch('prog_veiculos_dia',{filters:['data=eq.'+hoje,'deleted_at=is.null']}).then(function(rows){
             if(rows&&rows.length) rows.forEach(function(r){
-              _progVeiculos[r.equipe_id+'_'+hoje]={placa:r.placa,modelo:r.modelo||'',id:r.veiculo_id};
+              if(!r || !r.equipe_id || !r.placa) return;
+              _progVeiculos[Number(r.slot)===2 ? progVeiculoKeyB(r.equipe_id,hoje) : progVeiculoKey(r.equipe_id,hoje)]={placa:r.placa,modelo:r.modelo||'',id:r.veiculo_id,veiculo_id:r.veiculo_id||null};
             });
           }).catch(function(){});
         }
@@ -86315,6 +86324,7 @@ function portMostrarAba(aba){
       return portEnsureDadosPortariaDia(dataHojeLocal());
     }).then(function(){ portRenderAguardando(); });
   }
+  if((aba==='equipes' || aba==='saida') && typeof portSyncProgIniciar==='function') portSyncProgIniciar();
   if(aba==='liberacao') portRenderLiberacao();
   if(aba==='autorizados') portRenderAutorizados();
   if(aba==='registros'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
@@ -87119,6 +87129,166 @@ function portMesclarSaidas(rows){
   });
   portDedupSaidasMemoria();
 }
+/* ── Portaria acompanha a Programação (veículo/escala do dia) ──
+ * Fonte: prog_veiculos_dia + composicao_dia no servidor. A troca feita na Programação chega por
+ * Realtime (tabelas na publicação supabase_realtime) e, se o Realtime não entregar, pelo polling.
+ * Leitura que falhar não apaga nem troca nada da memória. */
+var PORT_SYNC_PROG_POLL_MS = 20000;
+var _portSyncProg = { canal:null, status:'', falhouEm:0, poll:null, timer:null, emCurso:null, pendente:false, dataSync:'', sig:{}, ouvintes:false };
+function portPaginaVisivel(){
+  var pg=document.getElementById('pg-frotas-portaria');
+  if(!pg || pg.classList.contains('hidden')) return false;
+  return !document.hidden;
+}
+function portDataExibida(){
+  return portDiaISO((document.getElementById('port-eq-data')||{}).value)||dataHojeLocal();
+}
+/** Relê do servidor os veículos e a escala do dia e substitui a memória da Portaria.
+ *  Resolve true quando o servidor mudou desde a última leitura (ou é a primeira). */
+function portSincronizarProgramacaoDia(data){
+  var d=portDiaISO(data)||dataHojeLocal();
+  if(DEMO || typeof sbFetch!=='function') return Promise.resolve(false);
+  if(typeof portOffIsOnline==='function' && !portOffIsOnline()) return Promise.resolve(false);
+  if(_portSyncProg.emCurso){ _portSyncProg.pendente=true; return _portSyncProg.emCurso; }
+  var LIM=1000;
+  _portSyncProg.emCurso=Promise.all([
+    Promise.resolve(sbFetch('prog_veiculos_dia',{filters:['data=eq.'+d,'deleted_at=is.null'],order:'equipe_id.asc,slot.asc',limit:LIM})).catch(function(){ return null; }),
+    Promise.resolve(sbFetch('composicao_dia',{filters:['data=eq.'+d],order:'id.asc',limit:LIM})).catch(function(){ return null; })
+  ]).then(function(res){
+    var veics=res[0], comps=res[1];
+    var okV=Array.isArray(veics), okC=Array.isArray(comps);
+    if(!okV && !okC) return false;
+    var sigV=okV ? JSON.stringify(veics.map(function(r){ return [r.id, r.equipe_id, r.slot, r.placa, r.modelo, r.veiculo_id, r.deleted_at]; })) : null;
+    var sigC=okC ? JSON.stringify(comps) : null;
+    var ant=_portSyncProg.sig[d]||{};
+    var mudou=(okV && sigV!==ant.v) || (okC && sigC!==ant.c);
+    _portSyncProg.sig[d]={ v: okV?sigV:ant.v, c: okC?sigC:ant.c };
+    if(okV && typeof _progVeiculos!=='undefined'){
+      var novo={};
+      veics.forEach(function(r){
+        if(!r || !r.equipe_id || r.deleted_at || !String(r.placa||'').trim()) return;
+        var k=Number(r.slot)===2 ? progVeiculoKeyB(r.equipe_id, d) : progVeiculoKey(r.equipe_id, d);
+        novo[k]={ placa:r.placa, modelo:r.modelo||'', id:r.veiculo_id||null, veiculo_id:r.veiculo_id||null };
+      });
+      // Lista cheia pode estar cortada no limite: aí só atualiza, não remove
+      if(veics.length<LIM){
+        Object.keys(_progVeiculos).forEach(function(k){
+          if(progVeiculoKeyEhDoDia(k, d) && k!==d && !novo[k]) delete _progVeiculos[k];
+        });
+      }
+      Object.keys(novo).forEach(function(k){ _progVeiculos[k]=novo[k]; });
+      if(portRenderEquipesDia._veicBuscado) portRenderEquipesDia._veicBuscado[d]=true;
+    }
+    if(okC && Array.isArray(composicao_dia)){
+      portMesclarComposicao(comps);
+      if(comps.length<LIM){
+        var noServidor={};
+        comps.forEach(function(c){ if(c && c.id) noServidor[String(c.id)]=true; });
+        for(var i=composicao_dia.length-1;i>=0;i--){
+          var c=composicao_dia[i];
+          if(c && portDiaISO(c.data)===d && isUUID(String(c.id||'')) && !noServidor[String(c.id)]) composicao_dia.splice(i,1);
+        }
+      }
+      if(window._portEqDiaBuscado) window._portEqDiaBuscado['c:'+d]=true;
+    }
+    return mudou;
+  }).then(function(mudou){
+    _portSyncProg.emCurso=null;
+    if(_portSyncProg.pendente){ _portSyncProg.pendente=false; portSyncProgAgendar(); }
+    return mudou;
+  }, function(){
+    _portSyncProg.emCurso=null;
+    _portSyncProg.pendente=false;
+    return false;
+  });
+  return _portSyncProg.emCurso;
+}
+function portRerenderPlacas(){
+  var vis=function(a){ var el=document.getElementById('port-aba-'+a); return !!el && el.style.display!=='none'; };
+  if(vis('equipes') && typeof portRenderEquipesDia==='function') portRenderEquipesDia();
+  if(vis('saida') && typeof portRenderAguardando==='function') portRenderAguardando();
+}
+function portSyncProgRodar(){
+  if(!portPaginaVisivel()) return Promise.resolve(false);
+  var d=portDataExibida();
+  _portSyncProg.dataSync=d;
+  return portSincronizarProgramacaoDia(d).then(function(mudou){
+    if(mudou && portPaginaVisivel() && portDataExibida()===d) portRerenderPlacas();
+    return mudou;
+  });
+}
+function portSyncProgAgendar(){
+  if(!portPaginaVisivel()) return;
+  clearTimeout(_portSyncProg.timer);
+  _portSyncProg.timer=setTimeout(function(){ _portSyncProg.timer=null; portSyncProgRodar(); }, 700);
+}
+function portSyncProgEvento(payload){
+  var r=(payload && payload.new && payload.new.data) ? payload.new : ((payload && payload.old) || {});
+  var dd=portDiaISO(r.data);
+  if(dd && dd!==portDataExibida()) return;
+  portSyncProgAgendar();
+}
+function portSyncProgAssinar(){
+  if(_portSyncProg.canal) return;
+  if(_portSyncProg.falhouEm && Date.now()-_portSyncProg.falhouEm < 5*60*1000) return;
+  if(DEMO || typeof supabaseClient==='undefined' || !supabaseClient || typeof supabaseClient.channel!=='function') return;
+  try{
+    var canal=supabaseClient.channel('portaria-programacao-dia')
+      .on('postgres_changes',{event:'*',schema:'public',table:'prog_veiculos_dia'},portSyncProgEvento)
+      .on('postgres_changes',{event:'*',schema:'public',table:'composicao_dia'},portSyncProgEvento);
+    _portSyncProg.canal=canal;
+    canal.subscribe(function(status){
+      _portSyncProg.status=status;
+      if(status==='SUBSCRIBED'){ _portSyncProg.falhouEm=0; portSyncProgAgendar(); }
+      if(status==='CHANNEL_ERROR' || status==='TIMED_OUT'){
+        console.warn('[Portaria] Realtime da Programação indisponível ('+status+'); seguindo pelo polling');
+        _portSyncProg.falhouEm=Date.now();
+        portSyncProgFecharCanal();
+      }
+    });
+  }catch(e){
+    console.warn('[Portaria] Realtime da Programação não iniciou', e);
+    _portSyncProg.falhouEm=Date.now();
+    _portSyncProg.canal=null;
+  }
+}
+function portSyncProgFecharCanal(){
+  var canal=_portSyncProg.canal;
+  _portSyncProg.canal=null;
+  if(!canal) return;
+  try{ if(supabaseClient && typeof supabaseClient.removeChannel==='function') supabaseClient.removeChannel(canal); else if(typeof canal.unsubscribe==='function') canal.unsubscribe(); }catch(e){}
+}
+/** Liga Realtime + polling (idempotente) e sincroniza quando a data exibida muda. */
+function portSyncProgGarantir(data){
+  if(DEMO) return;
+  portSyncProgAssinar();
+  if(!_portSyncProg.poll){
+    _portSyncProg.poll=setInterval(function(){
+      if(!portPaginaVisivel()) return;
+      if(!_portSyncProg.canal) portSyncProgAssinar();
+      portSyncProgRodar();
+    }, PORT_SYNC_PROG_POLL_MS);
+  }
+  if(!_portSyncProg.ouvintes){
+    _portSyncProg.ouvintes=true;
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden && _portSyncProg.poll) portSyncProgAgendar(); });
+    window.addEventListener('online', function(){ if(_portSyncProg.poll) portSyncProgAgendar(); });
+  }
+  var d=portDiaISO(data)||portDataExibida();
+  if(_portSyncProg.dataSync!==d){ _portSyncProg.dataSync=d; portSyncProgAgendar(); }
+}
+function portSyncProgIniciar(){
+  portSyncProgGarantir(portDataExibida());
+  portSyncProgAgendar();
+}
+function portSyncProgParar(){
+  portSyncProgFecharCanal();
+  if(_portSyncProg.poll){ clearInterval(_portSyncProg.poll); _portSyncProg.poll=null; }
+  clearTimeout(_portSyncProg.timer); _portSyncProg.timer=null;
+  _portSyncProg.dataSync='';
+  _portSyncProg.sig={};
+  _portSyncProg.falhouEm=0;
+}
 function portMesclarComposicao(rows){
   if(!rows||!rows.length) return;
   rows.forEach(function(c){
@@ -87245,6 +87415,8 @@ function portRenderEquipesDia(){
   var selData=document.getElementById('port-eq-data');
   if(selData && !selData.value) selData.value = hoje;
 
+  if(typeof portSyncProgGarantir==='function') portSyncProgGarantir(data);
+
   // Carregar veículos programados se não estiver em memória
   if(!DEMO && typeof _progVeiculos !== 'undefined'){
     if(!portRenderEquipesDia._veicBuscado) portRenderEquipesDia._veicBuscado={};
@@ -87256,7 +87428,7 @@ function portRenderEquipesDia(){
       function _aplicarVeic(rows){
         (rows||[]).forEach(function(r){
           if(r && r.equipe_id && r.placa && !r.deleted_at){
-            _progVeiculos[r.equipe_id+'_'+_veicKey] = {
+            _progVeiculos[Number(r.slot)===2 ? progVeiculoKeyB(r.equipe_id,_veicKey) : progVeiculoKey(r.equipe_id,_veicKey)] = {
               placa: r.placa, modelo: r.modelo||'',
               veiculo_id: r.veiculo_id||null
             };
