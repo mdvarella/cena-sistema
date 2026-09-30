@@ -5,14 +5,15 @@
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.175';
+const SW_VERSION   = 'cena-8.1.176';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
   'supabase.co',
   'supabase.com',
   'azurewebsites.net',
-  'nexusweb.com.br'
+  'nexusweb.com.br',
+  'nominatim.openstreetmap.org'
 ];
 
 const PRECACHE = [

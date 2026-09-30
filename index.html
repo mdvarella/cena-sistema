@@ -7973,8 +7973,8 @@ async function sbInsert(table,data,opts){
       'diferenca_quantidade','valor_unitario','diferenca_valor','movimento_id','revisado_em','revisado_por','criado_em','payload'],
     'comgas_inspecoes':['id','tipo','data','local','inspetor','contrato','obs_geral','conformes','nao_conformes','nao_aplicaveis','ncs_geradas','status','criado_em'],
     'enel_inspecoes':['id','tipo','data','local','inspetor','contrato','obs_geral','conformes','nao_conformes','nao_aplicaveis','ncs_geradas','status','criado_em'],
-    'comgas_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','status','criado_em','criado_por'],
-    'enel_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','status','criado_em','criado_por'],
+    'comgas_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','fotos','status','criado_em','criado_por'],
+    'enel_ncs':['id','inspecao_id','gravidade','descricao','observacao','local','contrato','inspetor','fotos','status','criado_em','criado_por'],
     'alm_requisicoes':['id','numero','data','solicitante_id','solicitante_nome','area_solicitante','contrato_id','contrato_nome',
       'base_id','base_nome','deposito_id','deposito_nome','dest_base_id','dest_base_nome','dest_deposito_id','dest_deposito_nome',
       'centro_custo','prioridade','finalidade','status','observacao',
@@ -20349,8 +20349,8 @@ async function permSalvarTodas(){
 // ── Ordenação alfabética de selects ─────────────────────────────────────
 function sortarOpts(selectEl, manterPrimeiro){
   if(!selectEl) return;
-  var valorAtual = selectEl.value;
   var opts = Array.from(selectEl.options);
+  var marcadas = opts.filter(function(o){ return o.selected; });
   var inicio = (manterPrimeiro!==false && opts.length && !opts[0].value) ? 1 : 0;
   var fixos  = opts.slice(0, inicio);
   var paraOrdenar = opts.slice(inicio);
@@ -20359,9 +20359,9 @@ function sortarOpts(selectEl, manterPrimeiro){
   });
   while(selectEl.options.length) selectEl.remove(0);
   fixos.concat(paraOrdenar).forEach(function(o){ selectEl.appendChild(o); });
-  if(valorAtual && Array.from(selectEl.options).some(function(o){ return o.value===valorAtual; })){
-    selectEl.value = valorAtual;
-  }
+  // Remover e reinserir opções muda a seleção no navegador ("Selecione..." virava a última opção)
+  if(selectEl.multiple) opts.forEach(function(o){ o.selected = marcadas.indexOf(o)>=0; });
+  else if(marcadas.length) marcadas[0].selected = true;
 }
 
 function sortarSelectId(id, manterPrimeiro){
@@ -45061,10 +45061,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.175',
+  numero: '8.1.176',
   data:   '30/09/2026',
-  build:  '20260930-1300',
+  build:  '20260930-1500',
   log: [
+    {v:'8.1.176', d:'30/09/2026', itens:[
+      'SESMT Inspeção de Campo: “+ Nova Inspeção” abre com “Selecione o contrato...”. Causa geral: a ordenação automática dos selects das modais trocava o “Selecione...” pela última opção da lista — valia para todas as modais',
+      'Nova Inspeção: 📍 GPS preenche o endereço pela localização do celular (OpenStreetMap); latitude, longitude e precisão ficam gravadas na vistoria',
+      'Checklist: Documentos = APR, Permissão de trabalho, PET, Ordem de Serviço e HAR; Veículo sem “EPIs obrigatórios” e com Ensaio elétrico e Ensaio acústico; novo bloco EPCs (18 itens); Colaborador com Kit Trabalho em Altura e 13 EPIs novos, sem “Luvas adequadas”',
+      'Veículo e Canteiro: item NC exige foto (câmera do celular). A foto vai para o servidor e fica na NC — a coluna fotos era descartada ao gravar',
+    ]},
     {v:'8.1.175', d:'30/09/2026', itens:[
       'SESMT Treinamentos: Importar planilha (ASO / treinamentos) e Renovar voltaram — tinham sido cortados na 8.1.108 e os botões davam erro. Também voltam as funções de RE/sigla usadas pelo filtro por treinamento, pelo registro de ASO na Evolução e pelo treinamento no celular',
       'Importação: lê a lista completa de treinamentos, colaboradores e funcionários (antes vinham só 1000 de 6498 treinamentos e o que não vinha era gravado de novo, duplicando). Se alguma leitura falhar, a prévia para e nada é gravado',
@@ -156977,33 +156983,57 @@ var _inspCampoTabPronta = false;
 var _inspCampoAcaOk = false;
 var _inspCampoPortfolio = {};
 
+var INSP_CAMPO_CK_VERSAO = 3;
 var INSP_CAMPO_BLOCOS = {
   documentos: {
-    label: 'Documentos', icon: '📄',
+    label: 'Documentos', icon: '📄', prefixo: 'ic_doc',
     itens: [
       'APR elaborada e assinada?',
-      'DDS realizado e assinado?',
-      'Permissões de trabalho em vigor?',
-      'Registro de treinamentos do dia?',
-      'Contrato identificado no canteiro?',
-      'Ficha de EPI atualizada?'
+      'Permissão de trabalho em vigor?',
+      'PET emitida e assinada?',
+      'Ordem de Serviço disponível?',
+      'HAR válida?'
     ]
   },
   veiculo: {
-    label: 'Veículo', icon: '🚗',
+    label: 'Veículo', icon: '🚗', prefixo: 'ic_veic', fotoNc: true,
     itens: [
       'Licenciamento e seguro válidos?',
       'Extintor válido e lacrado?',
       'Triângulo, macaco e estepe?',
       'Kit de primeiros socorros completo?',
-      'EPIs obrigatórios no veículo?',
+      'Ensaio elétrico em dia?',
+      'Ensaio acústico em dia?',
       'Sinalização e rotulagem adequadas?',
       'Condições mecânicas e elétricas seguras?',
       'Limpeza e organização interna?'
     ]
   },
+  epcs: {
+    label: 'EPCs', icon: '🛡️', prefixo: 'ic_epc',
+    itens: [
+      'Bastão isolante',
+      'Vara de manobra',
+      'Cobertura/manta isolante',
+      'Protetor de condutor',
+      'Protetor de cruzeta',
+      'Detector de tensão',
+      'Ferramentas isoladas',
+      'Escada apropriada',
+      'Cones, barreiras e sinalização',
+      'Detector multigases',
+      'Exaustor/insuflador',
+      'Tripé de resgate',
+      'Guincho/resgatador',
+      'Aterramento temporário',
+      'Kit de bloqueio e etiquetagem',
+      'Iluminação apropriada',
+      'Sinalização noturna',
+      'Guarda-corpo'
+    ]
+  },
   canteiro: {
-    label: 'Canteiro', icon: '🏗️',
+    label: 'Canteiro', icon: '🏗️', prefixo: 'ic_cant', fotoNc: true,
     itens: [
       'Layout e sinalização do canteiro adequados?',
       'Cerca/proteção perimetral em ordem?',
@@ -157020,15 +157050,215 @@ var INSP_CAMPO_BLOCOS = {
     itens: [
       'Capacete com jugular?',
       'Óculos de proteção?',
-      'Luvas adequadas à atividade?',
       'Calçado de segurança?',
       'Uniforme completo e identificado?',
-      'Cinto para trabalho em altura (se aplicável)?',
+      'Kit Trabalho em Altura (se aplicável)?',
+      'Detector de tensão de capacete',
+      'Protetor auricular',
+      'Balaclava antichama',
+      'Protetor facial para arco elétrico',
+      'Luva isolante de borracha',
+      'Luva de cobertura',
+      'Luva de vaqueta',
+      'Manga isolante de borracha',
+      'Cinturão paraquedista',
+      'Talabarte / dispositivo de conexão adequado',
+      'Trava-quedas',
+      'Máscara respiratória PFF2',
+      'Protetor solar',
       'Atitude preventiva e comportamento seguro?',
       'Conhecimento dos riscos da atividade?'
     ]
   }
 };
+var INSP_CAMPO_BLOCOS_ORDEM = ['documentos','veiculo','epcs','canteiro'];
+
+// ── Endereço pela localização do aparelho ──
+var _inspCampoGeo = {};
+var _inspCampoLocalManual = {};
+var _inspCampoGeoSeq = 0;
+function inspCampoFormatarEndereco(j){
+  if(!j) return '';
+  var a=j.address||{};
+  var rua=a.road||a.pedestrian||a.footway||a.path||a.residential||'';
+  var bairro=a.suburb||a.neighbourhood||a.quarter||a.city_district||'';
+  var cidade=a.city||a.town||a.village||a.municipality||'';
+  var uf=String(a['ISO3166-2-lvl4']||'').replace(/^BR-/,'');
+  var partes=[
+    rua?(rua+(a.house_number?', '+a.house_number:'')):'',
+    bairro,
+    cidade?(cidade+(uf?'/'+uf:'')):uf
+  ].filter(Boolean);
+  if(!partes.length) return String(j.display_name||'');
+  return partes.join(' - ')+(a.postcode?' - CEP '+a.postcode:'');
+}
+async function inspCampoEnderecoReverso(lat, lng){
+  var ctrl=typeof AbortController!=='undefined'?new AbortController():null;
+  var tm=ctrl?setTimeout(function(){ ctrl.abort(); },10000):0;
+  try{
+    var r=await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=pt-BR'
+      +'&lat='+encodeURIComponent(lat)+'&lon='+encodeURIComponent(lng), ctrl?{signal:ctrl.signal}:{});
+    if(!r.ok) return '';
+    return inspCampoFormatarEndereco(await r.json());
+  }catch(e){ return ''; }
+  finally{ if(tm) clearTimeout(tm); }
+}
+function inspCampoGeoStatus(prefix, txt, cor){
+  var el=document.getElementById(prefix+'-geo-status');
+  if(el){ el.textContent=txt||''; el.style.color=cor||'#888'; }
+}
+function inspCampoLocalDigitado(prefix){
+  _inspCampoLocalManual[prefix]=true;
+}
+function inspCampoCapturarEndereco(prefix, auto){
+  var seq=++_inspCampoGeoSeq;
+  if(!auto) _inspCampoLocalManual[prefix]=false;
+  if(!navigator.geolocation){
+    if(!auto) inspCampoGeoStatus(prefix,'Este aparelho não informa a localização. Digite o endereço.','#A32D2D');
+    return Promise.resolve(null);
+  }
+  inspCampoGeoStatus(prefix,'📍 Obtendo localização...');
+  return new Promise(function(resolve){
+    navigator.geolocation.getCurrentPosition(
+      function(pos){ resolve(pos); },
+      function(err){ resolve({erro:err||{}}); },
+      {enableHighAccuracy:true, timeout:15000, maximumAge:60000}
+    );
+  }).then(async function(pos){
+    if(seq!==_inspCampoGeoSeq || !document.getElementById(prefix+'-local')) return null;
+    if(!pos || pos.erro){
+      inspCampoGeoStatus(prefix, pos&&pos.erro&&pos.erro.code===1
+        ? 'Localização não permitida. Libere a localização no navegador e toque em 📍 GPS, ou digite o endereço.'
+        : 'Não foi possível obter a localização. Toque em 📍 GPS para tentar de novo ou digite o endereço.', '#A32D2D');
+      return null;
+    }
+    var geo={lat:pos.coords.latitude, lng:pos.coords.longitude, precisao_m:Math.round(pos.coords.accuracy||0), capturado_em:new Date().toISOString(), endereco:''};
+    _inspCampoGeo[prefix]=geo;
+    inspCampoGeoStatus(prefix,'📍 Localização obtida (±'+geo.precisao_m+' m). Buscando endereço...');
+    var end=await inspCampoEnderecoReverso(geo.lat, geo.lng);
+    if(seq!==_inspCampoGeoSeq) return geo;
+    var inp=document.getElementById(prefix+'-local');
+    if(!inp) return geo;
+    if(!end){
+      inspCampoGeoStatus(prefix,'📍 Localização registrada (±'+geo.precisao_m+' m), mas o endereço não foi encontrado. Digite o endereço.','#854F0B');
+      return geo;
+    }
+    geo.endereco=end;
+    if(!_inspCampoLocalManual[prefix] || !String(inp.value||'').trim()){
+      inp.value=end;
+      _inspCampoLocalManual[prefix]=false;
+    }
+    inspCampoGeoStatus(prefix,'📍 Endereço pela localização do aparelho (±'+geo.precisao_m+' m). Confira e corrija se precisar.','#3B6D11');
+    return geo;
+  });
+}
+function inspCampoGeoParaMeta(prefix, local){
+  var g=_inspCampoGeo[prefix];
+  if(!g || g.lat==null) return null;
+  return {lat:g.lat, lng:g.lng, precisao_m:g.precisao_m, capturado_em:g.capturado_em,
+    endereco_gps:g.endereco||'', local_editado:!g.endereco || String(local||'')!==g.endereco};
+}
+function inspCampoLocalHtml(i){
+  if(!i || !i.local) return '';
+  var g=i.geo||null;
+  var lat=g&&g.lat!=null?Number(g.lat):NaN, lng=g&&g.lng!=null?Number(g.lng):NaN;
+  var link=isFinite(lat)&&isFinite(lng)
+    ? ' · <a href="https://www.openstreetmap.org/?mlat='+lat+'&mlon='+lng+'#map=18/'+lat+'/'+lng+'" target="_blank" rel="noopener">📍 GPS'+(g.precisao_m?' ±'+g.precisao_m+' m':'')+'</a>'
+    : '';
+  return '<div style="font-size:12px;margin-bottom:.75rem"><b>Local:</b> '+escHtml(i.local)+link+'</div>';
+}
+
+// ── Foto obrigatória em item NC (blocos com fotoNc) ──
+var _inspCampoFotosEnviando = 0;
+function inspCampoFotosThumbsHtml(fotos){
+  fotos=(Array.isArray(fotos)?fotos:[]).filter(function(u){ return /^https?:\/\//.test(String(u||'')); });
+  if(!fotos.length) return '';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">'+fotos.map(function(u){
+    return '<a href="'+escHtml(u)+'" target="_blank" rel="noopener"><img src="'+escHtml(u)+'" style="width:52px;height:52px;object-fit:cover;border-radius:6px;border:.5px solid #e0dfd8"/></a>';
+  }).join('')+'</div>';
+}
+function inspCampoFotosDoRascunho(base){
+  var r=(_inspCampoMeta&&_inspCampoMeta.rascunho)||{};
+  return (r[base]&&Array.isArray(r[base].fotos))?r[base].fotos:[];
+}
+function inspCampoFotosMiniHtml(base){
+  var fotos=inspCampoFotosDoRascunho(base);
+  if(!fotos.length) return '<span style="font-size:11px;color:#A32D2D;font-weight:600">📷 Foto obrigatória para NC</span>';
+  return fotos.map(function(u, fi){
+    return '<div style="position:relative"><img src="'+escHtml(u)+'" style="width:56px;height:56px;object-fit:cover;border-radius:6px;border:.5px solid #e0dfd8;cursor:pointer" onclick="inspAbrirFotoFull(this.src)"/>'
+      +'<button type="button" onclick="inspCampoFotoRemover(\''+base+'\','+fi+')" style="position:absolute;top:-5px;right:-5px;background:#A32D2D;color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:10px;cursor:pointer;line-height:1;padding:0">×</button></div>';
+  }).join('');
+}
+function inspCampoFotoAreaHtml(base, status){
+  return '<div id="'+base+'_fotos" style="display:'+(status==='NC'?'block':'none')+';margin-top:6px">'
+    +'<div id="'+base+'_flist" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+inspCampoFotosMiniHtml(base)+'</div>'
+    +'<label class="btn btn-sm" style="display:inline-block;margin-top:6px;cursor:pointer">📷 Tirar foto'
+    +'<input type="file" accept="image/*" capture="environment" style="display:none" onchange="inspCampoFotoSelecionada(this,\''+base+'\')"/></label>'
+    +'<span id="'+base+'_fst" style="font-size:11px;color:#888;margin-left:8px"></span></div>';
+}
+function inspCampoAtualizarFotoArea(base){
+  var area=document.getElementById(base+'_fotos');
+  if(!area) return;
+  var st=(document.getElementById(base+'_s')||{}).value||'';
+  area.style.display=st==='NC'?'block':'none';
+  var lista=document.getElementById(base+'_flist');
+  if(lista) lista.innerHTML=inspCampoFotosMiniHtml(base);
+}
+function inspCampoComprimirFoto(file){
+  return new Promise(function(resolve, reject){
+    var reader=new FileReader();
+    reader.onerror=function(){ reject(new Error('leitura')); };
+    reader.onload=function(e){
+      var img=new Image();
+      img.onerror=function(){ reject(new Error('imagem')); };
+      img.onload=function(){
+        var MAX=1280, w=img.width, h=img.height;
+        if(w>MAX||h>MAX){ if(w>h){ h=Math.round(h*MAX/w); w=MAX; } else { w=Math.round(w*MAX/h); h=MAX; } }
+        var cv=document.createElement('canvas');
+        cv.width=w; cv.height=h;
+        cv.getContext('2d').drawImage(img,0,0,w,h);
+        cv.toBlob(function(b){ if(b) resolve(b); else reject(new Error('jpeg')); },'image/jpeg',0.8);
+      };
+      img.src=e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+async function inspCampoFotoSelecionada(input, base){
+  var meta=_inspCampoMeta;
+  var file=input&&input.files&&input.files[0];
+  if(!meta || !file) return;
+  input.value='';
+  var st=document.getElementById(base+'_fst');
+  if(st) st.textContent='⏳ Enviando foto...';
+  _inspCampoFotosEnviando++;
+  var url='';
+  try{
+    var blob=await inspCampoComprimirFoto(file);
+    url=await sbUpload(blob, 'evidencias/inspecao_campo/'+meta.modulo+'/'+meta.id+'/'+base+'_'+Date.now()+'.jpg');
+  }catch(e){ url=''; }
+  finally{ _inspCampoFotosEnviando--; }
+  if(st) st.textContent='';
+  if(!/^https?:\/\//.test(String(url||''))){
+    progShowToast('⚠ A foto não foi enviada ao servidor (sem conexão ou sem permissão). Tire a foto de novo.','erro');
+    return;
+  }
+  if(_inspCampoMeta!==meta) return;
+  var r=meta.rascunho||(meta.rascunho={});
+  if(!r[base]) r[base]={};
+  if(!Array.isArray(r[base].fotos)) r[base].fotos=[];
+  r[base].fotos.push(url);
+  inspCampoSalvarRascunhoLocal();
+  inspCampoAtualizarFotoArea(base);
+}
+function inspCampoFotoRemover(base, idx){
+  var r=(_inspCampoMeta&&_inspCampoMeta.rascunho)||{};
+  if(!r[base] || !Array.isArray(r[base].fotos) || !r[base].fotos[idx]) return;
+  if(!confirm('Remover esta foto?')) return;
+  r[base].fotos.splice(idx,1);
+  inspCampoSalvarRascunhoLocal();
+  inspCampoAtualizarFotoArea(base);
+}
 
 function inspCampoPortfolioLoad(){
   try{
@@ -157055,7 +157285,8 @@ function inspCampoPackObsGeral(obsText, ins){
     placa:ins.placa||'',
     modulo:ins.modulo||'',
     gestor_visto_em:ins.gestor_visto_em||'',
-    gestor_visto_por:ins.gestor_visto_por||''
+    gestor_visto_por:ins.gestor_visto_por||'',
+    geo:ins.geo||null
   });
 }
 /** Restaura campos da vistoria a partir de obs_geral JSON */
@@ -157080,6 +157311,7 @@ function inspCampoUnpackObsGeral(row){
         row.obs_geral=p.obs||'';
         row.gestor_visto_em=p.gestor_visto_em||'';
         row.gestor_visto_por=p.gestor_visto_por||'';
+        row.geo=p.geo||null;
         if(row.tipo!=='campo_vistoria') row.tipo='campo_vistoria';
       }
     }catch(e){}
@@ -157118,6 +157350,7 @@ function inspCampoNcToDbRow(nc){
     local:nc.local||'',
     contrato:nc.contrato||'',
     inspetor:nc.inspetor||'',
+    fotos:Array.isArray(nc.fotos)?nc.fotos:[],
     status:nc.status||'aberta',
     criado_em:nc.criado_em||new Date().toISOString(),
     criado_por:nc.criado_por||''
@@ -157132,7 +157365,8 @@ function inspCampoPackNcItens(itensNc){
       return {
         grupo:it.grupo||'', item:it.item||'', observacao:it.observacao||'',
         bloco:it.bloco||'', colaborador_id:it.colaborador_id||null,
-        colaborador_nome:it.colaborador_nome||''
+        colaborador_nome:it.colaborador_nome||'',
+        fotos:Array.isArray(it.fotos)?it.fotos:[]
       };
     })
   });
@@ -157163,6 +157397,7 @@ function inspCampoNcItensHtml(nc){
       +'<b>'+(ix+1)+'. '+escHtml(tit)+'</b>'
       +(it.colaborador_nome?'<span style="color:#888"> — '+escHtml(it.colaborador_nome)+'</span>':'')
       +(it.observacao?'<br><span style="color:#666">'+escHtml(it.observacao)+'</span>':'')
+      +inspCampoFotosThumbsHtml(it.fotos)
       +'</div>';
   }).join('');
 }
@@ -157195,6 +157430,7 @@ function inspCampoCriarNcUnificada(inspecao, itensNc, cfg){
     inspetor:inspecao.inspetor||'',
     status:'aberta',
     itens_qtd:qtd,
+    fotos:itensNc.reduce(function(a,it){ return a.concat(Array.isArray(it.fotos)?it.fotos:[]); },[]),
     criado_em:new Date().toISOString(),
     criado_por:(usuarioLogado||{}).nome||''
   };
@@ -157510,6 +157746,9 @@ function inspCampoNovaInspecao(modulo){
   inspCampoPortfolioLoad();
   var cfg=inspCampoModuloCfg(modulo);
   var prefix=modulo==='enel'?'ic-en':'ic-cg';
+  _inspCampoGeo[prefix]=null;
+  _inspCampoLocalManual[prefix]=false;
+  _inspCampoGeoSeq++;
   setModal('<div class="modal-bg"><div class="modal" style="max-width:520px;text-align:center;padding:2rem">'
     +'<div style="color:#888;font-size:13px">Carregando contratos e equipes...</div></div></div>');
   inspCampoGarantirDados(dataHojeLocal()).then(function(){
@@ -157521,12 +157760,16 @@ function inspCampoNovaInspecao(modulo){
       +inspCampoEquipeOptsHtml(prefix,'','')+'</div></div>'
       +'<div id="'+prefix+'-escala-preview" style="display:none;margin-bottom:.75rem;padding:.75rem;background:#f5f5f3;border-radius:8px;font-size:12px"></div>'
       +'<div class="fg"><label>Inspetor responsável</label><input class="inp" id="'+prefix+'-inspetor" style="width:100%" value="'+escHtml((usuarioLogado||{}).nome||'')+'"/></div>'
-      +'<div class="fg"><label>Local / frente (opcional)</label><input class="inp" id="'+prefix+'-local" style="width:100%" placeholder="Endereço ou frente de trabalho"/></div>'
+      +'<div class="fg"><label>Local / endereço</label>'
+      +'<div style="display:flex;gap:6px"><input class="inp" id="'+prefix+'-local" style="flex:1;min-width:0" placeholder="Endereço ou frente de trabalho" oninput="inspCampoLocalDigitado(\''+prefix+'\')"/>'
+      +'<button type="button" class="btn btn-sm" onclick="inspCampoCapturarEndereco(\''+prefix+'\',false)" title="Pegar o endereço pela localização do celular">📍 GPS</button></div>'
+      +'<div id="'+prefix+'-geo-status" style="font-size:11px;color:#888;margin-top:4px"></div></div>'
       +'<div style="display:flex;gap:8px;margin-top:1.25rem">'
       +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
       +'<button class="btn btn-pri" onclick="inspCampoAbrirWizard(\''+modulo+'\',\''+prefix+'\')" style="flex:1">Abrir checklists →</button>'
       +'</div></div></div>';
     setModal(html);
+    inspCampoCapturarEndereco(prefix, true);
   }).catch(function(){
     setModal('<div class="modal-bg"><div class="modal" style="max-width:420px">'
       +'<p style="font-size:13px;color:#A32D2D">Erro ao carregar dados. Tente novamente.</p>'
@@ -157593,6 +157836,8 @@ async function inspCampoAbrirWizard(modulo, prefix){
     data:data, inspetor:inspetor, local:local,
     supervisor:esc.supervisor, placa:esc.placa,
     membros:esc.membros,
+    geo:inspCampoGeoParaMeta(prefix, local),
+    ckVersao:INSP_CAMPO_CK_VERSAO,
     abaAtiva:'documentos'
   };
   inspCampoRenderWizard();
@@ -157648,6 +157893,12 @@ function inspCampoRestaurarSessao(modulo){
     var p=JSON.parse(raw);
     if(!p||!p.meta) return;
     if(modulo && p.meta.modulo!==modulo) return;
+    if(p.meta.ckVersao!==INSP_CAMPO_CK_VERSAO){
+      sessionStorage.removeItem('insp_campo_wizard_state');
+      if(p.meta.id) sessionStorage.removeItem('insp_campo_rascunho_'+p.meta.id);
+      progShowToast('⚠ A vistoria em andamento era do checklist anterior e foi descartada. Abra uma nova inspeção.','erro');
+      return;
+    }
     _inspCampoMeta=p.meta;
     _inspCampoMeta.rascunho=p.rascunho||{};
     _inspCampoMeta.obsGeral=p.obsGeral||'';
@@ -157667,12 +157918,13 @@ function inspCampoSetStatus(btn){
   wrap.querySelectorAll('.insp-campo-st-btn').forEach(function(b){ b.classList.remove('on'); });
   btn.classList.add('on');
   inspCampoSalvarRascunhoLocal();
+  if(hidId) inspCampoAtualizarFotoArea(hidId.replace(/_s$/,''));
 }
 function inspCampoStatusBtnHtml(val, selected){
   var labels={C:'✅ C',NC:'⚠️ NC',NA:'➖ N/A'};
   return '<button type="button" class="insp-campo-st-btn'+(selected===val?' on':'')+'" data-v="'+val+'" onclick="inspCampoSetStatus(this)">'+(labels[val]||val)+'</button>';
 }
-function inspCampoRenderChecklistItems(domPrefix, itens, salvas){
+function inspCampoRenderChecklistItems(domPrefix, itens, salvas, fotoNc){
   salvas=salvas||[];
   var botoes=inspCampoUsaBotoesStatus();
   return itens.map(function(item, ii){
@@ -157680,6 +157932,7 @@ function inspCampoRenderChecklistItems(domPrefix, itens, salvas){
     var sv=salvas[ii]||{};
     var st=sv.status||'';
     var ob=sv.obs||'';
+    var foto=fotoNc?inspCampoFotoAreaHtml(id, st):'';
     if(botoes){
       return '<div class="insp-campo-item">'
         +'<div class="insp-campo-item-txt">'+escHtml(item)+'</div>'
@@ -157688,19 +157941,20 @@ function inspCampoRenderChecklistItems(domPrefix, itens, salvas){
         +inspCampoStatusBtnHtml('C',st)+inspCampoStatusBtnHtml('NC',st)+inspCampoStatusBtnHtml('NA',st)
         +'</div>'
         +'<textarea class="inp insp-campo-obs" id="'+id+'_obs" rows="2" placeholder="Observação (opcional)" oninput="inspCampoSalvarRascunhoLocal()">'+escHtml(ob)+'</textarea>'
+        +foto
         +'</div>';
     }
     return '<div class="insp-campo-item">'
       +'<div class="insp-campo-item-txt">'+escHtml(item)+'</div>'
       +'<div class="insp-campo-item-acoes">'
-      +'<select class="inp" id="'+id+'_s" aria-label="Status" onchange="inspCampoSalvarRascunhoLocal()">'
+      +'<select class="inp" id="'+id+'_s" aria-label="Status" onchange="inspCampoSalvarRascunhoLocal();inspCampoAtualizarFotoArea(\''+id+'\')">'
       +'<option value=""'+(!st?' selected':'')+'>—</option>'
       +'<option value="C"'+(st==='C'?' selected':'')+'>✅ C</option>'
       +'<option value="NC"'+(st==='NC'?' selected':'')+'>⚠️ NC</option>'
       +'<option value="NA"'+(st==='NA'?' selected':'')+'>➖ N/A</option>'
       +'</select>'
       +'<input class="inp" id="'+id+'_obs" placeholder="Observação..." value="'+escHtml(ob)+'" oninput="inspCampoSalvarRascunhoLocal()"/>'
-      +'</div></div>';
+      +'</div>'+foto+'</div>';
   }).join('');
 }
 function inspCampoSalvasDoRascunho(domPrefix, qtd){
@@ -157713,11 +157967,12 @@ function inspCampoSalvasDoRascunho(domPrefix, qtd){
   }
   return out;
 }
-function inspCampoBlocoCard(titulo, domPrefix, itens){
+function inspCampoBlocoCard(titulo, domPrefix, itens, fotoNc){
   var salvas=inspCampoSalvasDoRascunho(domPrefix, itens.length);
   return '<div class="card insp-campo-bloco" style="margin-bottom:1rem">'
-    +'<div class="ch"><span class="ct" style="font-size:13px">'+titulo+'</span></div>'
-    +'<div class="insp-campo-itens">'+inspCampoRenderChecklistItems(domPrefix,itens,salvas)+'</div></div>';
+    +'<div class="ch"><span class="ct" style="font-size:13px">'+titulo+'</span>'
+    +(fotoNc?'<span style="font-size:10px;color:#A32D2D;margin-left:auto">📷 NC exige foto</span>':'')+'</div>'
+    +'<div class="insp-campo-itens">'+inspCampoRenderChecklistItems(domPrefix,itens,salvas,fotoNc)+'</div></div>';
 }
 function inspCampoAfterRender(modulo){
   if(!_inspCampoAcaOk){
@@ -157744,10 +157999,12 @@ function inspCampoRenderWizard(){
     +'<span><b>Supervisão:</b> '+escHtml(meta.supervisor||'—')+'</span>'
     +'<span><b>Inspetor:</b> '+escHtml(meta.inspetor)+'</span>'
     +(meta.placa?'<span><b>Placa:</b> '+escHtml(meta.placa)+'</span>':'')
+    +(meta.local?'<span><b>Local:</b> '+escHtml(meta.local)+(meta.geo?' 📍':'')+'</span>':'')
     +'</div></div>';
-  html+=inspCampoBlocoCard('📄 Documentos','ic_doc', INSP_CAMPO_BLOCOS.documentos.itens);
-  html+=inspCampoBlocoCard('🚗 Veículo','ic_veic', INSP_CAMPO_BLOCOS.veiculo.itens);
-  html+=inspCampoBlocoCard('🏗️ Canteiro','ic_cant', INSP_CAMPO_BLOCOS.canteiro.itens);
+  INSP_CAMPO_BLOCOS_ORDEM.forEach(function(key){
+    var def=INSP_CAMPO_BLOCOS[key];
+    html+=inspCampoBlocoCard(def.icon+' '+def.label, def.prefixo, def.itens, def.fotoNc);
+  });
   meta.membros.forEach(function(m){
     html+=inspCampoBlocoCard('👷 '+m.nome+(m.re?' (RE '+m.re+')':'')+(m.motorista?' — Motorista':''), 'ic_col_'+m.id, INSP_CAMPO_BLOCOS.colaborador.itens);
   });
@@ -157782,29 +158039,41 @@ function inspCampoSetAba(aba){
   _inspCampoMeta.abaAtiva=aba;
   inspCampoRenderWizard();
 }
-function inspCampoColetarBloco(domPrefix, itens, grupoNome){
-  var respostas=[], conformes=0, nao_conformes=0, nao_aplicaveis=0, ncs=[];
+function inspCampoColetarBloco(domPrefix, itens, grupoNome, fotoNc){
+  var r=(_inspCampoMeta&&_inspCampoMeta.rascunho)||{};
+  var respostas=[], conformes=0, nao_conformes=0, nao_aplicaveis=0, ncs=[], semFoto=[];
   itens.forEach(function(item, ii){
     var sel=document.getElementById(domPrefix+'_'+ii+'_s');
     var obs=document.getElementById(domPrefix+'_'+ii+'_obs');
     var status=sel?sel.value:'';
     var observacao=obs?(obs.value||'').trim():'';
-    respostas.push({item:item, status:status, obs:observacao});
+    var fotos=(fotoNc&&status==='NC'&&r[domPrefix+'_'+ii]&&Array.isArray(r[domPrefix+'_'+ii].fotos))?r[domPrefix+'_'+ii].fotos.slice():[];
+    var resp={item:item, status:status, obs:observacao};
+    if(fotos.length) resp.fotos=fotos;
+    respostas.push(resp);
     if(status==='C') conformes++;
-    else if(status==='NC'){ nao_conformes++; ncs.push({item:item, grupo:grupoNome, observacao:observacao}); }
+    else if(status==='NC'){
+      nao_conformes++;
+      ncs.push({item:item, grupo:grupoNome, observacao:observacao, fotos:fotos});
+      if(fotoNc&&!fotos.length) semFoto.push(grupoNome+' — '+item);
+    }
     else if(status==='NA') nao_aplicaveis++;
   });
-  return {respostas:respostas, conformes:conformes, nao_conformes:nao_conformes, nao_aplicaveis:nao_aplicaveis, ncs:ncs};
+  return {respostas:respostas, conformes:conformes, nao_conformes:nao_conformes, nao_aplicaveis:nao_aplicaveis, ncs:ncs, sem_foto:semFoto};
 }
 function inspCampoSalvarWizard(){
   var meta=_inspCampoMeta;
   if(!meta) return;
+  if(_inspCampoFotosEnviando>0){ alert('Aguarde o envio das fotos terminar antes de finalizar.'); return; }
+  inspCampoCapturarParaMeta();
   var cfg=inspCampoModuloCfg(meta.modulo);
   var blocos={};
-  var totalC=0, totalNC=0, totalNA=0, todasNcs=[];
-  ['documentos','veiculo','canteiro'].forEach(function(key){
-    var prefix=key==='documentos'?'ic_doc':(key==='veiculo'?'ic_veic':'ic_cant');
-    var bl=inspCampoColetarBloco(prefix, INSP_CAMPO_BLOCOS[key].itens, INSP_CAMPO_BLOCOS[key].label);
+  var totalC=0, totalNC=0, totalNA=0, todasNcs=[], semFoto=[];
+  INSP_CAMPO_BLOCOS_ORDEM.forEach(function(key){
+    var def=INSP_CAMPO_BLOCOS[key];
+    var bl=inspCampoColetarBloco(def.prefixo, def.itens, def.label, def.fotoNc);
+    semFoto=semFoto.concat(bl.sem_foto);
+    delete bl.sem_foto;
     blocos[key]=bl;
     totalC+=bl.conformes; totalNC+=bl.nao_conformes; totalNA+=bl.nao_aplicaveis;
     bl.ncs.forEach(function(n){ n.bloco=key; todasNcs.push(n); });
@@ -157812,18 +158081,23 @@ function inspCampoSalvarWizard(){
   blocos.colaboradores={};
   meta.membros.forEach(function(m){
     var bl=inspCampoColetarBloco('ic_col_'+m.id, INSP_CAMPO_BLOCOS.colaborador.itens, 'Colaborador — '+m.nome);
+    delete bl.sem_foto;
     blocos.colaboradores[m.id]=bl;
     totalC+=bl.conformes; totalNC+=bl.nao_conformes; totalNA+=bl.nao_aplicaveis;
     bl.ncs.forEach(function(n){ n.bloco='colaborador'; n.colaborador_id=m.id; n.colaborador_nome=m.nome; todasNcs.push(n); });
   });
   var obsGeral=(document.getElementById('ic-obs-geral')||{}).value||'';
+  if(semFoto.length){
+    alert('Foto obrigatória para item não conforme:\n\n• '+semFoto.join('\n• ')+'\n\nTire a foto em cada item e finalize de novo.');
+    return;
+  }
   var resultado=totalNC>0?'negativo':'positivo';
   var inspecao={
     id:meta.id, tipo:'campo_vistoria', versao_campo:2, modulo:meta.modulo,
     contrato_id:meta.contrato_id, contrato:meta.contrato_label, contrato_label:meta.contrato_label,
     equipe_id:meta.equipe_id, equipe_codigo:meta.equipe_codigo,
     data:meta.data, local:meta.local||meta.equipe_codigo, inspetor:meta.inspetor,
-    supervisor:meta.supervisor, placa:meta.placa, membros:meta.membros,
+    supervisor:meta.supervisor, placa:meta.placa, membros:meta.membros, geo:meta.geo||null,
     blocos:blocos, resultado:resultado,
     conformes:totalC, nao_conformes:totalNC, nao_aplicaveis:totalNA,
     ncs_geradas:todasNcs.length, obs_geral:obsGeral,
@@ -157865,14 +158139,14 @@ function inspCampoLabelTipo(i){
 // Renderiza o checklist completo (item a item) da inspeção de campo, a partir de i.blocos
 function _inspCampoChecklistHtml(i){
   var bl=i.blocos||{};
-  if(!bl.documentos && !bl.veiculo && !bl.canteiro && !bl.colaboradores) return '';
+  if(!bl.documentos && !bl.veiculo && !bl.epcs && !bl.canteiro && !bl.colaboradores) return '';
   function icon(s){ return s==='C'?'<span style="color:#3B6D11;font-weight:700">✅</span>':s==='NC'?'<span style="color:#A32D2D;font-weight:700">🚫</span>':'<span style="color:#aaa">—</span>'; }
   function linhaResp(rp){
     if(!rp) return '';
     var it=rp.item; var txt=(it&&typeof it==='object')?(it.descricao||it.pergunta||it.texto||''):String(it==null?'':it);
     return '<div style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;border-bottom:.5px solid #f5f5f3">'
       +icon(rp.status)+'<div style="flex:1"><span style="font-size:11px">'+escHtml(txt)+'</span>'
-      +(rp.obs?'<div style="font-size:10px;color:#888;margin-top:1px">'+escHtml(rp.obs)+'</div>':'')+'</div></div>';
+      +(rp.obs?'<div style="font-size:10px;color:#888;margin-top:1px">'+escHtml(rp.obs)+'</div>':'')+inspCampoFotosThumbsHtml(rp.fotos)+'</div></div>';
   }
   function secao(titulo,bloco){
     if(!bloco||!bloco.respostas||!bloco.respostas.length) return '';
@@ -157882,6 +158156,7 @@ function _inspCampoChecklistHtml(i){
   var h='<div style="margin-top:.75rem;border-top:.5px solid #e0dfd8;padding-top:.6rem"><div style="font-size:12px;font-weight:700;margin-bottom:.5rem">📋 Checklist completo</div>';
   h+=secao('📄 Documentos',bl.documentos);
   h+=secao('🚗 Veículo',bl.veiculo);
+  h+=secao('🛡️ EPCs',bl.epcs);
   h+=secao('🏗️ Canteiro',bl.canteiro);
   var cols=bl.colaboradores||{}, membros=i.membros||[];
   Object.keys(cols).forEach(function(cid){
@@ -157912,7 +158187,8 @@ function inspCampoVerInspecao(modulo, id){
     +'<div style="background:#A32D2D20;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">NC</div><div style="font-size:20px;font-weight:700;color:#A32D2D">'+(i.nao_conformes||0)+'</div></div>'
     +'<div style="background:#88888820;border-radius:8px;padding:.6rem;text-align:center"><div style="font-size:9px;color:#666">Status gestor</div><div style="font-size:12px;font-weight:600">'+(i.status==='pendente_gestor'?'Pendente':'Visto')+'</div></div>'
     +'</div>'
-    +'<div style="font-size:12px;margin-bottom:.75rem"><b>Supervisão:</b> '+escHtml(i.supervisor||'—')+' · <b>Inspetor:</b> '+escHtml(i.inspetor||'—')+'</div>';
+    +'<div style="font-size:12px;margin-bottom:.75rem"><b>Supervisão:</b> '+escHtml(i.supervisor||'—')+' · <b>Inspetor:</b> '+escHtml(i.inspetor||'—')+'</div>'
+    +inspCampoLocalHtml(i);
   if(i.membros&&i.membros.length){
     html+='<div style="font-size:11px;margin-bottom:.75rem;color:#555"><b>Colaboradores:</b> '+i.membros.map(function(m){
       return escHtml(m.nome+(m.re?' (RE '+m.re+')':''));
@@ -158398,7 +158674,7 @@ function comgasRenderNCs() {
       +(n.criado_em?'🗓 '+n.criado_em.slice(0,10):'')
       +'</div>'
       +(qtdItens>1?inspCampoNcItensHtml(n):(obsResumo?'<div style="font-size:11px;color:#666;margin-top:3px">'+escHtml(obsResumo)+'</div>':''))
-+((n.fotos&&n.fotos.length)?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+n.fotos.map(function(f){return '<img src="'+f+'" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:.5px solid #e0dfd8;cursor:pointeronclick=\'comgasVerFoto(this.src)\'er foto"/>';}).join('')+'</div>':'')
++((n.fotos&&n.fotos.length)?'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+n.fotos.map(function(f){return '<img src="'+escHtml(f)+'" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:.5px solid #e0dfd8;cursor:pointer" onclick="comgasVerFoto(this.src)" title="Ver foto"/>';}).join('')+'</div>':'')
       +(pa_vinc.length?'<div style="font-size:10px;color:#185FA5;margin-top:3px">✅ '+pa_vinc.length+' plano(s) de ação vinculado(s)</div>':'')
       +'</div>'
       +'<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">'
