@@ -44770,10 +44770,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.171',
+  numero: '8.1.172',
   data:   '30/09/2026',
-  build:  '20260930-0900',
+  build:  '20260930-1000',
   log: [
+    {v:'8.1.172', d:'30/09/2026', itens:[
+      'Programação TMA — botão Sync Ponto: lotes de 5 matrículas (a API leva ~10 s por matrícula e o Azure corta a requisição em ~230 s; lotes de 15 estouravam e davam erro no navegador enquanto a API seguia gravando)',
+      'Sync Ponto: matrículas de lote com erro são conferidas em ponto_registros (gravadas desde o início do sync) antes de contar como erro; a mensagem final mostra quantas ficaram sem sincronizar e o motivo'
+    ]},
     {v:'8.1.171', d:'30/09/2026', itens:[
       'Portaria: ao confirmar a Vistoria de Saída, relê do servidor a placa programada da equipe; se a programação trocou o veículo depois que a tela carregou, atualiza a placa, avisa o porteiro e exige conferir e liberar de novo (sem conexão, pede confirmação da placa)',
       'Programação TMA: coluna OPERAÇÃO avisa ⚠ Saiu com <placa> · prog. <placa> quando a portaria registrou uma placa diferente da programada'
@@ -53174,11 +53178,15 @@ function progSyncPonto(opts){
   }
 
   var total = matriculas.length;
-  var BATCH = 15;
+  // Azure corta a requisição em ~230 s e a API leva ~10 s por matrícula: lote pequeno para não estourar.
+  var BATCH = 5;
   var idx = 0;
   var totSinc = 0;
   var totErr = 0;
   var dataSyncInicio = data;
+  var desdeIso = new Date(Date.now() - 60000).toISOString();
+  var matsFalha = [];
+  var ultimoErro = '';
 
   window._progSyncPontoAtivo = true;
   window._progSyncPontoProgress = '0/'+total;
@@ -53200,7 +53208,7 @@ function progSyncPonto(opts){
     pontoInvalidarCache();
     var dataAtual = progGetData();
     if(dataAtual !== dataSyncInicio){
-      progSyncPontoFinalizar('✅ Ponto sincronizado — '+dataSyncInicio+' ('+totSinc+'/'+total+')');
+      progSyncPontoFinalizar(progSyncPontoMsgFinal(dataSyncInicio, totSinc, total, totErr, ultimoErro, 0, ''));
       return;
     }
     progCarregarPontoDoSupabase(data, function(){
@@ -53222,10 +53230,7 @@ function progSyncPonto(opts){
       progRenderQuadro();
       setTimeout(function(){
         progCarregarBadgesPonto();
-        var msg = '✅ Ponto sincronizado — '+data+' ('+totSinc+'/'+total+')';
-        if(!opts.todos && rotuloCont) msg += ' ['+rotuloCont+']';
-        if(totErr > 0) msg += ' | '+totErr+' erro(s)';
-        if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
+        var msg = progSyncPontoMsgFinal(data, totSinc, total, totErr, ultimoErro, corrigidos, opts.todos ? '' : rotuloCont);
         progSyncPontoFinalizar(msg);
       }, 300);
     });
@@ -53233,7 +53238,13 @@ function progSyncPonto(opts){
 
   function proximoLote(){
     if(idx >= total){
-      progSyncPontoPosSync();
+      // Lote que deu erro no navegador pode ter sido gravado pela API mesmo assim (timeout do Azure): confere no banco.
+      progSyncPontoConferirFalhas(data, matsFalha, desdeIso).then(function(confirmados){
+        totSinc += confirmados.length;
+        totErr  += matsFalha.length - confirmados.length;
+        if(confirmados.length) console.log('[Sync Ponto]', confirmados.length, 'matrícula(s) de lote com erro confirmadas no banco');
+        progSyncPontoPosSync();
+      });
       return;
     }
     var ate = Math.min(idx + BATCH, total);
@@ -53254,10 +53265,11 @@ function progSyncPonto(opts){
       setTimeout(proximoLote, 200);
     })
     .catch(function(e){
-      totErr += lote.length;
+      matsFalha = matsFalha.concat(lote);
       idx = ate;
       var msg = e && e.message ? e.message : String(e);
       if(e && e.status === 503) msg = 'Nexus indisponível (503)';
+      ultimoErro = msg;
       console.warn('[Sync Ponto] lote', progTxt, msg);
       if(horaEl) horaEl.textContent = '⚠ lote com erro, continuando...';
       setTimeout(proximoLote, 500);
@@ -53265,6 +53277,26 @@ function progSyncPonto(opts){
   }
 
   proximoLote();
+}
+
+/** Das matrículas cujo lote falhou no navegador, devolve as que a API gravou em ponto_registros desde desdeIso. */
+function progSyncPontoConferirFalhas(data, mats, desdeIso){
+  if(!mats || !mats.length || DEMO || typeof sbFetch!=='function') return Promise.resolve([]);
+  return sbFetch('ponto_registros', {select:'re,consultado_em', filters:['data=eq.'+data, 'consultado_em=gte.'+desdeIso], limit:5000})
+  .then(function(rows){
+    var gravadas = {};
+    (rows||[]).forEach(function(r){ if(r && r.re!=null) gravadas[pontoReNorm(r.re)] = true; });
+    return mats.filter(function(m){ return gravadas[pontoReNorm(m)]; });
+  })
+  .catch(function(){ return []; });
+}
+
+function progSyncPontoMsgFinal(data, totSinc, total, totErr, ultimoErro, corrigidos, rotuloCont){
+  var msg = (totErr > 0 ? '⚠' : '✅')+' Ponto sincronizado — '+data+' ('+totSinc+'/'+total+')';
+  if(rotuloCont) msg += ' ['+rotuloCont+']';
+  if(totErr > 0) msg += ' | '+totErr+' sem sincronizar'+(ultimoErro ? ' — '+ultimoErro : '');
+  if(corrigidos > 0) msg += ' | '+corrigidos+' falta(s) corrigida(s)';
+  return msg;
 }
 
 // Carregar dados de ponto do Supabase (após sincronização ou ao abrir dia anterior)
