@@ -15,6 +15,7 @@ var PORT_OFF_RETRY = [0, 4000, 12000, 30000, 60000];
 
 var _db = null;
 var _syncing = false;
+var _syncDeNovo = false;
 var _syncTimer = null;
 var _probeOnline = null; // true/false/null
 var _locks = {};
@@ -798,38 +799,40 @@ async function portOffSyncVisita(ev){
 }
 
 async function portOffSyncPendentes(){
-  if(_syncing) return;
+  if(_syncing){ _syncDeNovo=true; return; }
   if(typeof DEMO!=='undefined' && DEMO) return;
-  portOffRenderIndicador();
-  var online=await portOffProbe();
-  if(!online){
-    portOffRenderIndicador();
-    return;
-  }
-  if(!portOffSessaoOk()){
-    portOffRenderIndicador();
-    return;
-  }
-  var lista=await portOffListEvents();
-  var fila=portOffOrdenarFila(lista.filter(function(e){
-    return e && (e.status_sync==='PENDENTE' || e.status_sync==='ERRO' || e.status_sync==='SINCRONIZANDO');
-  }));
-  if(!fila.length){
-    _backoffIdx=0;
-    portOffRenderIndicador();
-    await portOffLimparCacheSincronizado();
-    return;
-  }
+  // Trava antes de qualquer await: duas passadas simultâneas enviavam o mesmo evento e duplicavam a saída.
   _syncing=true;
-  portOffRenderIndicador();
-  var i, falhou=false;
-  for(i=0;i<fila.length;i++){
-    try{
-      await portOffSyncUm(fila[i]);
-    }catch(e){ falhou=true; }
+  _syncDeNovo=false;
+  var processou=false, falhou=false;
+  try{
     portOffRenderIndicador();
+    var online=await portOffProbe();
+    if(!online || !portOffSessaoOk()) return;
+    var lista=await portOffListEvents();
+    var fila=portOffOrdenarFila(lista.filter(function(e){
+      return e && (e.status_sync==='PENDENTE' || e.status_sync==='ERRO' || e.status_sync==='SINCRONIZANDO');
+    }));
+    if(!fila.length){
+      _backoffIdx=0;
+      await portOffLimparCacheSincronizado();
+      return;
+    }
+    processou=true;
+    portOffRenderIndicador();
+    var i;
+    for(i=0;i<fila.length;i++){
+      try{
+        await portOffSyncUm(fila[i]);
+      }catch(e){ falhou=true; }
+      portOffRenderIndicador();
+    }
+  } finally {
+    _syncing=false;
+    portOffRenderIndicador();
+    if(!processou && _syncDeNovo){ _syncDeNovo=false; portOffAgendarSync(); }
   }
-  _syncing=false;
+  if(!processou) return;
   if(falhou) _backoffIdx=Math.min(_backoffIdx+1, PORT_OFF_RETRY.length-1);
   else _backoffIdx=0;
   portOffRenderIndicador();
@@ -840,7 +843,7 @@ async function portOffSyncPendentes(){
     if(el && el.style.display!=='none') try{ portRenderRetorno(); }catch(e2){}
   }
   var ainda=await portOffContagem();
-  if(ainda.pendente+ainda.erro>0) portOffAgendarSync();
+  if(ainda.pendente+ainda.erro>0 || _syncDeNovo){ _syncDeNovo=false; portOffAgendarSync(); }
 }
 
 function portOffContagemFrom(lista){

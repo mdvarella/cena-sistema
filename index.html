@@ -2066,7 +2066,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.153"></script>
+<script src="portaria-offline.js?v=8.1.173"></script>
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.152"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
@@ -44770,10 +44770,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.172',
+  numero: '8.1.173',
   data:   '30/09/2026',
-  build:  '20260930-1000',
+  build:  '20260930-1100',
   log: [
+    {v:'8.1.173', d:'30/09/2026', itens:[
+      'Portaria: cada liberação gravava a saída duas vezes (duas sincronizações da fila offline rodavam juntas; a segunda caía na tentativa sem id e criava uma cópia sem modelo). O retorno fechava só uma das linhas e a outra ficava para sempre em Retornos em aberto',
+      'Fila offline da portaria: trava de sincronização ligada antes de qualquer espera (uma passada por vez; pedidos durante a passada reagendam)',
+      'Gravação da saída: id sempre definido no tablet, inclusive na tentativa reduzida, e antes de cada nova tentativa confere se a saída já foi gravada'
+    ]},
     {v:'8.1.172', d:'30/09/2026', itens:[
       'Programação TMA — botão Sync Ponto: lotes de 5 matrículas (a API leva ~10 s por matrícula e o Azure corta a requisição em ~230 s; lotes de 15 estouravam e davam erro no navegador enquanto a API seguia gravando)',
       'Sync Ponto: matrículas de lote com erro são conferidas em ponto_registros (gravadas desde o início do sync) antes de contar como erro; a mensagem final mostra quantas ficaram sem sincronizar e o motivo'
@@ -89775,9 +89780,18 @@ function portFotoCampoSrc(f){
   return f.url||f.b64||f.src||'';
 }
 
+/** Saída já gravada com este id (resposta perdida ou tentativa anterior concluída) → [linha]; senão null. */
+async function portSaidaJaGravada(id){
+  if(!id || typeof sbFetch!=='function') return null;
+  var rows=await sbFetch('frotas_portaria_saidas', {filters:['id=eq.'+id], limit:1});
+  return rows && rows[0] ? [rows[0]] : null;
+}
+
 /** Insere uma NOVA saída e grava cada foto no mesmo formato da carga (texto). */
 async function portInsertSaidaDB(saida){
   if(DEMO||!saida) return null;
+  // id sempre definido no cliente: a chave primária impede gravar a mesma saída duas vezes.
+  if(!saida.id || (typeof isUUID==='function' && !isUUID(String(saida.id)))) saida.id=gerarUUID();
   var kmUrl=await portUploadFotoSaida(saida.km_foto_url,'km');
   var cargaUrl=await portUploadFotoSaida(saida.foto_carga_saida_b64,'carga');
   var extras=[];
@@ -89802,6 +89816,7 @@ async function portInsertSaidaDB(saida){
   if(core.id && typeof isUUID==='function' && !isUUID(String(core.id))) delete core.id;
 
   var r=await sbInsert('frotas_portaria_saidas', core, {silent:true});
+  if(!r) r=await portSaidaJaGravada(core.id);
   if(!r){
     var semOff=portPickCols(saida, ['id','placa','modelo','tipo_liberacao','destino','km_saida','data_saida','status',
       'previsao_retorno','equipe','equipe_id','motorista','contrato_id','contrato_nome',
@@ -89810,10 +89825,12 @@ async function portInsertSaidaDB(saida){
     if(semOff.id && typeof isUUID==='function' && !isUUID(String(semOff.id))) delete semOff.id;
     r=await sbInsert('frotas_portaria_saidas', semOff, {silent:true});
   }
+  if(!r) r=await portSaidaJaGravada(core.id);
   if(!r){
-    var mini=portPickCols(saida, ['placa','km_saida','data_saida','status','equipe','equipe_id','motorista','liberado_por','obs','base_saida','contrato_id','contrato_nome','destino']);
+    var mini=portPickCols(saida, ['id','placa','km_saida','data_saida','status','equipe','equipe_id','motorista','liberado_por','obs','base_saida','contrato_id','contrato_nome','destino']);
     r=await sbInsert('frotas_portaria_saidas', mini, {silent:true});
   }
+  if(!r) r=await portSaidaJaGravada(core.id);
   if(!r) r=await sbInsert('frotas_portaria_saidas', core);
   if(r && r[0] && r[0].id) saida.id=r[0].id;
   var id=saida.id;
