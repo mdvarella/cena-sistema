@@ -86,8 +86,9 @@ c.portMesclarSaidas([
 ]);
 ok('EIN134: saída de hoje continua em campo', c.frt_portaria.some(p => p.id === 'a301a075' && p.status === 'Em campo'));
 
-ok('versão 8.1.181', /numero:\s*'8\.1\.181'/.test(html));
-ok('sw.js 8.1.181', sw.includes("SW_VERSION   = 'cena-8.1.181'"));
+ok('versão 8.1.181 no log', html.includes("{v:'8.1.181'"));
+var numAtual = (html.match(/numero:\s*'([\d.]+)'/) || [])[1];
+ok('sw.js acompanha a versão atual', !!numAtual && sw.includes("SW_VERSION   = 'cena-" + numAtual + "'"), numAtual);
 
 if (failed.length) { console.log('portaria-dedup-mesmo-dia: FALHOU ' + failed.length + '/' + total); failed.forEach(f => console.log('  ✗ ' + f)); process.exit(1); }
 console.log('portaria-dedup-mesmo-dia: OK ' + total + ' checagens');
