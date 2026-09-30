@@ -149,7 +149,8 @@ const NOMINATIM = { display_name: '1578, Avenida Paulista, Morro dos Ingleses, B
     JSON.stringify(B.documentos.itens) === JSON.stringify(['APR elaborada e assinada?', 'Permissão de trabalho em vigor?', 'PET emitida e assinada?', 'Ordem de Serviço disponível?', 'HAR válida?']), B.documentos.itens);
   ok('Veículo: sem "EPIs obrigatórios", com ensaio elétrico e acústico',
     !B.veiculo.itens.some(i => /EPIs obrigat/.test(i)) && B.veiculo.itens.includes('Ensaio elétrico em dia?') && B.veiculo.itens.includes('Ensaio acústico em dia?') && B.veiculo.itens.length === 9, B.veiculo.itens);
-  ok('EPCs: 18 itens na ordem pedida', B.epcs.itens.length === 18 && B.epcs.itens[0] === 'Bastão isolante' && B.epcs.itens[17] === 'Guarda-corpo' && B.epcs.itens.includes('Detector multigases'), B.epcs.itens);
+  ok('EPCs: 20 itens na ordem pedida', B.epcs.itens.length === 20 && B.epcs.itens[0] === 'Bastão isolante' && B.epcs.itens[17] === 'Guarda-corpo'
+    && B.epcs.itens[18] === 'Kit Ambiental' && B.epcs.itens[19] === 'Kit Rota de Fuga' && B.epcs.itens.includes('Detector multigases'), B.epcs.itens);
   ok('Colaborador: sem luvas adequadas, com Kit Trabalho em Altura',
     !B.colaborador.itens.some(i => /Luvas adequadas|Cinto para/.test(i)) && B.colaborador.itens.includes('Kit Trabalho em Altura (se aplicável)?'), B.colaborador.itens);
   const EPIS = ['Detector de tensão de capacete', 'Protetor auricular', 'Balaclava antichama', 'Protetor facial para arco elétrico', 'Luva isolante de borracha', 'Luva de cobertura',
