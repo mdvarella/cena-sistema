@@ -38,6 +38,9 @@ ALTER TABLE public.sot_materiais ADD CONSTRAINT sot_materiais_descritivo_sem_ope
 
 COMMIT;
 
+-- A API (PostgREST) só enxerga a coluna nova depois de recarregar o cache; sem isto o app recebe PGRST204.
+NOTIFY pgrst, 'reload schema';
+
 -- Validação (após aplicar):
 --   SELECT conname FROM pg_constraint WHERE conname IN ('sot_atividades_descritivo_sem_operacao','sot_materiais_descritivo_sem_operacao');
 --   SELECT count(*) FROM public.sot_atividades WHERE somente_descritivo;   -- 0 logo após aplicar
