@@ -70,6 +70,16 @@ function sandbox(opts) {
     ok('Reserva: busca uma vez e não entra em loop', c.fetches === 1 && /Nenhum material programado/.test(cont.innerHTML), { fetches: c.fetches, html: cont.innerHTML });
     ok('Reserva: descritivo do banco não entra na lista', c.sot_materiais_proj.length === 0);
   }
+  {
+    const c = { String };
+    vm.createContext(c);
+    vm.runInContext(fn('sotContagemAba'), c);
+    ok('contador da aba: só descritivos', c.sotContagemAba([], [1, 2, 3, 4, 5, 6]) === '0 + 6 descritivos');
+    ok('contador da aba: misto e singular', c.sotContagemAba([1, 2], [1]) === '2 + 1 descritivo');
+    ok('contador da aba: sem descritivos', c.sotContagemAba([1, 2, 3], []) === '3' && c.sotContagemAba(null, null) === '0');
+    ok('abas Atividades/Materiais usam o contador', /atividades:'📋 Atividades \('\+sotContagemAba\(sot_atividades,sot_atividades_desc\)/.test(html)
+      && /materiais:'📦 Materiais \('\+sotContagemAba\(sot_materiais_proj,sot_materiais_desc\)/.test(html));
+  }
   ok('abrir projeto separa descritivos', /sot_atividades {6}= \(res\[0\]\|\|\[\]\)\.filter\(function\(a\)\{ return !a\.somente_descritivo; \}\);/.test(html)
     && /sot_materiais_desc {2}= \(res\[1\]\|\|\[\]\)\.filter\(function\(m\)\{ return !!m\.somente_descritivo; \}\);/.test(html));
   ok('PLPT e Resumo sem descritivos', /pj\._materiais {3}= \(res\[1\]\|\|\[\]\)\.filter\(function\(m\)\{ return !m\.somente_descritivo; \}\);/.test(html)
