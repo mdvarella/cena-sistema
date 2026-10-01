@@ -22,7 +22,8 @@ function fn(nome) {
 const vr = nome => { const i = html.indexOf('\nvar ' + nome + ' ') + 1; if (i < 1) throw new Error('var ' + nome); return html.slice(i, html.indexOf('\n', i)); };
 const codigo = ['SOT_LMS_ABA_RE', 'SOT_LMS_EXTRACAO_RE', 'SOT_LMS_CONFERENCIA_MIN'].map(vr)
   .concat(['sotLmsNum', 'sotLmsNormCodProjeto', 'sotLmsNormCodMaterial', 'sotLmsExtrair', 'sotLmsLerPlanilha', 'sotLmsAplicar',
-    '_sotPendentesDoModal', '_sotLancarPendentes', 'sotSalvarProjeto', 'sotListaHandleFile'].map(fn)).join('\n');
+    '_sotPendentesDoModal', 'sotParseContratosIds', 'sotFiltrarMatsContrato', 'sotBuildListaAlmSAP', 'sotCarregarCatalogoAlmSAP',
+    '_sotCatalogoAlmSAPContrato', '_sotLancarPendentes', 'sotSalvarProjeto', 'sotListaHandleFile'].map(fn)).join('\n');
 
 const PID = '20002920-9d52-4b6d-878d-9870da3fb62a';
 const CID = '3925df4e-7e39-498d-8c96-891a7f4d415c';
@@ -68,7 +69,14 @@ function sandbox(opts) {
     sbFetch: async (t, o) => { c.fetches.push({ t, o }); if (opts.fetchFalha) return null; return (opts.atuais || {})[t] || []; },
     sbInsert: async (t, d) => { c.inserts.push({ t, d }); if ((opts.insertFalha || []).includes(t)) return null; return (Array.isArray(d) ? d : [d]).map((x, i) => Object.assign({ id: (t === 'sot_projetos' ? NOVO_ID : t + '-' + i) }, x)); },
     sbUpdate: async () => true,
-    catalogo_materiais: [{ codigo_sap: '336822', descricao: 'CONECTOR CATÁLOGO', unidade: 'PC' }],
+    // catálogo sem vínculo com o contrato não serve; Almoxarifado SAP = Estoque SAP do contrato + materiais_sap
+    catalogo_materiais: [{ codigo_sap: '348140', descricao: 'CABO SEM CONTRATO', unidade: 'KG' }],
+    alm_movimentos: [{}], almCalcularSaldo() { c.saldoCalculado = (c.saldoCalculado || 0) + 1; },
+    alm_estoque: opts.almEstoque || [
+      { material_id: 'm1', contrato_id: CID, codigo_sap: '336822', material_desc: 'CONECTOR SAP', unidade: 'PC', saldo: 10 },
+      { material_id: 'm2', contrato_id: 'outro', codigo_sap: '348140', material_desc: 'CABO OUTRO CONTRATO', unidade: 'M', saldo: 5 },
+    ],
+    mat_sap: [{ id: 'ms1', contrato_id: CID, codigo_sap: '000348165', descricao: 'TERMINAL SAP', unidade: 'CJ' }],
     servicos: [
       { id: 'sv1', contrato_id: CID, codigo: 'I-0336822', descricao: 'MO INSTAL CONECTOR', unidade: 'UN', qtd_ups: 0.2, valor_ups: 216.54, valor_hora: 0 },
       { id: 'sv2', contrato_id: CID, codigo: 'R-0336839', descricao: 'MO RETIR PROTETOR', unidade: 'UN', qtd_ups: 0.1, valor_ups: 0, valor_hora: 50 },
@@ -173,15 +181,21 @@ const esperar = () => new Promise(r => setTimeout(r, 0));
     ok('lançar: um lote por tabela', c.inserts.length === 2 && Array.isArray(im.d) && Array.isArray(is.d));
     ok('materiais: colunas reais de sot_materiais', im.d.every(m => m.projeto_id === PID && 'codigo_sap' in m && 'descricao' in m && 'qtd_projetada' in m && m.qtd_requisitada === 0
       && !('codigo' in m) && !('nome' in m) && !('quantidade' in m) && !('status' in m) && !('catalogo_id' in m)), im.d[0]);
-    ok('materiais: já existente não duplica', JSON.stringify(im.d.map(m => m.codigo_sap)) === JSON.stringify(['336822', '348140', '348165']), im.d.map(m => m.codigo_sap));
-    ok('materiais: descrição da planilha, unidade do catálogo', im.d[0].descricao === 'CONEC,TERM,TORQ,BI' && im.d[0].unidade === 'PC' && im.d[1].unidade === 'UN' && im.d[0].qtd_projetada === 8);
+    ok('materiais: já existente não duplica', JSON.stringify(im.d.map(m => m.codigo_sap)) === JSON.stringify(['336822', '348140', '000348165']), im.d.map(m => m.codigo_sap));
+    ok('materiais: descrição e unidade do Almoxarifado SAP do contrato', im.d[0].descricao === 'CONECTOR SAP' && im.d[0].unidade === 'PC' && im.d[0].qtd_projetada === 8
+      && im.d[0].observacao === 'Planilha LMS — aba LMS - F', im.d[0]);
+    ok('materiais: código com zeros à esquerda no SAP encontrado', im.d[2].descricao === 'TERMINAL SAP' && im.d[2].unidade === 'CJ' && im.d[2].qtd_projetada === 3, im.d[2]);
+    ok('materiais: SAP de outro contrato e catálogo sem vínculo não são usados', im.d[1].descricao === 'CABO XLPE 240' && im.d[1].unidade === 'UN'
+      && im.d[1].observacao === 'Planilha LMS — aba LMS - F · sem cadastro no Almoxarifado SAP do contrato', im.d[1]);
     ok('serviços: colunas reais de sot_atividades', is.d.every(a => a.projeto_id === PID && 'qtd_prevista' in a && a.status === 'pendente' && !('nome' in a) && !('quantidade' in a) && !('tipo_servico_id' in a) && !('valor_total' in a)), is.d[0]);
     ok('serviços: já existente (maiúsc./minúsc.) não duplica', JSON.stringify(is.d.map(a => a.codigo)) === JSON.stringify(['I-0336822', 'I-AHO999']), is.d.map(a => a.codigo));
     ok('serviços: ligados ao cadastro do contrato com valor UPS', is.d[0].servico_id === 'sv1' && is.d[0].valor_unitario === 216.54 && is.d[0].qtd_prevista === 6);
-    ok('serviços: cadastro de outro contrato não é usado', is.d[1].servico_id === null && is.d[1].valor_unitario === 0);
+    ok('serviços: cadastro de outro contrato não é usado', is.d[1].servico_id === null && is.d[1].valor_unitario === 0
+      && /sem cadastro na lista de serviços do contrato$/.test(is.d[1].observacoes) && !/sem cadastro/.test(is.d[0].observacoes), is.d.map(a => a.observacoes));
     ok('serviços: ordem continua após os existentes', is.d[0].ordem_exec === 2 && is.d[1].ordem_exec === 3);
     const t = c.toasts[c.toasts.length - 1];
-    ok('aviso: lançados, mantidos e sem cadastro', t.tipo === 'ok' && /Lançados no projeto: 3 material\(is\) e 2 serviço\(s\)/.test(t.msg) && /2 já existiam/.test(t.msg) && /1 serviço\(s\) sem cadastro no contrato \(sem valor\): I-AHO999/.test(t.msg), t.msg);
+    ok('aviso: lançados, mantidos e sem cadastro', t.tipo === 'ok' && /Lançados no projeto: 3 material\(is\) e 2 serviço\(s\)/.test(t.msg) && /2 já existiam/.test(t.msg) && /1 serviço\(s\) sem cadastro no contrato \(sem valor\): I-AHO999/.test(t.msg)
+      && /1 material\(is\) sem cadastro no Almoxarifado SAP do contrato: 348140/.test(t.msg), t.msg);
     ok('projeto aberto é recarregado', c.abriu.includes(PID));
   }
   {
@@ -190,6 +204,7 @@ const esperar = () => new Promise(r => setTimeout(r, 0));
     const is = c.inserts.find(i => i.t === 'sot_atividades');
     ok('serviço sem UPS usa valor hora', is.d[0].valor_unitario === 50 && is.d[0].servico_id === 'sv2');
     ok('só serviços: aviso não cita 0 materiais', !/material/.test(c.toasts[0].msg), c.toasts[0].msg);
+    ok('só serviços: catálogo SAP não é carregado', !c.saldoCalculado);
   }
   {
     const c = sandbox({ fetchFalha: true });
@@ -211,7 +226,7 @@ const esperar = () => new Promise(r => setTimeout(r, 0));
     const c = sandbox();
     await c._sotLancarPendentes(PID, CID, { materiais: [{ codigo: '', nome: 'Cabo 35mm²', qtd: 100, unidade: 'm' }], servicos: [{ tipo_id: 'ts1', nome: 'Instalação de poste', qtd: 5 }] });
     const im = c.inserts.find(i => i.t === 'sot_materiais'), is = c.inserts.find(i => i.t === 'sot_atividades');
-    ok('IA genérica: material sem código grava com descrição', im.d[0].descricao === 'Cabo 35mm²' && im.d[0].unidade === 'm' && im.d[0].qtd_projetada === 100 && im.d[0].observacao === 'Lançado pela IA');
+    ok('IA genérica: material sem código grava com descrição', im.d[0].descricao === 'Cabo 35mm²' && im.d[0].unidade === 'm' && im.d[0].qtd_projetada === 100 && im.d[0].observacao === 'Lançado pela IA · sem cadastro no Almoxarifado SAP do contrato', im.d[0]);
     ok('IA genérica: serviço sem código grava sem cadastro', is.d[0].descricao === 'Instalação de poste' && is.d[0].servico_id === null && !('tipo_id' in is.d[0]));
   }
 

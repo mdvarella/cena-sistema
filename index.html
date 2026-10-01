@@ -42378,6 +42378,13 @@ function _sotPendentesDoModal(){
   return r && (r.materiais.length || r.servicos.length) ? r : null;
 }
 
+function _sotCatalogoAlmSAPContrato(contratoId){
+  return new Promise(function(res){
+    if(typeof sotCarregarCatalogoAlmSAP !== 'function'){ res([]); return; }
+    sotCarregarCatalogoAlmSAP(contratoId, function(){ res(sotBuildListaAlmSAP(contratoId || '')); });
+  });
+}
+
 async function _sotLancarPendentes(projetoId, contratoId, pend){
   var mats = (pend && pend.materiais) || [];
   var srvs = (pend && pend.servicos)  || [];
@@ -42394,23 +42401,33 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
     return;
   }
 
-  var jaMat = {}, jaAt = {}, pulados = 0, semCadastro = [];
-  atuais[0].forEach(function(x){ jaMat[String(x.codigo_sap||'').trim()] = true; });
+  var chaveMat = function(v){ return sotLmsNormCodMaterial(v).toUpperCase(); };
+  var jaMat = {}, jaAt = {}, pulados = 0, semCadastro = [], semCadMat = [];
+  atuais[0].forEach(function(x){ jaMat[chaveMat(x.codigo_sap)] = true; });
   atuais[1].forEach(function(x){ jaAt[String(x.codigo||'').trim().toUpperCase()] = true; });
 
-  var catM = typeof catalogo_materiais !== 'undefined' ? (catalogo_materiais || []) : [];
+  var catAlm = {};
+  if(mats.length){
+    (await _sotCatalogoAlmSAPContrato(contratoId)).forEach(function(x){
+      var k = chaveMat(x.codigo_sap);
+      if(k && !catAlm[k]) catAlm[k] = x;
+    });
+  }
   var insM = [];
   mats.forEach(function(m){
     var cod = String(m.codigo||'').trim();
-    if(cod && jaMat[cod]){ pulados++; return; }
-    var c = cod ? catM.find(function(x){ return String(x.codigo_sap||'').trim() === cod; }) : null;
-    var desc = String(m.nome||'').trim() || (c ? String(c.descricao||'') : '') || cod;
+    var k = chaveMat(cod);
+    if(k && jaMat[k]){ pulados++; return; }
+    var c = k ? catAlm[k] : null;
+    var desc = (c ? String(c.descricao||'').trim() : '') || String(m.nome||'').trim() || cod;
     if(!desc) return;
-    if(cod) jaMat[cod] = true;
-    insM.push({projeto_id:projetoId, codigo_sap:cod, descricao:desc,
-      unidade:String(m.unidade||'').trim() || (c && c.unidade) || 'UN',
+    if(k) jaMat[k] = true;
+    if(!c) semCadMat.push(cod || desc);
+    insM.push({projeto_id:projetoId, codigo_sap:c ? String(c.codigo_sap).trim() : cod, descricao:desc,
+      unidade:(c && c.unidade) || String(m.unidade||'').trim() || 'UN',
       qtd_projetada:Number(m.qtd||0), qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0,
-      qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0, observacao:m.obs||'Lançado pela IA'});
+      qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
+      observacao:(m.obs||'Lançado pela IA') + (c ? '' : ' · sem cadastro no Almoxarifado SAP do contrato')});
   });
 
   var catS = (typeof servicos !== 'undefined' ? (servicos || []) : []).filter(function(s){
@@ -42432,7 +42449,7 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
       qtd_prevista:Number(s.qtd||0),
       valor_unitario:sc ? (Number(sc.valor_ups||0) > 0 ? Number(sc.valor_ups) : Number(sc.valor_hora||0)) : 0,
       qtd_executada:0, qtd_medida:0, qtd_viabilizada:0, ordem_exec:ordem++, status:'pendente',
-      observacoes:s.obs||'Lançado pela IA', servico_id:sc ? sc.id : null});
+      observacoes:(s.obs||'Lançado pela IA') + (sc ? '' : ' · sem cadastro na lista de serviços do contrato'), servico_id:sc ? sc.id : null});
   });
 
   var okM = insM.length ? await sbInsert('sot_materiais', insM) : [];
@@ -42442,6 +42459,7 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
   if(okS && insS.length) partes.push(insS.length+' serviço(s)');
   var msg = (partes.length ? '✅ Lançados no projeto: '+partes.join(' e ') : '')
     + (pulados ? ' · '+pulados+' já existiam e foram mantidos' : '')
+    + (okM && semCadMat.length ? ' · '+semCadMat.length+' material(is) sem cadastro no Almoxarifado SAP do contrato: '+semCadMat.slice(0,5).join(', ')+(semCadMat.length>5?'…':'') : '')
     + (okS && semCadastro.length ? ' · '+semCadastro.length+' serviço(s) sem cadastro no contrato (sem valor): '+semCadastro.slice(0,5).join(', ')+(semCadastro.length>5?'…':'') : '');
   if(!okM || !okS){
     progShowToast('⚠ Erro ao gravar '+(!okM?'os materiais':'')+(!okM&&!okS?' e ':'')+(!okS?'os serviços':'')+' — nada desse grupo foi gravado.'+(msg?' '+msg:''),'erro');
@@ -45470,10 +45488,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.189',
+  numero: '8.1.190',
   data:   '01/10/2026',
-  build:  '20261001-1700',
+  build:  '20261001-1800',
   log: [
+    {v:'8.1.190', d:'01/10/2026', itens:[
+      'Projetos — lista de materiais da planilha/IA: o material agora é buscado no Almoxarifado SAP do contrato do projeto (Estoque SAP + catálogo SAP, o mesmo do "+ Material"), com descrição e unidade do SAP. Antes procurava só em catalogo_materiais, que não tem os materiais do RDSE. Material ou serviço sem cadastro no contrato é lançado com aviso e marcado na observação.',
+    ]},
     {v:'8.1.189', d:'01/10/2026', itens:[
       'Projetos — Lista de Materiais e Serviços: planilha LMS (.xlsx/.xlsb) é lida só pela aba LMS (ex.: "LMS - F"): materiais = código numérico (só Instalação, FT I; retirada não entra), serviços = demais códigos (I e R), quantidade = Quan. Plan (ou Quan. Real se vazia), itens repetidos somados. Antes ia para a IA só o texto das 3 primeiras abas.',
       'Projetos — planilha LMS desatualizada (itens que não aparecem na Extração_205/RESB do mesmo arquivo) ou de outro projeto é recusada sem lançar nada.',
