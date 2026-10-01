@@ -323,9 +323,12 @@ function estaticos() {
   const NOVAS = ['sotCroquiIaPrompt', 'sotCroquiNorm', 'sotCroquiEsc', 'sotCroquiJsonCompleto', 'sotCroquiValidarResposta', 'sotCroquiInterpretarResposta', 'sotCroquiPlanejar', 'sotCroquiAplicarPlano', 'sotCroquiMostrarAvisos'];
   const alteradas = Object.keys(bA).filter(n => JSON.stringify(bA[n]) !== JSON.stringify(bN[n] || null));
   ok('somente sotAnalisarCroquiIA, sotCroquiHandleFile e sotModalProjeto alteradas', alteradas.length === PERMITIDAS.length && alteradas.every(n => PERMITIDAS.includes(n)), alteradas);
-  const doCroqui = PERMITIDAS.concat(NOVAS);
+  // sotModalProjeto também monta o upload da lista de materiais (alterado em 8.1.189): ali só o trecho do croqui é conferido.
+  const doCroqui = PERMITIDAS.concat(NOVAS).filter(n => n !== 'sotModalProjeto');
   ok('funções do croqui intactas na versão atual', doCroqui.every(n => JSON.stringify(bN[n]) === JSON.stringify(bAtual[n])),
     doCroqui.filter(n => JSON.stringify(bN[n]) !== JSON.stringify(bAtual[n])));
+  const trechoCroqui = b => (b || []).join('\n').split('\n').filter(l => /croqui/i.test(l)).join('\n');
+  ok('trecho do croqui em sotModalProjeto intacto', trechoCroqui(bN.sotModalProjeto).length > 500 && trechoCroqui(bN.sotModalProjeto) === trechoCroqui(bAtual.sotModalProjeto));
   const criadas = Object.keys(bN).filter(n => !bA[n]);
   ok('funções novas só do croqui', JSON.stringify(criadas.sort()) === JSON.stringify(NOVAS.slice().sort()), criadas);
   ['_sotParseJsonRespostaIA', 'sotAnalisarListaIA', '_sotAnalisarTextoColado', '_sotAplicarResultadoLista', 'sotProjAtualizarSupEnc', 'projBuildColabOpts',

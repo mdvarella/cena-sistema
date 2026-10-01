@@ -41335,9 +41335,9 @@ function sotModalProjeto(p){
     +'ondrop="event.preventDefault();sotListaHandleFile(event.dataTransfer.files[0])">'
     +'<div style="font-size:18px;margin-bottom:3px">📄</div>'
     +'<div style="font-size:12px;color:#555;font-weight:500">Clique ou arraste a lista de materiais e serviços</div>'
-    +'<div style="font-size:11px;color:#aaa;margin-top:2px">PDF, Excel, Word, imagem</div>'
+    +'<div style="font-size:11px;color:#aaa;margin-top:2px">PDF, Excel (.xlsx/.xlsb — planilha LMS: só a aba LMS), Word, imagem</div>'
     +'</div>'
-    +'<input type="file" id="sot-lista-file" accept=".pdf,.xlsx,.xls,.doc,.docx,.png,.jpg,.jpeg" style="display:none" onchange="sotListaHandleFile(this.files[0])">'
+    +'<input type="file" id="sot-lista-file" accept=".pdf,.xlsx,.xls,.xlsb,.xlsm,.doc,.docx,.png,.jpg,.jpeg" style="display:none" onchange="sotListaHandleFile(this.files[0])">'
     +'<div style="margin-top:.5rem;display:flex;align-items:center;gap:8px">'
     +'<button type="button" id="sot-lista-ia-btn" onclick="sotAnalisarListaIA()" style="display:none;background:#3B6D11;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:600">🤖 Analisar e Lançar com IA</button>'
     +'<span id="sot-lista-status" style="font-size:11px;color:#888"></span>'
@@ -41574,6 +41574,9 @@ function sotCroquiInitExistente(url){
 
 function sotListaHandleFile(file){
   if(!file) return;
+  window._sotPendingMateriais = null;
+  window._sotPendingServicos  = null;
+  window._sotPendingModalRef  = null;
   var status = document.getElementById('sot-lista-status');
   var btn    = document.getElementById('sot-lista-ia-btn');
   var drop   = document.getElementById('sot-lista-drop');
@@ -42043,6 +42046,7 @@ function _sotAplicarResultadoLista(parsed, st, btn){
   }
   window._sotPendingMateriais = parsed.materiais || [];
   window._sotPendingServicos  = parsed.servicos  || [];
+  window._sotPendingModalRef  = document.getElementById('sot-lista-drop');
   var nMat = (parsed.materiais||[]).length;
   var nSrv = (parsed.servicos||[]).length;
   if(st) st.textContent = '✅ '+nMat+' material(is) e '+nSrv+' serviço(s) prontos para lançar ao salvar';
@@ -42050,6 +42054,128 @@ function _sotAplicarResultadoLista(parsed, st, btn){
   if(btn){ btn.disabled=false; btn.textContent='🤖 Analisar e Lançar com IA'; }
 }
 
+
+// Planilha LMS (Lista de Materiais e Serviços da concessionária): só a aba "LMS..." entra na extração.
+// Extração_205/RESB servem apenas para conferir se a LMS é deste projeto (tabela dinâmica desatualizada traz itens de outra obra).
+var SOT_LMS_ABA_RE = /^\s*LMS\b/i;
+var SOT_LMS_EXTRACAO_RE = /^\s*Extra[cç][aã]o_(205|RESB)\s*$/i;
+var SOT_LMS_CONFERENCIA_MIN = 0.5;
+
+function sotLmsNum(v){
+  if(typeof v === 'number') return isFinite(v) ? v : 0;
+  var s = String(v==null?'':v).trim();
+  if(!s) return 0;
+  if(s.indexOf(',') >= 0) s = s.replace(/\./g,'').replace(',','.');
+  var n = Number(s);
+  return isFinite(n) ? n : 0;
+}
+
+function sotLmsNormCodProjeto(s){ return String(s==null?'':s).toUpperCase().replace(/[^A-Z0-9]/g,''); }
+
+function sotLmsNormCodMaterial(s){ return String(s==null?'':s).trim().replace(/^0+(?=\d)/,''); }
+
+function sotLmsExtrair(aba, linhas, extracoes){
+  var r = {aba:aba, materiais:[], servicos:[], retiradaMateriais:0, semQtd:0, projeto:'', conferencia:null, erro:''};
+  var txt = function(v){ return String(v==null?'':v).trim(); };
+  var iCab = -1, cab = [];
+  for(var i=0; i<linhas.length && iCab<0; i++){
+    var l = (linhas[i]||[]).map(txt);
+    if(l.some(function(v){ return /^c[oó]digo$/i.test(v); }) && l.some(function(v){ return /^descri/i.test(v); })){ iCab = i; cab = l; }
+  }
+  if(iCab < 0){ r.erro = 'Aba "'+aba+'" sem a linha de cabeçalho Código / Descrição.'; return r; }
+  var col = function(re){ for(var k=0; k<cab.length; k++){ if(re.test(cab[k])) return k; } return -1; };
+  var cCod = col(/^c[oó]digo$/i), cDesc = col(/^descri/i), cFT = col(/^FT$/i), cPlan = col(/plan/i), cReal = col(/real/i);
+  if(cPlan < 0 && cReal < 0){ r.erro = 'Aba "'+aba+'" sem coluna de quantidade (Quan. Plan / Quan. Real).'; return r; }
+  var obs = 'Planilha LMS — aba '+aba;
+  var mats = {}, srvs = {}, ordemM = [], ordemS = [];
+  linhas.slice(iCab+1).forEach(function(row){
+    row = row || [];
+    var cod = txt(row[cCod]);
+    if(!cod || cod === '0') return;
+    var qtd = cPlan >= 0 ? sotLmsNum(row[cPlan]) : 0;
+    if(!(qtd > 0) && cReal >= 0) qtd = sotLmsNum(row[cReal]);
+    if(!(qtd > 0)){ r.semQtd++; return; }
+    var ft = cFT >= 0 ? txt(row[cFT]).toUpperCase() : '';
+    var desc = cDesc >= 0 ? txt(row[cDesc]) : '';
+    if(/^\d+$/.test(cod)){
+      if(ft === 'R'){ r.retiradaMateriais++; return; }
+      if(!mats[cod]){ mats[cod] = {codigo:cod, nome:desc, qtd:0, obs:obs}; ordemM.push(cod); }
+      mats[cod].qtd += qtd;
+    } else {
+      var k = cod.toUpperCase();
+      if(!srvs[k]){ srvs[k] = {codigo:cod, nome:desc, qtd:0, obs:obs}; ordemS.push(k); }
+      srvs[k].qtd += qtd;
+    }
+  });
+  var arred = function(x){ return Math.round(x*10000)/10000; };
+  r.materiais = ordemM.map(function(c){ mats[c].qtd = arred(mats[c].qtd); return mats[c]; });
+  r.servicos  = ordemS.map(function(c){ srvs[c].qtd = arred(srvs[c].qtd); return srvs[c]; });
+
+  var codsEx = {}, nEx = 0;
+  (extracoes||[]).forEach(function(ex){
+    var ls = ex.linhas || [];
+    if(!ls.length) return;
+    var h = (ls[0]||[]).map(txt);
+    var cM = h.indexOf('Material'), cP = -1;
+    h.forEach(function(v, k){ if(cP < 0 && /^defini[cç][aã]o do projeto$/i.test(v)) cP = k; });
+    ls.slice(1).forEach(function(row){
+      row = row || [];
+      if(!r.projeto && cP >= 0 && txt(row[cP])) r.projeto = txt(row[cP]);
+      var c = cM >= 0 ? sotLmsNormCodMaterial(row[cM]) : '';
+      if(c && !codsEx[c]){ codsEx[c] = true; nEx++; }
+    });
+  });
+  if(nEx && r.materiais.length){
+    var batem = r.materiais.filter(function(m){ return codsEx[sotLmsNormCodMaterial(m.codigo)]; }).length;
+    r.conferencia = {batem:batem, total:r.materiais.length};
+    if(batem < r.materiais.length * SOT_LMS_CONFERENCIA_MIN){
+      r.erro = 'A aba "'+aba+'" não corresponde à extração SAP desta planilha'+(r.projeto?' ('+r.projeto+')':'')
+        +': só '+batem+' de '+r.materiais.length+' materiais aparecem na Extração_205/RESB. A WL / tabela dinâmica da LMS está desatualizada'
+        +' — atualize no Excel (Dados > Atualizar Tudo), salve e envie de novo.';
+      return r;
+    }
+  }
+  if(!r.materiais.length && !r.servicos.length) r.erro = 'Aba "'+aba+'" sem itens com quantidade.';
+  return r;
+}
+
+// Retorna null quando a planilha não tem aba LMS (segue a análise genérica).
+function sotLmsLerPlanilha(XL, b64){
+  var nomes = XL.read(b64, {type:'base64', bookSheets:true}).SheetNames || [];
+  var aba = nomes.filter(function(n){ return SOT_LMS_ABA_RE.test(n); })[0];
+  if(!aba) return null;
+  var extras = nomes.filter(function(n){ return SOT_LMS_EXTRACAO_RE.test(n); });
+  var wb = XL.read(b64, {type:'base64', sheets:[aba].concat(extras)});
+  var aoa = function(n){ return wb.Sheets[n] ? XL.utils.sheet_to_json(wb.Sheets[n], {header:1, defval:'', blankrows:false, raw:true}) : []; };
+  return sotLmsExtrair(aba, aoa(aba), extras.map(function(n){ return {nome:n, linhas:aoa(n)}; }));
+}
+
+function sotLmsAplicar(lms, st){
+  window._sotPendingMateriais = null;
+  window._sotPendingServicos  = null;
+  window._sotPendingModalRef  = null;
+  var codEl = document.getElementById('sot-p-codigo');
+  var codForm = codEl ? String(codEl.value||'').trim() : '';
+  var erro = lms.erro;
+  if(!erro && lms.projeto && codForm && sotLmsNormCodProjeto(lms.projeto) !== sotLmsNormCodProjeto(codForm)){
+    erro = 'A planilha é do projeto '+lms.projeto+' e este projeto é '+codForm+'.';
+  }
+  if(erro){
+    if(st) st.textContent = '⚠ '+erro+' Nada foi preparado para lançar.';
+    progShowToast('⚠ '+erro, 'erro');
+    return false;
+  }
+  if(codEl && !codForm && lms.projeto) codEl.value = lms.projeto;
+  window._sotPendingMateriais = lms.materiais;
+  window._sotPendingServicos  = lms.servicos;
+  window._sotPendingModalRef  = document.getElementById('sot-lista-drop');
+  var msg = 'Aba "'+lms.aba+'": '+lms.materiais.length+' material(is) e '+lms.servicos.length+' serviço(s) prontos para lançar ao salvar'
+    + (lms.conferencia ? ' · '+lms.conferencia.batem+'/'+lms.conferencia.total+' materiais conferidos na extração SAP' : '')
+    + (lms.retiradaMateriais ? ' · '+lms.retiradaMateriais+' material(is) de retirada (FT R) não entram' : '');
+  if(st) st.textContent = '✅ '+msg;
+  progShowToast('✅ '+msg+'. Salve o projeto para lançar.');
+  return true;
+}
 
 async function sotAnalisarListaIA(){
   var btn  = document.getElementById('sot-lista-ia-btn');
@@ -42082,6 +42208,19 @@ async function sotAnalisarListaIA(){
     var imgMime = acceptedMime.indexOf(mime) >= 0 ? mime : 'image/jpeg';
     contentBlocks.push({type:'image', source:{type:'base64',media_type:imgMime,data:b64}});
   } else {
+    if(st) st.textContent = '⏳ Lendo planilha...';
+    var lms = null;
+    try{
+      if(typeof XLSX === 'undefined') throw new Error('leitor de planilha indisponível (recarregue a página)');
+      lms = sotLmsLerPlanilha(XLSX, b64);
+    }catch(e){
+      lms = {erro:'Não foi possível ler a planilha: '+(e&&e.message||e)+'.'};
+    }
+    if(lms){
+      sotLmsAplicar(lms, st);
+      if(btn){ btn.disabled=false; btn.textContent='🤖 Analisar e Lançar com IA'; }
+      return;
+    }
     // Excel/Word: converter para texto via SheetJS antes de enviar
     if(st) st.textContent = '⏳ Convertendo Excel para texto...';
     try{
@@ -42184,6 +42323,7 @@ function sotSalvarProjeto(id){
     croqui_url:g('sot-croqui-url')||null,
   };
 
+  var pendentes=_sotPendentesDoModal();
   if(id){
     // UPDATE
     var idx=sot_projetos.findIndex(function(x){return x.id===id;});
@@ -42202,6 +42342,7 @@ function sotSalvarProjeto(id){
     }
     closeModal();
     sotAbrirProjeto(id);
+    if(pendentes) _sotLancarPendentes(id, payload.contrato_id, pendentes);
   } else {
     // INSERT
     var novo=Object.assign({id:'sp'+Date.now()},payload);
@@ -42214,76 +42355,101 @@ function sotSalvarProjeto(id){
             projeto_id:res[0].id,status_anterior:null,status_novo:payload.status,
             usuario:usuarioLogado?usuarioLogado.nome:'',observacao:'Projeto criado'
           });
+          if(pendentes) _sotLancarPendentes(res[0].id, payload.contrato_id, pendentes);
+        } else if(pendentes){
+          progShowToast('⚠ O projeto não foi gravado; a lista de materiais e serviços não foi lançada.','erro');
         }
       });
     }
     closeModal();
     sotRenderMetricas();
     sotRenderProjetos();
-
-    // Lançar materiais e serviços pendentes identificados pela IA
-    if(window._sotPendingMateriais || window._sotPendingServicos){
-      setTimeout(function(){
-        var projetoId = _editandoProjetoId || null;
-        // Tentar pegar o id do último projeto criado/editado
-        if(!projetoId){
-          var last = sot_projetos[sot_projetos.length-1];
-          if(last) projetoId = last.id;
-        }
-        if(projetoId){
-          _sotLancarPendentes(projetoId);
-        }
-        window._sotPendingMateriais = null;
-        window._sotPendingServicos  = null;
-      }, 500);
-    }
   }
 }
 
-function _sotLancarPendentes(projetoId){
-  var mats = window._sotPendingMateriais || [];
-  var srvs = window._sotPendingServicos  || [];
-  var lançados = 0;
+// Lista analisada só vale para o modal em que foi analisada (cancelar e abrir outro projeto descarta).
+function _sotPendentesDoModal(){
+  var ref = window._sotPendingModalRef;
+  var valido = !!ref && ref.isConnected && ref === document.getElementById('sot-lista-drop');
+  var r = valido ? {materiais: window._sotPendingMateriais || [], servicos: window._sotPendingServicos || []} : null;
+  window._sotPendingMateriais = null;
+  window._sotPendingServicos  = null;
+  window._sotPendingModalRef  = null;
+  return r && (r.materiais.length || r.servicos.length) ? r : null;
+}
 
-  mats.forEach(function(m){
-    var mat = catalogo_materiais.find(function(c){ return c.codigo===m.codigo; });
-    var payload = {
-      projeto_id: projetoId,
-      catalogo_id: mat ? mat.id : null,
-      codigo:      m.codigo || '',
-      nome:        m.nome   || (mat ? mat.nome : ''),
-      quantidade:  Number(m.qtd||0),
-      unidade:     m.unidade || (mat ? mat.unidade : 'UN'),
-      status:      'Pendente',
-      observacoes: m.obs || 'Lançado pela IA',
-    };
-    sot_materiais = sot_materiais || [];
-    sot_materiais.push(Object.assign({id:'sm'+Date.now()+lançados}, payload));
-    if(!DEMO) sbInsert('sot_materiais', payload).catch(function(){});
-    lançados++;
-  });
+async function _sotLancarPendentes(projetoId, contratoId, pend){
+  var mats = (pend && pend.materiais) || [];
+  var srvs = (pend && pend.servicos)  || [];
+  if(!mats.length && !srvs.length) return;
+  if(DEMO){ progShowToast('Lista não lançada (modo demonstração).'); return; }
+  if(!isUUID(projetoId)){ progShowToast('⚠ Projeto sem id do banco; a lista de materiais e serviços não foi lançada.','erro'); return; }
 
-  srvs.forEach(function(s){
-    var tsv = tipos_servico_cad.find(function(t){ return t.id===s.tipo_id || t.nome===s.nome; });
-    var payload = {
-      projeto_id:     projetoId,
-      tipo_servico_id: tsv ? tsv.id : null,
-      nome:            s.nome || (tsv ? tsv.nome : ''),
-      quantidade:      Number(s.qtd||0),
-      unidade:         s.unidade || 'UN',
-      status:          'Pendente',
-      observacoes:     s.obs || 'Lançado pela IA',
-    };
-    sot_atividades = sot_atividades || [];
-    sot_atividades.push(Object.assign({id:'sa'+Date.now()+lançados}, payload));
-    if(!DEMO) sbInsert('sot_atividades', payload).catch(function(){});
-    lançados++;
-  });
-
-  if(lançados > 0){
-    progShowToast('✅ '+mats.length+' materiais e '+srvs.length+' serviços lançados no projeto');
-    sotRenderProjetos();
+  var atuais = await Promise.all([
+    sbFetch('sot_materiais', {select:'codigo_sap', filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'], limit:5000}),
+    sbFetch('sot_atividades', {select:'codigo', filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'], limit:5000})
+  ]);
+  if(!Array.isArray(atuais[0]) || !Array.isArray(atuais[1])){
+    progShowToast('⚠ Não foi possível ler a lista atual do projeto; nada foi lançado (evita duplicar). Tente de novo.','erro');
+    return;
   }
+
+  var jaMat = {}, jaAt = {}, pulados = 0, semCadastro = [];
+  atuais[0].forEach(function(x){ jaMat[String(x.codigo_sap||'').trim()] = true; });
+  atuais[1].forEach(function(x){ jaAt[String(x.codigo||'').trim().toUpperCase()] = true; });
+
+  var catM = typeof catalogo_materiais !== 'undefined' ? (catalogo_materiais || []) : [];
+  var insM = [];
+  mats.forEach(function(m){
+    var cod = String(m.codigo||'').trim();
+    if(cod && jaMat[cod]){ pulados++; return; }
+    var c = cod ? catM.find(function(x){ return String(x.codigo_sap||'').trim() === cod; }) : null;
+    var desc = String(m.nome||'').trim() || (c ? String(c.descricao||'') : '') || cod;
+    if(!desc) return;
+    if(cod) jaMat[cod] = true;
+    insM.push({projeto_id:projetoId, codigo_sap:cod, descricao:desc,
+      unidade:String(m.unidade||'').trim() || (c && c.unidade) || 'UN',
+      qtd_projetada:Number(m.qtd||0), qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0,
+      qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0, observacao:m.obs||'Lançado pela IA'});
+  });
+
+  var catS = (typeof servicos !== 'undefined' ? (servicos || []) : []).filter(function(s){
+    return s && !s.deleted_at && (!contratoId || String(s.contrato_id) === String(contratoId));
+  });
+  var ordem = atuais[1].length + 1;
+  var insS = [];
+  srvs.forEach(function(s){
+    var cod = String(s.codigo||'').trim();
+    var k = cod.toUpperCase();
+    if(k && jaAt[k]){ pulados++; return; }
+    var sc = k ? catS.find(function(x){ return String(x.codigo||'').trim().toUpperCase() === k; }) : null;
+    var desc = String(s.nome||'').trim() || (sc ? String(sc.descricao||'') : '') || cod;
+    if(!desc) return;
+    if(k) jaAt[k] = true;
+    if(!sc) semCadastro.push(cod || desc);
+    insS.push({projeto_id:projetoId, codigo:cod || (sc ? sc.codigo : ''), descricao:desc,
+      unidade:String(s.unidade||'').trim() || (sc && sc.unidade) || 'UN',
+      qtd_prevista:Number(s.qtd||0),
+      valor_unitario:sc ? (Number(sc.valor_ups||0) > 0 ? Number(sc.valor_ups) : Number(sc.valor_hora||0)) : 0,
+      qtd_executada:0, qtd_medida:0, qtd_viabilizada:0, ordem_exec:ordem++, status:'pendente',
+      observacoes:s.obs||'Lançado pela IA', servico_id:sc ? sc.id : null});
+  });
+
+  var okM = insM.length ? await sbInsert('sot_materiais', insM) : [];
+  var okS = insS.length ? await sbInsert('sot_atividades', insS) : [];
+  var partes = [];
+  if(okM && insM.length) partes.push(insM.length+' material(is)');
+  if(okS && insS.length) partes.push(insS.length+' serviço(s)');
+  var msg = (partes.length ? '✅ Lançados no projeto: '+partes.join(' e ') : '')
+    + (pulados ? ' · '+pulados+' já existiam e foram mantidos' : '')
+    + (okS && semCadastro.length ? ' · '+semCadastro.length+' serviço(s) sem cadastro no contrato (sem valor): '+semCadastro.slice(0,5).join(', ')+(semCadastro.length>5?'…':'') : '');
+  if(!okM || !okS){
+    progShowToast('⚠ Erro ao gravar '+(!okM?'os materiais':'')+(!okM&&!okS?' e ':'')+(!okS?'os serviços':'')+' — nada desse grupo foi gravado.'+(msg?' '+msg:''),'erro');
+  } else if(msg){
+    progShowToast(msg.replace(/^ · /,''));
+  }
+  if(typeof _sotProjetoAtual !== 'undefined' && _sotProjetoAtual === projetoId && typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);
+  sotRenderProjetos();
 }
 
 // ── Alterar status ────────────────────────────────────────────
@@ -45304,10 +45470,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.188',
+  numero: '8.1.189',
   data:   '01/10/2026',
-  build:  '20261001-1200',
+  build:  '20261001-1700',
   log: [
+    {v:'8.1.189', d:'01/10/2026', itens:[
+      'Projetos — Lista de Materiais e Serviços: planilha LMS (.xlsx/.xlsb) é lida só pela aba LMS (ex.: "LMS - F"): materiais = código numérico (só Instalação, FT I; retirada não entra), serviços = demais códigos (I e R), quantidade = Quan. Plan (ou Quan. Real se vazia), itens repetidos somados. Antes ia para a IA só o texto das 3 primeiras abas.',
+      'Projetos — planilha LMS desatualizada (itens que não aparecem na Extração_205/RESB do mesmo arquivo) ou de outro projeto é recusada sem lançar nada.',
+      'Projetos — "Analisar e Lançar" não gravava nada: usava colunas inexistentes em sot_materiais/sot_atividades e, em projeto novo, procurava o id no projeto errado. Agora grava no id real do projeto, nas colunas certas, sem duplicar códigos já lançados, ligando o serviço ao cadastro do contrato e avisando erro.',
+    ]},
     {v:'8.1.188', d:'01/10/2026', itens:[
       'Projetos — Importar materiais: arquivo que não é planilha nem texto (ou .xlsx com o leitor de planilha indisponível) era lido como texto e cada trecho de bytes virava um material. Agora só aceita .xlsx/.xls (com o leitor carregado), .csv/.txt (UTF-8 ou Windows-1252) e texto colado; linha com caractere inválido recusa a importação inteira, sem gravar nada.',
       'Banco: sot_materiais recusa gravar código, descrição, unidade ou observação com conteúdo binário (migration 20261001130000). A lista binária do projeto DAC/S.NOR-25.00228 é excluída pela migration 20261001120000.',
