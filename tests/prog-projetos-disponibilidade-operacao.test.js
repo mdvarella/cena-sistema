@@ -33,8 +33,9 @@ const escHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').repl
 // ─────────────────────────── OPERAÇÃO (Portaria + APP) ───────────────────────────
 const OPS_FUNCS = ['ppOpsTs', 'ppOpsDiaLocal', 'ppOpsHora', 'ppOpsAddDias', 'ppOpsEhFuturo', 'ppOpsNormPlaca', 'ppOpsSaidaRetornou',
   'ppOpsSaidaAberta', 'ppOpsInvalidar', 'ppOpsCarregar', 'ppOpsEstadoFonte', 'ppGetStatusPortariaEquipe', 'ppGetStatusAppEquipe',
-  'ppHtmlOperacaoEquipe'];
-const opsCodigo = [vr('PP_OPS_TTL_MS'), vr('_ppOps'), vr('PP_OPS_VISUAL')].concat(OPS_FUNCS.map(fn)).join('\n');
+  'ppOpsOsVisual', 'ppOpsOsEventos', 'ppOpsOsTs', 'ppOpsOsUltimoTs', 'ppGetOrdemEquipe', 'ppProjetosSelecionadosEquipe', 'ppHtmlOperacaoEquipe'];
+const opsCodigo = [vr('PP_OPS_TTL_MS'), vr('_ppOps'), vr('PP_OPS_VISUAL'), vr('PP_OPS_OS_ATIVA'), vr('PP_OPS_OS_FIM'), vr('PP_OPS_OS_EV')]
+  .concat(OPS_FUNCS.map(fn)).join('\n');
 
 function ctxOps(opts) {
   const ctx = {
@@ -45,6 +46,10 @@ function ctxOps(opts) {
     progProjetoCoreGetEquipes: () => ['eqA', 'eqB', 'eqC', 'eqE', 'eqG', 'eqN', 'eqO'].map(id => ({ id })),
     programadas: opts.programadas || {},
     progEquipeProgramadaNoDia(eqId, dia) { return !!ctx.programadas[eqId + '_' + dia]; },
+    composicao_dia: opts.composicao || [],
+    parseJsonField(v, d) { if (!v) return d; if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return d; } } return v; },
+    progProjGetCid: () => 'cid-1',
+    progProjGetProjetos: cid => (cid === 'cid-1' ? PROJETOS : []),
     fetches: [], escritas: 0,
     sbInsert() { ctx.escritas++; }, sbUpdate() { ctx.escritas++; }, sbUpsert() { ctx.escritas++; }, sbDelete() { ctx.escritas++; },
     async sbFetch(tabela, o) {
@@ -82,12 +87,46 @@ const SESSOES = [
   { id: 'p-g', equipe_id: 'eqG', data: HOJE, login_ts: ms('2026-09-29T07:50:00-03:00'), logout_ts: ms('2026-09-29T11:01:00-03:00') }
 ];
 
+const ORDENS = [
+  // B: OS em atendimento (a caminho) + uma já encerrada antes
+  { id: 'o-b1', equipe_id: 'eqB', data: HOJE, numero_ordem: '54321', status: 'a_caminho', eventos: [{ tipo: 'A caminho', ts: ms('2026-09-29T16:49:00-03:00') }] },
+  { id: 'o-b0', equipe_id: 'eqB', data: HOJE, numero_ordem: '54300', status: 'encerrada', eventos: JSON.stringify([{ tipo: 'A caminho', ts: ms('2026-09-29T08:00:00-03:00') }, { tipo: 'Atividade_encerrada', ts: ms('2026-09-29T12:10:00-03:00') }]) },
+  // C: só encerradas → ÚLTIMA OS + contagem
+  { id: 'o-c1', equipe_id: 'eqC', data: HOJE, numero_ordem: '700', status: 'encerrada', eventos: [{ tipo: 'Atividade_encerrada', ts: ms('2026-09-29T11:00:00-03:00') }] },
+  { id: 'o-c2', equipe_id: 'eqC', data: HOJE, numero_ordem: '701', status: 'encerrada', eventos: [{ tipo: 'Atividade_encerrada', ts: ms('2026-09-29T15:30:00-03:00') }] },
+  // G: no local, OS com data do dia seguinte (turno da noite)
+  { id: 'o-g', equipe_id: 'eqG', data: '2026-09-30', numero_ordem: '900', status: 'no_local', eventos: [{ tipo: 'A caminho', ts: ms('2026-09-29T22:00:00-03:00') }, { tipo: 'Chegou_local', ts: ms('2026-09-29T22:40:00-03:00') }] },
+  // excluída não conta; OS de outro dia não conta
+  { id: 'o-x', equipe_id: 'eqE', data: HOJE, numero_ordem: '1', status: 'a_caminho', deleted_at: '2026-09-29T10:00:00-03:00', eventos: [] },
+  { id: 'o-y', equipe_id: 'eqA', data: '2026-09-27', numero_ordem: '2', status: 'a_caminho', eventos: [] }
+];
+
+const PROJETOS = [
+  { id: 'pj-1', nome: 'DAC/S.SUL.22.00031', status: 'Em execução', origem: 'sot' },
+  { id: 'pj-2', nome: 'OBRA <2>', status: 'Em execução', origem: 'sot' }
+];
+const COMPOSICAO = [
+  // O: sem OS, dois projetos selecionados (string JSON, como no banco)
+  { equipe_id: 'eqO', data: HOJE, projeto_ids: JSON.stringify(['pj-1', 'pj-2']) },
+  // B: OS ativa + projeto selecionado → mostra a OS
+  { equipe_id: 'eqB', data: HOJE, projeto_ids: ['pj-1'] },
+  // N: projeto que não existe no cadastro do contrato
+  { equipe_id: 'eqN', data: HOJE, projeto_ids: '["pj-x"]' },
+  // A: projeto só em outra data; composição excluída não conta
+  { equipe_id: 'eqA', data: '2026-09-28', projeto_ids: '["pj-1"]' },
+  { equipe_id: 'eqC', data: HOJE, projeto_ids: '["pj-1"]', deleted_at: '2026-09-29T09:00:00-03:00' },
+  // E: composição sem projeto
+  { equipe_id: 'eqE', data: HOJE, projeto_ids: '[]' }
+];
+
 async function testesOperacao() {
-  const tabelas = { frotas_portaria_saidas: SAIDAS, plpt_sessoes: SESSOES };
-  const ctx = ctxOps({ tabelas, programadas: { eqA_2026_09_29: false, 'eqA_2026-09-29': true, 'eqE_2026-09-29': true, 'eqB_2026-09-29': true } });
+  const tabelas = { frotas_portaria_saidas: SAIDAS, plpt_sessoes: SESSOES, ordens_diario: ORDENS };
+  const ctx = ctxOps({ tabelas, composicao: COMPOSICAO, programadas: { eqA_2026_09_29: false, 'eqA_2026-09-29': true, 'eqE_2026-09-29': true, 'eqB_2026-09-29': true } });
   await ctx.ppOpsCarregar(HOJE, 'cid-1');
   const tabs = ctx.fetches.map(f => f[0]).sort();
-  ok('leitura: só frotas_portaria_saidas e plpt_sessoes', JSON.stringify(tabs) === JSON.stringify(['frotas_portaria_saidas', 'plpt_sessoes']), tabs);
+  ok('leitura: frotas_portaria_saidas, ordens_diario e plpt_sessoes', JSON.stringify(tabs) === JSON.stringify(['frotas_portaria_saidas', 'ordens_diario', 'plpt_sessoes']), tabs);
+  const fOs = ctx.fetches.find(f => f[0] === 'ordens_diario')[1].filters;
+  ok('OS filtradas pelas equipes do contrato, dia e dia seguinte', fOs.some(f => /^equipe_id=in\.\(eqA,eqB,/.test(f)) && fOs.includes('data=gte.' + HOJE) && fOs.includes('data=lte.2026-09-30'), fOs);
   const fPort = ctx.fetches.find(f => f[0] === 'frotas_portaria_saidas')[1].filters;
   ok('portaria filtrada pelas equipes do contrato', fPort.some(f => /^equipe_id=in\.\(eqA,eqB,/.test(f)), fPort);
   ok('portaria janela dia-1..dia+2', fPort.includes('data_saida=gte.2026-09-28') && fPort.includes('data_saida=lt.2026-10-01'), fPort);
@@ -101,27 +140,48 @@ async function testesOperacao() {
   // A
   ok('A: programada sem saída → aguardando', P('eqA').status === 'aguardando', P('eqA'));
   ok('A: html Aguardando saída', H('eqA').includes('Aguardando saída'));
-  ok('A: não é em campo', !H('eqA').includes('Em campo'));
+  ok('A: não é em campo', !/Em campo/i.test(H('eqA')));
   // B
   ok('B: saída sem retorno → em_campo', P('eqB').status === 'em_campo', P('eqB'));
   ok('B: hora real da saída', P('eqB').hora === '07:12', P('eqB').hora);
-  ok('B: html 🟢 Em campo — saída 07:12', H('eqB').includes('🟢 Em campo — saída 07:12'), H('eqB'));
+  ok('B: html 🟢 Em Campo · 07:12 (visual TMA)', H('eqB').includes('🟢 Em Campo · 07:12'), H('eqB'));
   // C
   ok('C: retornou (clone aberto ignorado)', P('eqC').status === 'retornou', P('eqC'));
   ok('C: hora real do retorno', P('eqC').hora === '16:22', P('eqC').hora);
-  ok('C: html 🔵 Retornou — 16:22', H('eqC').includes('🔵 Retornou — 16:22'), H('eqC'));
+  ok('C: html 🔵 Retornou · 16:22', H('eqC').includes('🔵 Retornou · 16:22'), H('eqC'));
   ok('C: retorno não gera logout (app segue logado)', A('eqC').status === 'logado' && A('eqC').hora === '07:30', A('eqC'));
   // E
   ok('E: login sem saída → APP logado', A('eqE').status === 'logado' && A('eqE').hora === '06:55', A('eqE'));
   ok('E: PORTARIA aguardando', P('eqE').status === 'aguardando', P('eqE'));
-  ok('E: html 🟢 Logado — 06:55 + Aguardando', H('eqE').includes('🟢 Logado — 06:55') && H('eqE').includes('Aguardando saída'), H('eqE'));
+  ok('E: html 🟢 Dia iniciado · 06:55 + Aguardando', H('eqE').includes('🟢 Dia iniciado · 06:55') && H('eqE').includes('Aguardando saída'), H('eqE'));
   // F
   ok('F: saída sem login → PORTARIA em campo', P('eqB').status === 'em_campo');
-  ok('F: APP não iniciado', A('eqB').status === 'sem_sessao' && H('eqB').includes('Não iniciado'), A('eqB'));
+  ok('F: ⚪ App não iniciado', A('eqB').status === 'sem_sessao' && H('eqB').includes('⚪ App não iniciado'), A('eqB'));
   // logout ≠ retorno
   ok('logout não gera retorno (portaria em campo)', P('eqG').status === 'em_campo', P('eqG'));
   ok('app encerrado com hora real', A('eqG').status === 'encerrado' && A('eqG').hora === '11:01', A('eqG'));
-  ok('html ✅ Encerrado — 11:01', H('eqG').includes('✅ Encerrado — 11:01'), H('eqG'));
+  ok('html ✅ Dia encerrado · 11:01', H('eqG').includes('✅ Dia encerrado · 11:01'), H('eqG'));
+  // OS
+  const O = id => ctx.ppGetOrdemEquipe(id, HOJE);
+  ok('OS: em atendimento vence a encerrada', O('eqB').status === 'ativa' && O('eqB').ordem.id === 'o-b1', O('eqB'));
+  ok('OS: html OS 54321 + 🚗 A caminho · 16:49', H('eqB').includes('>OS 54321<') && H('eqB').includes('🚗 A caminho · 16:49'), H('eqB'));
+  ok('OS: rótulo OS quando há OS ativa', H('eqB').includes('>OS</div>') && !H('eqB').includes('ÚLTIMA OS'));
+  ok('OS: só encerradas → ÚLTIMA OS mais recente', O('eqC').status === 'ultima' && O('eqC').ordem.id === 'o-c2', O('eqC'));
+  ok('OS: html ÚLTIMA OS ✅ Encerrada · 15:30 + contagem', H('eqC').includes('ÚLTIMA OS') && H('eqC').includes('✅ Encerrada · 15:30') && H('eqC').includes('2 OS concluídas no dia'), H('eqC'));
+  ok('OS: turno da noite (OS do dia seguinte) → 📍 No local · 22:40', H('eqG').includes('📍 Cheguei / No local · 22:40'), H('eqG'));
+  ok('OS: excluída não conta', O('eqE').status === 'sem_os' && H('eqE').includes('Sem OS em atendimento'), O('eqE'));
+  ok('OS: OS de outro dia não conta', O('eqA').status === 'sem_os', O('eqA'));
+  // Projeto selecionado no lugar de "Sem OS em atendimento"
+  ok('projeto: sem OS mostra rótulo PROJETO e os projetos selecionados', H('eqO').includes('>PROJETO</div>') && H('eqO').includes('📋 DAC/S.SUL.22.00031')
+    && H('eqO').includes('📋 OBRA &lt;2&gt;') && !H('eqO').includes('Sem OS em atendimento'), H('eqO'));
+  ok('projeto: data-pp-op-proj com o id real', H('eqO').includes('data-pp-op-proj="pj-1"') && H('eqO').includes('data-pp-op-proj="pj-2"'));
+  ok('projeto: OS ativa continua no lugar do projeto', H('eqB').includes('>OS 54321<') && !H('eqB').includes('PROJETO') && !H('eqB').includes('data-pp-op-proj'), H('eqB'));
+  ok('projeto: id fora do cadastro não aparece (Sem OS)', H('eqN').includes('Sem OS em atendimento') && !H('eqN').includes('pj-x') && !H('eqN').includes('PROJETO'), H('eqN'));
+  ok('projeto: de outra data não vaza', H('eqA').includes('Sem OS em atendimento') && !H('eqA').includes('data-pp-op-proj'), H('eqA'));
+  ok('projeto: composição excluída não conta', ctx.ppProjetosSelecionadosEquipe('eqC', HOJE).length === 0);
+  ok('projeto: lista vazia → Sem OS em atendimento', H('eqE').includes('Sem OS em atendimento') && !H('eqE').includes('PROJETO'), H('eqE'));
+  ok('projeto: data futura não mostra projeto no bloco OS', !ctx.ppHtmlOperacaoEquipe('eqO', '2026-09-30').includes('data-pp-op-proj'));
+  ok('visual TMA: rótulos PORTARIA/APP/OS empilhados', /PORTARIA<\/div><div data-pp-op-st="em_campo"[^>]*>🟢 Em Campo · 07:12<\/div><div[^>]*>APP<\/div>/.test(H('eqB')), H('eqB'));
   // cancelada / sem programação
   ok('saída cancelada ignorada; sem programação → sem_saida', P('eqN').status === 'sem_saida', P('eqN'));
   ok('programação sozinha não gera em campo', ['eqA', 'eqE'].every(id => P(id).status !== 'em_campo'));
@@ -136,7 +196,7 @@ async function testesOperacao() {
   ok('TTL: sem nova leitura dentro de 60s', ctx.fetches.length === n0, ctx.fetches.length - n0);
   ctx.ppOpsInvalidar();
   await ctx.ppOpsCarregar(HOJE, 'cid-1');
-  ok('Atualizar (invalidar) relê portaria e app', ctx.fetches.length === n0 + 2, ctx.fetches.length - n0);
+  ok('Atualizar (invalidar) relê portaria, app e OS', ctx.fetches.length === n0 + 3, ctx.fetches.length - n0);
 
   // D — data futura
   const n1 = ctx.fetches.length;
@@ -144,7 +204,8 @@ async function testesOperacao() {
   ok('D: data futura não consulta nada', ctx.fetches.length === n1, ctx.fetches.length - n1);
   const pF = ctx.ppGetStatusPortariaEquipe('eqB', '2026-09-30');
   ok('D: futura nunca em campo (mesmo com saída aberta hoje)', pF.status === 'futuro', pF);
-  ok('D: html futura sem Em campo', !ctx.ppHtmlOperacaoEquipe('eqB', '2026-09-30').includes('Em campo'));
+  ok('D: html futura sem Em campo', !/Em campo/i.test(ctx.ppHtmlOperacaoEquipe('eqB', '2026-09-30')));
+  ok('D: futura sem OS', ctx.ppGetOrdemEquipe('eqB', '2026-09-30').status === 'futuro' && !ctx.ppHtmlOperacaoEquipe('eqB', '2026-09-30').includes('A caminho'));
   ok('D: app futuro sem sessão', ctx.ppGetStatusAppEquipe('eqE', '2026-09-30').status === 'futuro');
 
   // Passado — histórico real do dia
@@ -161,6 +222,10 @@ async function testesOperacao() {
   await cErr.ppOpsCarregar(HOJE, 'cid-1');
   ok('falha na portaria → sem_leitura (fail-closed)', cErr.ppGetStatusPortariaEquipe('eqA', HOJE).status === 'sem_leitura');
   ok('falha só na portaria mantém app', cErr.ppGetStatusAppEquipe('eqE', HOJE).status === 'logado');
+  const cOs = ctxOps({ tabelas, programadas: {}, falha: { ordens_diario: true } });
+  await cOs.ppOpsCarregar(HOJE, 'cid-1');
+  ok('falha nas OS → sem_leitura, sem inventar OS', cOs.ppGetOrdemEquipe('eqB', HOJE).status === 'sem_leitura' && cOs.ppHtmlOperacaoEquipe('eqB', HOJE).includes('Sem leitura das OS'));
+  ok('falha só nas OS mantém portaria', cOs.ppGetStatusPortariaEquipe('eqB', HOJE).status === 'em_campo');
 }
 
 // ─────────────────────────── DISPONIBILIDADE ───────────────────────────
@@ -309,6 +374,13 @@ function testesEstaticos() {
   ok('render sincroniza Operação', fn('_progProjRenderQuadroInterno').includes('ppOpsSincronizar(data, cid, false)'));
   ok('linha da equipe com célula Operação', fn('progProjetoCoreRenderEquipeRow').includes('data-pp-op-eq="\'+eq.id+\'">\'+ppHtmlOperacaoEquipe(eq.id, data)'));
   ok('Atualizar invalida leitura', fn('progProjAtualizarQuadro').includes('ppOpsInvalidar();'));
+  const linhaPP = fn('progProjetoCoreRenderEquipeRow');
+  ok('ações da linha sem Conf. saída e WhatsApp', !/ppSupConfirmar\(|ppEnviarWhatsApp\(|Conf\. saída|Saída OK|📲/.test(linhaPP));
+  ok('ações da linha mantêm Desprog., HE, Auto Escalar e Salvar', ['ppDesprogramarEquipe(', 'ppAutorizarHoraExtra(', 'ppAutoEscalarEquipe(', 'ppSalvarEquipe('].every(t => linhaPP.includes(t)));
+  ok('funções ppSupConfirmar e ppEnviarWhatsApp preservadas', /\nfunction ppSupConfirmar\(/.test(html) && /\nfunction ppEnviarWhatsApp\(/.test(html));
+  ok('versão 8.1.184 no log e sw.js da versão atual', /\{v:'8\.1\.184'/.test(html) && sw.includes("'cena-" + /numero: '(8\.1\.\d+)'/.exec(html)[1] + "'"));
+  ok('slots de Projetos sem laranja a partir do T3', !/isFolg2|#FFF0E0|#E65C00|pos>=2/.test(linhaPP));
+  ok('slot usa a cor do status em todas as posições', linhaPP.includes("background:'+stI.bg+';") && linhaPP.includes("color:'+stI.cor+';margin-top:2px\">'+stI.label"));
   ok('retorno à página (visibilitychange)', fn('ppOpsRegistrarVisibilidade').includes("'visibilitychange'") && /\nppOpsRegistrarVisibilidade\(\);/.test(html));
   const ops = OPS_FUNCS.map(fn).join('\n');
   ok('módulo Operação sem escrita', !/sbInsert|sbUpdate|sbUpsert|sbDelete|method:\s*'(POST|PATCH|DELETE)'/.test(ops));

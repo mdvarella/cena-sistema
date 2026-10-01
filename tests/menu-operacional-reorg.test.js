@@ -156,14 +156,17 @@ function estaticos() {
   if (!base) return;
   const corta = b => { const i = b.indexOf('</script>'); return i >= 0 ? b.slice(0, i) : b; };
   const blocos = src => { const out = {}; const re = /\n(?:async )?function ([\w$]+)\(/g; let m; while ((m = re.exec(src))) { (out[m[1]] = out[m[1]] || []).push(corta(blocoEm(src.slice(m.index), /\n/))); } return out; };
-  const bA = blocos(base), bN = blocos(html);
+  // Escopo medido no commit do menu (8.1.186): versões mescladas depois mexem em outras funções.
+  let menu = null;
+  try { menu = execSync('git show 6399eae:index.html', { cwd: raiz, maxBuffer: 64 * 1024 * 1024 }).toString('utf8').replace(/\r\n/g, '\n'); } catch (e) { menu = null; }
+  if (!menu) return;
+  const bA = blocos(base), bN = blocos(menu), bAtual = blocos(html);
   const PERMITIDAS = ['sidebarMostrarItens', '_renderSubNav', 'showMain', 'showSub'];
-  // Funções de outras versões que chegaram junto pelo merge (8.1.187 Portaria): fora do escopo deste teste.
-  const OUTRAS_VERSOES = ['sbUpdate', 'portAbrirVistoriaRetorno', 'portEnsureDadosPortariaDia', 'portSuprimirCloneSaida', 'portDedupSaidasMemoria',
-    'portMesclarSaidas', 'portSyncProgRodar', 'portAposConferirSaidas', 'portConferirSaidasMemoria', 'portSaidaPendenteLocal'];
-  const alteradas = Object.keys(bA).filter(n => !OUTRAS_VERSOES.includes(n) && JSON.stringify(bA[n]) !== JSON.stringify(bN[n] || null));
+  const alteradas = Object.keys(bA).filter(n => JSON.stringify(bA[n]) !== JSON.stringify(bN[n] || null));
   ok('só o renderer e a navegação do menu mudaram', alteradas.length === PERMITIDAS.length && alteradas.every(n => PERMITIDAS.includes(n)), alteradas);
-  const criadas = Object.keys(bN).filter(n => !bA[n] && !OUTRAS_VERSOES.includes(n)).sort();
+  ok('funções do menu intactas na versão atual', PERMITIDAS.every(n => JSON.stringify(bN[n]) === JSON.stringify(bAtual[n])),
+    PERMITIDAS.filter(n => JSON.stringify(bN[n]) !== JSON.stringify(bAtual[n])));
+  const criadas = Object.keys(bN).filter(n => !bA[n]).sort();
   ok('funções novas só do menu', JSON.stringify(criadas) === JSON.stringify(['sidebarAbrirSubDoItem', 'sidebarAlternarSub', 'sidebarItensDoGrupo', 'sidebarSubFechada', 'sidebarSubFechadas']), criadas);
 }
 
