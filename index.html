@@ -43934,7 +43934,7 @@ function sotImportarAtividades(projetoId){
   var contId = proj?proj.contrato_id:'';
 
   var html='<div class="modal-bg"><div class="modal" style="max-width:560px">'
-    +'<h3 style="margin-bottom:.5rem">📥 Importar Atividades</h3>'
+    +'<h3 style="margin-bottom:.5rem">📥 Importar lista — serviços e materiais</h3>'
     +(isListaPrecos?'<div style="font-size:11px;color:#3B6D11;background:#EAF3DE;padding:4px 8px;border-radius:6px;margin-bottom:.75rem">✓ Lista de Preços — duplicatas somadas automaticamente</div>':'')
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">'
     // Opção 1 — arquivo
@@ -43952,8 +43952,8 @@ function sotImportarAtividades(projetoId){
     +'</div>'
     +'</div>'
     +'<div style="background:#f5f5f3;border-radius:8px;padding:.4rem .75rem;font-size:11px;margin-bottom:.6rem">'
-    +'Formatos aceitos: <code>CÓDIGO ; QTD</code> ou <code>CÓDIGO ; DESCRIÇÃO ; QTD</code> (CSV com aspas OK)<br>'
-    +'Separador: <code>;</code> <code>,</code> ou TAB — linha de cabeçalho ignorada automaticamente'
+    +'Formatos aceitos: <code>CÓDIGO ; QTD</code> ou <code>CÓDIGO ; DESCRIÇÃO ; QTD</code> (CSV com aspas OK). Colado do Excel (ex.: aba LMS: Código, Descrição, Quan. Plan, Quan. Real) usa a 1ª quantidade preenchida.<br>'
+    +'Serviço = código da lista de serviços do contrato · Material = código do Almoxarifado SAP do contrato. Separador: TAB, <code>;</code> ou <code>,</code> — cabeçalho ignorado'
     +'</div>'
     +'<textarea id="sot-imp-texto" class="inp" style="width:100%;height:130px;resize:vertical;font-family:monospace;font-size:12px;margin-bottom:.5rem" '
     +'placeholder="Cole aqui ou carregue um arquivo:\n\n5020100055 ; 10\n5020100059 ; 5\n5027000029 ; 8" '
@@ -43961,11 +43961,16 @@ function sotImportarAtividades(projetoId){
     +'<div id="sot-imp-preview" style="display:none;margin-bottom:.75rem;border:.5px solid #e0dfd8;border-radius:8px;max-height:200px;overflow-y:auto"></div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" style="flex:2" onclick="sotConfirmarImportacao(\''+projetoId+'\')">✅ Importar</button>'
+    +'<button class="btn btn-pri" id="sot-imp-btn" style="flex:2" onclick="sotConfirmarImportacao(\''+projetoId+'\')">✅ Importar</button>'
     +'</div></div></div>';
 
   setModal(html);
   setTimeout(function(){ var t=document.getElementById('sot-imp-texto'); if(t)t.focus(); },100);
+  window._sotImpAlmCarregando = true;
+  _sotCatalogoAlmSAPContrato(contId).then(function(){
+    window._sotImpAlmCarregando = false;
+    if(document.getElementById('sot-imp-texto')) sotPreviewImportacao(projetoId);
+  });
 }
 
 function sotLerArquivoAtividades(){
@@ -44003,6 +44008,7 @@ function sotLerArquivoAtividades(){
 }
 
 function _sotSplitCamposLinha(linha){
+  var sep = linha.indexOf('\t')>=0 ? '\t' : linha.indexOf(';')>=0 ? ';' : linha.indexOf('|')>=0 ? '|' : ',';
   var parts=[], cur='', inQ=false;
   for(var i=0;i<=linha.length;i++){
     var c=i<linha.length?linha[i]:'\n';
@@ -44013,7 +44019,7 @@ function _sotSplitCamposLinha(linha){
       } else cur+=c;
     } else {
       if(c==='"'){ inQ=true; continue; }
-      if(c===','||c===';'||c==='\t'||c==='|'){
+      if(c===sep){
         parts.push(cur.trim());
         cur='';
         continue;
@@ -44034,27 +44040,32 @@ function _sotLinhaEhCabecalhoImport(parts){
   return false;
 }
 
+var SOT_IMP_NUM_RE = /^(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)$/;
+
 function _sotExtrairCodQtdLinha(parts){
   if(!parts||parts.length<2) return null;
-  var cod=String(parts[0]||'').trim().replace(/^["']|["']$/g,'');
+  var limpa=function(v){ return String(v==null?'':v).trim().replace(/^["']|["']$/g,'').trim(); };
+  var p=parts.map(limpa);
+  // colunas PEP/FT antes do código (ex.: "OPE  I  321291 ...")
+  for(var k=0;k<2 && p.length>2 && /^[A-Za-z]{1,4}$/.test(p[0]);k++) p.shift();
+  var cod=p[0];
   if(!cod) return null;
-  var qtd=null;
-  if(parts.length>=3){
-    for(var i=parts.length-1;i>=1;i--){
-      var v=parseFloat(String(parts[i]).replace(/^["']|["']$/g,'').replace(',','.').trim());
-      if(!isNaN(v)&&v>0){ qtd=v; break; }
-    }
-  } else {
-    qtd=parseFloat(String(parts[1]).replace(/^["']|["']$/g,'').replace(',','.').trim());
+  var qtd=null, desc='';
+  for(var i=1;i<p.length;i++){
+    if(!p[i]) continue;
+    if(SOT_IMP_NUM_RE.test(p[i])){
+      var v=sotLmsNum(p[i]);
+      if(v>0){ qtd=v; break; }
+    } else if(!desc) desc=p[i];
   }
-  if(!cod||isNaN(qtd)||qtd<=0) return null;
-  return {codigo:cod.toUpperCase(), qtd:qtd};
+  if(!(qtd>0)) return null;
+  return {codigo:cod.toUpperCase(), qtd:qtd, descricao:desc};
 }
 
 function sotParsarLinhasImportacao(){
   var ta=document.getElementById('sot-imp-texto');
   if(!ta||!ta.value.trim())return[];
-  var res={};
+  var res={}, ordem=[];
   ta.value.split(/\r?\n/).forEach(function(linha){
     linha=linha.trim();
     if(!linha||linha.startsWith('#'))return;
@@ -44062,9 +44073,38 @@ function sotParsarLinhasImportacao(){
     if(_sotLinhaEhCabecalhoImport(parts)) return;
     var item=_sotExtrairCodQtdLinha(parts);
     if(!item) return;
-    res[item.codigo]=(res[item.codigo]||0)+item.qtd;
+    if(!res[item.codigo]){ res[item.codigo]={codigo:item.codigo, qtd:0, descricao:item.descricao}; ordem.push(item.codigo); }
+    res[item.codigo].qtd=Math.round((res[item.codigo].qtd+item.qtd)*1e6)/1e6;
+    if(!res[item.codigo].descricao) res[item.codigo].descricao=item.descricao;
   });
-  return Object.keys(res).map(function(c){return{codigo:c,qtd:res[c]};});
+  return ordem.map(function(c){ return res[c]; });
+}
+
+function _sotChaveMatImport(v){ return sotLmsNormCodMaterial(v).toUpperCase(); }
+
+// Serviço: lista de serviços do contrato. Material: Almoxarifado SAP do contrato.
+// I-/R- é sempre mão de obra: o Almoxarifado SAP do RDSE tem códigos I-AHO/R-AHO lançados como material.
+function _sotClassificarImportacao(itens, contId){
+  var sc=(typeof servicos!=='undefined'?(servicos||[]):[]).filter(function(s){
+    return s && !s.deleted_at && (!contId || s.contrato_id===contId);
+  });
+  var alm={};
+  (typeof sotBuildListaAlmSAP==='function' ? sotBuildListaAlmSAP(contId||'') : []).forEach(function(m){
+    var k=_sotChaveMatImport(m.codigo_sap);
+    if(k && !alm[k]) alm[k]=m;
+  });
+  return itens.map(function(it){
+    var serv=sc.find(function(s){ return String(s.codigo||'').trim().toUpperCase()===it.codigo; })||null;
+    var mo=/^[IR]-/.test(it.codigo);
+    var mat=(serv||mo) ? null : (alm[_sotChaveMatImport(it.codigo)]||null);
+    var tipo=(serv||mo) ? 'servico' : 'material';
+    return {item:it, tipo:tipo, serv:serv, mat:mat, cadastrado:!!(serv||mat)};
+  });
+}
+
+function _sotValorServ(serv){
+  if(!serv) return 0;
+  return Number(serv.valor_ups||0)>0 ? Number(serv.valor_ups) : Number(serv.valor_hora||0);
 }
 
 function sotPreviewImportacao(projetoId){
@@ -44074,31 +44114,36 @@ function sotPreviewImportacao(projetoId){
   if(!itens.length){prev.style.display='none';return;}
   var proj=sot_projetos.find(function(x){return x.id===projetoId;});
   var contId=proj?proj.contrato_id:'';
-  var sc=servicos.filter(function(s){return !contId||s.contrato_id===contId;});
-  var rows=itens.map(function(item){
-    var serv=sc.find(function(s){return(s.codigo||'').toUpperCase()===item.codigo;});
-    var ja=sot_atividades.find(function(a){return(a.codigo||'').toUpperCase()===item.codigo;});
-    return{item:item,serv:serv,ja:ja};
+  var jaAt={}, jaMat={};
+  (sot_atividades||[]).forEach(function(a){ if(a.projeto_id===projetoId && !a.deleted_at) jaAt[String(a.codigo||'').trim().toUpperCase()]=true; });
+  (sot_materiais_proj||[]).forEach(function(m){ if(m.projeto_id===projetoId && !m.deleted_at) jaMat[_sotChaveMatImport(m.codigo_sap)]=true; });
+  var rows=_sotClassificarImportacao(itens, contId).map(function(r){
+    r.ja = r.tipo==='servico' ? !!jaAt[r.item.codigo] : !!jaMat[_sotChaveMatImport(r.item.codigo)];
+    return r;
   });
-  var ok=rows.filter(function(r){return r.serv;}).length;
-  var sem=rows.filter(function(r){return!r.serv;}).length;
+  var nServ=rows.filter(function(r){return r.tipo==='servico'&&r.cadastrado;}).length;
+  var nMat=rows.filter(function(r){return r.tipo==='material'&&r.cadastrado;}).length;
+  var sem=rows.filter(function(r){return!r.cadastrado;}).length;
   var dup=rows.filter(function(r){return r.ja;}).length;
-  var tot=rows.reduce(function(s,r){return s+(r.serv?(r.serv.valor_ups||r.serv.valor_hora||0)*r.item.qtd:0);},0);
+  var tot=rows.reduce(function(s,r){return s+_sotValorServ(r.serv)*r.item.qtd;},0);
   prev.style.display='';
   prev.innerHTML='<div style="padding:.4rem .75rem;background:#f9f9f7;border-bottom:.5px solid #e0dfd8;font-size:11px;display:flex;gap:10px;flex-wrap:wrap">'
-    +'<span style="color:#3B6D11;font-weight:600">✓ '+ok+' encontrados</span>'
+    +'<span style="color:#3B6D11;font-weight:600">✓ '+nServ+' serviço(s) e '+nMat+' material(is) encontrados</span>'
     +(sem?'<span style="color:#A32D2D">⚠ '+sem+' sem cadastro</span>':'')
     +(dup?'<span style="color:#854F0B">🔁 '+dup+' serão somados</span>':'')
+    +(window._sotImpAlmCarregando?'<span style="color:#888">⏳ carregando Almoxarifado SAP…</span>':'')
     +(tot?'<span style="margin-left:auto;font-weight:600">'+fmtMoeda(tot)+'</span>':'')
     +'</div>'
     +'<table style="width:100%;font-size:11px;border-collapse:collapse">'
-    +'<tr style="background:#f0efe8"><th style="padding:3px 8px;text-align:left">Código</th><th style="padding:3px 8px;text-align:left">Descrição</th><th style="padding:3px 8px;text-align:right">Qtd</th><th style="padding:3px 8px;text-align:right">V.Unit.</th><th style="padding:3px 8px;text-align:right">Total</th></tr>'
+    +'<tr style="background:#f0efe8"><th style="padding:3px 8px;text-align:left">Tipo</th><th style="padding:3px 8px;text-align:left">Código</th><th style="padding:3px 8px;text-align:left">Descrição</th><th style="padding:3px 8px;text-align:right">Qtd</th><th style="padding:3px 8px;text-align:right">V.Unit.</th><th style="padding:3px 8px;text-align:right">Total</th></tr>'
     +rows.map(function(r){
-      var cor=r.serv?'':'color:#A32D2D';
-      var vu=r.serv?(r.serv.valor_ups||r.serv.valor_hora||0):0;
+      var cor=r.cadastrado?'':'color:#A32D2D';
+      var vu=_sotValorServ(r.serv);
+      var desc=r.serv ? r.serv.descricao : r.mat ? r.mat.descricao : '⚠ sem cadastro'+(r.item.descricao?' — '+r.item.descricao:'');
       return '<tr style="border-top:.5px solid #f0efe8">'
-        +'<td style="padding:3px 8px;font-family:monospace;'+cor+'">'+r.item.codigo+(r.ja?' 🔁':'')+'</td>'
-        +'<td style="padding:3px 8px;'+cor+'">'+(r.serv?r.serv.descricao:'⚠ não cadastrado')+'</td>'
+        +'<td style="padding:3px 8px">'+(r.tipo==='servico'?'Serviço':'Material')+'</td>'
+        +'<td style="padding:3px 8px;font-family:monospace;'+cor+'">'+_escapeHtml(r.item.codigo)+(r.ja?' 🔁':'')+'</td>'
+        +'<td style="padding:3px 8px;'+cor+'">'+_escapeHtml(desc)+'</td>'
         +'<td style="padding:3px 8px;text-align:right">'+r.item.qtd+'</td>'
         +'<td style="padding:3px 8px;text-align:right">'+(vu?fmtMoeda(vu):'—')+'</td>'
         +'<td style="padding:3px 8px;text-align:right">'+(vu?fmtMoeda(vu*r.item.qtd):'—')+'</td>'
@@ -44106,40 +44151,87 @@ function sotPreviewImportacao(projetoId){
     }).join('')+'</table>';
 }
 
-function sotConfirmarImportacao(projetoId){
+async function sotConfirmarImportacao(projetoId){
   var itens=sotParsarLinhasImportacao();
   if(!itens.length){alert('Nenhuma linha válida para importar.');return;}
+  if(DEMO){ progShowToast('Lista não importada (modo demonstração).'); return; }
+  if(!isUUID(projetoId)){ progShowToast('⚠ Projeto sem id do banco; nada foi importado.','erro'); return; }
+  if(itens.some(function(it){ return sotTextoBinario(it.codigo)||sotTextoBinario(it.descricao); })){
+    progShowToast('⚠ A lista tem caracteres inválidos (conteúdo binário); nada foi importado. Cole o texto direto do Excel.','erro'); return;
+  }
   var proj=sot_projetos.find(function(x){return x.id===projetoId;});
   var contId=proj?proj.contrato_id:'';
-  var sc=servicos.filter(function(s){return !contId||s.contrato_id===contId;});
-  var imp=0,som=0;
-  itens.forEach(function(item){
-    var serv=sc.find(function(s){return(s.codigo||'').toUpperCase()===item.codigo;});
-    var ja=sot_atividades.find(function(a){return(a.codigo||'').toUpperCase()===item.codigo;});
-    if(ja){
-      ja.qtd_prevista=(ja.qtd_prevista||0)+item.qtd;
-      if(!DEMO)sbUpdate('sot_atividades',{qtd_prevista:ja.qtd_prevista},'id=eq.'+ja.id);
-      som++;
+  var btn=document.getElementById('sot-imp-btn');
+  if(btn){ if(btn.disabled) return; btn.disabled=true; btn.textContent='⏳ Importando...'; }
+  var reabilitar=function(){ if(btn){ btn.disabled=false; btn.textContent='✅ Importar'; } };
+
+  await _sotCatalogoAlmSAPContrato(contId);
+  var rows=_sotClassificarImportacao(itens, contId);
+  var atuais=await Promise.all([
+    sbFetch('sot_materiais',{select:'id,codigo_sap,qtd_projetada',filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'],limit:5000}),
+    sbFetch('sot_atividades',{select:'id,codigo,qtd_prevista',filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'],limit:5000})
+  ]);
+  if(!Array.isArray(atuais[0])||!Array.isArray(atuais[1])){
+    reabilitar();
+    progShowToast('⚠ Não foi possível ler a lista atual do projeto; nada foi importado (evita duplicar). Tente de novo.','erro');
+    return;
+  }
+  var jaMat={}, jaAt={};
+  atuais[0].forEach(function(m){ var k=_sotChaveMatImport(m.codigo_sap); if(k&&!jaMat[k]) jaMat[k]=m; });
+  atuais[1].forEach(function(a){ var k=String(a.codigo||'').trim().toUpperCase(); if(k&&!jaAt[k]) jaAt[k]=a; });
+
+  var ORIGEM='Importado da lista colada';
+  var insM=[], insS=[], somas=[], semMat=[], semServ=[];
+  var ordem=atuais[1].length+1;
+  rows.forEach(function(r){
+    var it=r.item;
+    if(r.tipo==='material'){
+      var exM=jaMat[_sotChaveMatImport(it.codigo)];
+      if(exM){ somas.push({t:'sot_materiais', id:exM.id, campo:'qtd_projetada', valor:Number(exM.qtd_projetada||0)+it.qtd}); return; }
+      if(!r.mat) semMat.push(it.codigo);
+      insM.push({projeto_id:projetoId, codigo_sap:r.mat?String(r.mat.codigo_sap).trim():it.codigo,
+        descricao:r.mat?r.mat.descricao:(it.descricao||it.codigo), unidade:r.mat?(r.mat.unidade||'UN'):'UN',
+        qtd_projetada:it.qtd, qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0, qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
+        observacao:ORIGEM+(r.mat?'':' · sem cadastro no Almoxarifado SAP do contrato')});
     } else {
-      var _qups = serv?(serv.qtd_ups||1):1;
-      var _vups = serv?(serv.valor_ups||serv.valor_hora||0):0;
-      var nova={id:'sa'+Date.now()+Math.random().toString(36).slice(2),
-        projeto_id:projetoId,codigo:item.codigo,
-        descricao:serv?serv.descricao:item.codigo,
-        unidade:serv?(serv.unidade||'UN'):'UN',
-        qtd_prevista:item.qtd,qtd_executada:0,
-        qtd_ups:_qups, valor_ups:_vups,
-        valor_unitario:_vups,
-        status:'pendente',servico_id:serv?serv.id:null,
-        ordem_exec:sot_atividades.length+1};
-      sot_atividades.push(nova);
-      if(!DEMO)sbInsert('sot_atividades',_semId(nova)).then(function(r){if(r&&r[0]&&r[0].id)nova.id=r[0].id;});
-      imp++;
+      var exS=jaAt[it.codigo];
+      if(exS){ somas.push({t:'sot_atividades', id:exS.id, campo:'qtd_prevista', valor:Number(exS.qtd_prevista||0)+it.qtd}); return; }
+      if(!r.serv) semServ.push(it.codigo);
+      insS.push({projeto_id:projetoId, codigo:it.codigo,
+        descricao:r.serv?r.serv.descricao:(it.descricao||it.codigo), unidade:r.serv?(r.serv.unidade||'UN'):'UN',
+        qtd_prevista:it.qtd, valor_unitario:_sotValorServ(r.serv),
+        qtd_executada:0, qtd_medida:0, qtd_viabilizada:0, ordem_exec:ordem++, status:'pendente',
+        observacoes:ORIGEM+(r.serv?'':' · sem cadastro na lista de serviços do contrato'), servico_id:r.serv?r.serv.id:null});
     }
   });
+
+  var okM=insM.length ? await sbInsert('sot_materiais', insM) : [];
+  var okS=insS.length ? await sbInsert('sot_atividades', insS) : [];
+  var somadas=0, falhaSoma=0;
+  for(var i=0;i<somas.length;i++){
+    var u={}; u[somas[i].campo]=Math.round(somas[i].valor*1e6)/1e6;
+    var lin=await sbUpdate(somas[i].t, u, 'id=eq.'+somas[i].id, {linhas:true});
+    if(Array.isArray(lin)&&lin.length) somadas++; else falhaSoma++;
+  }
+  var partes=[];
+  if(okM&&insM.length) partes.push(insM.length+' material(is)');
+  if(okS&&insS.length) partes.push(insS.length+' serviço(s)');
+  var msg=(partes.length?'Importados: '+partes.join(' e '):'')
+    +(somadas?' · '+somadas+' já existiam e tiveram a quantidade somada':'')
+    +(okM&&semMat.length?' · '+semMat.length+' material(is) sem cadastro no Almoxarifado SAP: '+semMat.slice(0,5).join(', ')+(semMat.length>5?'…':''):'')
+    +(okS&&semServ.length?' · '+semServ.length+' serviço(s) sem cadastro no contrato (sem valor): '+semServ.slice(0,5).join(', ')+(semServ.length>5?'…':''):'');
+  msg=msg.replace(/^ · /,'');
+  if(!okM||!okS||falhaSoma){
+    var erros=[];
+    if(!okM) erros.push('os materiais');
+    if(!okS) erros.push('os serviços');
+    if(falhaSoma) erros.push(falhaSoma+' soma(s) de quantidade');
+    progShowToast('⚠ Erro ao gravar '+erros.join(' e ')+' — nada desse grupo foi gravado.'+(msg?' '+msg:''),'erro');
+  } else {
+    progShowToast('✅ '+msg);
+  }
   closeModal();
-  sotAtualizarAbaAtual(projetoId);
-  progShowToast('✅ '+imp+' importada(s) · '+som+' somada(s)');
+  sotAbrirProjeto(projetoId);
 }
 
 function sotImportarMateriais(projetoId){
@@ -45488,10 +45580,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.190',
+  numero: '8.1.191',
   data:   '01/10/2026',
-  build:  '20261001-1800',
+  build:  '20261001-1830',
   log: [
+    {v:'8.1.191', d:'01/10/2026', itens:[
+      'Projetos — Importar lista (colar do Excel): reconhece serviços (lista de serviços do contrato) e materiais (Almoxarifado SAP do contrato) na mesma lista; antes só procurava serviços e todo material aparecia "não cadastrado". Materiais vão para a aba Materiais, serviços para Atividades.',
+      'Projetos — Importar lista: colado do Excel separa só por TAB (vírgula da descrição e decimal 1,67 não quebram mais a linha) e usa a 1ª quantidade preenchida (Quan. Plan; Quan. Real se vazia). Antes "1,67" virava 67.',
+      'Projetos — Importar lista não gravava no banco (mandava colunas inexistentes qtd_ups/valor_ups em sot_atividades e mostrava só na tela). Agora grava nas colunas reais, soma a quantidade de código já lançado, avisa erro e recarrega o projeto do banco.',
+    ]},
     {v:'8.1.190', d:'01/10/2026', itens:[
       'Projetos — lista de materiais da planilha/IA: o material agora é buscado no Almoxarifado SAP do contrato do projeto (Estoque SAP + catálogo SAP, o mesmo do "+ Material"), com descrição e unidade do SAP. Antes procurava só em catalogo_materiais, que não tem os materiais do RDSE. Material ou serviço sem cadastro no contrato é lançado com aviso e marcado na observação.',
     ]},
