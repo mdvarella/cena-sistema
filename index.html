@@ -28512,8 +28512,8 @@ function _plptRenderProjetoDetalhe(projId){
       sbFetch('sot_adicionais', {filters:['projeto_id=eq.'+projId], order:'criado_em.desc'}),
       sbFetch('plpt_requisicoes_materiais', {filters:['projeto_id=eq.'+projId,'deleted_at=is.null'], order:'criado_em.desc', limit:80}),
     ]).then(function(res){
-      pj._atividades  = res[0]||[];
-      pj._materiais   = res[1]||[];
+      pj._atividades  = (res[0]||[]).filter(function(a){ return !a.somente_descritivo; });
+      pj._materiais   = (res[1]||[]).filter(function(m){ return !m.somente_descritivo; });
       pj._documentos  = res[2]||[];
       pj._adicionais  = res[3]||[];
       pj._requisicoes = res[4]||[];
@@ -37902,6 +37902,8 @@ if(typeof fmtMoeda === 'undefined'){
 var sot_projetos = [];
 var sot_atividades = [];
 var sot_materiais_proj = [];
+var sot_atividades_desc = [];
+var sot_materiais_desc = [];
 var sot_historico = [];
 var _sotProjetoAtual = null;
 
@@ -38782,8 +38784,10 @@ function sotAbrirProjeto(projetoId){
     DEMO?Promise.resolve([]):sbFetch('sot_medicoes',{filters:['projeto_id=eq.'+projetoId],order:'numero'}),
     DEMO?Promise.resolve([]):sbFetch('sot_med_itens',{filters:['projeto_id=eq.'+projetoId]}),
   ]).then(function(res){
-    sot_atividades     = res[0]||[];
-    sot_materiais_proj = res[1]||[];
+    sot_atividades      = (res[0]||[]).filter(function(a){ return !a.somente_descritivo; });
+    sot_atividades_desc = (res[0]||[]).filter(function(a){ return !!a.somente_descritivo; });
+    sot_materiais_proj  = (res[1]||[]).filter(function(m){ return !m.somente_descritivo; });
+    sot_materiais_desc  = (res[1]||[]).filter(function(m){ return !!m.somente_descritivo; });
     var docs           = res[2]||[];
     sot_historico      = res[3]||[];
     sot_medicoes       = (res[4]||[]).filter(function(m){return m.projeto_id===projetoId;});
@@ -40018,6 +40022,7 @@ function sotGerarDeParaSOT(projId){
   var mats = _sotMats.filter(function(m){return m.projeto_id===projId;});
   if(!mats.length&&!DEMO){
     sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projId,'deleted_at=is.null']}).then(function(rows){
+      rows = (rows||[]).filter(function(m){ return !m.somente_descritivo; });
       if(rows&&rows.length && typeof sot_materiais!=='undefined'){
         rows.forEach(function(m){if(!sot_materiais.find(function(x){return x.id===m.id;}))sot_materiais.push(m);});
       }
@@ -40038,6 +40043,10 @@ function sotGerarDeParaSOT(projId){
 }
 
 function sotRenderTabAtividades(projetoId){
+  return _sotRenderTabAtividadesOper(projetoId) + sotRenderBlocoDescritivo(projetoId, 'atividade');
+}
+
+function _sotRenderTabAtividadesOper(projetoId){
   var proj = sot_projetos.find(function(x){ return x.id===projetoId; });
   var isListaPrecos = proj && (proj.modalidade||'').toLowerCase().indexOf('lista')>=0;
   var isUPS = proj && (proj.modalidade||'').toUpperCase().indexOf('UPS')>=0;
@@ -40134,6 +40143,10 @@ function sotRenderTabAtividades(projetoId){
 }
 
 function sotRenderTabMateriais(projetoId, saldosInfo){
+  return _sotRenderTabMateriaisOper(projetoId, saldosInfo) + sotRenderBlocoDescritivo(projetoId, 'material');
+}
+
+function _sotRenderTabMateriaisOper(projetoId, saldosInfo){
   if(!sot_materiais_proj.length){
     return '<div style="padding:2rem;text-align:center;color:#aaa">'
       +'Nenhum material cadastrado.<br><br>'
@@ -40231,6 +40244,39 @@ function sotRenderTabMateriais(projetoId, saldosInfo){
     +'<button class="btn" onclick="sotImportarMateriais(\''+projetoId+'\')" style="font-size:12px;color:#185FA5;border-color:#185FA5">📥 Importar CSV/Excel</button>'
     +'<button class="btn" id="btn-verificar-saldo" style="font-size:12px;color:#533AB7;border-color:#533AB7">📊 Atualizar saldo SAP</button>'
     +'</div>';
+}
+
+// Itens sem cadastro no contrato (outra empresa): só descrição, sem lançamentos.
+function sotRenderBlocoDescritivo(projetoId, tipo){
+  var serv = tipo === 'atividade';
+  var lista = ((serv ? sot_atividades_desc : sot_materiais_desc) || []).filter(function(x){ return x.projeto_id === projetoId; });
+  if(!lista.length) return '';
+  var tabela = serv ? 'sot_atividades' : 'sot_materiais';
+  return '<div style="margin-top:1rem;border:1px dashed #b4b2a9;border-radius:8px;overflow:hidden">'
+    +'<div style="padding:.5rem .75rem;background:#f5f5f3;font-size:12px">'
+    +'<b>📝 Somente descritivo — '+lista.length+' '+(serv?'serviço(s)':'material(is)')+' sem cadastro no contrato</b>'
+    +'<div style="font-size:11px;color:#666;margin-top:2px">'+(serv?'Execução':'Material')+' que pode ser de outra empresa. Não entra em valor, '
+    +(serv?'viabilidade, execução, medição nem faturamento.':'viabilidade, reserva, requisição, entrega nem aplicação.')+'</div></div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:11px">'
+    +'<tr style="background:#fafaf8;color:#666"><th style="padding:4px 8px;text-align:left">Código</th><th style="padding:4px 8px;text-align:left">Descrição</th>'
+    +'<th style="padding:4px 8px;text-align:right">Qtd</th><th style="padding:4px 8px;text-align:left">Un</th><th></th></tr>'
+    +lista.map(function(x){
+      return '<tr style="border-top:.5px solid #f0efe8;color:#555">'
+        +'<td style="padding:4px 8px;font-family:monospace">'+_escapeHtml((serv ? x.codigo : x.codigo_sap) || '—')+'</td>'
+        +'<td style="padding:4px 8px">'+_escapeHtml(x.descricao || '')+'</td>'
+        +'<td style="padding:4px 8px;text-align:right">'+Number(serv ? (x.qtd_prevista||0) : (x.qtd_projetada||0))+'</td>'
+        +'<td style="padding:4px 8px">'+_escapeHtml(x.unidade || 'UN')+'</td>'
+        +'<td style="padding:4px 8px;text-align:right"><button class="btn btn-sm" style="font-size:10px;color:#A32D2D" title="Excluir" '
+        +'onclick="sotExcluirDescritivo(\''+tabela+'\',\''+x.id+'\',\''+projetoId+'\')">🗑</button></td>'
+        +'</tr>';
+    }).join('')+'</table></div>';
+}
+
+async function sotExcluirDescritivo(tabela, id, projetoId){
+  if(tabela !== 'sot_atividades' && tabela !== 'sot_materiais') return;
+  if(!confirm('Excluir este item descritivo do projeto?')) return;
+  if(!DEMO) await sbDelete(tabela, 'id=eq.'+id);
+  sotAbrirProjeto(projetoId);
 }
 
 function sotRenderTabDocumentos(projetoId){
@@ -42378,6 +42424,41 @@ function _sotPendentesDoModal(){
   return r && (r.materiais.length || r.servicos.length) ? r : null;
 }
 
+// Lote descritivo separado: sem a migration 20261001140000 só ele falha.
+async function _sotGravarListaProjeto(g){
+  var r = {};
+  r.mat     = g.mat.length     ? await sbInsert('sot_materiais', g.mat) : [];
+  r.matDesc = g.matDesc.length ? await sbInsert('sot_materiais', g.matDesc) : [];
+  if(!r.matDesc) r.errDesc = String(window._sbLastInsertErr || '');
+  r.srv     = g.srv.length     ? await sbInsert('sot_atividades', g.srv) : [];
+  r.srvDesc = g.srvDesc.length ? await sbInsert('sot_atividades', g.srvDesc) : [];
+  if(!r.srvDesc) r.errDesc = (r.errDesc || '') + String(window._sbLastInsertErr || '');
+  return r;
+}
+
+function _sotAvisoGravacaoLista(g, r, prefixo, extra, errosExtra){
+  var cods = function(l, campo){ return l.slice(0,5).map(function(x){ return x[campo] || x.descricao; }).join(', ') + (l.length>5 ? '…' : ''); };
+  var partes = [], desc = [], erros = [];
+  if(r.mat && g.mat.length) partes.push(g.mat.length+' material(is)');
+  if(r.srv && g.srv.length) partes.push(g.srv.length+' serviço(s)');
+  if(r.matDesc && g.matDesc.length) desc.push(g.matDesc.length+' material(is): '+cods(g.matDesc, 'codigo_sap'));
+  if(r.srvDesc && g.srvDesc.length) desc.push(g.srvDesc.length+' serviço(s): '+cods(g.srvDesc, 'codigo'));
+  if(!r.mat) erros.push('os materiais');
+  if(!r.matDesc) erros.push('os materiais descritivos');
+  if(!r.srv) erros.push('os serviços');
+  if(!r.srvDesc) erros.push('os serviços descritivos');
+  erros = erros.concat(errosExtra || []);
+  var msg = ((partes.length ? prefixo+partes.join(' e ') : '') + (extra || '')
+    + (desc.length ? ' · sem cadastro no contrato, lançados só como descritivo (outra empresa) — '+desc.join(' · ') : '')).replace(/^ · /, '');
+  if(erros.length){
+    progShowToast('⚠ Erro ao gravar '+erros.join(', ')+' — nada desse grupo foi gravado.'
+      + (/somente_descritivo/.test(String(r.errDesc || '')) ? ' Itens descritivos exigem a migration 20261001140000 no banco.' : '')
+      + (msg ? ' '+msg : ''), 'erro');
+  } else if(msg){
+    progShowToast('✅ '+msg);
+  }
+}
+
 function _sotCatalogoAlmSAPContrato(contratoId){
   return new Promise(function(res){
     if(typeof sotCarregarCatalogoAlmSAP !== 'function'){ res([]); return; }
@@ -42402,7 +42483,8 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
   }
 
   var chaveMat = function(v){ return sotLmsNormCodMaterial(v).toUpperCase(); };
-  var jaMat = {}, jaAt = {}, pulados = 0, semCadastro = [], semCadMat = [];
+  var jaMat = {}, jaAt = {}, pulados = 0;
+  var g = {mat:[], matDesc:[], srv:[], srvDesc:[]};
   atuais[0].forEach(function(x){ jaMat[chaveMat(x.codigo_sap)] = true; });
   atuais[1].forEach(function(x){ jaAt[String(x.codigo||'').trim().toUpperCase()] = true; });
 
@@ -42413,7 +42495,6 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
       if(k && !catAlm[k]) catAlm[k] = x;
     });
   }
-  var insM = [];
   mats.forEach(function(m){
     var cod = String(m.codigo||'').trim();
     var k = chaveMat(cod);
@@ -42422,19 +42503,19 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
     var desc = (c ? String(c.descricao||'').trim() : '') || String(m.nome||'').trim() || cod;
     if(!desc) return;
     if(k) jaMat[k] = true;
-    if(!c) semCadMat.push(cod || desc);
-    insM.push({projeto_id:projetoId, codigo_sap:c ? String(c.codigo_sap).trim() : cod, descricao:desc,
+    var linha = {projeto_id:projetoId, codigo_sap:c ? String(c.codigo_sap).trim() : cod, descricao:desc,
       unidade:(c && c.unidade) || String(m.unidade||'').trim() || 'UN',
       qtd_projetada:Number(m.qtd||0), qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0,
       qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
-      observacao:(m.obs||'Lançado pela IA') + (c ? '' : ' · sem cadastro no Almoxarifado SAP do contrato')});
+      observacao:(m.obs||'Lançado pela IA') + (c ? '' : ' · descritivo: sem cadastro no Almoxarifado SAP do contrato')};
+    if(c) g.mat.push(linha);
+    else { linha.somente_descritivo = true; g.matDesc.push(linha); }
   });
 
   var catS = (typeof servicos !== 'undefined' ? (servicos || []) : []).filter(function(s){
     return s && !s.deleted_at && (!contratoId || String(s.contrato_id) === String(contratoId));
   });
   var ordem = atuais[1].length + 1;
-  var insS = [];
   srvs.forEach(function(s){
     var cod = String(s.codigo||'').trim();
     var k = cod.toUpperCase();
@@ -42443,29 +42524,18 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
     var desc = String(s.nome||'').trim() || (sc ? String(sc.descricao||'') : '') || cod;
     if(!desc) return;
     if(k) jaAt[k] = true;
-    if(!sc) semCadastro.push(cod || desc);
-    insS.push({projeto_id:projetoId, codigo:cod || (sc ? sc.codigo : ''), descricao:desc,
+    var linha = {projeto_id:projetoId, codigo:cod || (sc ? sc.codigo : ''), descricao:desc,
       unidade:String(s.unidade||'').trim() || (sc && sc.unidade) || 'UN',
       qtd_prevista:Number(s.qtd||0),
       valor_unitario:sc ? (Number(sc.valor_ups||0) > 0 ? Number(sc.valor_ups) : Number(sc.valor_hora||0)) : 0,
       qtd_executada:0, qtd_medida:0, qtd_viabilizada:0, ordem_exec:ordem++, status:'pendente',
-      observacoes:(s.obs||'Lançado pela IA') + (sc ? '' : ' · sem cadastro na lista de serviços do contrato'), servico_id:sc ? sc.id : null});
+      observacoes:(s.obs||'Lançado pela IA') + (sc ? '' : ' · descritivo: sem cadastro na lista de serviços do contrato'), servico_id:sc ? sc.id : null};
+    if(sc) g.srv.push(linha);
+    else { linha.somente_descritivo = true; g.srvDesc.push(linha); }
   });
 
-  var okM = insM.length ? await sbInsert('sot_materiais', insM) : [];
-  var okS = insS.length ? await sbInsert('sot_atividades', insS) : [];
-  var partes = [];
-  if(okM && insM.length) partes.push(insM.length+' material(is)');
-  if(okS && insS.length) partes.push(insS.length+' serviço(s)');
-  var msg = (partes.length ? '✅ Lançados no projeto: '+partes.join(' e ') : '')
-    + (pulados ? ' · '+pulados+' já existiam e foram mantidos' : '')
-    + (okM && semCadMat.length ? ' · '+semCadMat.length+' material(is) sem cadastro no Almoxarifado SAP do contrato: '+semCadMat.slice(0,5).join(', ')+(semCadMat.length>5?'…':'') : '')
-    + (okS && semCadastro.length ? ' · '+semCadastro.length+' serviço(s) sem cadastro no contrato (sem valor): '+semCadastro.slice(0,5).join(', ')+(semCadastro.length>5?'…':'') : '');
-  if(!okM || !okS){
-    progShowToast('⚠ Erro ao gravar '+(!okM?'os materiais':'')+(!okM&&!okS?' e ':'')+(!okS?'os serviços':'')+' — nada desse grupo foi gravado.'+(msg?' '+msg:''),'erro');
-  } else if(msg){
-    progShowToast(msg.replace(/^ · /,''));
-  }
+  var r = await _sotGravarListaProjeto(g);
+  _sotAvisoGravacaoLista(g, r, 'Lançados no projeto: ', pulados ? ' · '+pulados+' já existiam e foram mantidos' : '');
   if(typeof _sotProjetoAtual !== 'undefined' && _sotProjetoAtual === projetoId && typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);
   sotRenderProjetos();
 }
@@ -44129,7 +44199,7 @@ function sotPreviewImportacao(projetoId){
   prev.style.display='';
   prev.innerHTML='<div style="padding:.4rem .75rem;background:#f9f9f7;border-bottom:.5px solid #e0dfd8;font-size:11px;display:flex;gap:10px;flex-wrap:wrap">'
     +'<span style="color:#3B6D11;font-weight:600">✓ '+nServ+' serviço(s) e '+nMat+' material(is) encontrados</span>'
-    +(sem?'<span style="color:#A32D2D">⚠ '+sem+' sem cadastro</span>':'')
+    +(sem?'<span style="color:#A32D2D">⚠ '+sem+' sem cadastro — entram só como descritivo (outra empresa)</span>':'')
     +(dup?'<span style="color:#854F0B">🔁 '+dup+' serão somados</span>':'')
     +(window._sotImpAlmCarregando?'<span style="color:#888">⏳ carregando Almoxarifado SAP…</span>':'')
     +(tot?'<span style="margin-left:auto;font-weight:600">'+fmtMoeda(tot)+'</span>':'')
@@ -44141,7 +44211,7 @@ function sotPreviewImportacao(projetoId){
       var vu=_sotValorServ(r.serv);
       var desc=r.serv ? r.serv.descricao : r.mat ? r.mat.descricao : '⚠ sem cadastro'+(r.item.descricao?' — '+r.item.descricao:'');
       return '<tr style="border-top:.5px solid #f0efe8">'
-        +'<td style="padding:3px 8px">'+(r.tipo==='servico'?'Serviço':'Material')+'</td>'
+        +'<td style="padding:3px 8px">'+(r.tipo==='servico'?'Serviço':'Material')+(r.cadastrado?'':'<div style="font-size:9px;color:#888">descritivo</div>')+'</td>'
         +'<td style="padding:3px 8px;font-family:monospace;'+cor+'">'+_escapeHtml(r.item.codigo)+(r.ja?' 🔁':'')+'</td>'
         +'<td style="padding:3px 8px;'+cor+'">'+_escapeHtml(desc)+'</td>'
         +'<td style="padding:3px 8px;text-align:right">'+r.item.qtd+'</td>'
@@ -44181,55 +44251,41 @@ async function sotConfirmarImportacao(projetoId){
   atuais[1].forEach(function(a){ var k=String(a.codigo||'').trim().toUpperCase(); if(k&&!jaAt[k]) jaAt[k]=a; });
 
   var ORIGEM='Importado da lista colada';
-  var insM=[], insS=[], somas=[], semMat=[], semServ=[];
+  var g={mat:[], matDesc:[], srv:[], srvDesc:[]}, somas=[];
   var ordem=atuais[1].length+1;
   rows.forEach(function(r){
     var it=r.item;
     if(r.tipo==='material'){
       var exM=jaMat[_sotChaveMatImport(it.codigo)];
       if(exM){ somas.push({t:'sot_materiais', id:exM.id, campo:'qtd_projetada', valor:Number(exM.qtd_projetada||0)+it.qtd}); return; }
-      if(!r.mat) semMat.push(it.codigo);
-      insM.push({projeto_id:projetoId, codigo_sap:r.mat?String(r.mat.codigo_sap).trim():it.codigo,
+      var lm={projeto_id:projetoId, codigo_sap:r.mat?String(r.mat.codigo_sap).trim():it.codigo,
         descricao:r.mat?r.mat.descricao:(it.descricao||it.codigo), unidade:r.mat?(r.mat.unidade||'UN'):'UN',
         qtd_projetada:it.qtd, qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0, qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
-        observacao:ORIGEM+(r.mat?'':' · sem cadastro no Almoxarifado SAP do contrato')});
+        observacao:ORIGEM+(r.mat?'':' · descritivo: sem cadastro no Almoxarifado SAP do contrato')};
+      if(r.mat) g.mat.push(lm);
+      else { lm.somente_descritivo=true; g.matDesc.push(lm); }
     } else {
       var exS=jaAt[it.codigo];
       if(exS){ somas.push({t:'sot_atividades', id:exS.id, campo:'qtd_prevista', valor:Number(exS.qtd_prevista||0)+it.qtd}); return; }
-      if(!r.serv) semServ.push(it.codigo);
-      insS.push({projeto_id:projetoId, codigo:it.codigo,
+      var ls={projeto_id:projetoId, codigo:it.codigo,
         descricao:r.serv?r.serv.descricao:(it.descricao||it.codigo), unidade:r.serv?(r.serv.unidade||'UN'):'UN',
         qtd_prevista:it.qtd, valor_unitario:_sotValorServ(r.serv),
         qtd_executada:0, qtd_medida:0, qtd_viabilizada:0, ordem_exec:ordem++, status:'pendente',
-        observacoes:ORIGEM+(r.serv?'':' · sem cadastro na lista de serviços do contrato'), servico_id:r.serv?r.serv.id:null});
+        observacoes:ORIGEM+(r.serv?'':' · descritivo: sem cadastro na lista de serviços do contrato'), servico_id:r.serv?r.serv.id:null};
+      if(r.serv) g.srv.push(ls);
+      else { ls.somente_descritivo=true; g.srvDesc.push(ls); }
     }
   });
 
-  var okM=insM.length ? await sbInsert('sot_materiais', insM) : [];
-  var okS=insS.length ? await sbInsert('sot_atividades', insS) : [];
+  var gr=await _sotGravarListaProjeto(g);
   var somadas=0, falhaSoma=0;
   for(var i=0;i<somas.length;i++){
     var u={}; u[somas[i].campo]=Math.round(somas[i].valor*1e6)/1e6;
     var lin=await sbUpdate(somas[i].t, u, 'id=eq.'+somas[i].id, {linhas:true});
     if(Array.isArray(lin)&&lin.length) somadas++; else falhaSoma++;
   }
-  var partes=[];
-  if(okM&&insM.length) partes.push(insM.length+' material(is)');
-  if(okS&&insS.length) partes.push(insS.length+' serviço(s)');
-  var msg=(partes.length?'Importados: '+partes.join(' e '):'')
-    +(somadas?' · '+somadas+' já existiam e tiveram a quantidade somada':'')
-    +(okM&&semMat.length?' · '+semMat.length+' material(is) sem cadastro no Almoxarifado SAP: '+semMat.slice(0,5).join(', ')+(semMat.length>5?'…':''):'')
-    +(okS&&semServ.length?' · '+semServ.length+' serviço(s) sem cadastro no contrato (sem valor): '+semServ.slice(0,5).join(', ')+(semServ.length>5?'…':''):'');
-  msg=msg.replace(/^ · /,'');
-  if(!okM||!okS||falhaSoma){
-    var erros=[];
-    if(!okM) erros.push('os materiais');
-    if(!okS) erros.push('os serviços');
-    if(falhaSoma) erros.push(falhaSoma+' soma(s) de quantidade');
-    progShowToast('⚠ Erro ao gravar '+erros.join(' e ')+' — nada desse grupo foi gravado.'+(msg?' '+msg:''),'erro');
-  } else {
-    progShowToast('✅ '+msg);
-  }
+  _sotAvisoGravacaoLista(g, gr, 'Importados: ', somadas?' · '+somadas+' já existiam e tiveram a quantidade somada':'',
+    falhaSoma ? [falhaSoma+' soma(s) de quantidade'] : []);
   closeModal();
   sotAbrirProjeto(projetoId);
 }
@@ -44294,34 +44350,24 @@ async function _sotCarregarArqMat(input){
   }
 }
 
-function sotProcessarImportacaoMat(projetoId){
+// Mesmo lançamento da lista do projeto: Almoxarifado SAP do contrato, sem cadastro = descritivo, sem duplicar código.
+async function sotProcessarImportacaoMat(projetoId){
   var raw=(document.getElementById('imp-mat-txt')||{}).value||'';
   var linhas=raw.split('\n').map(function(l){return l.trim();}).filter(Boolean);
   if(!linhas.length){progShowToast('⚠ Nenhuma linha.','erro');return;}
   var invalidas=linhas.filter(sotTextoBinario).length;
   if(invalidas){progShowToast('⚠ '+invalidas+' linha(s) com caracteres inválidos (arquivo binário?). Nada foi importado.','erro');return;}
-  var n=0;
+  var mats=[];
   linhas.forEach(function(linha){
     var sep=linha.indexOf(';')>=0?';':'\t';
     var cols=linha.split(sep).map(function(x){return x.trim();});
-    var desc=cols[1]||cols[0]||''; if(!desc) return;
-    var m={
-      id:'sm'+Date.now()+n, projeto_id:projetoId,
-      codigo_sap:cols[0]||'', descricao:desc,
-      unidade:cols[3]||'UN', qtd_projetada:parseFloat(cols[2])||1,
-      qtd_viabilizada:0, qtd_requisitada:0, qtd_entregue:0,
-      qtd_aplicada:0, qtd_devolvida:0, qtd_processada_sap:0,
-    };
-    sot_materiais_proj.push(m);
-    if(!DEMO){
-      var p=Object.assign({},m); delete p.id;
-      sbInsert('sot_materiais',p).then(function(r){if(r&&r[0])m.id=r[0].id;}).catch(function(){});
-    }
-    n++;
+    if(!(cols[1]||cols[0])) return;
+    mats.push({codigo:cols[0]||'', nome:cols[1]||'', qtd:sotLmsNum(cols[2])||1, unidade:cols[3]||'', obs:'Importado (Importar materiais)'});
   });
+  if(!mats.length){progShowToast('⚠ Nenhuma linha válida.','erro');return;}
+  var proj=sot_projetos.find(function(x){return x.id===projetoId;});
+  await _sotLancarPendentes(projetoId, proj?proj.contrato_id:'', {materiais:mats, servicos:[]});
   closeModal();
-  sotAtualizarAbaAtual(projetoId);
-  progShowToast('✅ '+n+' material(is) importado(s)');
 }
 
 
@@ -44684,26 +44730,29 @@ function sotRenderTabResumo(projetoId, container){
       +'<button class="btn btn-sm" onclick="sotAnalisarRelatorio(\''+projetoId+'\')" '
       +'style="background:linear-gradient(135deg,#533AB7,#185FA5);color:#fff;border:none;font-size:11px">🤖 Analisar relatório IA</button>'
       +'</div>'
-      + plptRenderResumoOperacoes(projetoId, pjStub, p, res[0]||[], res[1]||[])
+      + plptRenderResumoOperacoes(projetoId, pjStub, p,
+          (res[0]||[]).filter(function(a){ return !a.somente_descritivo; }),
+          (res[1]||[]).filter(function(m){ return !m.somente_descritivo; }))
       +'</div>';
   }).catch(function(){
     el.innerHTML = '<div style="padding:1rem;color:#A32D2D">Erro ao carregar resumo.</div>';
   });
 }
 
-function sotRenderTabReserva(projetoId, container){
+function sotRenderTabReserva(projetoId, container, _jaBuscou){
   var mats = (typeof sot_materiais_proj!=='undefined' ? sot_materiais_proj : [])
-    .filter(function(m){ return m.projeto_id===projetoId; });
+    .filter(function(m){ return m.projeto_id===projetoId && !m.somente_descritivo; });
 
   if(!mats.length){
-    if(!DEMO){
+    if(!DEMO && !_jaBuscou){
       if(container) container.innerHTML='<div style="padding:2rem;text-align:center;color:#aaa">⏳ Carregando...</div>';
       sbFetch('sot_materiais',{filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null']})
         .then(function(rows){
           if(rows&&rows.length) rows.forEach(function(r){
+            if(r.somente_descritivo) return;
             if(!sot_materiais_proj.find(function(x){return x.id===r.id;})) sot_materiais_proj.push(r);
           });
-          sotRenderTabReserva(projetoId, container);
+          sotRenderTabReserva(projetoId, container, true);
         }).catch(function(){
           if(container) container.innerHTML='<div style="padding:1.5rem;color:#A32D2D">Erro ao carregar materiais.</div>';
         });
@@ -45580,10 +45629,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.191',
+  numero: '8.1.192',
   data:   '01/10/2026',
-  build:  '20261001-1830',
+  build:  '20261001-1900',
   log: [
+    {v:'8.1.192', d:'01/10/2026', itens:[
+      'Projetos — material ou mão de obra sem cadastro no contrato (fora do Almoxarifado SAP / da lista de serviços) entra no projeto só como descritivo (pode ser de outra empresa): aparece num bloco "Somente descritivo" nas abas Atividades e Materiais e fica fora de valor, viabilidade, execução, medição, faturamento, reserva, requisição, entrega e aplicação.',
+      'Banco: sot_atividades/sot_materiais ganham somente_descritivo e recusam quantidade operacional ou valor em item descritivo (migration 20261001140000 — aplicar antes de publicar; sem ela os itens descritivos não são gravados e o aviso informa).',
+      'Projetos — aba Reserva: projeto sem materiais buscava a lista no banco sem parar; agora busca uma vez.',
+      'Projetos — "Importar materiais" usa o mesmo lançamento da lista: confere o Almoxarifado SAP do contrato, não duplica código já lançado, sem cadastro entra como descritivo e avisa erro (antes gravava às cegas e duplicava).',
+    ]},
     {v:'8.1.191', d:'01/10/2026', itens:[
       'Projetos — Importar lista (colar do Excel): reconhece serviços (lista de serviços do contrato) e materiais (Almoxarifado SAP do contrato) na mesma lista; antes só procurava serviços e todo material aparecia "não cadastrado". Materiais vão para a aba Materiais, serviços para Atividades.',
       'Projetos — Importar lista: colado do Excel separa só por TAB (vírgula da descrição e decimal 1,67 não quebram mais a linha) e usa a 1ª quantidade preenchida (Quan. Plan; Quan. Real se vazia). Antes "1,67" virava 67.',

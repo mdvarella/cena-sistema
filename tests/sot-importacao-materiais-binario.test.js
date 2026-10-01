@@ -20,7 +20,7 @@ function fn(nome) {
   const fim = html.indexOf('\n}\n', ini);
   return html.slice(ini, fim + 2);
 }
-const FUNCS = ['sotTextoBinario', 'sotDecodificarTextoArquivo', '_sotCarregarArqMat', 'sotProcessarImportacaoMat'];
+const FUNCS = ['sotTextoBinario', 'sotDecodificarTextoArquivo', '_sotCarregarArqMat', 'sotLmsNum', 'sotProcessarImportacaoMat'];
 const codigo = FUNCS.map(fn).join('\n');
 
 function sandbox(opts) {
@@ -36,6 +36,8 @@ function sandbox(opts) {
     sbInsert(t, p) { c.inserts.push({ t, p }); return Promise.resolve([{ id: 'x' + c.inserts.length }]); },
     closeModal() { c.fechou++; },
     sotAtualizarAbaAtual() { c.atualizou++; },
+    sot_projetos: [{ id: 'p1', contrato_id: 'c1' }], lancou: [],
+    _sotLancarPendentes: async (pid, cid, pend) => { c.lancou.push({ pid, cid, pend }); },
     FileReader: class { readAsDataURL(f) { setTimeout(() => this.onload({ target: { result: 'data:x;base64,' + Buffer.from(f._bytes).toString('base64') } }), 0); } },
   };
   if (opts.xlsx) c.XLSX = opts.xlsx;
@@ -108,15 +110,17 @@ const ZIP = [0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00, 0x08, 0x00, 0x00, 0
   // importar
   {
     const c = sandbox({ texto: '4500001234;Poste 11m;5;UN\nPK\u0003\u0004\uFFFD;x;1\n4500005678;Cabo;200;m' });
-    c.sotProcessarImportacaoMat('p1');
-    ok('lista com linha binária: nada importado', c.inserts.length === 0 && c.sot_materiais_proj.length === 0 && c.fechou === 0
+    await c.sotProcessarImportacaoMat('p1');
+    ok('lista com linha binária: nada importado', c.inserts.length === 0 && c.lancou.length === 0 && c.fechou === 0
       && /1 linha\(s\) com caracteres inválidos/.test((c.toasts[0] || {}).msg), c.toasts);
   }
   {
     const c = sandbox({ texto: '4500001234;Poste 11m;5;UN\n4500005678;Cabo XLPE 95mm²;200;m\n' });
-    c.sotProcessarImportacaoMat('p1');
-    ok('lista válida: importa as 2 linhas', c.inserts.length === 2 && c.inserts[0].t === 'sot_materiais' && c.inserts[1].p.descricao === 'Cabo XLPE 95mm²'
-      && c.inserts[1].p.qtd_projetada === 200 && c.fechou === 1, c.inserts.map(i => i.p));
+    await c.sotProcessarImportacaoMat('p1');
+    const l = c.lancou[0], m = l && l.pend.materiais;
+    ok('lista válida: as 2 linhas vão ao lançamento da lista (Almoxarifado SAP / descritivo)', c.lancou.length === 1 && l.pid === 'p1' && l.cid === 'c1'
+      && m.length === 2 && m[1].codigo === '4500005678' && m[1].nome === 'Cabo XLPE 95mm²' && m[1].qtd === 200 && m[1].unidade === 'm'
+      && l.pend.servicos.length === 0 && c.inserts.length === 0 && c.fechou === 1, l);
   }
 
   // versão

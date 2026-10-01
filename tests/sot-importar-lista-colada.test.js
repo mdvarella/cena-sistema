@@ -18,7 +18,7 @@ function fn(nome) {
 }
 const vr = nome => { const i = html.indexOf('\nvar ' + nome + ' ') + 1; if (i < 1) throw new Error('var ' + nome); return html.slice(i, html.indexOf('\n', i)); };
 const codigo = [vr('SOT_IMP_NUM_RE')].concat(['sotLmsNum', 'sotLmsNormCodMaterial', 'sotTextoBinario', 'sotParseContratosIds', 'sotFiltrarMatsContrato',
-  'sotBuildListaAlmSAP', 'sotCarregarCatalogoAlmSAP', '_sotCatalogoAlmSAPContrato', 'sotImportarAtividades', '_sotSplitCamposLinha',
+  'sotBuildListaAlmSAP', 'sotCarregarCatalogoAlmSAP', '_sotCatalogoAlmSAPContrato', '_sotGravarListaProjeto', '_sotAvisoGravacaoLista', 'sotImportarAtividades', '_sotSplitCamposLinha',
   '_sotLinhaEhCabecalhoImport', '_sotExtrairCodQtdLinha', 'sotParsarLinhasImportacao', '_sotChaveMatImport', '_sotClassificarImportacao',
   '_sotValorServ', 'sotPreviewImportacao', 'sotConfirmarImportacao', '_escapeHtml'].map(fn)).join('\n');
 
@@ -113,7 +113,7 @@ const COLADO = [
     const h = c.els['sot-imp-preview'].innerHTML;
     ok('modal: título serviços e materiais', /Importar lista — serviços e materiais/.test(c.modal));
     ok('prévia: conta serviços e materiais encontrados', /3 serviço\(s\) e 2 material\(is\) encontrados/.test(h), h.slice(0, 400));
-    ok('prévia: sem cadastro (R-AHO816, 321291 de outro contrato, 348140)', /⚠ 3 sem cadastro/.test(h));
+    ok('prévia: sem cadastro (R-AHO816, 321291 de outro contrato, 348140) entram como descritivo', /⚠ 3 sem cadastro — entram só como descritivo/.test(h) && /descritivo<\/div>/.test(h));
     ok('prévia: já lançados serão somados', /🔁 2 serão somados/.test(h));
     ok('prévia: material mostra descrição do SAP', /ARRUELA SAP/.test(h) && /Material/.test(h));
     ok('prévia: sem cadastro mostra descrição colada', /⚠ sem cadastro — ISOLADOR POLIMERICO/.test(h));
@@ -129,24 +129,27 @@ const COLADO = [
     c.sotImportarAtividades(PID);
     c.els['sot-imp-texto'].value = COLADO;
     await c.sotConfirmarImportacao(PID);
-    const im = c.inserts.find(i => i.t === 'sot_materiais'), is = c.inserts.find(i => i.t === 'sot_atividades');
-    ok('um lote por tabela', c.inserts.length === 2);
-    ok('materiais: colunas reais', im.d.every(m => m.projeto_id === PID && 'codigo_sap' in m && 'qtd_projetada' in m && !('codigo' in m) && !('qtd_ups' in m)), im.d[0]);
-    ok('materiais: novos (existente somado)', JSON.stringify(im.d.map(m => [m.codigo_sap, m.qtd_projetada])) === JSON.stringify([['949740', 1.67], ['321291', 24], ['348140', 1250.5]]), im.d.map(m => [m.codigo_sap, m.qtd_projetada]));
-    ok('materiais: descrição e unidade do SAP', im.d[0].descricao === 'ARRUELA SAP' && im.d[0].unidade === 'PC' && im.d[0].observacao === 'Importado da lista colada');
-    ok('materiais: SAP de outro contrato não serve; sem cadastro marcado', im.d[1].descricao === 'ISOLADOR POLIMERICO' && /sem cadastro no Almoxarifado SAP do contrato$/.test(im.d[1].observacao), im.d[1]);
-    ok('serviços: colunas reais (sem qtd_ups/valor_ups)', is.d.every(a => a.projeto_id === PID && 'qtd_prevista' in a && 'valor_unitario' in a && !('qtd_ups' in a) && !('valor_ups' in a) && !('id' in a) && a.status === 'pendente'), is.d[0]);
-    ok('serviços: novos (existente somado)', JSON.stringify(is.d.map(a => a.codigo)) === JSON.stringify(['R-AHO816', 'I-0325508', 'GS83.389']), is.d.map(a => a.codigo));
-    ok('serviços: cadastro do contrato com valor', is.d[1].servico_id === 'sv1' && is.d[1].valor_unitario === 100 && is.d[1].descricao === 'MO INSTAL FECHO');
-    ok('I-/R- no Almoxarifado SAP continua serviço (não vira material)', !im.d.some(m => /AHO/.test(m.codigo_sap)) && is.d[0].codigo === 'R-AHO816');
-    ok('serviços: sem cadastro sem valor e marcado', is.d[0].servico_id === null && is.d[0].valor_unitario === 0 && /sem cadastro na lista de serviços do contrato$/.test(is.d[0].observacoes));
-    ok('serviços: ordem após os existentes', is.d[0].ordem_exec === 2 && is.d[2].ordem_exec === 4);
+    const lote = (t, desc) => c.inserts.find(i => i.t === t && i.d.every(x => !!x.somente_descritivo === desc));
+    const im = lote('sot_materiais', false), imd = lote('sot_materiais', true), is = lote('sot_atividades', false), isd = lote('sot_atividades', true);
+    ok('lote de cadastrados e lote descritivo por tabela', c.inserts.length === 4 && im && imd && is && isd, c.inserts.map(i => i.t + ':' + i.d.length));
+    ok('materiais: colunas reais', im.d.concat(imd.d).every(m => m.projeto_id === PID && 'codigo_sap' in m && 'qtd_projetada' in m && !('codigo' in m) && !('qtd_ups' in m)), im.d[0]);
+    ok('materiais: cadastrado novo (existente somado)', JSON.stringify(im.d.map(m => [m.codigo_sap, m.qtd_projetada])) === JSON.stringify([['949740', 1.67]]), im.d.map(m => [m.codigo_sap, m.qtd_projetada]));
+    ok('materiais: descrição e unidade do SAP', im.d[0].descricao === 'ARRUELA SAP' && im.d[0].unidade === 'PC' && im.d[0].observacao === 'Importado da lista colada' && !('somente_descritivo' in im.d[0]));
+    ok('materiais: sem cadastro (inclusive SAP de outro contrato) vão como descritivo', JSON.stringify(imd.d.map(m => [m.codigo_sap, m.qtd_projetada])) === JSON.stringify([['321291', 24], ['348140', 1250.5]])
+      && imd.d[0].descricao === 'ISOLADOR POLIMERICO' && imd.d.every(m => m.somente_descritivo === true && /descritivo: sem cadastro no Almoxarifado SAP do contrato$/.test(m.observacao)), imd.d);
+    ok('serviços: colunas reais (sem qtd_ups/valor_ups)', is.d.concat(isd.d).every(a => a.projeto_id === PID && 'qtd_prevista' in a && 'valor_unitario' in a && !('qtd_ups' in a) && !('valor_ups' in a) && !('id' in a) && a.status === 'pendente'), is.d[0]);
+    ok('serviços: cadastrados novos (existente somado)', JSON.stringify(is.d.map(a => a.codigo)) === JSON.stringify(['I-0325508', 'GS83.389']), is.d.map(a => a.codigo));
+    ok('serviços: cadastro do contrato com valor', is.d[0].servico_id === 'sv1' && is.d[0].valor_unitario === 100 && is.d[0].descricao === 'MO INSTAL FECHO');
+    ok('I-/R- no Almoxarifado SAP continua serviço (não vira material)', !im.d.concat(imd.d).some(m => /AHO/.test(m.codigo_sap)) && isd.d[0].codigo === 'R-AHO816');
+    ok('serviços: sem cadastro vai como descritivo, sem valor', isd.d[0].servico_id === null && isd.d[0].valor_unitario === 0 && isd.d[0].somente_descritivo === true
+      && /descritivo: sem cadastro na lista de serviços do contrato$/.test(isd.d[0].observacoes));
+    ok('serviços: ordem após os existentes', isd.d[0].ordem_exec === 2 && is.d[0].ordem_exec === 3 && is.d[1].ordem_exec === 4);
     ok('somas: material e serviço existentes, conferindo linha', c.updates.length === 2
       && c.updates.some(u => u.t === 'sot_materiais' && u.d.qtd_projetada === 3 && u.f === 'id=eq.mat-ex' && u.o.linhas)
       && c.updates.some(u => u.t === 'sot_atividades' && u.d.qtd_prevista === 3 && u.f === 'id=eq.at-ex'), c.updates);
     const t = c.toasts[c.toasts.length - 1];
-    ok('aviso: importados, somados e sem cadastro', t.tipo === 'ok' && /Importados: 3 material\(is\) e 3 serviço\(s\)/.test(t.msg) && /2 já existiam/.test(t.msg)
-      && /2 material\(is\) sem cadastro no Almoxarifado SAP: 321291, 348140/.test(t.msg) && /1 serviço\(s\) sem cadastro no contrato \(sem valor\): R-AHO816/.test(t.msg), t.msg);
+    ok('aviso: importados, somados e descritivos', t.tipo === 'ok' && /Importados: 1 material\(is\) e 2 serviço\(s\)/.test(t.msg) && /2 já existiam/.test(t.msg)
+      && /lançados só como descritivo \(outra empresa\) — 2 material\(is\): 321291, 348140 · 1 serviço\(s\): R-AHO816/.test(t.msg), t.msg);
     ok('fecha e recarrega o projeto do banco', c.fechou === 1 && c.abriu[0] === PID);
   }
   {
@@ -161,7 +164,7 @@ const COLADO = [
     c.sotImportarAtividades(PID);
     c.els['sot-imp-texto'].value = COLADO;
     await c.sotConfirmarImportacao(PID);
-    ok('erro ao gravar serviços e soma: avisa', c.toasts[0].tipo === 'erro' && /os serviços e 1 soma\(s\) de quantidade/.test(c.toasts[0].msg), c.toasts[0].msg);
+    ok('erro ao gravar serviços e soma: avisa', c.toasts[0].tipo === 'erro' && /os serviços, os serviços descritivos, 1 soma\(s\) de quantidade/.test(c.toasts[0].msg), c.toasts[0].msg);
   }
   {
     const c = sandbox();
