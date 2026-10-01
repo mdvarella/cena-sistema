@@ -166,7 +166,8 @@ async function testesInsert() {
   await testesFila();
   await testesInsert();
   ok('versão: log 8.1.173', /\{v:'8\.1\.173'/.test(html));
-  ok('versão: tag portaria-offline.js com a versão nova', html.includes('portaria-offline.js?v=8.1.173'));
+  const tagOff = +((html.match(/portaria-offline\.js\?v=8\.1\.(\d+)/) || [])[1] || 0);
+  ok('versão: tag portaria-offline.js a partir de 8.1.173', tagOff >= 173, tagOff);
   ok('versão: sw cena-8.1.x', /'cena-8\.1\.\d+'/.test(sw));
   if (failed.length) {
     console.error('FALHAS (' + failed.length + '/' + total + '):\n - ' + failed.join('\n - '));

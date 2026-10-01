@@ -610,6 +610,38 @@ function portOffAplicarSaidaMemoria(local, server){
   }
 }
 
+/* Saída viva que substitui uma cópia excluída: mesma placa, até 2 min de diferença e mesma equipe quando as duas têm. */
+async function portOffSaidaVivaEquivalente(ref){
+  if(!ref || !ref.placa || !ref.data_saida || typeof sbFetch!=='function') return {ok:false, motivo:'sem placa/horário'};
+  var t=new Date(ref.data_saida).getTime();
+  if(!t || isNaN(t)) return {ok:false, motivo:'sem horário de saída'};
+  var rows=null;
+  try{
+    rows=await sbFetch('frotas_portaria_saidas',{
+      select:'id,placa,equipe_id,equipe,data_saida,status,data_retorno,deleted_at',
+      filters:['placa=eq.'+encodeURIComponent(ref.placa),'deleted_at=is.null',
+        'data_saida=gte.'+new Date(t-120000).toISOString(),'data_saida=lte.'+new Date(t+120000).toISOString()],
+      limit:10
+    });
+  }catch(e){ rows=null; }
+  if(!Array.isArray(rows)) return {ok:false, motivo:'leitura falhou', tentarDepois:true};
+  var cand=rows.filter(function(r){
+    if(!r || String(r.id)===String(ref.id) || r.deleted_at) return false;
+    if(r.equipe_id && ref.equipe_id && String(r.equipe_id)!==String(ref.equipe_id)) return false;
+    return true;
+  });
+  if(cand.length!==1) return {ok:false, motivo:cand.length?'mais de uma saída equivalente':'nenhuma saída equivalente'};
+  return {ok:true, row:cand[0]};
+}
+
+function portOffTrocarIdMemoria(antigo, novo){
+  if(typeof frt_portaria==='undefined' || !frt_portaria) return;
+  var velho=frt_portaria.find(function(x){ return x && String(x.id)===String(antigo); });
+  var atual=frt_portaria.find(function(x){ return x && String(x.id)===String(novo); });
+  if(velho && atual && velho!==atual) frt_portaria.splice(frt_portaria.indexOf(velho),1);
+  else if(velho && !atual) velho.id=novo;
+}
+
 async function portOffSyncRetorno(ev){
   var p=ev.payload||{};
   var sid=p.saida_id;
@@ -641,6 +673,18 @@ async function portOffSyncRetorno(ev){
     p.fotos=null;
     return;
   }
+  // Cópia excluída no servidor (cache antigo do tablet): o retorno vai para a saída viva equivalente, nunca para a excluída.
+  if(srv.deleted_at){
+    var eqv=await portOffSaidaVivaEquivalente(srv);
+    if(!eqv.ok){
+      throw new Error('A saída deste retorno foi excluída no servidor ('+eqv.motivo+'). Nada foi gravado — avise o gestor.');
+    }
+    if(!p.saida_id_excluida) p.saida_id_excluida=sid;
+    portOffTrocarIdMemoria(sid, eqv.row.id);
+    sid=eqv.row.id;
+    p.saida_id=sid;
+    srv=eqv.row;
+  }
   if(srv.status==='Retornado' && srv.data_retorno){
     ev.status_sync='CONFLITO';
     ev.ultimo_erro='Este evento não foi aplicado porque a equipe já possui retorno registrado no servidor.';
@@ -666,21 +710,38 @@ async function portOffSyncRetorno(ev){
     // NÃO enviar colunas do sql_portaria_offline_1 (dispositivo_id/retorno_offline_event_id/
     // sincronizado_em) — não existem na tabela (SQL não aplicado) e causavam 400 PGRST204.
   };
-  var ok=await sbUpdate('frotas_portaria_saidas', patch, 'id=eq.'+sid);
+  // Só grava em saída viva e ainda sem retorno; a resposta traz as linhas alteradas (204 sem linha não é sucesso).
+  // id por último: sbUpdate recusa filtro que começa com id=eq. e não é só o UUID.
+  var filtro='deleted_at=is.null&data_retorno=is.null&id=eq.'+sid;
+  var ok=await sbUpdate('frotas_portaria_saidas', patch, filtro, {linhas:true});
   if(ok===false && portOffColunaAusente('column')){
     ok=await sbUpdate('frotas_portaria_saidas', {
       status:'Retornado', km_retorno:p.km_retorno, data_retorno:p.data_retorno,
       base_retorno:p.base_retorno||null, status_devolucao:p.status_devolucao||null,
       obs_retorno:p.obs_retorno||null, retorno_registrado_por:p.retorno_registrado_por||null,
       foto_carga_retorno_b64:fotoUrl||null
-    }, 'id=eq.'+sid);
+    }, filtro, {linhas:true});
   }
   if(ok===false){
-    var mini=await sbUpdate('frotas_portaria_saidas', {
+    ok=await sbUpdate('frotas_portaria_saidas', {
       status:'Retornado', km_retorno:p.km_retorno, data_retorno:p.data_retorno,
       obs_retorno:p.obs_retorno||null, retorno_registrado_por:p.retorno_registrado_por||null
-    }, 'id=eq.'+sid);
-    if(mini===false) throw new Error('Servidor não confirmou o retorno');
+    }, filtro, {linhas:true});
+    if(ok===false) throw new Error('Servidor não confirmou o retorno');
+  }
+  if(!Array.isArray(ok) || ok.length!==1){
+    var rel=null;
+    try{ rel=await sbFetch('frotas_portaria_saidas',{select:'id,status,data_retorno,deleted_at', filters:['id=eq.'+sid], limit:1}); }catch(e3){ rel=null; }
+    var s2=rel && rel[0];
+    if(s2 && !s2.deleted_at && s2.data_retorno){
+      ev.status_sync='CONFLITO';
+      ev.ultimo_erro='Este evento não foi aplicado porque a equipe já possui retorno registrado no servidor.';
+      portOffMarcarMemoriaConflito(sid);
+      return;
+    }
+    throw new Error(s2 && s2.deleted_at
+      ? 'A saída foi excluída no servidor durante o envio. Nada foi gravado — tenta de novo.'
+      : 'Servidor não alterou nenhuma saída (sem permissão ou saída inexistente). Nada foi gravado.');
   }
   ev.status_sync='SINCRONIZADO';
   ev.data_hora_sincronizacao=syncEm;
@@ -688,7 +749,12 @@ async function portOffSyncRetorno(ev){
   p.fotos=null;
   if(typeof frt_portaria!=='undefined'){
     var mem=(frt_portaria||[]).find(function(x){return String(x.id)===String(sid);});
-    if(mem) mem._sync_status='SINCRONIZADO';
+    if(mem){
+      mem._sync_status='SINCRONIZADO';
+      mem.status='Retornado';
+      if(!mem.data_retorno) mem.data_retorno=p.data_retorno;
+      if(mem.km_retorno==null || mem.km_retorno==='') mem.km_retorno=p.km_retorno;
+    }
   }
 }
 

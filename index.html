@@ -2066,7 +2066,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.173"></script>
+<script src="portaria-offline.js?v=8.1.187"></script>
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
@@ -8254,9 +8254,9 @@ async function sbUpdate(table,data,filter,opts){
     }
   }
   try{
-    var resUpd=await cenaAuthAuthorizedFetch(SB.url+'/rest/v1/'+table+'?'+filter,{
+    var resUpd=await cenaAuthAuthorizedFetch(SB.url+'/rest/v1/'+table+'?'+filter+(opts.linhas?'&select=id':''),{
       method:'PATCH',
-      headers:{'Content-Type':'application/json','Prefer':'return=minimal'},
+      headers:{'Content-Type':'application/json','Prefer':opts.linhas?'return=representation':'return=minimal'},
       body:JSON.stringify(data)
     },{requireAuth:!!opts.requireAuth, op:'sbUpdate:'+table});
     if(resUpd.aborted){
@@ -8264,6 +8264,11 @@ async function sbUpdate(table,data,filter,opts){
       return false;
     }
     if(!resUpd.ok){console.error('sbUpdate erro ['+table+']',resUpd.status,resUpd.text);window._sbLastUpdateErr=resUpd.text;return false;}
+    if(opts.linhas){
+      var linhasUpd=Array.isArray(resUpd.json)?resUpd.json:[];
+      if(linhasUpd.length) _auditAuto('editar', table, data, filter);
+      return linhasUpd;
+    }
     _auditAuto('editar', table, data, filter);
     return true;
   }catch(e){console.error('sbUpdate exception',e);return false;}
@@ -45064,10 +45069,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.182',
-  data:   '30/09/2026',
-  build:  '20260930-1600',
+  numero: '8.1.187',
+  data:   '01/10/2026',
+  build:  '20261001-1000',
   log: [
+    {v:'8.1.187', d:'01/10/2026', itens:[
+      'Portaria: retorno registrado ia para a cópia da saída já excluída no banco (o tablet guardava a cópia no cache) e a equipe continuava "Em campo" — 16 equipes em 30/09. Agora o retorno só grava em saída viva e sem retorno, confere que o servidor alterou a linha e, se a saída do tablet foi excluída, grava na saída viva equivalente (mesma placa e horário) ou fica com erro visível na sincronização',
+      'Portaria: as saídas abertas da memória são conferidas com o servidor (na carga do dia e a cada minuto); cópia excluída sai da tela e a saída viva entra no lugar',
+      'Portaria: a deduplicação automática não exclui mais no banco uma saída com retorno, nem exclui quando a saída que ficou na tela não existe viva no servidor (caso RTQ7D65 de 30/09)',
+    ]},
     {v:'8.1.182', d:'30/09/2026', itens:[
       'Portaria: KM digitado com ponto de milhar (ex.: 32.942) era gravado só com os primeiros dígitos (32). Agora o KM é lido inteiro na saída e no retorno, o campo abre o teclado numérico e KM com dígitos faltando (menor que 1.000 quando a placa já passa de 10.000) é bloqueado em vez de só pedir confirmação',
     ]},
@@ -86108,7 +86118,9 @@ function portAbrirVistoriaRetorno(saidaId){
           data_retorno:           saida.data_retorno,
           status_devolucao:       saida.status_devolucao,
           obs_retorno:            obs||null,
-        },'id=eq.'+idDb).catch(function(e){ console.error('retorno:',e); });
+        },'deleted_at=is.null&data_retorno=is.null&id=eq.'+idDb,{linhas:true}).then(function(l){
+          if(!Array.isArray(l) || l.length!==1) progShowToast('⚠ Retorno não gravado: a saída foi excluída ou já tem retorno no servidor. Recarregue a Portaria.','erro');
+        }).catch(function(e){ console.error('retorno:',e); });
       }
       // Foto fica no IndexedDB (Blob). Não espera upload para confirmar na tela.
       _gravarRetorno(fotoB64||null);
@@ -86893,6 +86905,14 @@ function portEnsureDadosPortariaDia(data){
   }
   if(!jobs.length) return Promise.resolve();
   return Promise.all(jobs).then(function(){
+    if(typeof portConferirSaidasMemoria!=='function') return;
+    return portConferirSaidasMemoria({forcar:true}).then(function(r){
+      if(r && r.excluidas){
+        Object.keys(window._portEqDiaBuscado).forEach(function(k){ if(k.indexOf('p:')===0) delete window._portEqDiaBuscado[k]; });
+        return portEnsureDadosPortariaDia(data);
+      }
+    });
+  }).then(function(){
     if(typeof portOffSnapshotCache==='function') portOffSnapshotCache();
   }).catch(function(){
     if(typeof portOffHidatarCache==='function') return portOffHidatarCache();
@@ -87053,7 +87073,9 @@ function portFundirSaidas(mem, r){
   return merged;
 }
 var _portClonesSuprimidos={};
-function portSuprimirCloneSaida(p){
+/** Cópia da memória perdeu para a vencedora. No banco só é excluída se a vencedora existir viva lá e a cópia
+ *  continuar aberta (sem retorno): a memória do tablet pode estar velha e nunca pode apagar saída com retorno. */
+function portSuprimirCloneSaida(p, vencedora){
   if(!p) return;
   if(!p.deleted_at) p.deleted_at=new Date().toISOString();
   var id=p.id;
@@ -87061,9 +87083,13 @@ function portSuprimirCloneSaida(p){
   _portClonesSuprimidos[String(id)]=true;
   if(typeof DEMO!=='undefined' && DEMO) return;
   if(typeof isUUID==='function' && !isUUID(String(id))) return;
-  if(typeof sbUpdate==='function'){
-    sbUpdate('frotas_portaria_saidas',{deleted_at:p.deleted_at},'id=eq.'+id).catch(function(){});
-  }
+  var vid=vencedora && vencedora.id;
+  if(!vid || String(vid)===String(id) || (typeof isUUID==='function' && !isUUID(String(vid)))) return;
+  if(typeof sbFetch!=='function' || typeof sbUpdate!=='function') return;
+  Promise.resolve(sbFetch('frotas_portaria_saidas',{select:'id', filters:['id=eq.'+vid,'deleted_at=is.null'], limit:1})).then(function(rows){
+    if(!Array.isArray(rows) || rows.length!==1) return;
+    return sbUpdate('frotas_portaria_saidas',{deleted_at:p.deleted_at},'deleted_at=is.null&data_retorno=is.null&id=eq.'+id);
+  }).catch(function(){});
 }
 function portDedupSaidasMemoria(){
   if(!frt_portaria||!frt_portaria.length) return;
@@ -87076,7 +87102,7 @@ function portDedupSaidasMemoria(){
     var k0=portSaidaChaveDedup(w); if(k0) byKey[k0]=w;
     var pm0=portSaidaChavePlacaMinuto(w); if(pm0) byPm[pm0]=w;
     var l2=String(prev.id||'')!==String(w.id||'')?prev:(String(p.id||'')!==String(w.id||'')?p:null);
-    if(l2 && l2!==w && String(l2.id||'') && String(l2.id)!==String(w.id||'')) losers.push(l2);
+    if(l2 && l2!==w && String(l2.id||'') && String(l2.id)!==String(w.id||'')) losers.push({copia:l2, vencedora:w});
     if(store && storeKey) store[storeKey]=w;
     return w;
   }
@@ -87119,13 +87145,14 @@ function portDedupSaidasMemoria(){
     if(pm) byPm[pm]=p;
   });
   frt_portaria=keep;
-  losers.forEach(portSuprimirCloneSaida);
+  losers.forEach(function(x){ portSuprimirCloneSaida(x.copia, x.vencedora); });
 }
 function portMesclarSaidas(rows){
   if(!rows||!rows.length) return;
   if(!frt_portaria) frt_portaria=[];
   rows.forEach(function(r){
     if(!r) return;
+    if(r.id && typeof _portSaidasExcluidasServidor!=='undefined' && _portSaidasExcluidasServidor[String(r.id)]) return;
     var ix=frt_portaria.findIndex(function(p){return p && r.id && String(p.id)===String(r.id);});
     if(ix<0 && r.offline_event_id){
       ix=frt_portaria.findIndex(function(p){ return p && String(p.offline_event_id||'')===String(r.offline_event_id); });
@@ -87155,6 +87182,84 @@ function portMesclarSaidas(rows){
   });
   portDedupSaidasMemoria();
 }
+/* ── Conferência das saídas abertas da memória com o servidor ──
+ * O cache do tablet pode guardar uma cópia já excluída no banco; ela escondia a saída viva e recebia o retorno
+ * (30/09: 16 retornos gravados em cópias excluídas). Só age com prova do servidor: excluída → sai da memória;
+ * retornada/cancelada → memória recebe o estado do servidor. Não encontrada ou leitura falhou → nada muda. */
+var PORT_CONFERIR_SAIDAS_MS = 60000;
+var _portSaidasExcluidasServidor = {};
+var _portConferirSaidas = { emCurso:null, ultima:0 };
+function portSaidaPendenteLocal(p){
+  var st=p && p._sync_status;
+  return st==='PENDENTE' || st==='ERRO' || st==='SINCRONIZANDO';
+}
+function portConferirSaidasMemoria(opts){
+  opts=opts||{};
+  var vazio={excluidas:0, atualizadas:0};
+  if(DEMO || typeof sbFetch!=='function') return Promise.resolve(vazio);
+  if(typeof portOffIsOnline==='function' && !portOffIsOnline()) return Promise.resolve(vazio);
+  if(_portConferirSaidas.emCurso) return _portConferirSaidas.emCurso;
+  if(!opts.forcar && Date.now()-_portConferirSaidas.ultima < PORT_CONFERIR_SAIDAS_MS) return Promise.resolve(vazio);
+  _portConferirSaidas.ultima=Date.now();
+  var ids=[];
+  (frt_portaria||[]).forEach(function(p){
+    if(!p || !portEstaEmCampo(p) || portSaidaPendenteLocal(p)) return;
+    var id=String(p.id||'');
+    if(isUUID(id) && ids.indexOf(id)<0) ids.push(id);
+  });
+  if(!ids.length) return Promise.resolve(vazio);
+  var lotes=[];
+  for(var i=0;i<ids.length;i+=80) lotes.push(ids.slice(i,i+80));
+  _portConferirSaidas.emCurso=Promise.all(lotes.map(function(l){
+    return Promise.resolve(sbFetch('frotas_portaria_saidas',{
+      select:'id,deleted_at,status,data_retorno,km_retorno,retorno_registrado_por,obs_retorno',
+      filters:['id=in.('+l.join(',')+')'], limit:l.length
+    })).catch(function(){ return null; });
+  })).then(function(res){
+    var srv={};
+    res.forEach(function(rows){ if(Array.isArray(rows)) rows.forEach(function(r){ if(r && r.id) srv[String(r.id)]=r; }); });
+    var out={excluidas:0, atualizadas:0};
+    for(var j=(frt_portaria||[]).length-1;j>=0;j--){
+      var p=frt_portaria[j];
+      if(!p || !portEstaEmCampo(p) || portSaidaPendenteLocal(p)) continue;
+      var s=srv[String(p.id||'')];
+      if(!s) continue;
+      if(s.deleted_at){
+        _portSaidasExcluidasServidor[String(p.id)]=true;
+        frt_portaria.splice(j,1);
+        out.excluidas++;
+      } else if(s.data_retorno || (s.status && s.status!=='Em campo')){
+        p.status=s.status||'Retornado';
+        if(s.data_retorno) p.data_retorno=s.data_retorno;
+        if(s.km_retorno!=null && s.km_retorno!=='') p.km_retorno=s.km_retorno;
+        if(s.retorno_registrado_por) p.retorno_registrado_por=s.retorno_registrado_por;
+        if(s.obs_retorno) p.obs_retorno=s.obs_retorno;
+        out.atualizadas++;
+      }
+    }
+    return out;
+  }).then(function(r){ _portConferirSaidas.emCurso=null; return r; }, function(){ _portConferirSaidas.emCurso=null; return vazio; });
+  return _portConferirSaidas.emCurso;
+}
+/** Depois da conferência: cópia excluída saiu da memória → relê o dia (a saída viva entra no lugar) e redesenha. */
+function portAposConferirSaidas(r){
+  if(!r || !(r.excluidas || r.atualizadas)) return Promise.resolve(r);
+  var redesenhar=function(){
+    var vis=function(a){ var el=document.getElementById('port-aba-'+a); return !!el && el.style.display!=='none'; };
+    try{
+      if(vis('equipes') && typeof portRenderEquipesDia==='function') portRenderEquipesDia();
+      if(vis('retorno') && typeof portRenderRetorno==='function') portRenderRetorno();
+      if(vis('saida') && typeof portRenderAguardando==='function') portRenderAguardando();
+    }catch(e){}
+    return r;
+  };
+  if(!r.excluidas) return Promise.resolve(redesenhar());
+  if(window._portEqDiaBuscado){
+    Object.keys(window._portEqDiaBuscado).forEach(function(k){ if(k.indexOf('p:')===0) delete window._portEqDiaBuscado[k]; });
+  }
+  return portEnsureDadosPortariaDia(portDataExibida()).then(redesenhar, redesenhar);
+}
+
 /* ── Portaria acompanha a Programação (veículo/escala do dia) ──
  * Fonte: prog_veiculos_dia + composicao_dia no servidor. A troca feita na Programação chega por
  * Realtime (tabelas na publicação supabase_realtime) e, se o Realtime não entregar, pelo polling.
@@ -87240,6 +87345,7 @@ function portSyncProgRodar(){
   _portSyncProg.dataSync=d;
   return portSincronizarProgramacaoDia(d).then(function(mudou){
     if(mudou && portPaginaVisivel() && portDataExibida()===d) portRerenderPlacas();
+    if(typeof portConferirSaidasMemoria==='function') portConferirSaidasMemoria().then(portAposConferirSaidas).catch(function(){});
     return mudou;
   });
 }
