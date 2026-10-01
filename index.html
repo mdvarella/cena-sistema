@@ -41141,6 +41141,7 @@ function sotCroquiHandleFile(file){
   var preview = document.getElementById('sot-croqui-preview');
   var drop = document.getElementById('sot-croqui-drop');
   var ehPdf = _sotArquivoEhPdf(file.type, file.name);
+  sotCroquiMostrarAvisos([]);
   if(status) status.textContent = '⏳ Carregando croqui...';
 
   var reader = new FileReader();
@@ -41303,6 +41304,7 @@ function sotModalProjeto(p){
     +'<button type="button" id="sot-croqui-ia-btn" onclick="sotAnalisarCroquiIA()" style="display:'+(p&&p.croqui_url?'':'none')+';background:#533AB7;color:#fff;border:none;border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;font-weight:600">🤖 Preencher com IA</button>'
     +'<span id="sot-croqui-status" style="font-size:11px;color:#888"></span>'
     +'</div>'
+    +'<div id="sot-croqui-avisos" style="display:none;margin-top:6px;background:#FFF8E6;border:.5px solid #E0B252;border-radius:8px;padding:6px 10px;font-size:11px;color:#6B4E00;line-height:1.45"></div>'
     +'<input type="hidden" id="sot-croqui-url" value="'+(p&&p.croqui_url?p.croqui_url:'')+'">'
     +'<input type="hidden" id="sot-croqui-b64" value="">'
     +'<input type="hidden" id="sot-croqui-mime" value="">'
@@ -41573,6 +41575,205 @@ function sotListaHandleFile(file){
   reader.readAsDataURL(file);
 }
 
+var SOT_CROQUI_IA_PROMPT_VERSAO = 'CROQUI_V2';
+var SOT_CROQUI_IA_CAMPOS = ['cliente','codigo_projeto','nome_projeto','cidade','bairro','endereco','tipo_servico_texto','prazo_previsto','observacoes'];
+var SOT_CROQUI_IA_ROTULOS = ['supervisor','encarregado','responsavel_interno'];
+
+function sotCroquiIaPrompt(){
+  return 'Leia este croqui de projeto elétrico/civil (PDF ou imagem) enviado pelo cliente.\n'
+    + 'REGRAS OBRIGATÓRIAS:\n'
+    + '- Extraia apenas informações efetivamente visíveis no documento.\n'
+    + '- Não complete, não deduza e não invente. Quando não encontrar uma informação, retorne string vazia.\n'
+    + '- Copie os textos como aparecem no documento, sem resumir e sem criar descrição nova.\n'
+    + '- cliente: nome da empresa cliente/concessionária escrito no documento (texto legível ou junto do CNPJ). Não deduza pelo logotipo, cores ou layout. Projetista, desenhista e empreiteira não são o cliente.\n'
+    + '- codigo_projeto: código do projeto indicado por rótulo como "Projeto", "Nº Projeto", "Projeto nº", "SOT" ou "OS". Não use número da folha, número do desenho, revisão, número de poste ou de instalação.\n'
+    + '- nome_projeto: título/descrição do projeto copiado do documento. Não gere descrição nova.\n'
+    + '- cidade: somente o município. bairro: somente o bairro. Nunca coloque bairro em cidade. Se houver só bairro, cidade = "".\n'
+    + '- endereco: logradouro/local como escrito.\n'
+    + '- tipo_servico_texto: tipo de obra/serviço como escrito no documento.\n'
+    + '- prazo_previsto: somente se houver rótulo explícito de prazo, no formato AAAA-MM-DD. Data do desenho ou da revisão não é prazo.\n'
+    + '- observacoes: somente nota real e relevante escrita no documento; se não houver, "".\n'
+    + '- campos_com_rotulo_explicito: preencha supervisor, encarregado ou responsavel_interno SOMENTE se o documento tiver literalmente o rótulo "Supervisor:", "Encarregado:" ou "Responsável interno:". Projetista, Desenhista, Responsável técnico e Engenheiro responsável NÃO são supervisor, encarregado nem responsável interno.\n'
+    + 'Retorne SOMENTE JSON válido, sem markdown, exatamente com estas chaves (todos os valores são strings):\n'
+    + '{"cliente":"","codigo_projeto":"","nome_projeto":"","cidade":"","bairro":"","endereco":"","tipo_servico_texto":"","prazo_previsto":"","observacoes":"","campos_com_rotulo_explicito":{"supervisor":"","encarregado":"","responsavel_interno":""}}';
+}
+
+/** Comparação de nomes: sem acento, minúsculas, espaços únicos. */
+function sotCroquiNorm(v){
+  return String(v==null?'':v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+
+function sotCroquiEsc(v){
+  return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+/** true quando o texto contém um objeto JSON fechado (resposta truncada nunca é "consertada"). */
+function sotCroquiJsonCompleto(text){
+  var t = String(text||'');
+  var start = t.indexOf('{');
+  if(start < 0) return false;
+  var depth = 0, inStr = false, esc = false;
+  for(var i=start;i<t.length;i++){
+    var ch = t[i];
+    if(inStr){
+      if(esc) esc = false;
+      else if(ch==='\\') esc = true;
+      else if(ch==='"') inStr = false;
+      continue;
+    }
+    if(ch==='"'){ inStr = true; continue; }
+    if(ch==='{') depth++;
+    else if(ch==='}'){ depth--; if(depth===0) return true; }
+  }
+  return false;
+}
+
+/** Schema CROQUI_V2: todas as chaves obrigatórias, nenhuma desconhecida, valores string (null = vazio). Desvio → null. */
+function sotCroquiValidarResposta(obj){
+  if(!obj || typeof obj!=='object' || Array.isArray(obj)) return null;
+  var permitidas = SOT_CROQUI_IA_CAMPOS.concat(['campos_com_rotulo_explicito']);
+  if(Object.keys(obj).some(function(k){ return permitidas.indexOf(k)<0; })) return null;
+  function str(v){ if(v===null) return ''; return typeof v==='string' ? v.trim() : undefined; }
+  var out = {campos_com_rotulo_explicito:{}};
+  for(var i=0;i<SOT_CROQUI_IA_CAMPOS.length;i++){
+    var k = SOT_CROQUI_IA_CAMPOS[i];
+    if(!Object.prototype.hasOwnProperty.call(obj, k)) return null;
+    var v = str(obj[k]);
+    if(v===undefined) return null;
+    out[k] = v;
+  }
+  if(!Object.prototype.hasOwnProperty.call(obj, 'campos_com_rotulo_explicito')) return null;
+  var r = obj.campos_com_rotulo_explicito;
+  if(r===null) r = {supervisor:'', encarregado:'', responsavel_interno:''};
+  if(typeof r!=='object' || Array.isArray(r)) return null;
+  if(Object.keys(r).some(function(k){ return SOT_CROQUI_IA_ROTULOS.indexOf(k)<0; })) return null;
+  for(var j=0;j<SOT_CROQUI_IA_ROTULOS.length;j++){
+    var kr = SOT_CROQUI_IA_ROTULOS[j];
+    if(!Object.prototype.hasOwnProperty.call(r, kr)) return null;
+    var vr = str(r[kr]);
+    if(vr===undefined) return null;
+    out.campos_com_rotulo_explicito[kr] = vr;
+  }
+  return out;
+}
+
+/** Resposta do proxy → objeto validado ou null (erro, truncada, JSON inválido ou fora do schema). */
+function sotCroquiInterpretarResposta(data){
+  if(!data || typeof data!=='object' || Array.isArray(data) || data.error || data.type==='error') return null;
+  if(data.stop_reason && data.stop_reason!=='end_turn' && data.stop_reason!=='stop_sequence') return null;
+  if(!Array.isArray(data.content)) return null;
+  var text = _sotExtrairTextoRespostaIA(data);
+  if(!text || !sotCroquiJsonCompleto(text)) return null;
+  var obj;
+  try{ obj = _sotParseJsonRespostaIA(text); }catch(e){ return null; }
+  return sotCroquiValidarResposta(obj);
+}
+
+/**
+ * Decide o que a IA pode preencher. Campo com valor nunca é trocado nem limpo;
+ * cliente e pessoas só com correspondência exata normalizada no cadastro.
+ */
+function sotCroquiPlanejar(r, atual, ctx){
+  ctx = ctx || {}; atual = atual || {};
+  var plano = {aplicar:{}, rotulos:{}, avisos:[]};
+  function vazio(v){ return !String(v==null?'':v).trim(); }
+  function texto(id, rotulo, sug, cur){
+    sug = String(sug||'').trim();
+    if(!sug) return;
+    if(vazio(cur)){ plano.aplicar[id] = sug; plano.rotulos[id] = rotulo; return; }
+    if(sotCroquiNorm(cur)!==sotCroquiNorm(sug)) plano.avisos.push(rotulo+': valor já preenchido. Sugestão da IA: '+sug);
+  }
+  function pessoa(id, rotulo, nome, cur, lista){
+    nome = String(nome||'').trim();
+    if(!nome) return;
+    var n = sotCroquiNorm(nome);
+    var hits = (lista||[]).filter(function(c){ return c && sotCroquiNorm(c.nome)===n; });
+    if(hits.length!==1){
+      plano.avisos.push(rotulo+': IA encontrou no croqui: '+nome+', mas '+(hits.length ? 'há mais de um colaborador com esse nome (nenhum selecionado).' : 'não foi localizado colaborador correspondente.'));
+      return;
+    }
+    var nomeCad = hits[0].nome;
+    if(vazio(cur)){ plano.aplicar[id] = nomeCad; plano.rotulos[id] = rotulo; return; }
+    if(sotCroquiNorm(cur)!==n) plano.avisos.push(rotulo+': valor já preenchido. Sugestão da IA: '+nomeCad);
+  }
+
+  texto('sot-p-codigo', 'Código do projeto', r.codigo_projeto, atual.codigo);
+  texto('sot-p-nome', 'Nome do projeto', r.nome_projeto, atual.nome);
+
+  var cidade = r.cidade, bairro = r.bairro;
+  if(cidade && bairro && sotCroquiNorm(cidade).indexOf(sotCroquiNorm(bairro))>=0){
+    plano.avisos.push('Cidade não preenchida: a IA devolveu "'+cidade+'", que contém o bairro "'+bairro+'".');
+    cidade = '';
+  } else if(cidade && cidade.indexOf('/')>=0){
+    plano.avisos.push('Cidade não preenchida: valor ambíguo no croqui ("'+cidade+'"). Confira e preencha manualmente.');
+    cidade = '';
+  }
+  texto('sot-p-cidade', 'Cidade', cidade, atual.cidade);
+  if(bairro) plano.avisos.push('Bairro no croqui: '+bairro+' (a tela não tem campo de bairro; não foi colocado em Cidade).');
+  texto('sot-p-local', 'Local/Endereço', r.endereco, atual.local);
+
+  if(r.observacoes){
+    if(vazio(atual.obs)){ plano.aplicar['sot-p-obs'] = r.observacoes; plano.rotulos['sot-p-obs'] = 'Observações'; }
+    else if(sotCroquiNorm(atual.obs).indexOf(sotCroquiNorm(r.observacoes))<0) plano.avisos.push('Observações: campo já preenchido. Sugestão da IA: '+r.observacoes);
+  }
+  if(r.tipo_servico_texto) plano.avisos.push('Tipo de serviço no croqui: '+r.tipo_servico_texto+' (selecione manualmente).');
+  if(r.prazo_previsto) plano.avisos.push('Prazo no croqui: '+r.prazo_previsto+' (não preenchido automaticamente).');
+
+  var cli = String(r.cliente||'').trim();
+  if(cli){
+    var lista = (ctx.clientes||[]).filter(function(c){ return c && !c.deleted_at; });
+    var n = sotCroquiNorm(cli);
+    var unico = function(arr){ var ids = {}; arr.forEach(function(c){ ids[c.id] = c; }); return Object.keys(ids).map(function(k){ return ids[k]; }); };
+    var hits = unico(lista.filter(function(c){ return String(c.nome_fantasia||'').trim()===cli || String(c.razao_social||'').trim()===cli; }));
+    if(!hits.length) hits = unico(lista.filter(function(c){ return c.nome_fantasia && sotCroquiNorm(c.nome_fantasia)===n; }));
+    if(!hits.length) hits = unico(lista.filter(function(c){ return c.razao_social && sotCroquiNorm(c.razao_social)===n; }));
+    var atualId = String(atual.cliente_id||'');
+    var atualCli = atualId ? lista.find(function(c){ return String(c.id)===atualId; }) : null;
+    var nomeAtual = atualCli ? (atualCli.razao_social||atualCli.nome_fantasia||atualId) : atualId;
+    if(hits.length===1){
+      if(!atualId){ plano.aplicar['sot-p-cliente-id'] = hits[0].id; plano.rotulos['sot-p-cliente-id'] = 'Cliente'; }
+      else if(String(hits[0].id)!==atualId) plano.avisos.push('Cliente atual: '+nomeAtual+' — IA identificou: '+cli+'. Cliente não alterado.');
+    } else if(atualId){
+      plano.avisos.push('Cliente atual: '+nomeAtual+' — IA identificou: '+cli+'. Cliente não alterado.');
+    } else {
+      plano.avisos.push('IA identificou o cliente "'+cli+'", '+(hits.length ? 'que corresponde a mais de um cadastro' : 'sem correspondência exata no cadastro')+'. Selecione manualmente.');
+    }
+  }
+
+  var rot = r.campos_com_rotulo_explicito || {};
+  texto('sot-p-resp', 'Responsável interno', rot.responsavel_interno, atual.resp);
+  pessoa('sot-p-sup', 'Supervisor', rot.supervisor, atual.sup, ctx.supervisores);
+  pessoa('sot-p-enc', 'Encarregado', rot.encarregado, atual.enc, ctx.encarregados);
+  return plano;
+}
+
+/** Aplica só em campos ainda vazios; select só aceita opção existente. Retorna quantos campos foram preenchidos. */
+function sotCroquiAplicarPlano(plano){
+  var n = 0;
+  Object.keys(plano.aplicar).forEach(function(id){
+    var el = document.getElementById(id);
+    if(!el || String(el.value||'').trim()) return;
+    var v = plano.aplicar[id];
+    el.value = v;
+    if(String(el.value)!==String(v)){
+      el.value = '';
+      plano.avisos.push((plano.rotulos[id]||id)+': "'+v+'" não está disponível na lista; nada foi selecionado.');
+      return;
+    }
+    n++;
+  });
+  return n;
+}
+
+function sotCroquiMostrarAvisos(avisos){
+  var box = document.getElementById('sot-croqui-avisos');
+  if(!box) return;
+  if(!avisos || !avisos.length){ box.innerHTML = ''; box.style.display = 'none'; return; }
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:2px">Avisos da análise do croqui</div>'
+    + avisos.map(function(a){ return '<div>• '+sotCroquiEsc(a)+'</div>'; }).join('');
+  box.style.display = 'block';
+}
+
 async function sotAnalisarCroquiIA(){
   var btn   = document.getElementById('sot-croqui-ia-btn');
   var st    = document.getElementById('sot-croqui-status');
@@ -41613,12 +41814,8 @@ async function sotAnalisarCroquiIA(){
   }
 
   if(btn){ btn.disabled=true; btn.textContent='⏳ Analisando...'; }
+  sotCroquiMostrarAvisos([]);
   if(st)  st.textContent = 'Enviando para IA...';
-
-  var prompt = 'Analise este croqui de projeto elétrico/civil (PDF ou imagem).\n'
-    + 'Extraia os dados do projeto e retorne SOMENTE JSON válido sem markdown:\n'
-    + '{"cliente":"nome do cliente ou empresa","codigo_projeto":"código alfanumérico do projeto","nome_projeto":"nome/descrição do projeto","cidade":"cidade","endereco":"endereço ou local","responsavel_interno":"nome do responsável interno","supervisor":"nome do supervisor","encarregado":"nome do encarregado previsto","observacoes":"outras informações relevantes"}\n'
-    + 'Se um campo não estiver visível no documento, retorne string vazia para ele.';
 
   var contentBlocks = [];
   if(_sotArquivoEhPdf(mime, '')){
@@ -41628,8 +41825,9 @@ async function sotAnalisarCroquiIA(){
     var imgMime = acceptedMime.indexOf(mime) >= 0 ? mime : 'image/jpeg';
     contentBlocks.push({type:'image', source:{type:'base64', media_type:imgMime, data:b64}});
   }
-  contentBlocks.push({type:'text', text: prompt});
+  contentBlocks.push({type:'text', text: sotCroquiIaPrompt()});
 
+  var resultado = null, falha = '';
   try{
     var resp = await fetch('https://cena-proxy.marcos-afe.workers.dev',{
       method:'POST',
@@ -41639,40 +41837,40 @@ async function sotAnalisarCroquiIA(){
         messages:[{role:'user', content: contentBlocks}]
       })
     });
-    if(!resp.ok) throw new Error('HTTP '+resp.status);
-    var data = await resp.json();
-    var text = (data.content||[]).map(function(c){return c.type==='text'?c.text:'';}).join('').replace(/```json|```/g,'').trim();
-    var parsed = JSON.parse(text);
-
-    // Preencher campos
-    var set = function(id,v){ var el=document.getElementById(id); if(el&&v) el.value=v; };
-    set('sot-p-codigo', parsed.codigo_projeto);
-    set('sot-p-nome',   parsed.nome_projeto);
-    set('sot-p-cidade', parsed.cidade);
-    set('sot-p-local',  parsed.endereco);
-    set('sot-p-resp',   parsed.responsavel_interno);
-    set('sot-p-sup',    parsed.supervisor);
-    set('sot-p-enc',    parsed.encarregado);
-    sotProjAtualizarSupEnc(parsed.supervisor||'', parsed.encarregado||'');
-    if(parsed.observacoes){
-      var obs = document.getElementById('sot-p-obs');
-      if(obs) obs.value = (obs.value?obs.value+'\n':'')+parsed.observacoes;
+    if(!resp.ok){
+      falha = 'Falha ao consultar a IA (HTTP '+resp.status+').';
+    } else {
+      var data = null;
+      try{ data = await resp.json(); }catch(e){ data = null; }
+      resultado = sotCroquiInterpretarResposta(data);
+      if(!resultado) falha = 'Não foi possível interpretar a análise da IA.';
     }
-    // Tentar matching de cliente
-    if(parsed.cliente){
-      var cliSel = document.getElementById('sot-p-cliente-id');
-      if(cliSel){
-        var cliMatch = clientes.find(function(c){
-          return (c.razao_social||'').toLowerCase().includes(parsed.cliente.toLowerCase())
-              || (c.nome_fantasia||'').toLowerCase().includes(parsed.cliente.toLowerCase());
-        });
-        if(cliMatch) cliSel.value = cliMatch.id;
-      }
-    }
-    if(st) st.textContent = '✅ Campos preenchidos pela IA';
   } catch(e){
-    if(st) st.textContent = '⚠ Erro: '+e.message;
-    console.error('sotAnalisarCroquiIA erro:', e);
+    falha = 'Falha ao consultar a IA.';
+    console.error('sotAnalisarCroquiIA erro:', e && e.message ? e.message : e);
+  }
+
+  try{
+    if(falha){
+      if(st) st.textContent = '⚠ '+falha+' Nenhum campo foi alterado.';
+      return;
+    }
+    if(btn && btn.isConnected===false) return;
+    var val = function(id){ return (document.getElementById(id)||{}).value||''; };
+    var cid = val('sot-p-cont');
+    var plano = sotCroquiPlanejar(resultado, {
+      cliente_id: val('sot-p-cliente-id'), codigo: val('sot-p-codigo'), nome: val('sot-p-nome'),
+      cidade: val('sot-p-cidade'), local: val('sot-p-local'), resp: val('sot-p-resp'),
+      sup: val('sot-p-sup'), enc: val('sot-p-enc'), obs: val('sot-p-obs')
+    }, {
+      clientes: typeof clientes!=='undefined' ? clientes : [],
+      supervisores: projColabsContratoPorCargo(cid, 'supervisor'),
+      encarregados: projColabsContratoPorCargo(cid, 'encarregado')
+    });
+    var n = sotCroquiAplicarPlano(plano);
+    sotCroquiMostrarAvisos(plano.avisos);
+    if(st) st.textContent = (n ? '✅ IA preencheu '+n+' campo(s) vazio(s)' : 'ℹ IA não preencheu nenhum campo')
+      + (plano.avisos.length ? ' — veja os avisos abaixo' : '');
   } finally {
     if(btn){ btn.disabled=false; btn.textContent='🤖 Preencher com IA'; }
   }
@@ -45064,10 +45262,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.182',
-  data:   '30/09/2026',
-  build:  '20260930-1600',
+  numero: '8.1.185',
+  data:   '01/10/2026',
+  build:  '20261001-0730',
   log: [
+    {v:'8.1.185', d:'01/10/2026', itens:[
+      'Projetos — croqui com IA: a IA só preenche campos vazios; campo já preenchido (inclusive cliente) não é trocado nem apagado, a sugestão aparece como aviso abaixo do croqui',
+      'Projetos — croqui com IA: supervisor e encarregado só são selecionados quando o nome casa (sem acento/maiúsculas) com um colaborador do contrato; nome sem cadastro não vira mais opção na lista',
+      'Projetos — croqui com IA: prompt CROQUI_V2 extrai só o que está escrito (cidade e bairro separados, nome copiado, sem supervisor/encarregado/responsável deduzidos); cliente só com nome exato do cadastro; observação repetida não é acrescentada',
+      'Projetos — croqui com IA: resposta inválida, incompleta ou erro do proxy não altera nenhum campo',
+    ]},
     {v:'8.1.182', d:'30/09/2026', itens:[
       'Portaria: KM digitado com ponto de milhar (ex.: 32.942) era gravado só com os primeiros dígitos (32). Agora o KM é lido inteiro na saída e no retorno, o campo abre o teclado numérico e KM com dígitos faltando (menor que 1.000 quando a placa já passa de 10.000) é bloqueado em vez de só pedir confirmação',
     ]},
