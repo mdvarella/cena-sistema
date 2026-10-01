@@ -43976,21 +43976,45 @@ function sotImportarMateriais(projetoId){
     +'</div></div></div>');
 }
 
+// Bytes de controle, C1 ou U+FFFD: sinal de arquivo binário (ex.: .xlsx lido como texto).
+function sotTextoBinario(s){
+  return /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFFFD]/.test(String(s==null?'':s));
+}
+
+function sotDecodificarTextoArquivo(buf){
+  var t;
+  try{ t=new TextDecoder('utf-8',{fatal:true}).decode(buf); }
+  catch(e){ t=new TextDecoder('windows-1252').decode(buf); }
+  if(t.charCodeAt(0)===0xFEFF) t=t.slice(1);
+  return sotTextoBinario(t)?null:t;
+}
+
 async function _sotCarregarArqMat(input){
   var file=input.files[0]; if(!file) return;
   var txt=document.getElementById('imp-mat-txt');
-  if(file.name.match(/\.xlsx?$/i) && typeof XLSX!=='undefined'){
-    var b64=await new Promise(function(res,rej){
-      var r=new FileReader();r.onload=function(e){res(e.target.result.split(',')[1]);};r.onerror=rej;r.readAsDataURL(file);
-    });
-    var wb=XLSX.read(b64,{type:'base64'});
-    var ws=wb.Sheets[wb.SheetNames[0]];
-    var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',blankrows:false}).slice(0,300);
-    if(txt) txt.value=rows.map(function(r){return r.slice(0,5).join(';');}).join('\n');
+  function recusar(msg){ input.value=''; progShowToast('⚠ '+msg+' Nada foi carregado.','erro'); }
+  if(/\.xlsx?$/i.test(file.name)){
+    if(typeof XLSX==='undefined'){ recusar('Leitor de planilha indisponível (sem internet?). Recarregue a página ou cole a lista como texto.'); return; }
+    var rows;
+    try{
+      var b64=await new Promise(function(res,rej){
+        var r=new FileReader();r.onload=function(e){res(e.target.result.split(',')[1]);};r.onerror=rej;r.readAsDataURL(file);
+      });
+      var wb=XLSX.read(b64,{type:'base64'});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',blankrows:false}).slice(0,300);
+    }catch(e){ recusar('Não foi possível ler a planilha ('+(e&&e.message||e)+').'); return; }
+    var texto=rows.map(function(r){return r.slice(0,5).join(';');}).join('\n');
+    if(sotTextoBinario(texto)){ recusar('A planilha tem caracteres inválidos.'); return; }
+    if(txt) txt.value=texto;
+  } else if(/\.(txt|csv|tsv)$/i.test(file.name)){
+    var t;
+    try{ t=sotDecodificarTextoArquivo(await file.arrayBuffer()); }
+    catch(e){ recusar('Não foi possível ler o arquivo ('+(e&&e.message||e)+').'); return; }
+    if(t===null){ recusar('O arquivo não é texto legível (conteúdo binário).'); return; }
+    if(txt) txt.value=t;
   } else {
-    var reader=new FileReader();
-    reader.onload=function(e){if(txt)txt.value=e.target.result;};
-    reader.readAsText(file,'UTF-8');
+    recusar('Formato não suportado: use .xlsx, .xls, .csv ou .txt.');
   }
 }
 
@@ -43998,6 +44022,8 @@ function sotProcessarImportacaoMat(projetoId){
   var raw=(document.getElementById('imp-mat-txt')||{}).value||'';
   var linhas=raw.split('\n').map(function(l){return l.trim();}).filter(Boolean);
   if(!linhas.length){progShowToast('⚠ Nenhuma linha.','erro');return;}
+  var invalidas=linhas.filter(sotTextoBinario).length;
+  if(invalidas){progShowToast('⚠ '+invalidas+' linha(s) com caracteres inválidos (arquivo binário?). Nada foi importado.','erro');return;}
   var n=0;
   linhas.forEach(function(linha){
     var sep=linha.indexOf(';')>=0?';':'\t';
@@ -45278,10 +45304,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.187',
+  numero: '8.1.188',
   data:   '01/10/2026',
-  build:  '20261001-1000',
+  build:  '20261001-1200',
   log: [
+    {v:'8.1.188', d:'01/10/2026', itens:[
+      'Projetos — Importar materiais: arquivo que não é planilha nem texto (ou .xlsx com o leitor de planilha indisponível) era lido como texto e cada trecho de bytes virava um material. Agora só aceita .xlsx/.xls (com o leitor carregado), .csv/.txt (UTF-8 ou Windows-1252) e texto colado; linha com caractere inválido recusa a importação inteira, sem gravar nada.',
+      'Banco: sot_materiais recusa gravar código, descrição, unidade ou observação com conteúdo binário (migration 20261001130000). A lista binária do projeto DAC/S.NOR-25.00228 é excluída pela migration 20261001120000.',
+    ]},
     {v:'8.1.187', d:'01/10/2026', itens:[
       'Portaria: retorno registrado ia para a cópia da saída já excluída no banco (o tablet guardava a cópia no cache) e a equipe continuava "Em campo" — 16 equipes em 30/09. Agora o retorno só grava em saída viva e sem retorno, confere que o servidor alterou a linha e, se a saída do tablet foi excluída, grava na saída viva equivalente (mesma placa e horário) ou fica com erro visível na sincronização',
       'Portaria: as saídas abertas da memória são conferidas com o servidor (na carga do dia e a cada minuto); cópia excluída sai da tela e a saída viva entra no lugar',
