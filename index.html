@@ -45634,10 +45634,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.193',
-  data:   '01/10/2026',
-  build:  '20261001-1950',
+  numero: '8.1.194',
+  data:   '02/10/2026',
+  build:  '20261002-0800',
   log: [
+    {v:'8.1.194', d:'02/10/2026', itens:[
+      'Portaria — botão "🔄 Atualizar registros" no topo: busca no banco as últimas saídas e retornos e redesenha a aba aberta (Saída, Retorno, Retornos em aberto, Registros), sem recarregar a página. Sem conexão ou com falha na leitura, avisa e mantém o que já estava na tela e a fila offline.',
+    ]},
     {v:'8.1.193', d:'01/10/2026', itens:[
       'Projetos — contador das abas Atividades e Materiais inclui os itens descritivos (ex.: "0 + 6 descritivos"); antes mostrava 0 quando o projeto só tinha itens sem cadastro no contrato.',
     ]},
@@ -87123,6 +87126,59 @@ function portMostrarAba(aba){
   }
 }
 
+function portAbaAtiva(){
+  var abas=['equipes','saida','retorno','abertos','liberacao','autorizados','registros','reservas','config','acesso'];
+  for(var i=0;i<abas.length;i++){
+    var el=document.getElementById('port-aba-'+abas[i]);
+    if(el && el.style.display!=='none') return abas[i];
+  }
+  return 'equipes';
+}
+/** Botão "Atualizar registros": relê do banco as saídas/retornos e redesenha a aba aberta, sem recarregar a página.
+ *  Leitura que falhar não apaga nada da memória nem da fila offline. */
+var _portAtualizandoRegistros=false;
+function portAtualizarRegistros(){
+  if(_portAtualizandoRegistros) return Promise.resolve(false);
+  var aba=portAbaAtiva();
+  if(DEMO){ portMostrarAba(aba); return Promise.resolve(true); }
+  if(typeof portOffIsOnline==='function' && !portOffIsOnline()){
+    progShowToast('⚠ Sem conexão: a tela mostra os registros guardados no aparelho. Os pendentes sobem quando a conexão voltar.','erro');
+    return Promise.resolve(false);
+  }
+  var btn=document.getElementById('port-btn-atualizar');
+  _portAtualizandoRegistros=true;
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Atualizando…'; }
+  var hoje=dataHojeLocal();
+  var dia=aba==='retorno' ? (portDiaISO((document.getElementById('ret-data')||{}).value)||hoje) : hoje;
+  return Promise.resolve(sbFetch('frotas_portaria_saidas',{filters:portFiltrosDataSaida(dia,dia),order:'data_saida.desc',limit:2000})).then(function(rows){
+    if(!Array.isArray(rows)) return false;
+    portMesclarSaidas(rows);
+    portInvalidarCacheSaidas(dia);
+    if(dia!==hoje) portInvalidarCacheSaidas(hoje);
+    if(!window._portEqDiaBuscado) window._portEqDiaBuscado={};
+    window._portEqDiaBuscado['p:'+dia]=true;
+    return Promise.resolve(portConferirSaidasMemoria({forcar:true})).then(function(r){
+      if(r && r.excluidas){
+        Object.keys(window._portEqDiaBuscado).forEach(function(k){ if(k.indexOf('p:')===0) delete window._portEqDiaBuscado[k]; });
+      }
+      return true;
+    }, function(){ return true; });
+  }, function(){ return false; }).then(function(ok){
+    _portAtualizandoRegistros=false;
+    if(btn){ btn.disabled=false; btn.textContent='🔄 Atualizar registros'; }
+    if(!ok){ progShowToast('⚠ Não foi possível buscar os registros agora. A tela continua com o que já estava carregado.','erro'); return false; }
+    if(aba==='equipes') portEnsureDadosPortariaDia(hoje).then(function(){ portRenderEquipesDia(); });
+    else if(aba==='saida') portEnsureDadosPortariaDia(hoje).then(function(){ portRenderAguardando(); });
+    else if(aba==='retorno') portRenderRetorno();
+    else if(aba==='abertos'){ _portAbertosLoaded=false; portRenderRetornosAbertos(); }
+    else if(aba==='registros'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
+    else portMostrarAba(aba);
+    var d=new Date();
+    progShowToast('✅ Saídas e retornos atualizados ('+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+').');
+    return true;
+  });
+}
+
 /** Normaliza placa para comparação (sem hífen/espaço). */
 function portNormPlaca(p){
   return String(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -100110,6 +100166,7 @@ window._almShowAbaInterna = window._almShowAbaInterna || function(aba){
   <div style="display:flex;align-items:center;gap:10px;background:#1a1a18;border-radius:10px;padding:10px 16px;margin-bottom:1rem;flex-wrap:wrap">
     <div id="port-off-indicador" onclick="portOffAbrirPainel()" title="Sincronização da Portaria">🟢 Online<br><span style="font-weight:500">Todos os registros sincronizados</span></div>
     <button type="button" onclick="portOffAbrirPainel()" style="font-size:11px;padding:6px 10px;background:#fff;color:#1a1a18;border:none;border-radius:8px;font-weight:700;cursor:pointer">Sincronização</button>
+    <button type="button" id="port-btn-atualizar" data-fastclick onclick="portAtualizarRegistros()" title="Busca no banco as últimas saídas e retornos, sem recarregar a página" style="font-size:11px;padding:6px 10px;background:#fff;color:#185FA5;border:none;border-radius:8px;font-weight:700;cursor:pointer">🔄 Atualizar registros</button>
     <button type="button" data-fastclick onclick="cenaForcarAtualizacao()" title="Baixa a versão mais recente do app (preserva a fila offline)" style="font-size:11px;padding:6px 10px;background:#185FA5;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer">🔄 Atualizar app</button>
   </div>
 
