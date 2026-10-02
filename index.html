@@ -2225,7 +2225,7 @@ body.insp-campo-ativo #app-content-area {
 <script src="vendor/qrcode.min.js" onerror="console.warn('[CENA] vendor/qrcode.min.js indisponível — usando CenaQR embutido')"></script>
 <script src="vendor/qrcode-local.js" onerror="console.warn('[CENA] vendor/qrcode-local.js indisponível')"></script>
 <!-- ?v deve casar com APP_VERSAO/SW_VERSION a cada release (cache-bust do JS: URL nova fura o cache do SW antigo) -->
-<script src="portaria-offline.js?v=8.1.187"></script>
+<script src="portaria-offline.js?v=8.1.197"></script>
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
@@ -45791,10 +45791,16 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.196',
+  numero: '8.1.197',
   data:   '02/10/2026',
-  build:  '20261002-0900',
+  build:  '20261002-1430',
   log: [
+    {v:'8.1.197', d:'02/10/2026', itens:[
+      'Portaria — Autorizados: a lista é relida do banco ao abrir a aba; se a leitura falhar (sessão ainda não pronta, rede), avisa com "Tentar de novo" em vez de ficar vazia até recarregar a página.',
+      'Portaria — Visitantes: o cadastro entra como "Aguardando"; botões "Liberar entrada" (status Entrou, hora de entrada) e "Liberar saída" (status Saiu, hora de saída). Saem do cadastro os campos de hora (o de saída marcava o visitante como Saiu ao registrar) e o de crachá.',
+      'Portaria — Visitantes: fotos do visitante e do documento pela câmera ou por arquivo; "Com quem vai falar" lista todos os colaboradores ativos com busca por digitação.',
+      'Portaria — Visitantes: foto grande era gravada como "[mem]" no lugar da imagem; edição da visita (nome, destino, motivo, fotos) agora sobe para o banco (antes só hora de saída/status).',
+    ]},
     {v:'8.1.196', d:'02/10/2026', itens:[
       'Visual padrão de abas em todo o sistema (mesmo estilo do Contrato de Obras): Financeiro, VBE, Almoxarifado SAP, Portaria, Frotas (Documentos, Ociosidade, Combustível, Pedágios, Ficha, Pneus), Gestão de Ponto, Relatórios, TMA, Programação, Pendências de Projeto, SOT, Modelo de Escalas e detalhe do Dashboard. Ícone em quadrado colorido e aba ativa na cor da posição; SOT e Escalas mantêm a cor própria. Projetos: contratos em pílulas com bolinha por família. Mesmos textos, IDs e cliques. Sem SQL.',
     ]},
@@ -87274,7 +87280,7 @@ function portMostrarAba(aba){
   }
   if((aba==='equipes' || aba==='saida') && typeof portSyncProgIniciar==='function') portSyncProgIniciar();
   if(aba==='liberacao') portRenderLiberacao();
-  if(aba==='autorizados') portRenderAutorizados();
+  if(aba==='autorizados') portRenderAutorizados(true);
   if(aba==='registros'){ frtPortariaRender._lastKey=''; frtPortariaRender(); }
   if(aba==='reservas')  portRenderReservas();
   if(aba==='config'){   portCarregarConfigs(); portRenderConfig(); }
@@ -89827,6 +89833,31 @@ function portCarregarVisitas(data){
   }).catch(function(){});
 }
 
+function portEsc(t){
+  return String(t==null?'':t).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+/** Visitante: Aguardando (registrado) → Entrou (entrada liberada) → Saiu (saída liberada). "Em visita" é o nome antigo de Entrou. */
+function portVisitaStatus(v){
+  var st=(v && v.status) || 'Aguardando';
+  return st==='Em visita' ? 'Entrou' : st;
+}
+function portVisitaCor(st){
+  if(st==='Entrou') return {cor:'#3B6D11', bg:'#EAF3DE'};
+  if(st==='Aguardando') return {cor:'#854F0B', bg:'#FEF3E2'};
+  return {cor:'#185FA5', bg:'#E6F1FB'};
+}
+function portVisitaBotoes(v, fecharModal){
+  var st=portVisitaStatus(v), fx=fecharModal?';closeModal()':'';
+  if(st==='Aguardando') return '<button class="btn btn-sm" onclick="portLiberarEntradaVisita(\''+v.id+'\')'+fx+'" style="color:#3B6D11;border-color:#3B6D11;font-size:10px">➡ Liberar entrada</button> ';
+  if(st==='Entrou') return '<button class="btn btn-sm" onclick="portRegistrarSaida(\''+v.id+'\')'+fx+'" style="color:#185FA5;border-color:#185FA5;font-size:10px">↩ Liberar saída</button> ';
+  return '';
+}
+function portHoraAgora(){
+  return new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+}
+
 function portRenderLiberacao(){
   var hoje  = dataHojeLocal();
   var data  = (document.getElementById('lib-data')||{}).value || hoje;
@@ -89844,30 +89875,27 @@ function portRenderLiberacao(){
   var visitas = portaria_visitas.filter(function(v){
     if(v.data !== data) return false;
     if(busca && !(v.nome||'').toLowerCase().includes(busca) && !(v.doc_num||'').includes(busca)) return false;
-    if(stFil && v.status !== stFil) return false;
+    if(stFil && portVisitaStatus(v) !== stFil) return false;
     return true;
   }).sort(function(a,b){ return (b.hora_entrada||'') > (a.hora_entrada||'') ? 1 : -1; });
 
-  // Resumo
   var resumo = document.getElementById('lib-resumo');
   if(resumo){
-    var nTotal  = visitas.length;
-    var nVisita = visitas.filter(function(v){return v.status==='Em visita';}).length;
-    var nAguard = visitas.filter(function(v){return v.status==='Aguardando';}).length;
-    var nSaiu   = visitas.filter(function(v){return v.status==='Saiu';}).length;
+    var nAguard = visitas.filter(function(v){return portVisitaStatus(v)==='Aguardando';}).length;
+    var nEntrou = visitas.filter(function(v){return portVisitaStatus(v)==='Entrou';}).length;
+    var nSaiu   = visitas.filter(function(v){return portVisitaStatus(v)==='Saiu';}).length;
     function chip(icon,label,val,cor,bg){
       return '<div style="background:'+(bg||'#f5f5f3')+';border-radius:8px;padding:5px 12px;display:flex;align-items:center;gap:6px">'
         +'<span style="font-size:16px">'+icon+'</span>'
         +'<div><div style="font-size:16px;font-weight:700;color:'+(cor||'#555')+'">'+val+'</div>'
         +'<div style="font-size:10px;color:#888">'+label+'</div></div></div>';
     }
-    resumo.innerHTML = chip('🆔','Total do dia',nTotal,'#555','#f5f5f3')
+    resumo.innerHTML = chip('🆔','Total do dia',visitas.length,'#555','#f5f5f3')
       +chip('⏳','Aguardando',nAguard,'#854F0B','#FEF3E2')
-      +chip('🟢','Em visita',nVisita,'#3B6D11','#EAF3DE')
-      +chip('✅','Saíram',nSaiu,'#185FA5','#E6F1FB');
+      +chip('🟢','Entrou',nEntrou,'#3B6D11','#EAF3DE')
+      +chip('✅','Saiu',nSaiu,'#185FA5','#E6F1FB');
   }
 
-  // Tabela
   var tbody = document.getElementById('lib-tbody');
   if(!tbody) return;
 
@@ -89877,110 +89905,156 @@ function portRenderLiberacao(){
   }
 
   tbody.innerHTML = visitas.map(function(v){
-    var corStatus = v.status==='Em visita'?'#3B6D11':v.status==='Aguardando'?'#854F0B':'#185FA5';
-    var bgStatus  = v.status==='Em visita'?'#EAF3DE':v.status==='Aguardando'?'#FEF3E2':'#E6F1FB';
+    var st = portVisitaStatus(v), c = portVisitaCor(st);
     var fotoHtml  = v.foto_visitante
-      ? '<img src="'+v.foto_visitante+'" style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:1.5px solid #e0dfd8">'
+      ? '<img src="'+portEsc(v.foto_visitante)+'" style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:1.5px solid #e0dfd8">'
       : '<div style="width:38px;height:38px;border-radius:50%;background:#f0efe8;display:flex;align-items:center;justify-content:center;font-size:18px">👤</div>';
+    var entrada = st==='Aguardando'
+      ? '<span style="color:#aaa">chegou '+portEsc(v.hora_entrada||'—')+'</span>'
+      : portEsc(v.hora_entrada||'—');
     return '<tr style="border-bottom:.5px solid #f0efe8" onmouseenter="this.style.background=\'#F0F4FF\'" onmouseleave="this.style.background=\'\'">'
       +'<td style="padding:6px 8px">'+fotoHtml+'</td>'
-      +'<td style="padding:6px 8px;font-weight:600">'+escHtml(v.nome||'—')+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+escHtml(v.doc_tipo||'')+'</div><div style="color:#888">'+escHtml(v.doc_num||'—')+'</div></td>'
-      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+escHtml(v.destino||'—')+'</div><div style="color:#888;font-size:10px">'+escHtml(v.cargo_destino||'')+'</div></td>'
-      +'<td style="padding:6px 8px;font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escHtml(v.motivo||'—')+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+escHtml(v.hora_entrada||'—')+'</td>'
-      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+escHtml(v.hora_saida||'—')+'</td>'
-      +'<td style="padding:6px 8px"><span style="background:'+bgStatus+';color:'+corStatus+';border-radius:12px;padding:2px 9px;font-size:10px;font-weight:600">'+escHtml(v.status||'Aguardando')+'</span></td>'
+      +'<td style="padding:6px 8px;font-weight:600">'+portEsc(v.nome||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+portEsc(v.doc_tipo||'')+'</div><div style="color:#888">'+portEsc(v.doc_num||'—')+'</div></td>'
+      +'<td style="padding:6px 8px;font-size:11px"><div style="font-weight:500">'+portEsc(v.destino||'—')+'</div><div style="color:#888;font-size:10px">'+portEsc(v.cargo_destino||'')+'</div></td>'
+      +'<td style="padding:6px 8px;font-size:11px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+portEsc(v.motivo||'—')+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+entrada+'</td>'
+      +'<td style="padding:6px 8px;font-size:11px;color:#555">'+portEsc(v.hora_saida||'—')+'</td>'
+      +'<td style="padding:6px 8px"><span style="background:'+c.bg+';color:'+c.cor+';border-radius:12px;padding:2px 9px;font-size:10px;font-weight:600">'+portEsc(st)+'</span></td>'
       +'<td style="padding:6px 8px;white-space:nowrap">'
-        +(v.status!=='Saiu'?'<button class="btn btn-sm" onclick="portRegistrarSaida(\''+v.id+'\')" style="color:#3B6D11;border-color:#3B6D11;font-size:10px">↩ Saída</button> ':'')
+        +portVisitaBotoes(v)
         +'<button class="btn btn-sm" onclick="portVerVisita(\''+v.id+'\')" style="font-size:10px">👁</button> '
         +'<button class="btn btn-sm" onclick="portEditarVisita(\''+v.id+'\')" style="font-size:10px">✎</button>'
       +'</td></tr>';
   }).join('');
 }
 
+/* ── "Com quem vai falar": todos os colaboradores ativos, com busca por digitação ── */
+var _portColabsDestino = null;
+var _portColabsDestinoCarregando = null;
+function portColabsDestino(){
+  if(_portColabsDestino) return Promise.resolve(_portColabsDestino);
+  var mem=(typeof colaboradores!=='undefined' && Array.isArray(colaboradores) ? colaboradores : [])
+    .filter(function(c){ return c && c.nome && c.ativo!==false && !c.deleted_at; });
+  if(DEMO){ _portColabsDestino=mem; return Promise.resolve(mem); }
+  if(_portColabsDestinoCarregando) return _portColabsDestinoCarregando;
+  _portColabsDestinoCarregando=Promise.resolve(sbFetch('colaboradores',{select:'id,nome,cargo',filters:['ativo=eq.true','deleted_at=is.null'],order:'nome',limit:5000})).then(function(rows){
+    _portColabsDestinoCarregando=null;
+    if(Array.isArray(rows) && rows.length){ _portColabsDestino=rows.filter(function(c){ return c && c.nome; }); return _portColabsDestino; }
+    return mem.length ? mem : null;
+  }, function(){
+    _portColabsDestinoCarregando=null;
+    return mem.length ? mem : null;
+  });
+  return _portColabsDestinoCarregando;
+}
+function portNormBusca(t){
+  return String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+}
+function portDestinoFiltrar(){
+  var inp=document.getElementById('lib-destino'), box=document.getElementById('lib-destino-sug');
+  if(!inp || !box) return;
+  box.style.display='block';
+  if(!_portColabsDestino) box.innerHTML='<div style="padding:8px 10px;font-size:12px;color:#888">⏳ Carregando colaboradores…</div>';
+  portColabsDestino().then(function(lista){
+    if(document.getElementById('lib-destino')!==inp) return;
+    if(!lista){
+      box.innerHTML='<div style="padding:8px 10px;font-size:12px;color:#854F0B">⚠ Não foi possível carregar a lista de colaboradores. Digite o nome.</div>';
+      return;
+    }
+    var termos=portNormBusca(inp.value).split(/\s+/).filter(Boolean);
+    var achados=lista.filter(function(c){
+      var n=portNormBusca(c.nome+' '+(c.cargo||''));
+      return termos.every(function(t){ return n.indexOf(t)>=0; });
+    });
+    window._portDestinoAchados=achados.slice(0,60);
+    if(!achados.length){
+      box.innerHTML='<div style="padding:8px 10px;font-size:12px;color:#888">Nenhum colaborador encontrado.</div>';
+      return;
+    }
+    box.innerHTML=window._portDestinoAchados.map(function(c,i){
+      return '<div onmousedown="event.preventDefault()" onclick="portDestinoEscolher('+i+')" style="padding:7px 10px;font-size:12px;cursor:pointer;border-bottom:.5px solid #f5f5f3">'
+        +'<div style="font-weight:600">'+portEsc(c.nome)+'</div>'
+        +(c.cargo?'<div style="font-size:10px;color:#888">'+portEsc(c.cargo)+'</div>':'')+'</div>';
+    }).join('')
+      +(achados.length>60?'<div style="padding:6px 10px;font-size:11px;color:#888">+'+(achados.length-60)+' colaboradores — continue digitando para filtrar</div>':'');
+  });
+}
+function portDestinoEscolher(i){
+  var c=(window._portDestinoAchados||[])[i]; if(!c) return;
+  var inp=document.getElementById('lib-destino'); if(inp) inp.value=c.nome;
+  var cg=document.getElementById('lib-cargo-dest'); if(cg && !String(cg.value||'').trim() && c.cargo) cg.value=c.cargo;
+  portDestinoFechar();
+}
+function portDestinoFechar(){
+  var box=document.getElementById('lib-destino-sug'); if(box) box.style.display='none';
+}
+
+function portVisitaFotoBloco(rotulo, pid, inpCam, inpArq, dataId, valor, vazio, capture){
+  return '<div>'
+    +'<label style="font-size:11px;display:block;margin-bottom:4px">'+rotulo+'</label>'
+    +'<div id="'+pid+'" style="width:100%;height:120px;background:#f5f5f3;border-radius:8px;border:1.5px dashed #e0dfd8;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden" onclick="document.getElementById(\''+inpCam+'\').click()">'
+      +(valor?'<img src="'+portEsc(valor)+'" style="width:100%;height:100%;object-fit:cover">':'<span style="color:#aaa;font-size:12px;text-align:center">'+vazio+'</span>')
+    +'</div>'
+    +'<div style="display:flex;gap:6px;margin-top:6px">'
+      +'<button type="button" class="btn btn-sm" style="flex:1;font-size:11px" onclick="document.getElementById(\''+inpCam+'\').click()">📷 Câmera</button>'
+      +'<button type="button" class="btn btn-sm" style="flex:1;font-size:11px" onclick="document.getElementById(\''+inpArq+'\').click()">📁 Arquivo</button>'
+    +'</div>'
+    +'<input type="file" id="'+inpCam+'" accept="image/*" capture="'+capture+'" style="display:none" onchange="portFotoPreview(this,\''+pid+'\',\''+dataId+'\')">'
+    +'<input type="file" id="'+inpArq+'" accept="image/*" style="display:none" onchange="portFotoPreview(this,\''+pid+'\',\''+dataId+'\')">'
+    +'<input type="hidden" id="'+dataId+'" value="">'
+  +'</div>';
+}
+
 function portNovaVisita(id){
   if(!_cad_cargos.length && !DEMO){ cadCarregarCargos(function(){ portNovaVisita(id); }); return; } // cargos p/ sugestao
   var v = id ? portaria_visitas.find(function(x){return x.id===id;}) : null;
   var isNew = !v; v = v||{};
-  var hoje = dataHojeLocal();
-  var horaAtual = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-
-  // Colaboradores para o select "destino"
-  var colabOpts = colaboradores.filter(function(c){return c.ativo!==false;}).map(function(c){
-    return '<option value="'+escHtml(c.nome)+'">'+escHtml(c.nome)+(c.cargo?' — '+c.cargo:'')+'</option>';
-  }).join('');
-
   var docTipos = ['RG','CPF','CNH','Passaporte','Carteira de Trabalho','Crachá Empresa','Outro'];
 
   setModal('<div class="modal-bg"><div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">'
     +'<h3 style="margin-bottom:1rem">'+(isNew?'🆔 Registrar Visitante':'✏ Editar Visita')+'</h3>'
 
-    // Dados pessoais
     +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Dados do Visitante</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
     +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Nome completo <span style="color:#A32D2D">*</span></label>'
-    +'<input class="inp" id="lib-nome" style="width:100%" value="'+escHtml(v.nome||'')+'" placeholder="Nome do visitante"/></div>'
+    +'<input class="inp" id="lib-nome" style="width:100%" value="'+portEsc(v.nome||'')+'" placeholder="Nome do visitante"/></div>'
     +'<div class="fg"><label style="font-size:11px">Tipo de documento</label>'
     +'<select class="inp" id="lib-doc-tipo" style="width:100%">'
     +docTipos.map(function(t){return '<option'+(v.doc_tipo===t?' selected':'')+'>'+t+'</option>';}).join('')
     +'</select></div>'
     +'<div class="fg"><label style="font-size:11px">Número do documento</label>'
-    +'<input class="inp" id="lib-doc-num" style="width:100%" value="'+escHtml(v.doc_num||'')+'" placeholder="Número"/></div>'
+    +'<input class="inp" id="lib-doc-num" style="width:100%" value="'+portEsc(v.doc_num||'')+'" placeholder="Número"/></div>'
     +'</div>'
 
-    // Foto do visitante
     +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Fotos</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
-    +'<div>'
-      +'<label style="font-size:11px;display:block;margin-bottom:4px">📷 Foto do visitante</label>'
-      +'<div id="lib-foto-vis-preview" style="width:100%;height:120px;background:#f5f5f3;border-radius:8px;border:1.5px dashed #e0dfd8;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden" onclick="document.getElementById(\'lib-foto-vis-inp\').click()">'
-        +(v.foto_visitante?'<img src="'+v.foto_visitante+'" style="width:100%;height:100%;object-fit:cover">':'<span style="color:#aaa;font-size:12px;text-align:center">Clique para capturar<br>ou enviar foto</span>')
-      +'</div>'
-      +'<input type="file" id="lib-foto-vis-inp" accept="image/*" capture="user" style="display:none" onchange="portFotoPreview(this,\'lib-foto-vis-preview\',\'lib-foto-vis-data\')">'
-      +'<input type="hidden" id="lib-foto-vis-data" value="'+escHtml(v.foto_visitante||'')+'">'
-    +'</div>'
-    +'<div>'
-      +'<label style="font-size:11px;display:block;margin-bottom:4px">📄 Foto do documento</label>'
-      +'<div id="lib-foto-doc-preview" style="width:100%;height:120px;background:#f5f5f3;border-radius:8px;border:1.5px dashed #e0dfd8;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden" onclick="document.getElementById(\'lib-foto-doc-inp\').click()">'
-        +(v.foto_documento?'<img src="'+v.foto_documento+'" style="width:100%;height:100%;object-fit:cover">':'<span style="color:#aaa;font-size:12px;text-align:center">Foto do RG/CNH<br>ou outro documento</span>')
-      +'</div>'
-      +'<input type="file" id="lib-foto-doc-inp" accept="image/*" capture="environment" style="display:none" onchange="portFotoPreview(this,\'lib-foto-doc-preview\',\'lib-foto-doc-data\')">'
-      +'<input type="hidden" id="lib-foto-doc-data" value="'+escHtml(v.foto_documento||'')+'">'
-    +'</div>'
+    +portVisitaFotoBloco('📷 Foto do visitante','lib-foto-vis-preview','lib-foto-vis-inp','lib-foto-vis-arq','lib-foto-vis-data',v.foto_visitante,'Tire a foto pela câmera<br>ou escolha um arquivo','user')
+    +portVisitaFotoBloco('📄 Foto do documento','lib-foto-doc-preview','lib-foto-doc-inp','lib-foto-doc-arq','lib-foto-doc-data',v.foto_documento,'Foto do RG/CNH<br>ou outro documento','environment')
     +'</div>'
 
-    // Destino e motivo
     +'<div style="font-size:11px;font-weight:700;color:#185FA5;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px">Visita</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1rem">'
-    +'<div class="fg"><label style="font-size:11px">Com quem vai falar <span style="color:#A32D2D">*</span></label>'
-    +'<input class="inp" id="lib-destino" list="lib-destino-list" style="width:100%" value="'+escHtml(v.destino||'')+'" placeholder="Nome da pessoa"/>'
-    +'<datalist id="lib-destino-list">'+colabOpts+'</datalist></div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:1.25rem">'
+    +'<div class="fg" style="position:relative"><label style="font-size:11px">Com quem vai falar <span style="color:#A32D2D">*</span></label>'
+    +'<input class="inp" id="lib-destino" autocomplete="off" style="width:100%" value="'+portEsc(v.destino||'')+'" placeholder="Digite para buscar o colaborador" oninput="portDestinoFiltrar()" onfocus="portDestinoFiltrar()" onblur="setTimeout(portDestinoFechar,250)"/>'
+    +'<div id="lib-destino-sug" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:50;background:#fff;border:.5px solid #e0dfd8;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.12);max-height:220px;overflow-y:auto"></div></div>'
     +'<div class="fg"><label style="font-size:11px">Cargo / Setor do destino</label>'
-    +'<input class="inp" id="lib-cargo-dest" list="lib-cargo-dl" style="width:100%" value="'+escHtml(v.cargo_destino||'')+'" placeholder="Cargo/Setor (escolha ou digite)"/>'+cargoDatalistHtml('lib-cargo-dl')+'</div>'
+    +'<input class="inp" id="lib-cargo-dest" list="lib-cargo-dl" style="width:100%" value="'+portEsc(v.cargo_destino||'')+'" placeholder="Cargo/Setor (escolha ou digite)"/>'+cargoDatalistHtml('lib-cargo-dl')+'</div>'
     +'<div class="fg" style="grid-column:span 2"><label style="font-size:11px">Motivo da visita <span style="color:#A32D2D">*</span></label>'
-    +'<textarea class="inp" id="lib-motivo" style="width:100%;height:60px;resize:vertical" placeholder="Descreva o motivo da visita...">'+escHtml(v.motivo||'')+'</textarea></div>'
-    +'</div>'
-
-    // Horário e crachá
-    +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:1.25rem">'
-    +'<div class="fg"><label style="font-size:11px">Hora de entrada</label>'
-    +'<input class="inp" type="time" id="lib-hora-ent" style="width:100%" value="'+(v.hora_entrada||horaAtual)+'"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Hora de saída</label>'
-    +'<input class="inp" type="time" id="lib-hora-sai" style="width:100%" value="'+(v.hora_saida||'')+'"/></div>'
-    +'<div class="fg"><label style="font-size:11px">Crachá / Catraca</label>'
-    +'<input class="inp" id="lib-cracha" style="width:100%" value="'+escHtml(v.cracha||'')+'" placeholder="Nº do crachá"/></div>'
+    +'<textarea class="inp" id="lib-motivo" style="width:100%;height:60px;resize:vertical" placeholder="Descreva o motivo da visita...">'+portEsc(v.motivo||'')+'</textarea></div>'
     +'</div>'
 
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn btn-pri" id="lib-salvar-btn" style="flex:2">'+(isNew?'✅ Registrar entrada':'Salvar alterações')+'</button>'
+    +'<button class="btn btn-pri" id="lib-salvar-btn" style="flex:2">'+(isNew?'✅ Registrar visitante':'Salvar alterações')+'</button>'
     +'</div></div></div>');
 
-  // Setar doc_tipo após render
   setTimeout(function(){
     var selDoc = document.getElementById('lib-doc-tipo');
     if(selDoc && v.doc_tipo) selDoc.value = v.doc_tipo;
+    portFotoGuardar('lib-foto-vis-data', v.foto_visitante||null);
+    portFotoGuardar('lib-foto-doc-data', v.foto_documento||null);
+    portColabsDestino();
 
     var btn = document.getElementById('lib-salvar-btn'); if(!btn)return;
     btn.onclick = function(){
@@ -89992,26 +90066,20 @@ function portNovaVisita(id){
       if(!destino){ progShowToast('⚠ Informe com quem o visitante vai falar.'); return; }
       if(!motivo) { progShowToast('⚠ Informe o motivo da visita.'); return; }
 
-      var hoje2 = dataHojeLocal();
       var dados = {
-        data:         hoje2,
-        hora_entrada: g('lib-hora-ent'),
-        hora_saida:   g('lib-hora-sai')||null,
-        nome:         nome,
-        doc_tipo:     g('lib-doc-tipo'),
-        doc_num:      g('lib-doc-num'),
-        foto_visitante: g('lib-foto-vis-data')||null,
-        foto_documento: g('lib-foto-doc-data')||null,
-        destino:       destino,
-        cargo_destino: g('lib-cargo-dest'),
-        motivo:        motivo,
-        cracha:        g('lib-cracha'),
-        portaria_id:   _portAtiva ? _portAtiva.id : null,
-        status:        g('lib-hora-sai') ? 'Saiu' : 'Em visita',
-        obs:           ''
+        nome:           nome,
+        doc_tipo:       g('lib-doc-tipo'),
+        doc_num:        g('lib-doc-num'),
+        foto_visitante: portFotoLer('lib-foto-vis-data')||null,
+        foto_documento: portFotoLer('lib-foto-doc-data')||null,
+        destino:        destino,
+        cargo_destino:  g('lib-cargo-dest'),
+        motivo:         motivo
       };
 
       if(isNew){
+        dados = Object.assign({ data: dataHojeLocal(), hora_entrada: portHoraAgora(), hora_saida: null }, dados,
+          { portaria_id: _portAtiva ? _portAtiva.id : null, status: 'Aguardando', obs: '' });
         dados.id = (typeof portOffNovoId==='function'?portOffNovoId():('vis'+Date.now()));
         dados.offline_event_id = dados.id;
         portaria_visitas.unshift(dados);
@@ -90019,7 +90087,7 @@ function portNovaVisita(id){
           if(typeof portOffRegistrarVisita==='function') portOffRegistrarVisita('VISITA_ENTRADA', dados, dados.id);
           else sbInsert('portaria_visitas', _semId(dados));
         }
-        progShowToast('✅ Visitante registrado: '+nome);
+        progShowToast('✅ Visitante registrado: '+portEsc(nome)+'. Use "Liberar entrada" quando ele entrar.');
       } else {
         var idx = portaria_visitas.findIndex(function(x){return x.id===id;});
         if(idx>=0) portaria_visitas[idx] = Object.assign({}, portaria_visitas[idx], dados);
@@ -90039,47 +90107,66 @@ function portEditarVisita(id){ portNovaVisita(id); }
 
 function portVerVisita(id){
   var v = portaria_visitas.find(function(x){return x.id===id;}); if(!v) return;
-  var corStatus = v.status==='Em visita'?'#3B6D11':v.status==='Aguardando'?'#854F0B':'#185FA5';
-  var bgStatus  = v.status==='Em visita'?'#EAF3DE':v.status==='Aguardando'?'#FEF3E2':'#E6F1FB';
+  var st = portVisitaStatus(v), c = portVisitaCor(st);
 
   setModal('<div class="modal-bg"><div class="modal" style="max-width:440px">'
     +'<div style="display:flex;gap:1rem;align-items:flex-start;margin-bottom:1rem">'
     +(v.foto_visitante
-      ?'<img src="'+v.foto_visitante+'" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #185FA5;flex-shrink:0">'
+      ?'<img src="'+portEsc(v.foto_visitante)+'" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid #185FA5;flex-shrink:0">'
       :'<div style="width:72px;height:72px;border-radius:50%;background:#f0efe8;display:flex;align-items:center;justify-content:center;font-size:36px;flex-shrink:0">👤</div>')
     +'<div>'
-    +'<div style="font-size:18px;font-weight:700">'+escHtml(v.nome||'—')+'</div>'
-    +'<div style="font-size:12px;color:#888">'+escHtml(v.doc_tipo||'')+' '+escHtml(v.doc_num||'')+'</div>'
-    +'<span style="background:'+bgStatus+';color:'+corStatus+';border-radius:12px;padding:2px 10px;font-size:11px;font-weight:600">'+escHtml(v.status||'')+'</span>'
+    +'<div style="font-size:18px;font-weight:700">'+portEsc(v.nome||'—')+'</div>'
+    +'<div style="font-size:12px;color:#888">'+portEsc(v.doc_tipo||'')+' '+portEsc(v.doc_num||'')+'</div>'
+    +'<span style="background:'+c.bg+';color:'+c.cor+';border-radius:12px;padding:2px 10px;font-size:11px;font-weight:600">'+portEsc(st)+'</span>'
     +'</div></div>'
     +'<table style="width:100%;font-size:12px;border-collapse:collapse">'
     +[
       ['🎯 Destino',    v.destino],
       ['🏢 Cargo/Setor', v.cargo_destino],
       ['📋 Motivo',     v.motivo],
-      ['⏰ Entrada',    v.hora_entrada],
+      [st==='Aguardando'?'⏰ Chegada':'⏰ Entrada', v.hora_entrada],
       ['🚪 Saída',      v.hora_saida||'—'],
-      ['🏷 Crachá',     v.cracha||'—'],
-    ].map(function(row){
+    ].concat(v.cracha?[['🏷 Crachá', v.cracha]]:[]).map(function(row){
       return '<tr style="border-bottom:.5px solid #f5f5f3">'
         +'<td style="padding:6px 8px;color:#888;white-space:nowrap;width:120px">'+row[0]+'</td>'
-        +'<td style="padding:6px 8px;font-weight:500">'+escHtml(row[1]||'—')+'</td></tr>';
+        +'<td style="padding:6px 8px;font-weight:500">'+portEsc(row[1]||'—')+'</td></tr>';
     }).join('')
     +'</table>'
-    +(v.foto_documento?'<div style="margin-top:.75rem"><label style="font-size:11px;color:#888;display:block;margin-bottom:4px">Documento</label><img src="'+v.foto_documento+'" style="width:100%;border-radius:8px;max-height:200px;object-fit:contain;background:#f5f5f3"></div>':'')
-    +'<div style="margin-top:1rem;display:flex;gap:8px">'
+    +(v.foto_documento?'<div style="margin-top:.75rem"><label style="font-size:11px;color:#888;display:block;margin-bottom:4px">Documento</label><img src="'+portEsc(v.foto_documento)+'" style="width:100%;border-radius:8px;max-height:200px;object-fit:contain;background:#f5f5f3"></div>':'')
+    +'<div style="margin-top:1rem;display:flex;gap:8px;align-items:center">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
-    +(v.status!=='Saiu'?'<button class="btn btn-pri" onclick="portRegistrarSaida(\''+id+'\');closeModal()" style="flex:1;background:#3B6D11;border-color:#3B6D11">↩ Registrar saída</button>':'')
+    +portVisitaBotoes(v, true)
     +'</div></div></div>');
+}
+
+function portLiberarEntradaVisita(id){
+  var v = portaria_visitas.find(function(x){return x.id===id;}); if(!v) return;
+  if(portVisitaStatus(v)!=='Aguardando'){ progShowToast('A entrada deste visitante já foi liberada.'); return; }
+  if(typeof portOffTravar==='function' && !portOffTravar('VISITA_ENTROU:'+id)){
+    progShowToast('Aguarde, esta entrada já está em andamento.');
+    return;
+  }
+  var agora = portHoraAgora();
+  v.hora_entrada = agora;
+  v.status       = 'Entrou';
+  if(!DEMO){
+    if(typeof portOffRegistrarVisita==='function') portOffRegistrarVisita('VISITA_ENTROU', {id:id, hora_entrada:agora, status:'Entrou'}, id);
+    else sbUpdate('portaria_visitas',{hora_entrada:agora,status:'Entrou'},'id=eq.'+id);
+  }
+  portRenderLiberacao();
+  progShowToast('✅ Entrada de '+portEsc(v.nome)+' liberada às '+agora+'.');
 }
 
 function portRegistrarSaida(id){
   var v = portaria_visitas.find(function(x){return x.id===id;}); if(!v) return;
+  var st = portVisitaStatus(v);
+  if(st==='Saiu'){ progShowToast('A saída deste visitante já foi registrada.'); return; }
+  if(st!=='Entrou'){ progShowToast('⚠ Libere a entrada antes de liberar a saída.','erro'); return; }
   if(typeof portOffTravar==='function' && !portOffTravar('VISITA_SAIDA:'+id)){
     progShowToast('Aguarde, esta saída já está em andamento.');
     return;
   }
-  var agora = new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  var agora = portHoraAgora();
   v.hora_saida = agora;
   v.status     = 'Saiu';
   if(!DEMO){
@@ -90087,7 +90174,7 @@ function portRegistrarSaida(id){
     else sbUpdate('portaria_visitas',{hora_saida:agora,status:'Saiu'},'id=eq.'+id);
   }
   portRenderLiberacao();
-  progShowToast('✅ Saída de '+escHtml(v.nome)+' registrada às '+agora+'.');
+  progShowToast('✅ Saída de '+portEsc(v.nome)+' registrada às '+agora+'.');
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -90249,31 +90336,29 @@ async function portAuthImportarLoteLista(){
   progShowToast('Importação: '+ok+' novos, '+skip+' atualizados, '+frotaN+' com frota, '+extN+' externos'+(err?', '+err+' erro(s)':'')+'.');
 }
 
+var portaria_autorizados_erro = false;
+/** Leitura que falhar (sessão ainda não pronta, rede) não vira lista vazia "carregada": mantém a última lista e tenta de novo. */
 function portCarregarAutorizados(force){
   if(DEMO){ portaria_autorizados_loaded=true; return Promise.resolve(portaria_autorizados); }
   if(portaria_autorizados_loaded && !force) return Promise.resolve(portaria_autorizados);
-  return sbFetch('portaria_autorizados',{ order:'nome.asc' }).then(function(rows){
-    portaria_autorizados = Array.isArray(rows) ? rows : [];
+  return Promise.resolve(sbFetch('portaria_autorizados',{ order:'nome.asc' })).then(function(rows){
+    if(!Array.isArray(rows)){ portaria_autorizados_erro = true; return portaria_autorizados; }
+    portaria_autorizados = rows;
     portaria_autorizados_loaded = true;
+    portaria_autorizados_erro = false;
     return portaria_autorizados;
-  }).catch(function(err){
+  }, function(err){
     console.warn('portaria_autorizados:', err);
-    if(typeof portOffHidatarCache==='function'){
-      return portOffHidatarCache().then(function(){
-        portaria_autorizados_loaded = true;
-        return portaria_autorizados;
-      });
-    }
-    portaria_autorizados_loaded = true;
+    portaria_autorizados_erro = true;
     return portaria_autorizados;
   });
 }
 
-function portRenderAutorizados(){
+function portRenderAutorizados(force){
   var aviso = document.getElementById('auth-aviso-portaria');
   if(aviso) aviso.style.display = portPodeCadastrarAutorizado() ? 'none' : 'block';
 
-  portCarregarAutorizados().then(function(){
+  portCarregarAutorizados(!!force).then(function(){
     var busca = ((document.getElementById('auth-busca')||{}).value||'').toLowerCase().trim();
     var stFil = (document.getElementById('auth-status-fil')||{}).value||'';
     var atFil = (document.getElementById('auth-ativo-fil')||{}).value;
@@ -90307,6 +90392,11 @@ function portRenderAutorizados(){
 
     var tbody = document.getElementById('auth-tbody');
     if(!tbody) return;
+    if(!lista.length && portaria_autorizados_erro){
+      tbody.innerHTML='<tr><td colspan="8" style="padding:2rem;text-align:center;color:#854F0B">⚠ Não foi possível carregar os autorizados (sem conexão ou sessão expirada). '
+        +'<button class="btn btn-sm" onclick="portRenderAutorizados(true)" style="margin-left:6px">🔄 Tentar de novo</button></td></tr>';
+      return;
+    }
     if(!lista.length){
       tbody.innerHTML='<tr><td colspan="8" style="padding:2rem;text-align:center;color:#aaa">Nenhum autorizado encontrado.'
         +(portPodeCadastrarAutorizado()?' Use “+ Cadastrar autorizado”.':'')+'</td></tr>';
@@ -100358,7 +100448,7 @@ window._almShowAbaInterna = window._almShowAbaInterna || function(aba){
           <select class="inp" id="lib-status-fil" style="width:140px" onchange="portRenderLiberacao()">
             <option value="">Todos</option>
             <option value="Aguardando">Aguardando</option>
-            <option value="Em visita">Em visita</option>
+            <option value="Entrou">Entrou</option>
             <option value="Saiu">Saiu</option>
           </select>
           <button class="btn btn-pri" onclick="portNovaVisita()">+ Registrar Visitante</button>

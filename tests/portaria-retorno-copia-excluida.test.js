@@ -366,7 +366,7 @@ async function testesEnsure() {
   ok('carga do dia confere antes do cache do tablet', /portConferirSaidasMemoria\(\{forcar:true\}\)[\s\S]*portOffSnapshotCache/.test(fnHtml('portEnsureDadosPortariaDia')));
   ok('retorno sem fila offline: filtro protegido', /'deleted_at=is\.null&data_retorno=is\.null&id=eq\.'\+idDb,\{linhas:true\}/.test(fnHtml('portAbrirVistoriaRetorno')));
   ok('versão: log 8.1.187', html.includes("{v:'8.1.187'"));
-  ok('versão: tag portaria-offline.js 8.1.187', html.includes('portaria-offline.js?v=8.1.187'));
+  ok('versão: tag portaria-offline.js a partir de 8.1.187', +((html.match(/portaria-offline\.js\?v=8\.1\.(\d+)/) || [])[1] || 0) >= 187);
   const numAtual = (html.match(/numero:\s*'([\d.]+)'/) || [])[1];
   ok('versão: sw.js acompanha', !!numAtual && sw.includes("SW_VERSION   = 'cena-" + numAtual + "'"), numAtual);
   if (failed.length) {

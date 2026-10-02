@@ -477,7 +477,7 @@ function portOffAgendarSync(){
 }
 
 function portOffOrdenarFila(lista){
-  var peso={SAIDA:1, VISITA_ENTRADA:1, AUTH_ENTRADA:2, AUTH_SAIDA:2, RETORNO:3, VISITA_SAIDA:3, VISITA_UPDATE:4};
+  var peso={SAIDA:1, VISITA_ENTRADA:1, AUTH_ENTRADA:2, AUTH_SAIDA:2, VISITA_ENTROU:2, RETORNO:3, VISITA_SAIDA:3, VISITA_UPDATE:4};
   return (lista||[]).slice().sort(function(a,b){
     var pa=peso[a.tipo_evento]||5, pb=peso[b.tipo_evento]||5;
     if(pa!==pb) return pa-pb;
@@ -531,7 +531,7 @@ async function portOffSyncUm(ev){
     if(ev.tipo_evento==='SAIDA') await portOffSyncSaida(ev);
     else if(ev.tipo_evento==='RETORNO') await portOffSyncRetorno(ev);
     else if(ev.tipo_evento==='AUTH_ENTRADA' || ev.tipo_evento==='AUTH_SAIDA') await portOffSyncAuth(ev);
-    else if(ev.tipo_evento==='VISITA_ENTRADA' || ev.tipo_evento==='VISITA_SAIDA' || ev.tipo_evento==='VISITA_UPDATE') await portOffSyncVisita(ev);
+    else if(ev.tipo_evento==='VISITA_ENTRADA' || ev.tipo_evento==='VISITA_ENTROU' || ev.tipo_evento==='VISITA_SAIDA' || ev.tipo_evento==='VISITA_UPDATE') await portOffSyncVisita(ev);
     else {
       ev.status_sync='ERRO';
       ev.ultimo_erro='Tipo desconhecido: '+ev.tipo_evento;
@@ -809,6 +809,7 @@ async function portOffSyncAuth(ev){
   ev.data_hora_sincronizacao=new Date().toISOString();
 }
 
+var PORT_OFF_VISITA_CAMPOS_EDICAO = ['nome','doc_tipo','doc_num','foto_visitante','foto_documento','destino','cargo_destino','motivo'];
 async function portOffSyncVisita(ev){
   var p=ev.payload||{};
   var dados=Object.assign({}, p.visita||{});
@@ -842,7 +843,7 @@ async function portOffSyncVisita(ev){
       for(i=0;i<todos.length;i++){
         var o=todos[i];
         if(!o || o.event_id===ev.event_id) continue;
-        if((o.tipo_evento==='VISITA_SAIDA'||o.tipo_evento==='VISITA_UPDATE') && o.payload && String(o.payload.id_local)===String(p.id_local)){
+        if((o.tipo_evento==='VISITA_ENTROU'||o.tipo_evento==='VISITA_SAIDA'||o.tipo_evento==='VISITA_UPDATE') && o.payload && String(o.payload.id_local)===String(p.id_local)){
           o.payload.id_local=r[0].id;
           o.depends_on=ev.event_id;
           await portOffPutEvent(o);
@@ -854,9 +855,17 @@ async function portOffSyncVisita(ev){
     if(!id || (typeof isUUID==='function' && !isUUID(String(id)))){
       throw new Error('Visita local ainda sem ID no servidor');
     }
-    var patch={hora_saida:dados.hora_saida, status:dados.status||'Saiu'};
+    var patch={};
+    if(ev.tipo_evento==='VISITA_SAIDA') patch={hora_saida:dados.hora_saida, status:dados.status||'Saiu'};
+    else if(ev.tipo_evento==='VISITA_ENTROU') patch={hora_entrada:dados.hora_entrada, status:'Entrou'};
+    else {
+      PORT_OFF_VISITA_CAMPOS_EDICAO.forEach(function(k){ if(dados[k]!==undefined) patch[k]=dados[k]; });
+      // Evento de edição gravado pela versão anterior (status calculado pela hora de saída).
+      if(Object.prototype.hasOwnProperty.call(p.visita||{}, 'status')){ patch.hora_saida=dados.hora_saida; patch.status=dados.status||'Saiu'; }
+    }
+    if(!Object.keys(patch).length) throw new Error('Visitante sem dados para enviar');
     var ok=await sbUpdate('portaria_visitas', patch, 'id=eq.'+id);
-    if(ok===false) throw new Error('Servidor não confirmou a saída do visitante');
+    if(ok===false) throw new Error(ev.tipo_evento==='VISITA_ENTROU'?'Servidor não confirmou a entrada do visitante':ev.tipo_evento==='VISITA_SAIDA'?'Servidor não confirmou a saída do visitante':'Servidor não confirmou a edição do visitante');
   }
   ev.status_sync='SINCRONIZADO';
   ev.data_hora_sincronizacao=new Date().toISOString();
@@ -1134,7 +1143,7 @@ function portOffFmtHora(iso){
 }
 function portOffTipoLabel(t){
   return ({SAIDA:'Saída', RETORNO:'Retorno', AUTH_ENTRADA:'Autorizado — entrada', AUTH_SAIDA:'Autorizado — saída',
-    VISITA_ENTRADA:'Visitante — entrada', VISITA_SAIDA:'Visitante — saída', VISITA_UPDATE:'Visitante — update'})[t]||t;
+    VISITA_ENTRADA:'Visitante — cadastro', VISITA_ENTROU:'Visitante — entrada', VISITA_SAIDA:'Visitante — saída', VISITA_UPDATE:'Visitante — edição'})[t]||t;
 }
 
 function portOffAbrirPainel(){
