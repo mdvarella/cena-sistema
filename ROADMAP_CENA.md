@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
-**Atualizado em:** 02/10/2026  
-**Versão atual do sistema:** `8.1.196` (02/10/2026, build `20261002-0900`)  
+**Atualizado em:** 03/10/2026  
+**Versão atual do sistema:** `8.1.198` (03/10/2026, build `20261003-0820`)  
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -458,6 +458,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 03/10/2026 | 8.1.198 | Portaria — Retorno: no dia de hoje, equipe que saiu e não retornou fica em "Saíram e não retornaram" por até 28h após a saída (`portSaidaAbertaNaJanelaRetorno`); busca de "Em campo" passa a cobrir 2 dias. Sem SQL. HOMOLOGAÇÃO. |
 | 02/10/2026 | 8.1.196 | Visual padrão de abas (estilo Contrato de Obras) em Financeiro, VBE, Almox SAP, Portaria, Frotas, Gestão de Ponto, Relatórios, TMA, Programação, Pendências de Projeto, SOT, Modelo de Escalas e detalhe do Dashboard; Projetos em pílulas por família. CSS global `.cena-tabs`/`.cena-chips` + `cenaTabsSync` (espelha a aba ativa em `.ativo`). Sem SQL. HOMOLOGAÇÃO. |
 | 02/10/2026 | 8.1.195 | Contrato de Obras: visual "mais vivo" da barra de contratos (pílula + bolinha por família, ativo verde, quebra de linha), faixa em gradiente verde CENA e abas com ícone em quadrado colorido e aba ativa na cor própria. Só CSS + `data-familia`/classe `ativo` no JS. Sem SQL. HOMOLOGAÇÃO. |
 | 21/09/2026 | 8.1.105 | RFID-CORE-1: cadastro mestre de crachá RFID no colaborador (seção Editar, leitor USB teclado só em sessão, RPCs vincular/bloquear/substituir/testar). Sem portão/Portaria/estoque/ponto. SQL manual `sql_colaborador_credenciais_rfid_core_1.sql`. HOMOLOGAÇÃO. |
