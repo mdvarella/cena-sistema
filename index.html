@@ -45791,10 +45791,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.198',
+  numero: '8.1.199',
   data:   '03/10/2026',
-  build:  '20261003-0820',
+  build:  '20261003-1100',
   log: [
+    {v:'8.1.199', d:'03/10/2026', itens:[
+      'Navegação persistente: a tela atual fica na URL (?page=pg-<tela>). F5 volta para a mesma tela, o link copiado abre a mesma tela em outra aba e os botões Voltar/Avançar do navegador trocam entre as telas do ERP sem sair do sistema.',
+      'Sem ?page= válido, abre a última tela da aba (sessionStorage) e, se não houver, a tela inicial do perfil. Tela sem permissão pelo link: aviso de acesso negado e segue para a tela permitida (mesmas regras do menu por perfil). Portaria e Diário de Bordo mantêm a tela fixa. Sem SQL.',
+    ]},
     {v:'8.1.198', d:'03/10/2026', itens:[
       'Portaria — Retorno: no dia de hoje, toda equipe que saiu e não retornou fica em "Saíram e não retornaram" por até 28h depois da hora de saída (antes o dia anterior só entrava na virada da meia-noite, saída a partir das 20h). Sem SQL.',
     ]},
@@ -78303,13 +78307,8 @@ function sidebarMostrarModulos(){
   if(inner)  { inner.style.display='none'; inner.innerHTML=''; }
 }
 
-function sidebarMostrarItens(main, subAtivo){
-  var modulos = document.getElementById('sidebar-modulos');
-  var inner   = document.getElementById('sidebar-inner');
-  if(modulos) modulos.style.display = 'none';
-  if(!inner)  return;
-  inner.style.display = 'block';
-
+/** Grupos do menu lateral de um módulo, já filtrados pelo perfil logado. */
+function sidebarGruposDoPerfil(main){
   var grupos = SIDEBAR_GROUPS[main] || [];
   // Portaria: só mostrar sub-item portaria
   if(usuarioLogado && usuarioLogado.perfil==='portaria' && main==='frotas'){
@@ -78325,6 +78324,17 @@ function sidebarMostrarItens(main, subAtivo){
   if(typeof perfilDpRhFiltrarSidebar==='function'){
     grupos = perfilDpRhFiltrarSidebar(main, grupos);
   }
+  return grupos;
+}
+
+function sidebarMostrarItens(main, subAtivo){
+  var modulos = document.getElementById('sidebar-modulos');
+  var inner   = document.getElementById('sidebar-inner');
+  if(modulos) modulos.style.display = 'none';
+  if(!inner)  return;
+  inner.style.display = 'block';
+
+  var grupos = sidebarGruposDoPerfil(main);
   // Segurança: SIDEBAR_GROUPS deve ser array; se for objeto (erro config), usar []
   if(!Array.isArray(grupos)){
     console.error('SIDEBAR_GROUPS['+main+'] deve ser array. Verifique a configuração.', grupos);
@@ -78431,6 +78441,142 @@ function sidebarVoltar(){
 function renderSidebar(main, subAtivo){
   sidebarMostrarItens(main, subAtivo);
 }
+
+// ── Navegação persistente: ?page=pg-<página> + voltar/avançar do navegador ──
+// Trocas de tela dentro deste intervalo são redirecionamentos encadeados (ex.: RH → Gestão de Ponto) e não viram entrada nova.
+var CENA_NAV_REDIRECT_MS = 400;
+var CENA_NAV_BOOT_MS = 1500;
+var _cenaNav = { atual:null, main:null, restaurando:false, iniciado:false, bootAte:0, ultimoTs:0 };
+
+function cenaNavAtiva(){
+  if(!window.history || typeof history.pushState!=='function' || typeof history.replaceState!=='function') return false;
+  if(!usuarioLogado || usuarioLogado.perfil==='equipe') return false;
+  if(typeof rhPortalParseToken==='function' && rhPortalParseToken()) return false;
+  return true;
+}
+function cenaNavChave(pageId){ return 'pg-'+pageId; }
+function cenaNavLerChave(chave){
+  var s = String(chave==null?'':chave).trim();
+  if(s.indexOf('pg-')===0) s = s.slice(3);
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,80}$/.test(s) ? s : null;
+}
+function cenaNavPaginaDaUrl(){
+  try{ return cenaNavLerChave(new URLSearchParams(location.search||'').get('page')); }
+  catch(e){ return null; }
+}
+function cenaNavUrl(pageId, manterHash){
+  var sp = new URLSearchParams(location.search||'');
+  sp.set('page', cenaNavChave(pageId));
+  return location.pathname+'?'+sp.toString()+(manterHash ? (location.hash||'') : '');
+}
+/** Módulo liberado para o perfil: mesmas regras do showMain + botão do módulo visível (CSS por perfil). */
+function cenaNavModuloVisivel(main){
+  if(!main || !MAIN_CONFIG[main]) return false;
+  if(typeof perfilModuloBloqueado==='function' && perfilModuloBloqueado(main)) return false;
+  var btn = document.getElementById('mn-'+main);
+  if(!btn) return false;
+  try{ return window.getComputedStyle(btn).display!=='none'; }
+  catch(e){ return false; }
+}
+function cenaNavPaginaNoMenu(pageId, main){
+  var grupos = sidebarGruposDoPerfil(main);
+  if(!Array.isArray(grupos)) return false;
+  return grupos.some(function(g){
+    return sidebarItensDoGrupo(g).some(function(i){ return i && i.id===pageId; });
+  });
+}
+/** Módulo onde o perfil logado abre a página pelo menu; null = página inexistente ou sem acesso. */
+function cenaNavResolverMain(pageId, mainPreferido){
+  if(!pageId || !usuarioLogado || usuarioLogado.perfil==='equipe') return null;
+  if(usuarioLogado.perfil==='portaria') return pageId==='frotas-portaria' ? 'frotas' : null;
+  var mains = Object.keys(SIDEBAR_GROUPS);
+  var iPref = mainPreferido ? mains.indexOf(mainPreferido) : -1;
+  if(iPref>0){ mains.splice(iPref,1); mains.unshift(mainPreferido); }
+  for(var i=0;i<mains.length;i++){
+    if(cenaNavPaginaNoMenu(pageId, mains[i]) && cenaNavModuloVisivel(mains[i])) return mains[i];
+  }
+  return null;
+}
+function cenaNavGravarSessao(pageId, main){
+  try{
+    sessionStorage.setItem('lastPage', cenaNavChave(pageId));
+    if(main) sessionStorage.setItem('lastMain', main);
+  }catch(e){}
+}
+/** Chamado ao fim de showPage: grava a tela na URL e no histórico sem criar laço. */
+function cenaNavRegistrar(pageId){
+  if(!pageId || !cenaNavAtiva()) return;
+  var main = _mainAtual;
+  var agora = Date.now();
+  var boot = !_cenaNav.iniciado || agora<_cenaNav.bootAte;
+  var trocou = pageId!==_cenaNav.atual;
+  cenaNavGravarSessao(pageId, main);
+  var estado = { cenaNav:1, page:cenaNavChave(pageId), main:main };
+  try{
+    if(!trocou && cenaNavPaginaDaUrl()===pageId){
+      if(main!==_cenaNav.main) history.replaceState(estado, '', location.href);
+    } else if(boot || _cenaNav.restaurando || (agora-_cenaNav.ultimoTs)<CENA_NAV_REDIRECT_MS){
+      history.replaceState(estado, '', cenaNavUrl(pageId, boot));
+    } else {
+      history.pushState(estado, '', cenaNavUrl(pageId, false));
+    }
+  }catch(e){ console.warn('[nav] histórico indisponível:', e); }
+  if(trocou) _cenaNav.ultimoTs = agora;
+  _cenaNav.iniciado = true;
+  _cenaNav.atual = pageId;
+  _cenaNav.main = main;
+}
+/** Abre a página pelos fluxos normais (showMain → showSub), que mantêm as regras de perfil. */
+function cenaNavAbrir(pageId, main){
+  _cenaNav.restaurando = true;
+  try{
+    _subAtual[main] = pageId;
+    showMain(main);
+    if(_mainAtual===main && _subAtual[main]!==pageId) showSub(pageId);
+  }catch(e){
+    console.warn('[nav] falha ao abrir '+pageId+':', e);
+  }finally{
+    _cenaNav.restaurando = false;
+    _cenaNav.ultimoTs = Date.now();
+  }
+}
+/** Login/sessão restaurada: página da URL → última página da aba. false = seguir a tela inicial do perfil. */
+function cenaNavRestaurarInicial(){
+  _cenaNav.bootAte = Date.now()+CENA_NAV_BOOT_MS;
+  if(!cenaNavAtiva() || usuarioLogado.perfil==='portaria') return false;
+  var daUrl = cenaNavPaginaDaUrl();
+  var daSessao = null, mainSessao = null;
+  try{
+    daSessao = cenaNavLerChave(sessionStorage.getItem('lastPage'));
+    mainSessao = sessionStorage.getItem('lastMain');
+  }catch(e){}
+  var candidatas = [];
+  if(daUrl) candidatas.push({page:daUrl, main:(daUrl===daSessao?mainSessao:null), url:true});
+  if(daSessao && daSessao!==daUrl) candidatas.push({page:daSessao, main:mainSessao});
+  for(var i=0;i<candidatas.length;i++){
+    var c = candidatas[i];
+    var main = cenaNavResolverMain(c.page, c.main);
+    if(main){ cenaNavAbrir(c.page, main); return true; }
+    if(c.url && typeof progShowToast==='function') progShowToast('⚠ Acesso negado: a tela do link não está disponível para o seu perfil.','erro');
+  }
+  return false;
+}
+function cenaNavAoVoltar(ev){
+  if(!cenaNavAtiva()) return;
+  var st = ev && ev.state;
+  var pageId = (st && st.cenaNav) ? cenaNavLerChave(st.page) : cenaNavPaginaDaUrl();
+  if(!pageId || pageId===_cenaNav.atual) return;
+  var main = cenaNavResolverMain(pageId, st && st.main);
+  if(!main){
+    if(typeof progShowToast==='function') progShowToast('⚠ Acesso negado a esta tela.','erro');
+    if(_cenaNav.atual){
+      try{ history.replaceState({cenaNav:1, page:cenaNavChave(_cenaNav.atual), main:_cenaNav.main}, '', cenaNavUrl(_cenaNav.atual, false)); }catch(e){}
+    }
+    return;
+  }
+  cenaNavAbrir(pageId, main);
+}
+window.addEventListener('popstate', cenaNavAoVoltar);
 
 function showMain(main){
   // Perfil equipe: só Diário de Bordo
@@ -79022,6 +79168,7 @@ function showPage(pageId){
   }
   // Auto-refresh — iniciar/parar conforme a tela
   _autoRefresh.iniciar(pageId);
+  cenaNavRegistrar(pageId);
 }
 
 
@@ -80235,7 +80382,9 @@ async function fazerLogin(){
       _gestorContratos=encCids;
       _gestorContAtivo=encCids.length===1?encCids[0]:null;
       window._filtroContrato=_gestorContAtivo;
-      showMain('campo');
+      if(!cenaNavRestaurarInicial()) showMain('campo');
+    } else if(cenaNavRestaurarInicial()){
+      console.log('[LOGIN] tela restaurada da URL/sessão:', _cenaNav.atual);
     } else if(user.perfil==='gerente_frotas'||user.perfil==='supervisor_frotas'){
       showMain('frotas');
     } else if(user.perfil==='almoxarife'){
@@ -100232,7 +100381,9 @@ window.addEventListener('load',async function(){
       }
       if(usuarioLogado.perfil==='encarregado'){
         console.log('[INIT] encarregado → showMain campo');
-        resolveEquipeUsuario().then(function(){ showMain('campo'); });
+        resolveEquipeUsuario().then(function(){ if(!cenaNavRestaurarInicial()) showMain('campo'); });
+      }else if(cenaNavRestaurarInicial()){
+        console.log('[INIT] tela restaurada da URL/sessão:', _cenaNav.atual);
       }else if(usuarioLogado.perfil==='supervisor_tma'||usuarioLogado.perfil==='coordenador_tma'){
         console.log('[INIT] supervisor/coordenador TMA → showMain tma');
         showMain('tma');

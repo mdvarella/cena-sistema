@@ -73,7 +73,7 @@ function ctxRender(store) {
   };
   vm.createContext(ctx);
   vm.runInContext([vrEm(html, 'SIDEBAR_GROUPS'), vrEm(html, 'SIDEBAR_SUB_FECHADAS_KEY')].concat(
-    ['sidebarMostrarItens', 'sidebarItensDoGrupo', 'sidebarSubFechadas', 'sidebarSubFechada', 'sidebarAlternarSub', 'sidebarAbrirSubDoItem', '_renderSubNav', 'perfilDpRhFiltrarSidebar'].map(fn)).join('\n'), ctx);
+    ['sidebarMostrarItens', 'sidebarGruposDoPerfil', 'sidebarItensDoGrupo', 'sidebarSubFechadas', 'sidebarSubFechada', 'sidebarAlternarSub', 'sidebarAbrirSubDoItem', '_renderSubNav', 'perfilDpRhFiltrarSidebar'].map(fn)).join('\n'), ctx);
   return { ctx, els };
 }
 const conta = (s, sub) => s.split(sub).length - 1;
@@ -148,7 +148,9 @@ function estaticos() {
   ok('CSS: marcador do título', html.includes(".sb-section::before{content:'';width:3px;height:11px;"));
   ok('CSS: sub-itens recuados', html.includes('.sb-item.sb-item-sub{padding-left:26px}'));
   ok('CSS mobile: sub-seção vira lista plana', html.includes('  .sb-sub{display:none!important}\n  .sb-sub-itens{display:contents!important}'));
-  ok('almoxarife e DP/RH continuam com o menu próprio', fn('sidebarMostrarItens').includes("{label:'Almoxarifado SAP', items:[{id:'obras-requisicao', label:'Requisição SAP', icon:'📥'}]}")
+  ok('almoxarife e DP/RH continuam com o menu próprio', fn('sidebarGruposDoPerfil').includes("{label:'Almoxarifado SAP', items:[{id:'obras-requisicao', label:'Requisição SAP', icon:'📥'}]}")
+    && fn('sidebarGruposDoPerfil').includes('perfilDpRhFiltrarSidebar(main, grupos)')
+    && fn('sidebarMostrarItens').includes('var grupos = sidebarGruposDoPerfil(main);')
     && fn('_renderSubNav').includes("usuarioLogado.perfil==='almoxarife' && main==='operacional'"));
   ok('versão 8.1.186 no log', /\{v:'8\.1\.186'/.test(html));
   const num = /numero: '(8\.1\.\d+)'/.exec(html)[1];
@@ -164,8 +166,15 @@ function estaticos() {
   const PERMITIDAS = ['sidebarMostrarItens', '_renderSubNav', 'showMain', 'showSub'];
   const alteradas = Object.keys(bA).filter(n => JSON.stringify(bA[n]) !== JSON.stringify(bN[n] || null));
   ok('só o renderer e a navegação do menu mudaram', alteradas.length === PERMITIDAS.length && alteradas.every(n => PERMITIDAS.includes(n)), alteradas);
-  ok('funções do menu intactas na versão atual', PERMITIDAS.every(n => JSON.stringify(bN[n]) === JSON.stringify(bAtual[n])),
-    PERMITIDAS.filter(n => JSON.stringify(bN[n]) !== JSON.stringify(bAtual[n])));
+  // 8.1.199: o filtro de perfil saiu de sidebarMostrarItens para sidebarGruposDoPerfil (reusado pela navegação persistente).
+  const FILTRO_INI = '  var grupos = SIDEBAR_GROUPS[main] || [];\n', FILTRO_FIM = '  // Segurança: SIDEBAR_GROUPS deve ser array';
+  const filtroMenu = (bN.sidebarMostrarItens || [''])[0].split(FILTRO_INI)[1];
+  const filtro186 = filtroMenu ? FILTRO_INI + filtroMenu.split(FILTRO_FIM)[0] : null;
+  const atualNorm = n => (n !== 'sidebarMostrarItens' || !filtro186) ? bAtual[n]
+    : (bAtual[n] || []).map(b => b.replace('  var grupos = sidebarGruposDoPerfil(main);\n', filtro186));
+  ok('funções do menu intactas na versão atual', PERMITIDAS.every(n => JSON.stringify(bN[n]) === JSON.stringify(atualNorm(n))),
+    PERMITIDAS.filter(n => JSON.stringify(bN[n]) !== JSON.stringify(atualNorm(n))));
+  ok('filtro de perfil movido sem alteração', !!filtro186 && fn('sidebarGruposDoPerfil').includes(filtro186 + '  return grupos;\n}'));
   const criadas = Object.keys(bN).filter(n => !bA[n]).sort();
   ok('funções novas só do menu', JSON.stringify(criadas) === JSON.stringify(['sidebarAbrirSubDoItem', 'sidebarAlternarSub', 'sidebarItensDoGrupo', 'sidebarSubFechada', 'sidebarSubFechadas']), criadas);
 }
