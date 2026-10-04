@@ -1,7 +1,7 @@
 # ROADMAP MESTRE --- ERP CENA
 
 **Atualizado em:** 04/10/2026  
-**Versão atual do sistema:** `8.1.200` (04/10/2026, build `20261004-1000`)  
+**Versão atual do sistema:** `8.1.201` (04/10/2026, build `20261004-1300`)
 **Arquivo oficial:** `ROADMAP_CENA.md` na raiz do ERP (não gravar cópia `*_ATUALIZADO` nesta pasta).
 
 **Objetivo:** fonte única de verdade para desenvolvimento, testes e
@@ -458,6 +458,7 @@ Segurança, Contratual e Operacional 12. Admissão concluída / liberado
 
 | Data       | Versão  | Alteração |
 | ---------- | ------- | --------- |
+| 04/10/2026 | 8.1.201 | Jornada de Projetos: corrige o deep link da próxima ação para aguardar a montagem da Programação de Projetos e selecionar contrato, data e projeto. Sem SQL. TMA intacta. |
 | 04/10/2026 | 8.1.200 | Projetos — aba Jornada no detalhe (primeira aba): etapa calculada pelos dados, próxima ação e link para as telas já existentes. Perfis base e Equatorial PLPT. Programação de hoje ou futura: linha datada em `plpt_prog_projetos` ou composição confirmada. Histórico, rascunho e `deleted_at` não dispensam a próxima execução. NF de parcial não encerra o projeto. Sem SQL. TMA intacta. HOMOLOGAÇÃO. |
 | 03/10/2026 | 8.1.198 | Portaria — Retorno: no dia de hoje, equipe que saiu e não retornou fica em "Saíram e não retornaram" por até 28h após a saída (`portSaidaAbertaNaJanelaRetorno`); busca de "Em campo" passa a cobrir 2 dias. Sem SQL. HOMOLOGAÇÃO. |
 | 02/10/2026 | 8.1.196 | Visual padrão de abas (estilo Contrato de Obras) em Financeiro, VBE, Almox SAP, Portaria, Frotas, Gestão de Ponto, Relatórios, TMA, Programação, Pendências de Projeto, SOT, Modelo de Escalas e detalhe do Dashboard; Projetos em pílulas por família. CSS global `.cena-tabs`/`.cena-chips` + `cenaTabsSync` (espelha a aba ativa em `.ativo`). Sem SQL. HOMOLOGAÇÃO. |

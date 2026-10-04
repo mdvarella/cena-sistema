@@ -114,28 +114,40 @@
     if(!projeto) return;
     var data = jornadaDataHoje();
     if(typeof global.showPage==='function') global.showPage('programacao-projetos');
+    var tentativas = 0;
+    var pintou = false;
     var aplicar = function(){
-      var sel = document.getElementById('pp-cont');
-      var dt = document.getElementById('pp-data');
-      if(sel && projeto.contrato_id) sel.value = projeto.contrato_id;
-      if(dt) dt.value = data;
       if(global._pp){
         global._pp.cid = projeto.contrato_id || '';
         global._pp.data = data;
         global._pp.projetoIds = projeto.id ? [projeto.id] : [];
       }
+      var sel = document.getElementById('pp-cont');
+      var lista = document.getElementById('pp-proj-lista');
+      var dt = document.getElementById('pp-data');
+      if(dt) dt.value = data;
+      if(sel && projeto.contrato_id) sel.value = String(projeto.contrato_id);
+      var valorOk = !projeto.contrato_id || (sel && sel.value === String(projeto.contrato_id));
+      if((!sel || !lista || !valorOk) && tentativas < 30 && typeof global.setTimeout==='function'){
+        tentativas++;
+        global.setTimeout(aplicar, 100);
+        return;
+      }
       if(typeof global.progProjAtualizarProjLista==='function') global.progProjAtualizarProjLista();
+      if(pintou) return;
+      pintou = true;
       if(typeof global.progProjAtualizarPillsTipo==='function') global.progProjAtualizarPillsTipo();
       if(typeof global.progProjCarregarStatus==='function') global.progProjCarregarStatus(data);
       if(typeof global.progProjCarregarStatusBanco==='function'){
         global.progProjCarregarStatusBanco(data, function(){
+          if(typeof global.progProjAtualizarProjLista==='function') global.progProjAtualizarProjLista();
           if(typeof global.progProjRenderQuadro==='function') global.progProjRenderQuadro();
         });
       } else if(typeof global.progProjRenderQuadro==='function'){
         global.progProjRenderQuadro();
       }
     };
-    if(typeof global.setTimeout==='function') global.setTimeout(aplicar, 60);
+    if(typeof global.setTimeout==='function') global.setTimeout(aplicar, 100);
     else aplicar();
   }
 
