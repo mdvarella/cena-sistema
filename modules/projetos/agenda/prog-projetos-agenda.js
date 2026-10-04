@@ -1,4 +1,4 @@
-/* Programação de Projetos — fila "Projetos a programar" (8.1.202).
+/* Programação de Projetos — fila "Projetos a programar" (8.1.203).
  * Fonte persistente: prog_projetos_agenda (projeto + data, ainda sem equipe). RLS no banco decide quem lê e grava.
  * EM COMPOSIÇÃO e PROGRAMADO continuam vindo só de composicao_dia (projeto_ids + confirmada).
  * Escolher a data não programa o projeto. Nada aqui grava em composicao_dia. */
