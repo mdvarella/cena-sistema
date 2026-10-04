@@ -4,6 +4,7 @@
 -- composicao_dia (projeto_ids + confirmada). Escolher a data NÃO programa o projeto.
 
 -- ── Permissão: perfis da Programação de Projetos (anon sem acesso) ────────
+-- Somente auth.uid() → usuarios_sistema.auth_user_id. E-mail do JWT não autoriza.
 CREATE OR REPLACE FUNCTION public.cena_prog_pode_programar_projetos()
 RETURNS boolean
 LANGUAGE plpgsql
@@ -12,23 +13,17 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_email text;
   v_perfil text;
 BEGIN
   IF auth.uid() IS NULL THEN
     RETURN FALSE;
   END IF;
-  v_email := lower(btrim(coalesce(auth.jwt() ->> 'email', '')));
   SELECT lower(btrim(coalesce(us.perfil, '')))
     INTO v_perfil
   FROM public.usuarios_sistema us
-  WHERE us.ativo IS TRUE
-    AND (us.deleted_at IS NULL)
-    AND (
-      us.auth_user_id = auth.uid()
-      OR (v_email <> '' AND lower(btrim(us.email)) = v_email)
-    )
-  ORDER BY CASE WHEN us.auth_user_id = auth.uid() THEN 0 ELSE 1 END
+  WHERE us.auth_user_id = auth.uid()
+    AND us.ativo IS TRUE
+    AND us.deleted_at IS NULL
   LIMIT 1;
   RETURN coalesce(v_perfil, '') IN ('admin','diretoria','gestor','coordenador','supervisor','administrativo','escritorio');
 END;
@@ -165,7 +160,7 @@ REVOKE ALL ON FUNCTION public.cena_prog_projetos_agenda_validar() FROM PUBLIC, a
 -- ── RLS: só usuário autenticado com perfil da Programação; sem DELETE (cancelamento é lógico) ──
 ALTER TABLE public.prog_projetos_agenda ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.prog_projetos_agenda FORCE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.prog_projetos_agenda FROM PUBLIC, anon;
+REVOKE ALL ON TABLE public.prog_projetos_agenda FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.prog_projetos_agenda TO authenticated;
 GRANT ALL ON TABLE public.prog_projetos_agenda TO service_role;
 

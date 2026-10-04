@@ -32,6 +32,8 @@ ok('migration recarrega o cache do PostgREST', /NOTIFY pgrst, 'reload schema';/.
 ok('não mexe em composicao_dia / plpt / equipes_disp / TMA', !/composicao_dia|plpt_|equipes_disp|progTma/i.test(codigo));
 ok('sem DELETE / UPDATE de dados existentes', !/\b(DELETE FROM|UPDATE public\.)/i.test(codigo));
 ok('sem GRANT para anon', !/GRANT[^;]*\banon\b/i.test(mig));
+ok('permissão não usa e-mail do JWT', !/auth\.jwt\(\)/i.test(codigo));
+ok('REVOKE ALL também de authenticated antes do GRANT', /REVOKE ALL ON TABLE public\.prog_projetos_agenda FROM PUBLIC, anon, authenticated;/.test(codigo));
 
 const P1 = '11111111-1111-4111-8111-111111111111';
 const P2 = '22222222-2222-4222-8222-222222222222';
@@ -52,6 +54,8 @@ create function auth.uid() returns uuid language sql stable as $$ select nullif(
 create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
 grant usage on schema auth to anon, authenticated;
 grant usage on schema public to anon, authenticated;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
 create table public.usuarios_sistema (id uuid primary key default gen_random_uuid(), nome text, email text, perfil text,
   ativo boolean default true, auth_user_id uuid, deleted_at timestamptz);
 create table public.sot_projetos (id uuid primary key, contrato_id text, nome text, codigo_cliente text, deleted_at timestamptz);
@@ -147,6 +151,15 @@ const visInativo = await comoUsuario(U_INATIVO, 'ex@cena', nVis);
 ok('usuário inativo não vê nada', visInativo === 0);
 const visSemLogin = await comoUsuario('', '', nVis);
 ok('sem auth.uid() não vê nada', visSemLogin === 0);
+const visEmailGestor = await comoUsuario('ffffffff-ffff-4fff-8fff-ffffffffffff', 'gestor@cena', nVis);
+ok('conta Auth com e-mail do gestor mas outro UID não vê nada', visEmailGestor === 0, visEmailGestor);
+const insEmailGestor = await comoUsuario('ffffffff-ffff-4fff-8fff-ffffffffffff', 'gestor@cena', () => tenta(`insert into public.prog_projetos_agenda (projeto_id, data) values ($1, $2)`, [P2, depois]));
+ok('conta Auth com e-mail do gestor mas outro UID não agenda', insEmailGestor && insEmailGestor.code === '42501', insEmailGestor && insEmailGestor.message);
+const privA = await one(`select has_table_privilege('authenticated','public.prog_projetos_agenda','DELETE') d,
+  has_table_privilege('authenticated','public.prog_projetos_agenda','TRUNCATE') t,
+  has_table_privilege('authenticated','public.prog_projetos_agenda','SELECT') s,
+  has_table_privilege('anon','public.prog_projetos_agenda','SELECT') a`);
+ok('com privilégios padrão do Supabase: authenticated só SELECT/INSERT/UPDATE, anon nada', !privA.d && !privA.t && privA.s && !privA.a, privA);
 const delGestor = await comoUsuario(U_GESTOR, 'gestor@cena', () => tenta(`delete from public.prog_projetos_agenda where projeto_id = $1`, [P2]));
 ok('sem DELETE para authenticated (cancelamento é lógico)', delGestor && delGestor.code === '42501');
 await db.exec(`set role anon`);
