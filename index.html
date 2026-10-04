@@ -2229,12 +2229,13 @@ body.insp-campo-ativo #app-content-area {
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
-<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.201"></script>
-<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.201"></script>
-<script src="modules/projetos/jornada/jornada-state.js?v=8.1.201"></script>
-<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.201"></script>
-<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.201"></script>
-<script src="modules/projetos/jornada/jornada.js?v=8.1.201"></script>
+<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada-state.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.202"></script>
+<script src="modules/projetos/jornada/jornada.js?v=8.1.202"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios.js?v=8.1.166"></script>
@@ -45822,10 +45823,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.201',
+  numero: '8.1.202',
   data:   '04/10/2026',
-  build:  '20261004-1300',
+  build:  '20261004-1800',
   log: [
+    {v:'8.1.202', d:'04/10/2026', itens:[
+      'Jornada → Programação de Projetos: "Programar execução" e "Continuar execução" pedem a data (Hoje, Amanhã ou calendário; a data nunca é presumida) e enviam o projeto para PROJETOS A PROGRAMAR daquela data, aguardando equipe. A fila fica no banco (prog_projetos_agenda — migration 20261004200000, RLS para gestão/programação) e aparece para os outros usuários autorizados. Na Programação de Projetos, clicar no projeto e depois na equipe coloca o projeto em composicao_dia.projeto_ids da equipe pelo motor existente: fica EM COMPOSIÇÃO até a equipe ser confirmada e então PROGRAMADO. Mesmo projeto na mesma data não duplica; em outra data pergunta se mantém, altera ou adiciona a data. Corrige Auto Escalar e "+ projeto", que sobrescreviam os projetos já vinculados à equipe. Sem alteração na Programação TMA.',
+    ]},
     {v:'8.1.201', d:'04/10/2026', itens:[
       'Jornada de Projetos: corrige o deep link da próxima ação para aguardar a montagem da Programação de Projetos e selecionar corretamente contrato, data e projeto. Sem SQL. Sem alteração na Programação TMA.',
     ]},
@@ -80586,10 +80590,79 @@ function progProjetoCoreFindEquipe(eqId){
 }
 
 /** Persiste composição parcial — desconfirma; grava em composicao_dia. */
+function progProjetoCoreListaProjetos(raw){
+  var v = parseJsonField(raw, []);
+  return Array.isArray(v) ? v.filter(Boolean).map(String) : [];
+}
+
+/** Projetos já vinculados à equipe + projetos filtrados no topo; nunca apaga o que a equipe já tem. */
+function progProjetoCoreUniaoProjetos(atuais, extras){
+  var ids = progProjetoCoreListaProjetos(atuais);
+  progProjetoCoreListaProjetos(extras).forEach(function(id){ if(ids.indexOf(id)<0) ids.push(id); });
+  return ids;
+}
+
+/** Inclui/retira projetos da composição da equipe no dia. Lê a linha do banco antes de gravar para não
+ * sobrescrever projetos gravados por outro usuário. Não confirma e não mexe nos colaboradores. */
+function progProjetoCoreAlterarProjetosEquipe(eqId, data, mud){
+  mud = mud || {};
+  var add = (mud.add || []).filter(Boolean).map(String);
+  var rem = (mud.remove || []).filter(Boolean).map(String);
+  var comp = progFindCompDia(eqId, data);
+  function aplicar(base){
+    var ids = progProjetoCoreListaProjetos(base).filter(function(id){ return rem.indexOf(id)<0; });
+    add.forEach(function(id){ if(ids.indexOf(id)<0) ids.push(id); });
+    return ids;
+  }
+  if(DEMO){
+    var txtDemo = JSON.stringify(aplicar(comp ? comp.projeto_ids : []));
+    if(comp) comp.projeto_ids = txtDemo;
+    else composicao_dia.push({id:'local_pp_'+eqId+'_'+data, equipe_id:eqId, data:data, colaborador_ids:'[]', projeto_ids:txtDemo, turno:'Manha', confirmada:false, _local:true});
+    return Promise.resolve(true);
+  }
+  var real = comp && comp.id && !comp._local && !String(comp.id).startsWith('local_');
+  var filtro = real ? ['id=eq.'+comp.id] : ['equipe_id=eq.'+eqId, 'data=eq.'+data];
+  return sbFetch('composicao_dia', {filters: filtro.concat(['deleted_at=is.null']), limit: 1})
+    .then(function(rows){
+      if(rows === null) return false;
+      var srv = rows[0] || null;
+      if(srv){
+        var txt = JSON.stringify(aplicar(srv.projeto_ids));
+        return sbUpdate('composicao_dia', {projeto_ids: txt}, 'id=eq.'+srv.id, {linhas: true}).then(function(r){
+          if(!Array.isArray(r) || !r.length) return false;
+          var alvo = comp;
+          if(!alvo){
+            alvo = Object.assign({}, srv);
+            alvo.colaborador_ids = parseJsonField(srv.colaborador_ids, []);
+            composicao_dia.push(alvo);
+          }
+          alvo.id = srv.id;
+          alvo._local = false;
+          alvo.projeto_ids = txt;
+          return true;
+        });
+      }
+      if(!add.length){
+        if(comp) comp.projeto_ids = JSON.stringify(aplicar(comp.projeto_ids));
+        return true;
+      }
+      var colabs = comp ? parseJsonField(comp.colaborador_ids, []) : [];
+      var txtN = JSON.stringify(aplicar(comp ? comp.projeto_ids : []));
+      return sbInsert('composicao_dia', {equipe_id: eqId, data: data, colaborador_ids: colabs, projeto_ids: txtN, turno: 'Manha', confirmada: false})
+        .then(function(r){
+          if(!r || !r[0] || !r[0].id) return false;
+          if(comp){ comp.id = r[0].id; comp._local = false; comp.projeto_ids = txtN; comp.confirmada = false; }
+          else composicao_dia.push({id: r[0].id, equipe_id: eqId, data: data, colaborador_ids: colabs, projeto_ids: txtN, turno: 'Manha', confirmada: false});
+          return true;
+        });
+    })
+    .catch(function(e){ console.error('[progProjetoCore] projetos da equipe', e); return false; });
+}
+
 function progProjetoCorePersistirComposicao(eqId, data, ids){
   var comp = progFindCompDia(eqId, data);
   var payloadIds = Array.isArray(ids) ? ids : parseJsonField(ids, []);
-  var projetoIds = JSON.stringify(_pp.projetoIds || []);
+  var projetoIds = JSON.stringify(progProjetoCoreUniaoProjetos(comp ? comp.projeto_ids : [], _pp.projetoIds || []));
   if(comp){
     comp.colaborador_ids = JSON.stringify(payloadIds);
     comp.projeto_ids = projetoIds;
@@ -80740,6 +80813,7 @@ function ppSetAba(aba){
   if(aba==='programacao') progProjRenderQuadro && progProjRenderQuadro();
   if(aba==='requisicoes') plptRenderRequisicoes();
   if(aba==='obras')       _ppRenderObras();
+  if(aba!=='programacao') ppFilaRender(progProjGetData(), progProjGetCid());
 }
 
 function ppRenderDashboard(){
@@ -81357,6 +81431,7 @@ function progProjAtualizarQuadro(){
   _progStatusDateCache = null;
   _progVeiculosDateCache = null;
   ppOpsInvalidar();
+  ppFilaInvalidar();
   var btn = document.querySelector('[onclick="progProjAtualizarQuadro()"]');
   if(btn){ btn.textContent = '⏳ Atualizando...'; btn.disabled = true; }
   var data = progProjGetData();
@@ -81636,6 +81711,7 @@ function progProjRenderQuadro(){
 
 function _progProjRenderQuadroInterno(data, cid){
   var wrap = document.getElementById('pp-quadro'); if(!wrap) return;
+  ppFilaRender(data, cid);
   // Âncora de topo para scroll
   var _topoAnchor = '<div id="pp-sec-topo"></div>';
 
@@ -82039,6 +82115,10 @@ function progProjetoCoreRenderEquipeRow(eq, data, cid, maxSlots){
   var ppPH='<div style="display:flex;flex-direction:column;gap:1px">'
     +ppPIds.map(function(pid){var p=ppProjs.find(function(x){return x.id===pid;});return p?'<div style="display:flex;align-items:center;gap:2px;background:#EBF4FD;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin:1px 0">'+p.nome+'<span onclick="ppEqRemoverProjeto(\''+eq.id+'\',\''+pid+'\')" style="cursor:pointer;color:#A32D2D;margin-left:3px">&#x2715;</span></div>':'';}).join('')
     +'<div onclick="ppEqSelecionarProjetos(\''+eq.id+'\')" style="cursor:pointer;background:#f5f5f3;border:.5px dashed #bbb;border-radius:4px;padding:2px 7px;font-size:10px;color:#888;margin-top:2px;display:inline-block">+ projeto</div></div>';
+  if(_pp.filaSel && !(emFolgaEq&&!heAuth) && ppPIds.indexOf(_pp.filaSel)<0){
+    ppPH = ppPH.slice(0, -'</div>'.length)
+      +'<div onclick="ppFilaColocarNaEquipe(\''+eq.id+'\')" style="cursor:pointer;background:#185FA5;color:#fff;border-radius:4px;padding:5px 9px;font-size:11px;font-weight:700;margin-top:3px;display:inline-block">＋ Colocar aqui</div></div>';
+  }
   var addCol=(!confirmada&&numSlots<7)
     ?'<td style="padding:4px 4px;vertical-align:middle;text-align:center"><button onclick="ppAdicionarSlot(\''+eq.id+'\')" title="T'+(numSlots+1)+'" style="width:26px;height:26px;border-radius:50%;border:2px dashed #185FA5;background:#EBF4FD;color:#185FA5;cursor:pointer;font-size:16px;font-weight:700;line-height:1;display:inline-flex;align-items:center;justify-content:center">+</button></td>'
     :'<td style="width:30px"></td>';
@@ -82073,6 +82153,221 @@ function progProjetoCoreRenderEquipeRow(eq, data, cid, maxSlots){
         :'<button class="btn btn-sm" onclick="ppAutoEscalarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">Auto Escalar</button>'
          +'<button class="btn btn-sm btn-pri" onclick="ppSalvarEquipe(\''+eq.id+'\')" style="font-size:10px;padding:2px 6px;white-space:nowrap">💾 Salvar</button>'
     )+'</td></tr>';
+}
+
+// ══════════════════════════════════════════════════════════════
+// FILA "PROJETOS A PROGRAMAR" (8.1.202) — prog_projetos_agenda
+// A fila só guarda projeto + data. Equipe entra pelo motor (composicao_dia.projeto_ids);
+// EM COMPOSIÇÃO / PROGRAMADO vêm da composição (confirmada), nunca da fila.
+// ══════════════════════════════════════════════════════════════
+var _ppFilaCache = {};
+var PP_FILA_TTL_MS = 30000;
+
+function ppFilaInvalidar(){ _ppFilaCache = {}; }
+
+function ppFilaHosts(){
+  var hosts = [];
+  var quadro = document.getElementById('pp-quadro');
+  var host = document.getElementById('pp-fila');
+  if(!host && quadro && quadro.parentNode){
+    host = document.createElement('div');
+    host.id = 'pp-fila';
+    quadro.parentNode.insertBefore(host, quadro);
+  }
+  if(host) hosts.push(host);
+  var mob = document.getElementById('pp-fila-mob');
+  if(mob) hosts.push(mob);
+  return hosts;
+}
+
+function ppFilaEsconder(hosts){
+  hosts.forEach(function(h){ h.innerHTML = ''; h.style.display = 'none'; });
+}
+
+function ppFilaRender(data, cid){
+  var hosts = ppFilaHosts();
+  if(!hosts.length) return;
+  data = String(data || '').split('T')[0];
+  if(!cid && _ppMobileAtivo) cid = _pp.filaCidMobile || '';
+  if(_ppAba !== 'programacao' || !cid || !data || typeof progAgendaListarData !== 'function'){
+    ppFilaEsconder(hosts);
+    return;
+  }
+  if(usuarioLogado && typeof progAgendaPerfilPode === 'function' && !progAgendaPerfilPode(usuarioLogado)){
+    ppFilaEsconder(hosts);
+    return;
+  }
+  hosts.forEach(function(h){ h.style.display = ''; });
+  _pp.filaData = data;
+  _pp.filaCid = cid;
+  var chave = cid + '|' + data;
+  var c = _ppFilaCache[chave];
+  if(c && c.slot && !c.carregando && (Date.now() - c.em) < PP_FILA_TTL_MS){
+    ppFilaPintar(hosts, data, cid, c.slot);
+    return;
+  }
+  if(c && c.slot) ppFilaPintar(hosts, data, cid, c.slot);
+  else hosts.forEach(function(h){ h.innerHTML = '<div style="padding:.6rem 1rem;margin-bottom:.75rem;border:.5px solid #e0dfd8;border-radius:10px;background:#fff;font-size:12px;color:#888">Carregando projetos a programar…</div>'; });
+  if(c && c.carregando) return;
+  _ppFilaCache[chave] = {slot: c ? c.slot : null, em: 0, carregando: true};
+  progAgendaListarData(cid, data).then(function(slot){
+    _ppFilaCache[chave] = {slot: slot, em: Date.now(), carregando: false};
+    if(_pp.filaData === data && _pp.filaCid === cid) ppFilaPintar(ppFilaHosts(), data, cid, slot);
+  });
+}
+
+function ppFilaEquipesElegiveis(cid, data, pid){
+  return progProjetoCoreGetEquipes(cid, {}).map(function(eq){
+    var folga = equipeEstaEmFolga(eq, data) && !(_pp._horaExtraAuth && _pp._horaExtraAuth[eq.id]);
+    var comp = progFindCompDia(eq.id, data);
+    var projs = comp ? progProjetoCoreListaProjetos(comp.projeto_ids) : [];
+    return {
+      eq: eq,
+      elegivel: !folga,
+      motivo: folga ? 'Folga pela escala — autorize HE no quadro' : '',
+      confirmada: progCompEstaProgramada(comp),
+      emComposicao: !!comp && !progCompEstaProgramada(comp),
+      qtdProjetos: projs.length,
+      jaTem: !!pid && projs.indexOf(String(pid)) >= 0
+    };
+  }).sort(function(a, b){
+    if(a.elegivel !== b.elegivel) return a.elegivel ? -1 : 1;
+    return String(a.eq.nome_equipe || '').localeCompare(String(b.eq.nome_equipe || ''));
+  });
+}
+
+function ppFilaEsc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+
+function ppFilaPintar(hosts, data, cid, slot){
+  var hoje = dataHojeLocal();
+  var html;
+  var caixa = 'padding:.75rem 1rem;margin-bottom:.75rem;border:.5px solid #e0dfd8;border-radius:10px;background:#fff';
+  if(!slot || !slot.known){
+    html = '<div style="'+caixa+';border-color:#F5C4C4;background:#FFF5F5;font-size:12px;color:#A32D2D">⚠ Não foi possível ler os projetos a programar deste dia. Nenhum projeto foi marcado como programado. O quadro das equipes segue normal.</div>';
+    hosts.forEach(function(h){ h.innerHTML = html; });
+    return;
+  }
+  var eqIds = progProjetoCoreGetEquipes(cid, {}).map(function(e){ return e.id; });
+  var fila = progAgendaMontarFila(slot.rows, composicao_dia, data, eqIds);
+  var aProg = fila.aProgramar;
+  if(_pp.filaSel && !aProg.some(function(r){ return String(r.projeto_id) === String(_pp.filaSel); })) _pp.filaSel = null;
+  var passado = data < hoje;
+
+  var lista = aProg.map(function(r){
+    var pid = String(r.projeto_id);
+    var sel = _pp.filaSel === pid;
+    var dest = _pp.filaDestaque && String(_pp.filaDestaque) === pid;
+    var borda = sel ? '#185FA5' : (dest ? '#533AB7' : '#e0dfd8');
+    var badge = passado
+      ? '<span style="background:#FCEBEB;color:#A32D2D;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap">NÃO PROGRAMADO · data passada</span>'
+      : '<span style="background:#EBF4FD;color:#185FA5;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap">A PROGRAMAR · AGUARDANDO EQUIPE</span>';
+    return '<div '+(passado ? '' : 'onclick="ppFilaSelecionar(\''+pid+'\')" ')+'style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;margin-top:6px;border:1.5px solid '+borda+';border-radius:8px;background:'+(sel ? '#EBF4FD' : '#fff')+';'+(passado ? '' : 'cursor:pointer;')+'min-height:44px">'
+      +'<span style="flex:1;min-width:160px;font-size:13px;font-weight:600">'+ppFilaEsc(progAgendaNomeProjeto(pid))+'</span>'
+      +badge
+      +(passado ? '' : '<span style="font-size:11px;color:#185FA5;font-weight:700;white-space:nowrap">'+(sel ? '✕ Cancelar seleção' : 'Escolher equipe ▸')+'</span>')
+      +'</div>';
+  }).join('');
+
+  var selHtml = '';
+  if(_pp.filaSel && !passado){
+    var eqs = ppFilaEquipesElegiveis(cid, data, _pp.filaSel);
+    selHtml = '<div style="margin-top:8px;padding:10px 12px;border:1.5px solid #185FA5;border-radius:8px;background:#F5F9FE">'
+      +'<div style="font-size:13px;font-weight:700;color:#185FA5">Selecione a equipe para este projeto.</div>'
+      +'<div style="font-size:12px;color:#555;margin:2px 0 8px">'+ppFilaEsc(progAgendaNomeProjeto(_pp.filaSel))+' · '+ppFilaEsc(progAgendaDataBR(data))+'</div>'
+      +(eqs.length ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px">'
+        +eqs.map(function(x){
+          var sub = !x.elegivel ? x.motivo
+            : (x.confirmada ? '✓ Programada'+(x.qtdProjetos ? ' · '+x.qtdProjetos+' projeto(s)' : '')
+            : (x.emComposicao ? 'Em composição'+(x.qtdProjetos ? ' · '+x.qtdProjetos+' projeto(s)' : '') : 'Sem composição no dia'));
+          return '<button type="button" '+(x.elegivel ? 'onclick="ppFilaColocarNaEquipe(\''+x.eq.id+'\')"' : 'disabled')+' style="text-align:left;padding:10px;border-radius:8px;min-height:48px;font-size:13px;font-weight:700;cursor:'+(x.elegivel ? 'pointer' : 'not-allowed')+';border:1.5px solid '+(x.elegivel ? '#185FA5' : '#e0dfd8')+';background:'+(x.elegivel ? '#fff' : '#f5f5f3')+';color:'+(x.elegivel ? '#1a1a18' : '#aaa')+'">'
+            +ppFilaEsc(x.eq.nome_equipe || 'Equipe')
+            +'<div style="font-size:10px;font-weight:500;color:'+(x.elegivel ? '#666' : '#aaa')+';margin-top:2px">'+ppFilaEsc(sub)+'</div></button>';
+        }).join('')+'</div>'
+        : '<div style="font-size:12px;color:#A32D2D">Nenhuma equipe ativa neste contrato.</div>')
+      +'<button type="button" class="btn" onclick="ppFilaCancelarSelecao()" style="margin-top:8px;font-size:12px">Cancelar</button>'
+      +'</div>';
+  }
+
+  var progs = fila.programados.map(function(p){
+    var conf = p.confirmada;
+    return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;margin-top:4px;border-radius:6px;background:'+(conf ? '#EAF3DE' : '#FEF3E2')+'">'
+      +'<span style="flex:1;min-width:160px;font-size:12px;font-weight:600;color:'+(conf ? '#3B6D11' : '#854F0B')+'">'+(conf ? '✓ ' : '⏳ ')+ppFilaEsc(progAgendaNomeProjeto(p.projeto_id))+' — '+ppFilaEsc(progAgendaNomeEquipe(p.equipe_id))+'</span>'
+      +'<span style="font-size:10px;font-weight:700;color:'+(conf ? '#3B6D11' : '#854F0B')+';white-space:nowrap">'+(conf ? 'PROGRAMADO' : 'EM COMPOSIÇÃO — confirme a equipe (💾 Salvar)')+'</span>'
+      +'</div>';
+  }).join('');
+
+  html = '<div id="pp-sec-fila" style="'+caixa+'">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:13px;font-weight:700">📋 PROJETOS A PROGRAMAR — '+ppFilaEsc(progAgendaDataBR(data))+' <span style="color:#185FA5">('+aProg.length+')</span></span>'
+    +'<span style="font-size:11px;color:#888">Clique no projeto e depois na equipe.</span>'
+    +'</div>'
+    +(aProg.length ? lista : '<div style="font-size:12px;color:#888;margin-top:6px">Nenhum projeto aguardando equipe neste dia.</div>')
+    +selHtml
+    +'<div style="margin-top:10px;font-size:12px;font-weight:700;color:#3B6D11">✓ PROGRAMADOS / EM COMPOSIÇÃO ('+fila.programados.length+')</div>'
+    +(fila.programados.length ? progs : '<div style="font-size:12px;color:#888;margin-top:4px">Nenhum projeto nas equipes deste dia.</div>')
+    +'</div>';
+  hosts.forEach(function(h){ h.innerHTML = html; });
+}
+
+function ppFilaRepintar(){
+  progProjRenderQuadro();
+  if(_ppMobileAtivo) ppFilaRender(_pp.filaData || progProjGetData(), _pp.filaCid || progProjGetCid());
+}
+
+function ppFilaSelecionar(pid){
+  var data = _pp.filaData || progProjGetData();
+  if(data < dataHojeLocal()){ progShowToast('⛔ Data passada — não é possível programar.','erro'); return; }
+  _pp.filaSel = (_pp.filaSel === String(pid)) ? null : String(pid);
+  ppFilaRepintar();
+}
+
+function ppFilaCancelarSelecao(){
+  _pp.filaSel = null;
+  ppFilaRepintar();
+}
+
+/** Equipe do projeto no dia pela composição em memória; a fila acompanha (ALOCADO ou de volta a AGUARDANDO). */
+function ppFilaSincronizarProjeto(pid, data){
+  if(typeof progAgendaSincronizarAlocacao !== 'function') return Promise.resolve(false);
+  var d = String(data || '').split('T')[0];
+  var comp = (composicao_dia || []).find(function(c){
+    return c && !c.deleted_at && String(c.data || '').split('T')[0] === d && progProjetoCoreListaProjetos(c.projeto_ids).indexOf(String(pid)) >= 0;
+  });
+  return progAgendaSincronizarAlocacao(pid, d, comp ? comp.equipe_id : null);
+}
+
+function ppFilaColocarNaEquipe(eqId){
+  var pid = _pp.filaSel;
+  if(!pid) return;
+  var data = _pp.filaData || progProjGetData();
+  var cid = _pp.filaCid || progProjGetCid();
+  if(data < dataHojeLocal()){ progShowToast('⛔ Data passada — não é possível programar.','erro'); return; }
+  var info = ppFilaEquipesElegiveis(cid, data, pid).find(function(x){ return String(x.eq.id) === String(eqId); });
+  if(!info){ progShowToast('⚠ Equipe não pertence a este contrato.','erro'); return; }
+  if(!info.elegivel){ progShowToast('⛔ '+info.motivo,'erro'); return; }
+  var nomeEq = info.eq.nome_equipe || 'Equipe';
+  if(info.confirmada && !confirm(nomeEq+' já está programada (confirmada) em '+progAgendaDataBR(data)+'.\n\nIncluir o projeto nessa programação?')) return;
+  if(_pp._filaGravando) return;
+  _pp._filaGravando = true;
+  progShowToast('⏳ Colocando o projeto na equipe…');
+  progProjetoCoreAlterarProjetosEquipe(eqId, data, {add: [pid]}).then(function(ok){
+    if(!ok){
+      progShowToast('⚠ Não foi possível colocar o projeto na equipe. Nada foi alterado.','erro');
+      return;
+    }
+    _pp.filaSel = null;
+    return ppFilaSincronizarProjeto(pid, data).then(function(){
+      ppFilaInvalidar();
+      ppFilaRepintar();
+      progShowToast(info.confirmada
+        ? '✅ Projeto incluído na programação de '+nomeEq+'.'
+        : '✅ Projeto EM COMPOSIÇÃO — '+nomeEq+'. Confirme a equipe (💾 Salvar) para ficar PROGRAMADO.');
+    });
+  }).then(function(){ _pp._filaGravando = false; }, function(){ _pp._filaGravando = false; });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -82127,10 +82422,13 @@ function ppMobileRenderLista(){
     +'</div>'
     +'<input id="pp-mob-busca" placeholder="🔍 Buscar equipe..." value="'+escHtml(buscaAtual)+'" '
     +'style="width:100%;padding:10px;border:.5px solid #e0dfd8;border-radius:8px;font-size:14px;margin-bottom:8px;box-sizing:border-box">'
+    +'<div id="pp-fila-mob" style="margin-bottom:8px"></div>'
     +'<div id="pp-mob-lista"></div>'
     +'</div>';
 
   mobile.innerHTML = html;
+  _pp.filaCidMobile = cid || '';
+  ppFilaRender(data, cid);
 
   // Eventos
   var btnPrev = document.getElementById('pp-mob-prev');
@@ -83166,30 +83464,28 @@ function ppEqSelecionarProjetos(eqId){
   if(btn) btn.onclick=function(){
     var cbs=document.querySelectorAll('#modal-area .pp-eq-proj-cb:checked');
     var novos=Array.from(cbs).map(function(cb){return cb.value;});
-    if(!comp){
-      comp={id:'local_'+eqId+'_'+data,equipe_id:eqId,data:data,
-        colaborador_ids:'[null,null,null]',projeto_ids:JSON.stringify(novos),
-        turno:'Manha',confirmada:false,_local:true};
-      composicao_dia.push(comp);
-    } else {
-      comp.projeto_ids=JSON.stringify(novos);
-    }
-    if(!DEMO&&comp.id&&!comp._local)
-      sbUpdate('composicao_dia',{projeto_ids:JSON.stringify(novos)},'id=eq.'+comp.id);
+    var add=novos.filter(function(id){return selecionados.indexOf(id)<0;});
+    var rem=selecionados.filter(function(id){return novos.indexOf(id)<0;});
     closeModal();
-    progProjRenderQuadro();
+    if(!add.length && !rem.length) return;
+    progProjetoCoreAlterarProjetosEquipe(eqId, data, {add:add, remove:rem}).then(function(ok){
+      if(!ok){ progShowToast('⚠ Não foi possível salvar os projetos da equipe. Nada foi alterado.','erro'); progProjRenderQuadro(); return; }
+      add.concat(rem).forEach(function(pid){ ppFilaSincronizarProjeto(pid, data); });
+      ppFilaInvalidar();
+      progProjRenderQuadro();
+    });
   };
 }
 
 function ppEqRemoverProjeto(eqId, projetoId){
   var data=progProjGetData();
-  var comp=composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
-  if(!comp) return;
-  var ids=[]; try{ids=JSON.parse(comp.projeto_ids||'[]');}catch(e){}
-  ids=ids.filter(function(id){return id!==projetoId;});
-  comp.projeto_ids=JSON.stringify(ids);
-  if(!DEMO&&!comp._local)sbUpdate('composicao_dia',{projeto_ids:JSON.stringify(ids)},'id=eq.'+comp.id);
-  progProjRenderQuadro();
+  if(!progFindCompDia(eqId, data)) return;
+  progProjetoCoreAlterarProjetosEquipe(eqId, data, {remove:[projetoId]}).then(function(ok){
+    if(!ok){ progShowToast('⚠ Não foi possível retirar o projeto da equipe. Nada foi alterado.','erro'); return; }
+    ppFilaSincronizarProjeto(projetoId, data);
+    ppFilaInvalidar();
+    progProjRenderQuadro();
+  });
 }
 
 function ppEnviarWhatsApp(eqId){

@@ -23,6 +23,7 @@
       programacao: jornadaSlot(c.programacao),
       requisicoes: jornadaSlot(c.requisicoes),
       adicionais: jornadaSlot(c.adicionais),
+      agenda: jornadaSlot(c.agenda),
       hoje: jornadaHojeIso(c.hoje)
     };
   }
@@ -87,6 +88,51 @@
     if(classe.semData) return {estado:'em_andamento', texto:'Programação sem data, sem programação de hoje ou futura'};
     if(classe.rascunho) return {estado:'em_andamento', texto:'Composição ainda não confirmada. No quadro isso não é escala programada.'};
     return {estado:'nao_iniciada', texto:'Sem programação registrada'};
+  }
+
+  function dataBR(iso){
+    var p = String(iso||'').split('-');
+    return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : '—';
+  }
+
+  function nomeEquipe(id){
+    var lista = Array.isArray(global.equipes) ? global.equipes : [];
+    for(var i=0;i<lista.length;i++){
+      if(lista[i] && String(lista[i].id)===String(id)) return lista[i].nome_equipe || lista[i].codigo || 'Equipe';
+    }
+    return 'Equipe não carregada';
+  }
+
+  /** Texto da situação de hoje em diante: composição confirmada, composição em aberto ou data escolhida sem equipe.
+   * Só descreve; a classificação e a próxima ação continuam as de jornadaClassificarProgramacao. */
+  function jornadaDetalheProgramacao(prog, agenda, hoje){
+    var hojeIso = jornadaHojeIso(hoje);
+    var comps = (prog && prog.known ? prog.rows : []).filter(function(r){
+      return r && !r.deleted_at && jornadaLinhaEhComposicao(r) && jornadaDataLinha(r) >= hojeIso;
+    }).sort(function(a,b){ return jornadaDataLinha(a) < jornadaDataLinha(b) ? -1 : 1; });
+    var conf = comps.filter(jornadaProgramacaoConfirmada);
+    if(conf.length){
+      var c = conf[0];
+      return {tipo:'programado', data:jornadaDataLinha(c), equipe_id:c.equipe_id,
+        texto:'Execução programada para '+dataBR(jornadaDataLinha(c))+' — '+nomeEquipe(c.equipe_id)};
+    }
+    if(comps.length){
+      var r = comps[0];
+      return {tipo:'em_composicao', data:jornadaDataLinha(r), equipe_id:r.equipe_id,
+        texto:'Programação em composição — '+nomeEquipe(r.equipe_id)+' ('+dataBR(jornadaDataLinha(r))+'), composição não confirmada'};
+    }
+    var fila = (agenda && agenda.known ? agenda.rows : []).filter(function(a){
+      if(!a || a.deleted_at || String(a.status||'')==='CANCELADO') return false;
+      var d = jornadaDataLinha(a);
+      return d && d >= hojeIso;
+    }).sort(function(a,b){ return jornadaDataLinha(a) < jornadaDataLinha(b) ? -1 : 1; });
+    if(fila.length){
+      var d0 = jornadaDataLinha(fila[0]);
+      var outras = fila.length - 1;
+      return {tipo:'aguardando_equipe', data:d0, equipe_id:null,
+        texto:'Execução aguardando definição de equipe — '+dataBR(d0)+(outras ? ' (+'+outras+' data(s))' : '')};
+    }
+    return null;
   }
 
   function num(v){ var n = Number(v); return isFinite(n) ? n : 0; }
@@ -257,7 +303,8 @@
       adicionaisPendentes: ctx.adicionais.known ? adicionaisPend : null,
       resumo: resumo,
       contexto: ctx,
-      programacaoClasse: classeProg
+      programacaoClasse: classeProg,
+      programacaoDetalhe: jornadaDetalheProgramacao(prog, ctx.agenda, ctx.hoje)
     };
   }
 
@@ -266,5 +313,6 @@
   global.jornadaResumoAtividades = jornadaResumoAtividades;
   global.jornadaProgramacaoConfirmada = jornadaProgramacaoConfirmada;
   global.jornadaClassificarProgramacao = jornadaClassificarProgramacao;
+  global.jornadaDetalheProgramacao = jornadaDetalheProgramacao;
   global.jornadaDerivarEstado = jornadaDerivarEstado;
 })(typeof window!=='undefined' ? window : globalThis);

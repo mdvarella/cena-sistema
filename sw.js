@@ -5,7 +5,7 @@
 // IndexedDB (fila Portaria) é independente deste cache.
 // ══════════════════════════════════════════════════════════════
 
-const SW_VERSION   = 'cena-8.1.201';
+const SW_VERSION   = 'cena-8.1.202';
 const CACHE_STATIC = SW_VERSION + '-static';
 
 const BYPASS_HOSTS = [
@@ -24,6 +24,7 @@ const PRECACHE = [
   './portaria-camera.js',
   './sesmt-alm-shell.js',
   './prog-projetos-shell.js',
+  './modules/projetos/agenda/prog-projetos-agenda.js',
   './modules/projetos/jornada/jornada-profiles.js',
   './modules/projetos/jornada/jornada-resolver.js',
   './modules/projetos/jornada/jornada-state.js',

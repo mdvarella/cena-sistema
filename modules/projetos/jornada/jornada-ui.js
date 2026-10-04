@@ -70,6 +70,13 @@
         +linha({estado:estado.asBuilt.estado, label:'AS BUILT', texto:estado.asBuilt.texto})
         +'</div>';
     }
+    var detalhe = estado.programacaoDetalhe;
+    global._jornadaDetalheProgramacao = detalhe || null;
+    var detalheHtml = '';
+    if(detalhe){
+      var corDet = detalhe.tipo==='programado' ? ['#EAF3DE','#3B6D11','✅'] : (detalhe.tipo==='em_composicao' ? ['#FEF3E2','#854F0B','🟡'] : ['#EBF4FD','#185FA5','⏳']);
+      detalheHtml = '<div style="margin-top:8px;font-size:12px;font-weight:600;background:'+corDet[0]+';color:'+corDet[1]+';border-radius:6px;padding:6px 8px">'+corDet[2]+' '+esc(detalhe.texto)+'</div>';
+    }
     var adicionais = '';
     if(estado.adicionaisPendentes){
       adicionais = '<div style="margin-top:8px;font-size:12px;color:#854F0B">⚠ '+estado.adicionaisPendentes+' adicional(is) pendente(s)</div>';
@@ -89,6 +96,7 @@
       +'<div style="margin-top:8px;font-size:12px">Execução geral: <b>'+esc(pctTxt)+'</b></div>'
       +'<div style="margin-top:4px;font-size:12px;color:#666">Status administrativo atual: <b>'+esc(estado.statusAdministrativo||'—')+'</b></div>'
       +fases
+      +detalheHtml
       +parciais
       +asBuilt
       +adicionais

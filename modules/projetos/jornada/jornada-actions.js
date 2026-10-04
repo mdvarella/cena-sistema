@@ -1,5 +1,5 @@
 /* Jornada de Projetos — próxima ação e navegação (Fase 1).
- * Não grava. Cada ação só abre uma tela que já existe. */
+ * Não grava. Cada ação abre uma tela que já existe; programar pede a data (módulo agenda). */
 (function(global){
   'use strict';
 
@@ -104,15 +104,19 @@
     return acao('validar_encerramento','Processo administrativo específico a validar','aguardando','As etapas comuns visíveis não fecham a obra. A NF de uma parcial não conclui o projeto.', null, 20);
   }
 
-  function jornadaDataHoje(){
-    if(typeof global.dataHojeLocal==='function') return global.dataHojeLocal();
-    var d = new Date();
-    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  function jornadaDataValida(v){
+    var s = String(v||'').split('T')[0];
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '';
   }
 
-  function jornadaAbrirProgramacao(projeto){
+  /** Abre a Programação de Projetos no contrato e na data escolhida. Sem data não abre: a data nunca é presumida. */
+  function jornadaAbrirProgramacao(projeto, dataEscolhida){
     if(!projeto) return;
-    var data = jornadaDataHoje();
+    var data = jornadaDataValida(dataEscolhida);
+    if(!data){
+      if(typeof global.progAgendaPedirData==='function') global.progAgendaPedirData(projeto);
+      return;
+    }
     if(typeof global.showPage==='function') global.showPage('programacao-projetos');
     var tentativas = 0;
     var pintou = false;
@@ -120,7 +124,7 @@
       if(global._pp){
         global._pp.cid = projeto.contrato_id || '';
         global._pp.data = data;
-        global._pp.projetoIds = projeto.id ? [projeto.id] : [];
+        global._pp.filaDestaque = projeto.id || null;
       }
       var sel = document.getElementById('pp-cont');
       var lista = document.getElementById('pp-proj-lista');
@@ -136,6 +140,7 @@
       if(typeof global.progProjAtualizarProjLista==='function') global.progProjAtualizarProjLista();
       if(pintou) return;
       pintou = true;
+      if(typeof global.ppFilaInvalidar==='function') global.ppFilaInvalidar();
       if(typeof global.progProjAtualizarPillsTipo==='function') global.progProjAtualizarPillsTipo();
       if(typeof global.progProjCarregarStatus==='function') global.progProjCarregarStatus(data);
       if(typeof global.progProjCarregarStatusBanco==='function'){
@@ -156,7 +161,8 @@
       if(!acaoAtual || !projeto) return;
       var id = acaoAtual.id;
       if(id==='importar_lista' && typeof global.sotImportarAtividades==='function') global.sotImportarAtividades(projeto.id);
-      else if((id==='programar_execucao' || id==='programar_proxima' || id==='continuar_execucao') && typeof global.jornadaAbrirProgramacao==='function') global.jornadaAbrirProgramacao(projeto);
+      else if((id==='programar_execucao' || id==='programar_proxima' || id==='continuar_execucao') && typeof global.progAgendaPedirData==='function') global.progAgendaPedirData(projeto);
+      else if(id==='aguardar_execucao' && global._jornadaDetalheProgramacao && global._jornadaDetalheProgramacao.data && typeof global.jornadaAbrirProgramacao==='function') global.jornadaAbrirProgramacao(projeto, global._jornadaDetalheProgramacao.data);
       else if(id==='criar_requisicao' && typeof global.sotMostrarTab==='function') global.sotMostrarTab('reserva');
       else if((id==='criar_parcial' || id==='avancar_medicao' || id==='aguardar_validacao' || id==='emitir_nf') && typeof global.sotMostrarTab==='function') global.sotMostrarTab('medicao');
       else if(id==='ver_as_built' && typeof global.sotMostrarTab==='function') global.sotMostrarTab('documentos');

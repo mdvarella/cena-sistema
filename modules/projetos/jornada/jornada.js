@@ -2,6 +2,7 @@
  * Lê o que o detalhe já carregou e busca, só com SELECT, programação, requisição e adicionais.
  * Programação: plpt_prog_projetos (com a data do dia) ou composicao_dia confirmada.
  * Composição apagada, não confirmada ou só histórica não vira programação de hoje/futura.
+ * prog_projetos_agenda (data escolhida, sem equipe) só detalha o texto; não programa.
  * Erro aqui não segue para as outras abas. */
 (function(global){
   'use strict';
@@ -26,16 +27,18 @@
       medicoes: slotMemoria(global.sot_medicoes),
       programacao: {loaded:false, known:false, rows:null},
       requisicoes: {loaded:false, known:false, rows:null},
-      adicionais: {loaded:false, known:false, rows:null}
+      adicionais: {loaded:false, known:false, rows:null},
+      agenda: {loaded:false, known:false, rows:null}
     };
   }
 
-  function lerTabela(table, filters, select){
+  function lerTabela(table, filters, select, requireAuth){
     if(typeof global.sbFetch!=='function'){
       return Promise.resolve({loaded:false, known:false, rows:null});
     }
     var opts = {filters:filters, limit:500};
     if(select) opts.select = select;
+    if(requireAuth) opts.requireAuth = true;
     return Promise.resolve(global.sbFetch(table, opts)).then(function(rows){
       if(!Array.isArray(rows)) return {loaded:true, known:false, rows:null};
       return {loaded:true, known:true, rows:rows};
@@ -124,23 +127,40 @@
     return {loaded:true, known:true, rows:rows};
   }
 
+  function hojeIso(){
+    if(typeof global.dataHojeLocal==='function') return String(global.dataHojeLocal()||'').split('T')[0];
+    var d = new Date();
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+
+  /** Datas escolhidas para a execução ainda sem equipe (prog_projetos_agenda). Não conta como programação. */
+  function consultarAgenda(id){
+    var uid = uuidDe(id);
+    if(!uid) return Promise.resolve({loaded:true, known:false, rows:null});
+    return lerTabela('prog_projetos_agenda',
+      ['projeto_id=eq.'+uid, 'deleted_at=is.null', 'status=neq.CANCELADO', 'data=gte.'+hojeIso()],
+      'id,projeto_id,data,status,equipe_id', true);
+  }
+
   function jornadaCarregarExtras(projetoId){
     var id = String(projetoId||'');
     if(global.DEMO){
       var vazio = {loaded:true, known:true, rows:[]};
       var mem = Array.isArray(global.composicao_dia) ? programacaoNaMemoria(id) : vazio;
-      return Promise.resolve({programacao:mem, requisicoes:vazio, adicionais:vazio});
+      return Promise.resolve({programacao:mem, requisicoes:vazio, adicionais:vazio, agenda:vazio});
     }
     return Promise.all([
       lerTabela('plpt_prog_projetos', ['projeto_id=eq.'+id, 'deleted_at=is.null'], 'id,prog_dia_id,projeto_id,status,deleted_at,plpt_prog_dia(data,deleted_at)').then(normalizarPlpt),
       consultarComposicao(id),
       lerTabela('plpt_requisicoes_materiais', ['projeto_id=eq.'+id, 'deleted_at=is.null']),
-      lerTabela('sot_adicionais', ['projeto_id=eq.'+id])
+      lerTabela('sot_adicionais', ['projeto_id=eq.'+id]),
+      consultarAgenda(id)
     ]).then(function(r){
       return {
         programacao: jornadaMesclarProgramacao(r[0], r[1]),
         requisicoes: r[2],
-        adicionais: r[3]
+        adicionais: r[3],
+        agenda: r[4]
       };
     });
   }
@@ -171,6 +191,7 @@
         ctx.programacao = extra.programacao;
         ctx.requisicoes = extra.requisicoes;
         ctx.adicionais = extra.adicionais;
+        ctx.agenda = extra.agenda;
         try{ pintar(projeto, ctx); }
         catch(e2){
           if(global.console && console.error) console.error('[Jornada]', e2);
