@@ -137,8 +137,9 @@ function qs(c) { return new URLSearchParams(c.location.search); }
     html.indexOf("resolveEquipeUsuario().then(function(){ if(!cenaNavRestaurarInicial()) showMain('campo'); });") >= 0);
   ok('sessão: restauração vem antes do ramo da portaria',
     html.indexOf("}else if(cenaNavRestaurarInicial()){\n        console.log('[INIT] tela restaurada") < html.indexOf("console.log('[INIT] portaria → frotas-portaria');"));
-  ok('versão 8.1.199', /numero: '8\.1\.199'/.test(html) && html.indexOf("{v:'8.1.199'") >= 0);
-  ok('SW 8.1.199', sw.indexOf("const SW_VERSION   = 'cena-8.1.199';") >= 0);
+  const num = (/numero: '8\.1\.(\d+)'/.exec(html) || [])[1];
+  ok('versão >= 8.1.199 com log da 8.1.199', Number(num) >= 199 && html.indexOf("{v:'8.1.199'") >= 0, num);
+  ok('SW na versão atual', sw.indexOf("const SW_VERSION   = 'cena-8.1." + num + "';") >= 0, num);
 }
 
 // ── Aba nova sem URL → tela inicial do perfil; replaceState no boot ──
