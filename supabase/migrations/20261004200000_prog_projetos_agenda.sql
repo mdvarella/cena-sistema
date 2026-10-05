@@ -1,4 +1,4 @@
--- 8.1.202 — Programação de Projetos: fila "Projetos a programar" (projeto + data, ainda sem equipe).
+-- 8.1.205 — Programação de Projetos: fila "Projetos a programar" (projeto + data, ainda sem equipe).
 -- Aditiva e idempotente. Não altera composicao_dia, plpt_prog_*, equipes_disp nem a Programação TMA.
 -- Estado mostrado: AGUARDANDO EQUIPE vem só desta tabela; EM COMPOSIÇÃO e PROGRAMADO continuam vindo de
 -- composicao_dia (projeto_ids + confirmada). Escolher a data NÃO programa o projeto.
