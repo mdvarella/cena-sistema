@@ -1,5 +1,5 @@
 'use strict';
-// 8.1.203 — Jornada → data → fila de projetos → equipe. Sem banco (stubs de sbFetch/sbInsert/sbUpdate).
+// 8.1.205 (Fila; na prévia era 8.1.203) — Jornada → data → fila de projetos → equipe. Sem banco (stubs de sbFetch/sbInsert/sbUpdate).
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -322,12 +322,12 @@ ok('conflito: cancelado não conta', A.progAgendaAnalisarConflito([{id:'k', proj
     const fim = html.indexOf('\n}\n', ini);
     return html.slice(ini, fim + 2);
   }
-  const iAg = html.indexOf('modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.203');
-  ok('index: carrega o módulo da agenda', iAg > 0 && iAg < html.indexOf('modules/projetos/jornada/jornada.js?v=8.1.203'));
+  const num = (/numero: '8\.1\.(\d+)'/.exec(html) || [])[1];
+  const iAg = html.indexOf('modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.' + num + '"');
+  ok('index: carrega o módulo da agenda', iAg > 0 && iAg < html.indexOf('modules/projetos/jornada/jornada.js?v=8.1.' + num + '"'), num);
   const sw = fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8');
   ok('SW: módulo no precache', sw.indexOf("'./modules/projetos/agenda/prog-projetos-agenda.js'") >= 0);
-  const num = (/numero: '8\.1\.(\d+)'/.exec(html) || [])[1];
-  ok('versão >= 8.1.203 com log', Number(num) >= 203 && html.indexOf("{v:'8.1.203'") >= 0 && html.indexOf("{v:'8.1.202'") >= 0, num);
+  ok('versão >= 8.1.205 com log da fusão', Number(num) >= 205 && ["{v:'8.1.205'", "{v:'8.1.204'", "{v:'8.1.202'"].every(function(v){ return html.indexOf(v) >= 0; }), num);
   ok('SW na versão atual', sw.indexOf("const SW_VERSION   = 'cena-8.1." + num + "';") >= 0, num);
 
   const blocoFila = html.slice(html.indexOf('// FILA "PROJETOS A PROGRAMAR"'), html.indexOf('// MODO MOBILE — PROGRAMAÇÃO DE PROJETOS'));
