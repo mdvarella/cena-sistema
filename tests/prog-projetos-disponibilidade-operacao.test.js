@@ -395,7 +395,8 @@ function testesEstaticos() {
   const nomesTma = [...new Set([...base.matchAll(/\nfunction (progTma\w*)\(/g)].map(m => m[1]))]
     .concat(['progRenderPainelDisp', 'progRenderEquipeRow', 'progValidarComposicao', 'progEfetuarDrop', 'progRenderQuadro', 'progRenderResumo', 'progFiltrarColsProgramacao', 'progMenuSlot']);
   // 8.1.171: aviso de placa divergente (saída da portaria × programação) — coberto em portaria-placa-reconferencia.test.js.
-  const ALTERADAS_DEPOIS = ['progTmaHtmlOperacao'];
+  // 8.1.208: CNH B para Delivery Express / 4x2 no menu do slot — coberto em cnh-delivery-express.test.js.
+  const ALTERADAS_DEPOIS = ['progTmaHtmlOperacao', 'progMenuSlot'];
   const difs = nomesTma.filter(n => {
     if (ALTERADAS_DEPOIS.includes(n)) return false;
     const re = new RegExp('\\n(?:async )?function ' + n + '\\(');
