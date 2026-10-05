@@ -21,7 +21,8 @@ function fn(nome) {
 
 const ctx = { console };
 vm.createContext(ctx);
-vm.runInContext(fn('cnhVeiculoEhDeliveryExpress') + fn('cnhCompatibilidadeVeiculo'), ctx);
+const REGRA = fn('cnhVeiculoEhDeliveryExpress') + fn('cnhVeiculoAceitaCnhB') + fn('cnhCompatibilidadeVeiculo');
+vm.runInContext(REGRA, ctx);
 const compat = (cnh, tipo, veic) => ctx.cnhCompatibilidadeVeiculo(cnh, tipo, veic);
 
 // ── reconhecimento ────────────────────────────────────────────────
@@ -44,6 +45,23 @@ ok('sem veículo', !ctx.cnhVeiculoEhDeliveryExpress(null));
 ok('Delivery Express pelo texto do tipo (sem objeto)', compat('B', 'delivery express') === 'ok');
 ok('Delivery Express com tipo vazio ainda exige B', compat('A', '', DX_MODELO) === 'bloqueado' && compat('B', '', DX_MODELO) === 'ok');
 
+// ── 8.1.209: "4x2" no modelo/tipo também aceita B, exceto cesto e munck ──
+const C4X2 = { tipo: 'Caminhão', modelo: 'VW 8.160 4X2' };
+ok('4x2 no modelo aceita B', ctx.cnhVeiculoAceitaCnhB(C4X2) && compat('B', 'caminhão', C4X2) === 'ok');
+ok('"4 x 2" com espaços aceita B', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'Accelo 4 x 2' }) === 'ok');
+ok('4x2 no tipo operacional aceita B', compat('B', '', { tipo: '', tipo_operacional: 'Caminhão 4x2', modelo: '' }) === 'ok');
+ok('4x2 no texto do tipo aceita B', compat('B', 'caminhão 4x2') === 'ok');
+ok('4x2 + CNH A bloqueia', compat('A', 'caminhão', C4X2) === 'bloqueado');
+ok('4x2 + sem CNH bloqueia', compat('', 'caminhão', C4X2) === 'bloqueado');
+ok('cesto aéreo 4x2 + B bloqueia', !ctx.cnhVeiculoAceitaCnhB({ tipo: 'Cesto Aéreo', modelo: 'Atego 1719 4x2' }) && compat('B', 'cesto aéreo', { tipo: 'Cesto Aéreo', modelo: 'Atego 1719 4x2' }) === 'bloqueado');
+ok('cesto no modelo 4x2 + B bloqueia', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'Cesto aéreo 4x2' }) === 'bloqueado');
+ok('munck 4x2 + B bloqueia', compat('B', 'caminhão munck', { tipo: 'Caminhão Munck', modelo: 'Cargo 4x2' }) === 'bloqueado');
+ok('munk (grafia) 4x2 + B bloqueia', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'Munk 4X2' }) === 'bloqueado');
+ok('cesto 4x2 + C continua ok', compat('C', 'cesto aéreo', { tipo: 'Cesto Aéreo', modelo: 'Atego 4x2' }) === 'ok');
+ok('6x2 não aceita B', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'Atego 2426 6x2' }) === 'bloqueado');
+ok('14x2/4x20 não contam como 4x2', !ctx.cnhVeiculoAceitaCnhB('modelo 14x2') && !ctx.cnhVeiculoAceitaCnhB('modelo 4x20'));
+ok('caminhonete 4x2 + B ok', compat('B', 'caminhonete', { tipo: 'Caminhonete', modelo: 'S10 4x2' }) === 'ok');
+
 // ── regras antigas intactas ───────────────────────────────────────
 ok('caminhão comum + B = bloqueado', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'Atego 1719' }) === 'bloqueado');
 ok('Delivery 9.170 + B = bloqueado', compat('B', 'caminhão', { tipo: 'Caminhão', modelo: 'VW Delivery 9.170' }) === 'bloqueado');
@@ -61,7 +79,7 @@ ok('progDefinirMotorista passa cadastro', fn('progDefinirMotorista').includes('c
 ok('Projetos gravação passa cadastro', fn('progProjetoCoreDefinirMotorista').includes('cnhCompatibilidadeVeiculo(cnh, tipo, veicCad)'));
 const slotPP = fn('progProjetoCoreMenuSlot');
 ok('Projetos menu usa a regra compartilhada para Delivery Express',
-  slotPP.includes('ehDeliveryExpress ? cnhCompatibilidadeVeiculo(cnh, tipoVeic, veic)!==\'bloqueado\''));
+  slotPP.includes('aceitaCnhB ? cnhCompatibilidadeVeiculo(cnh, tipoVeic, veic)!==\'bloqueado\''));
 ok('nenhuma chamada sem o cadastro do veículo', !/cnhCompatibilidadeVeiculo\(cnh, tipo\)/.test(html) && !/cnhCompatibilidadeVeiculo\(cnh, tipoVeic\)/.test(html));
 
 // ── gravação real do motorista (TMA e Projetos) ───────────────────
@@ -86,7 +104,7 @@ function rodarDefinir(nomeFn, cnhCat, veicCad) {
     setTimeout: () => 0,
   };
   vm.createContext(c);
-  vm.runInContext(fn('cnhVeiculoEhDeliveryExpress') + fn('cnhCompatibilidadeVeiculo') + fn(nomeFn), c);
+  vm.runInContext(REGRA + fn(nomeFn), c);
   try { vm.runInContext(nomeFn + "('m1','e1',true);", c); } catch (e) { /* passos após a validação dependem do restante da tela */ }
   return { bloqueou: toasts.some(t => t.indexOf('🚫') === 0), chk };
 }
@@ -99,12 +117,17 @@ for (const f of ['progDefinirMotorista', 'progProjetoCoreDefinirMotorista']) {
   ok(f + ': CNH A no Delivery Express bloqueia', r.bloqueou && r.chk.checked === false);
   r = rodarDefinir(f, 'B', VEIC_ATEGO);
   ok(f + ': CNH B em caminhão comum continua bloqueada', r.bloqueou);
+  r = rodarDefinir(f, 'B', { id: 'v3', tipo: 'Caminhão', modelo: 'VW 8.160 4X2', placa: 'ABC1D23' });
+  ok(f + ': CNH B em caminhão 4x2 não bloqueia', !r.bloqueou && r.chk.checked === true);
+  r = rodarDefinir(f, 'B', { id: 'v4', tipo: 'Cesto Aéreo', modelo: 'Atego 1719 4x2', placa: 'ABC1D23' });
+  ok(f + ': CNH B em cesto aéreo 4x2 bloqueia', r.bloqueou);
 }
 
 // ── versão ────────────────────────────────────────────────────────
 const num = (html.match(/numero: '([\d.]+)'/) || [])[1];
-ok('versão >= 8.1.208', Number(String(num).split('.')[2]) >= 208, num);
+ok('versão >= 8.1.209', Number(String(num).split('.')[2]) >= 209, num);
 ok('changelog 8.1.208', html.includes("{v:'8.1.208'"));
+ok('changelog 8.1.209', html.includes("{v:'8.1.209'"));
 ok('sw.js acompanha a versão', sw.includes("const SW_VERSION   = 'cena-" + num + "';"));
 
 console.log('cnh-delivery-express: ' + (total - falhas) + '/' + total);
