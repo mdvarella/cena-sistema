@@ -94,7 +94,7 @@ function ctxNovo(els, fetchImpl) {
   vm.runInContext(codigo, ctx);
   return ctx;
 }
-const VAZIO = { cliente: '', codigo_projeto: '', nome_projeto: '', cidade: '', bairro: '', endereco: '', tipo_servico_texto: '', prazo_previsto: '', observacoes: '', campos_com_rotulo_explicito: { supervisor: '', encarregado: '', responsavel_interno: '' } };
+const VAZIO = { cliente: '', projeto_ps: '', codigo_projeto: '', nome_projeto: '', cidade: '', bairro: '', endereco: '', tipo_servico_texto: '', prazo_previsto: '', observacoes: '', campos_com_rotulo_explicito: { supervisor: '', encarregado: '', responsavel_interno: '' } };
 function resposta(campos, extra) {
   const obj = JSON.parse(JSON.stringify(VAZIO));
   Object.assign(obj, campos || {});
@@ -125,6 +125,23 @@ async function cenarios() {
   ok('B: avisos visíveis', r.els['sot-croqui-avisos'].style.display === 'block');
   r = await rodar({ 'sot-p-codigo': 'dac/s.sul.22.00031' }, resposta({ codigo_projeto: 'DAC/S.SUL.22.00031' }));
   ok('B: mesmo valor (normalizado) não gera aviso', r.els['sot-p-codigo'].value === 'dac/s.sul.22.00031' && !r.avisos.includes('Código'));
+
+  // B2 (8.1.207) — campo "Projeto PS" vira o código do projeto
+  r = await rodar({}, resposta({ projeto_ps: 'DAC/S.NOR-25.00228 - EXTENSÃO DE REDE', codigo_projeto: 'DAC/S.NOR-25.00228 - EXTENSÃO DE REDE' }));
+  ok('B2: Projeto PS preenche o código', r.els['sot-p-codigo'].value === 'DAC/S.NOR-25.00228 - EXTENSÃO DE REDE', r.els['sot-p-codigo'].value);
+  ok('B2: mesmo texto nos dois rótulos não gera aviso', !r.avisos.includes('Projeto PS'), r.avisos);
+  r = await rodar({}, resposta({ projeto_ps: 'PS-4471 REFORMA RUA Y', codigo_projeto: 'OS 99887' }));
+  ok('B2: Projeto PS tem prioridade sobre outro rótulo', r.els['sot-p-codigo'].value === 'PS-4471 REFORMA RUA Y', r.els['sot-p-codigo'].value);
+  ok('B2: aviso quando a IA leu outro código', r.avisos.includes('Código do projeto: usado o campo Projeto PS (&quot;PS-4471 REFORMA RUA Y&quot;). A IA também leu &quot;OS 99887&quot; em outro rótulo.'), r.avisos);
+  r = await rodar({}, resposta({ projeto_ps: '', codigo_projeto: 'DAC/S.SUL.22.00031' }));
+  ok('B2: sem Projeto PS usa codigo_projeto', r.els['sot-p-codigo'].value === 'DAC/S.SUL.22.00031');
+  r = await rodar({ 'sot-p-codigo': 'MEU-123' }, resposta({ projeto_ps: 'PS-1' }));
+  ok('B2: código já preenchido não é trocado pelo Projeto PS', r.els['sot-p-codigo'].value === 'MEU-123' && r.avisos.includes('Sugestão da IA: PS-1'), r.avisos);
+  {
+    const b = resposta({ codigo_projeto: 'X' }); const o = JSON.parse(b.content[0].text); delete o.projeto_ps; b.content[0].text = JSON.stringify(o);
+    r = await rodar({}, b);
+    ok('B2: resposta sem a chave projeto_ps é rejeitada (schema V3)', r.els['sot-p-codigo'].value === '' && r.st.includes('Nenhum campo foi alterado'), r.st);
+  }
 
   // C — supervisor com match normalizado
   r = await rodar({}, resposta({ rot: { supervisor: '  joao   da  silva ' } }));
@@ -268,7 +285,8 @@ async function cenarios() {
   ok('prompt: pessoas só em campos_com_rotulo_explicito', prompt.includes('"campos_com_rotulo_explicito":{"supervisor":"","encarregado":"","responsavel_interno":""}') && !/"supervisor":"nome/.test(prompt));
   ok('prompt: projetista não é colaborador', prompt.includes('Projetista, Desenhista, Responsável técnico e Engenheiro responsável NÃO são'));
   ok('prompt: cliente não por logotipo', prompt.includes('Não deduza pelo logotipo'));
-  ok('versão do prompt CROQUI_V2', r.ctx.SOT_CROQUI_IA_PROMPT_VERSAO === 'CROQUI_V2');
+  ok('prompt: campo Projeto PS', prompt.includes('- projeto_ps: texto completo do campo com o rótulo "Projeto PS"') && prompt.includes('{"cliente":"","projeto_ps":"","codigo_projeto":""'));
+  ok('versão do prompt CROQUI_V3', r.ctx.SOT_CROQUI_IA_PROMPT_VERSAO === 'CROQUI_V3');
   {
     const els = modal({});
     const ctx = ctxNovo(els, okResp(resposta({})));
@@ -324,7 +342,9 @@ function estaticos() {
   const alteradas = Object.keys(bA).filter(n => JSON.stringify(bA[n]) !== JSON.stringify(bN[n] || null));
   ok('somente sotAnalisarCroquiIA, sotCroquiHandleFile e sotModalProjeto alteradas', alteradas.length === PERMITIDAS.length && alteradas.every(n => PERMITIDAS.includes(n)), alteradas);
   // sotModalProjeto também monta o upload da lista de materiais (alterado em 8.1.189): ali só o trecho do croqui é conferido.
-  const doCroqui = PERMITIDAS.concat(NOVAS).filter(n => n !== 'sotModalProjeto');
+  // 8.1.207 alterou sotCroquiIaPrompt e sotCroquiPlanejar (campo Projeto PS); cobertas pelos cenários B2.
+  const ALTERADAS_207 = ['sotCroquiIaPrompt', 'sotCroquiPlanejar'];
+  const doCroqui = PERMITIDAS.concat(NOVAS).filter(n => n !== 'sotModalProjeto' && !ALTERADAS_207.includes(n));
   ok('funções do croqui intactas na versão atual', doCroqui.every(n => JSON.stringify(bN[n]) === JSON.stringify(bAtual[n])),
     doCroqui.filter(n => JSON.stringify(bN[n]) !== JSON.stringify(bAtual[n])));
   const trechoCroqui = b => (b || []).join('\n').split('\n').filter(l => /croqui/i.test(l)).join('\n');
