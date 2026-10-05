@@ -282,6 +282,9 @@ body{font-family:system-ui,sans-serif;background:#f5f5f3;color:#1a1a18;font-size
 
 /* ── LAYOUT SHELL ─────────────────────────────────────── */
 #pg-app{display:flex;flex-direction:column;height:100vh;overflow:hidden;}
+/* #pg-app{display:flex} vence .hidden pela especificidade do ID */
+#pg-app.hidden{display:none!important;}
+body.cena-saindo{pointer-events:none;cursor:progress;}
 #topbar{display:flex;align-items:center;gap:8px;background:#1a1a18;color:#fff;height:48px;flex:0 0 48px;padding:0 1rem;z-index:200;}
 body.sem-login #topbar{display:none!important;}
 body.sem-login #sidebar{display:none!important;}
@@ -2229,13 +2232,13 @@ body.insp-campo-ativo #app-content-area {
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
-<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada-state.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.205"></script>
-<script src="modules/projetos/jornada/jornada.js?v=8.1.205"></script>
+<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada-state.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.206"></script>
+<script src="modules/projetos/jornada/jornada.js?v=8.1.206"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios.js?v=8.1.166"></script>
@@ -6505,7 +6508,7 @@ function cenaAuthHandleUnauthorized(opts){
   try{ sbAuthShowSessaoIndisponivel(msg); }catch(eMsg){}
   try{
     if(typeof fazerLogout === 'function' && usuarioLogado){
-      fazerLogout();
+      fazerLogout({msg:msg});
     } else {
       try{ localStorage.removeItem('cena_user'); }catch(eLs){}
       usuarioLogado = null;
@@ -45829,10 +45832,13 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.205',
-  data:   '04/10/2026',
-  build:  '20261004-2130',
+  numero: '8.1.206',
+  data:   '05/10/2026',
+  build:  '20261005-1145',
   log: [
+    {v:'8.1.206', d:'05/10/2026', itens:[
+      'Logout: "Sair" passa a zerar o sistema. Antes a barra superior e o menu sumiam, mas o conteúdo da última tela continuava abaixo do login e aceitava cliques, porque o CSS do #pg-app vencia a classe hidden. Agora o app é escondido de fato, a sessão do Supabase Auth é encerrada (sem rede, a sessão salva no navegador é apagada mesmo assim) e a página recarrega sem ?page=, descartando dados carregados, modais e timers da sessão anterior. O próximo usuário não abre na última tela de quem saiu. Sessão expirada mostra o aviso na tela de login. Sem SQL. Sem alteração na Programação TMA.',
+    ]},
     {v:'8.1.205', d:'04/10/2026', itens:[
       'Jornada → Programação de Projetos: "Programar execução" e "Continuar execução" pedem a data (Hoje, Amanhã ou calendário; a data nunca é presumida) e enviam o projeto para PROJETOS A PROGRAMAR daquela data, aguardando equipe. A fila fica no banco (prog_projetos_agenda — migration 20261004200000, RLS para gestão/programação) e aparece para os outros usuários autorizados. Na Programação de Projetos, clicar no projeto e depois na equipe coloca o projeto em composicao_dia.projeto_ids da equipe pelo motor existente: fica EM COMPOSIÇÃO até a equipe ser confirmada e então PROGRAMADO. Mesmo projeto na mesma data não duplica; em outra data pergunta se mantém, altera ou adiciona a data. Corrige Auto Escalar e "+ projeto", que sobrescreviam os projetos já vinculados à equipe. Sem alteração na Programação TMA. (Na prévia do Cloudflare apareceu como 8.1.203; homologação pendente.)',
       'Fusão: inclui a 8.1.204 (usuários online e sino de aprovações no login pelo formulário) e a segurança 8.1.202. Exige a migration 20261004200000_prog_projetos_agenda.sql aplicada antes da publicação: sem a tabela, "Programar execução" não grava e avisa que nada foi alterado.',
@@ -79952,7 +79958,35 @@ function usarDemo(){DEMO=true;usuarioLogado={id:'u0',nome:'Demo Admin',perfil:'a
       showMain('dashboard');
     }
   });}
-function fazerLogout(){
+var _cenaSaindo = false;
+var CENA_LOGOUT_MSG_KEY = 'cena_logout_msg';
+/** Apaga a sessão Supabase salva no navegador: signOut sem rede não apaga, e a recarga reabriria a sessão. */
+function cenaAuthRemoverSessaoLocal(){
+  try{
+    var chaves=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k && /^sb-.*-auth-token(-code-verifier)?$/i.test(k)) chaves.push(k);
+    }
+    chaves.forEach(function(k){ localStorage.removeItem(k); });
+  }catch(e){}
+}
+async function cenaAuthEncerrarSessaoSupabase(){
+  if(supabaseClient && supabaseClient.auth){
+    try{ if(typeof supabaseClient.auth.stopAutoRefresh==='function') supabaseClient.auth.stopAutoRefresh(); }catch(eAr){}
+    try{
+      await Promise.race([
+        supabaseClient.auth.signOut(),
+        new Promise(function(r){ setTimeout(r, 4000); })
+      ]);
+    }catch(eOut){}
+  }
+  cenaAuthRemoverSessaoLocal();
+}
+function fazerLogout(opts){
+  if(_cenaSaindo) return;
+  _cenaSaindo = true;
+  opts = opts || {};
   auditLog('logout','sistema','Logout do sistema');
   // Circuit breaker ANTES de qualquer coisa — impede refresh pós-logout
   _cenaAuthInvalid = true;
@@ -79964,7 +79998,6 @@ function fazerLogout(){
   _sbAuthToken = null;
   _cenaAuthHadSession = false;
   // NÃO resetar _cenaAuthInvalid aqui — só no próximo login Auth válido
-  try{ if(supabaseClient) supabaseClient.auth.signOut(); }catch(e){}
   document.body.classList.remove('perfil-equipe');
   if(typeof limparClassesPerfilBody==='function') limparClassesPerfilBody();
   // Resetar estado do diário de bordo completamente
@@ -79984,9 +80017,21 @@ function fazerLogout(){
   var nm=document.getElementById('nav-main');if(nm)nm.style.display='';
   var gb=document.getElementById('gestor-bar');if(gb)gb.style.display='none';
   var btn=document.getElementById('btn-voltar-painel');if(btn)btn.style.display='none';
-  document.getElementById('pg-app').classList.add('hidden');
+  var pgApp=document.getElementById('pg-app');
+  if(pgApp){ pgApp.style.cssText=''; pgApp.classList.add('hidden'); }
+  var ma=document.getElementById('modal-area');if(ma)ma.innerHTML='';
   document.getElementById('pg-login').classList.remove('hidden');
   document.body.classList.add('sem-login');
+  document.body.classList.add('cena-saindo');
+  try{
+    sessionStorage.removeItem('lastPage');
+    sessionStorage.removeItem('lastMain');
+    sessionStorage.removeItem('_cena_sessao');
+    if(opts.msg) sessionStorage.setItem(CENA_LOGOUT_MSG_KEY, String(opts.msg));
+  }catch(eSs){}
+  // Recarregar descarta dados, telas, modais e timers da sessão anterior; sem ?page= o próximo login não herda a tela
+  var recarregar=function(){ location.replace(location.pathname); };
+  cenaAuthEncerrarSessaoSupabase().then(recarregar, recarregar);
 }
 
 // MD5
@@ -100531,6 +100576,14 @@ window.addEventListener('load',async function(){
   var elEmail=document.getElementById('login-email');
   if(elSenha)elSenha.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin();});
   if(elEmail)elEmail.addEventListener('keydown',function(e){if(e.key==='Enter')fazerLogin();});
+  try{
+    var msgSaida=sessionStorage.getItem(CENA_LOGOUT_MSG_KEY);
+    if(msgSaida){
+      sessionStorage.removeItem(CENA_LOGOUT_MSG_KEY);
+      var elErrSaida=document.getElementById('login-err');
+      if(elErrSaida){ elErrSaida.textContent=msgSaida; elErrSaida.classList.remove('hidden'); }
+    }
+  }catch(eMsgSaida){}
 
   // ── Tentar restaurar sessão Supabase Auth ────────────────────────────
   try{ if(typeof progLimparCacheVeiculosAntigos==='function') progLimparCacheVeiculosAntigos(); }catch(ePv){}
