@@ -2232,13 +2232,13 @@ body.insp-campo-ativo #app-content-area {
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
-<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada-state.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.210"></script>
-<script src="modules/projetos/jornada/jornada.js?v=8.1.210"></script>
+<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada-state.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.212"></script>
+<script src="modules/projetos/jornada/jornada.js?v=8.1.212"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios.js?v=8.1.166"></script>
@@ -6764,8 +6764,7 @@ var ERP = {
   url:   'https://erp.cenabr.app/api/external/v1', // URL pública (sem segredo)
   token: null, // NUNCA armazenar Bearer no frontend / localStorage / sessionStorage
   disabled: false, // sync liberado via proxy; exige sessão Auth (_sbAuthToken)
-  disabledMsg: 'Sincronização ERP exige login via Supabase Auth (JWT). Faça login Auth ou configure o proxy.',
-  cache: { key:'cena_erp_forn_v6', keyTs:'cena_erp_forn_ts_v6', ttl:30*60*1000 }
+  disabledMsg: 'Sincronização ERP exige login via Supabase Auth (JWT). Faça login Auth ou configure o proxy.'
 };
 
 /** Chama Edge Function Supabase com JWT do usuário (nunca service_role). */
@@ -7363,155 +7362,68 @@ async function chamarApiCenaSegura(payload){
   return (res.data !== undefined) ? res.data : res;
 }
 
-// Restaurar cache do localStorage ao iniciar
-(function(){
-  try{
-    var ts=parseInt(localStorage.getItem(ERP.cache.keyTs)||'0');
-    var raw=localStorage.getItem(ERP.cache.key);
-    if(raw&&(Date.now()-ts)<ERP.cache.ttl){
-      var saved=JSON.parse(raw);
-      if(saved&&saved.length) fornecedores=saved;
-    }
-  }catch(e){}
-})();
-
-function erpSalvarCache(d){
-  try{
-    localStorage.setItem(ERP.cache.key,JSON.stringify(d));
-    localStorage.setItem(ERP.cache.keyTs,String(Date.now()));
-  }catch(e){}
-}
-function erpInvalidarCache(){
-  try{localStorage.removeItem(ERP.cache.key);localStorage.removeItem(ERP.cache.keyTs);}catch(e){}
-}
-function erpCacheValido(){
-  try{return (Date.now()-parseInt(localStorage.getItem(ERP.cache.keyTs)||'0'))<ERP.cache.ttl;}catch(e){return false;}
-}
-function erpCacheInfo(){
-  if(!erpCacheValido()||!fornecedores.length) return '';
-  var mins=0;
-  try{mins=Math.max(0,Math.round((ERP.cache.ttl-(Date.now()-parseInt(localStorage.getItem(ERP.cache.keyTs)||'0')))/60000));}catch(e){}
-  return '✅ '+fornecedores.length+' fornecedores · cache ~'+mins+' min';
-}
+// Fornecedores do ERP CENA: a Edge erp-fornecedores-sync grava na tabela fornecedores (cron diário + botão Sincronizar).
+// O navegador só lê o banco. As chaves antigas guardavam a lista do ERP com dados pessoais.
+try{ localStorage.removeItem('cena_erp_forn_v6'); localStorage.removeItem('cena_erp_forn_ts_v6'); }catch(e){}
 
 function _erpSetStatus(txt,cor){
   var el=document.getElementById('forn-load-status');
   if(el) el.innerHTML=txt?'<span style="color:'+(cor||'#888')+'">'+txt+'</span>':'';
 }
 
-function erpFetchPagina(pg){
-  // Fase 2B: proxy Edge Function com JWT — sem Bearer no browser.
-  return chamarApiCenaSegura({ path:'/suppliers', method:'GET', query:{ page:String(pg) } });
-}
-
-// Remove duplicados por CNPJ válido — mantém o cadastro matriz (is_root_supplier).
-// CNPJs vazios/zerados são placeholders de fornecedores distintos: não deduplicar.
-function erpDedup(items){
-  var vistos={};
-  var ordenados=items.slice().sort(function(a,b){
-    var ra=a.is_root_supplier?0:1, rb=b.is_root_supplier?0:1;
-    if(ra!==rb)return ra-rb;
-    return (a.id||0)-(b.id||0);
-  });
-  var out=[];
-  ordenados.forEach(function(s){
-    var c=String(s.cpf_cnpj||s.cnpj||s.cnpj_cpf||'').replace(/\D/g,'');
-    if(!c||/^0+$/.test(c)){ out.push(s); return; }
-    if(vistos[c]) return;
-    vistos[c]=true;
-    out.push(s);
-  });
-  return out;
-}
-
-function erpNorm(s){
-  var st='Inativo';
-  if(s.status==='ativo'||s.status==='active'||s.active===true||s.active===1||s.status===1||s.status==='1'||s.is_active===true||s.is_active===1) st='Ativo';
-  var email = s.email||s.email_address||s.contact_email||s.contato_email||'';
-  if(!email && s.contacts && s.contacts[0]) email = s.contacts[0].email||s.contacts[0].email_address||'';
-  var tel = s.telefone||s.phone||s.celular||s.mobile||s.whatsapp||s.contact_phone||s.contato_fone||s.fone||'';
-  if(!tel && s.contacts && s.contacts[0]) tel = s.contacts[0].phone||s.contacts[0].telefone||s.contacts[0].mobile||'';
-  return {
-    id:'_erp_'+(s.id||s.uuid||String(Math.random())),
-    razao_social:s.razao_social||s.name||s.nome||s.company_name||s.fantasy_name||'',
-    nome_fantasia:s.nome_fantasia||s.fantasy_name||s.trade_name||'',
-    cnpj_cpf:s.cnpj||s.cpf||s.cnpj_cpf||s.cpf_cnpj||s.document||s.tax_id||'',
-    tipo:s.tipo||s.type||(s.cnpj?'Jurídica':'Física'),
-    email:email, telefone:tel,
-    cidade:s.cidade||s.city||(s.address&&s.address.city)||'',
-    estado:s.estado||s.uf||s.state||(s.address&&s.address.state)||'',
-    endereco:s.endereco||s.address_line||(s.address&&s.address.street)||'',
-    cep:s.cep||s.zip||s.postal_code||'',
-    status:st, _erp:true, _erp_id:s.id, _erp_raw:s
-  };
-}
-
-// Buscar todas as páginas em paralelo
-function erpFetchTodos(){
-  return erpFetchPagina(1).then(function(resp){
-    var items=resp.data||resp.results||[];
-    var meta=resp.meta||{};
-    var lastPage=meta.last_page||resp.last_page||1;
-    var total=meta.total||resp.total||items.length;
-    _erpSetStatus('📥 1/'+lastPage+' — '+items.length+'/'+total,'#185FA5');
-    if(lastPage<=1) return items;
-    var promises=[];
-    for(var p=2;p<=lastPage;p++){
-      (function(pg){
-        promises.push(erpFetchPagina(pg)
-          .then(function(r){return r.data||r.results||[];})
-          .catch(function(){return [];}));
-      })(p);
-    }
-    return Promise.all(promises).then(function(pages){
-      pages.forEach(function(pg,i){
-        items=items.concat(pg);
-        _erpSetStatus('📥 '+(i+2)+'/'+lastPage+' — '+items.length+'/'+total,'#185FA5');
-      });
-      return items;
-    });
-  });
+var _erpFornUltimaExec=null;
+function erpCarregarUltimaSincFornecedores(){
+  if(DEMO) return Promise.resolve(null);
+  return Promise.resolve(sbFetch('erp_sync_execucoes',{
+    select:'iniciado_em,finalizado_em,modo,disparo,status,lidos,inseridos,atualizados,vinculados,inativados,conflitos,erro',
+    filters:['recurso=eq.suppliers','modo=neq.SIMULACAO'], order:'iniciado_em.desc', limit:1
+  })).then(function(r){ _erpFornUltimaExec=(Array.isArray(r)&&r[0])||null; return _erpFornUltimaExec; })
+    .catch(function(){ return null; });
 }
 
 function erpCarregarFornecedores(forceRefresh){
-  if(!_sbAuthToken){
-    _erpSetStatus('⚠ Sync ERP exige login Auth','#854F0B');
-    if(forceRefresh && typeof progShowToast==='function'){
-      progShowToast('⚠ '+ERP.disabledMsg);
-    }
-    return carregarFornDB().then(function(r){
-      if(r&&r.length && !(fornecedores||[]).some(function(f){return f._erp;}))
-        fornecedores=r.slice();
-      setTimeout(function(){_erpSetStatus('');},4000);
-      return r||[];
-    });
-  }
-
-  if(!forceRefresh&&erpCacheValido()&&fornecedores.length>50)
-    return Promise.resolve(fornecedores);
-
-  if(forceRefresh) erpInvalidarCache();
-  _erpSetStatus('🔄 Conectando ao ERP...','#888');
-
-  return erpFetchTodos().then(function(items){
-    var norm=erpDedup(items).map(erpNorm).filter(function(f){return f.razao_social;})
-      .sort(function(a,b){return a.razao_social.localeCompare(b.razao_social,'pt-BR',{sensitivity:'base'});});
-    erpSalvarCache(norm);
-    // Mantém ERP em fornecedores, mas NÃO apaga o cadastro local (_fornDB)
-    fornecedores=norm;
-    _erpSetStatus('✅ '+norm.length+' ERP','#3B6D11');
-    setTimeout(function(){_erpSetStatus('');},3000);
-    return carregarFornDB().then(function(){ return norm; });
-  }).catch(function(e){
-    console.error('ERP:',e);
-    _erpSetStatus('⚠️ ERP indisponível','#854F0B');
-    setTimeout(function(){_erpSetStatus('');},4000);
-    return carregarFornDB().then(function(r){
-      if(r&&r.length && !(fornecedores||[]).some(function(f){return f._erp;}))
-        fornecedores=r.slice();
-      return r||[];
-    });
+  if(forceRefresh) return erpSincronizarFornecedores('auto');
+  return carregarFornDB().then(function(r){
+    fornecedores=(r||[]).slice();
+    return r||[];
   });
+}
+
+/** Dispara a sincronização no servidor. modo: 'auto' | 'completa' | 'simulacao' (simulação não grava fornecedores). */
+async function erpSincronizarFornecedores(modo){
+  modo=modo||'auto';
+  if(['auto','completa','simulacao'].indexOf(modo)<0){ console.warn('[ERP] modo inválido:', modo); return null; }
+  if(DEMO){ if(typeof progShowToast==='function') progShowToast('Sincronização com o ERP indisponível no modo demonstração.'); return null; }
+  _erpSetStatus('🔄 Sincronizando com o ERP...','#888');
+  var res=null, msg='';
+  try{
+    res=await chamarEdgeFunction('erp-fornecedores-sync',{modo:modo});
+  }catch(e){
+    var st=e&&e.status;
+    msg = st===409 ? 'Já existe uma sincronização em andamento. Tente de novo em alguns minutos.'
+      : st===403 ? 'Seu perfil não pode sincronizar fornecedores do ERP.'
+      : st===401 ? 'Sessão expirada ou sem login Auth. Entre novamente.'
+      : 'Falha na sincronização com o ERP: '+((e&&e.message)||'erro desconhecido');
+  }
+  await erpCarregarFornecedores(false);
+  await erpCarregarUltimaSincFornecedores();
+  if(res&&res.ok){
+    var c=res.contadores||{};
+    var txt=(res.modo==='SIMULACAO'?'Simulação (nada gravado): ':'Fornecedores sincronizados: ')
+      +(c.lidos||0)+' lidos, '+(c.inseridos||0)+' novos, '+(c.atualizados||0)+' atualizados, '
+      +(c.vinculados||0)+' vinculados ao cadastro, '+(c.inativados||0)+' inativados, '+(c.conflitos||0)+' conflitos';
+    if(res.status==='PARCIAL') txt+=' — PARCIAL: '+(res.aviso||'leitura incompleta');
+    if(res.modo==='SIMULACAO') console.log('[ERP] simulação de fornecedores', res);
+    _erpSetStatus((res.status==='OK'?'✅ ':'⚠ ')+escHtml(txt),res.status==='OK'?'#3B6D11':'#854F0B');
+    if(typeof progShowToast==='function') progShowToast(txt, res.status==='OK'?undefined:'erro');
+  } else {
+    if(!msg) msg='Falha na sincronização com o ERP.';
+    _erpSetStatus('⚠ '+escHtml(msg),'#854F0B');
+    if(typeof progShowToast==='function') progShowToast('⚠ '+msg,'erro');
+  }
+  setTimeout(function(){_erpSetStatus('');},8000);
+  if(document.getElementById('tbody-forn-vis')) renderFornecedoresVis();
+  return res;
 }
 // ── FIM INTEGRAÇÃO ERP ────────────────────────────────────────────────
 var usuarioLogado=null;
@@ -7524,7 +7436,7 @@ function carregarFornDB(){
   if(DEMO) return Promise.resolve(_fornDB);
   // Sem filtro de status e com paginação: evita sumir ativos além do limite 1000
   var fetchFn = typeof sbFetchAll==='function'
-    ? sbFetchAll('fornecedores',{order:'razao_social.asc',pageSize:1000,maxPages:20})
+    ? sbFetchAll('fornecedores',{order:'razao_social.asc,id.asc',pageSize:1000,maxPages:20})
     : sbFetch('fornecedores',{order:'razao_social',limit:5000});
   return fetchFn.then(function(r){
     if(Array.isArray(r)) _fornDB=r.filter(function(f){ return f.deleted_at==null; });
@@ -9998,7 +9910,7 @@ async function carregarDadosBase(){
       sbFetch('categorias_despesa',{filters:['ativa=eq.true'],order:'nome'}),
       sbFetch('subcategorias_despesa',{filters:['ativa=eq.true']}),
       sbFetch('verbas_contrato'),
-      sbFetch('fornecedores',{filters:['status=eq.Ativo','deleted_at=is.null'],order:'razao_social'}),
+      sbFetchAll('fornecedores',{filters:['status=eq.Ativo','deleted_at=is.null'],order:'razao_social.asc,id.asc',pageSize:1000,maxPages:20}),
       sbFetch('equipes',{filters:['status=neq.Inativo']}),
       sbFetch('causas_codx',{filters:['ativa=eq.true']}),
       sbFetch('servicos_contrato'),
@@ -18098,7 +18010,7 @@ function renderConteudoCadastro(id){
       +'<span id="forn-load-status" style="font-size:11px;color:#888"></span>'
       +'<input class="inp" id="forn-busca" placeholder="Buscar razão, fantasia, CNPJ, e-mail ou telefone..." style="width:280px;font-size:12px" oninput="renderFornecedoresVis()"/>'
       +'<select class="inp" id="forn-fil-status" style="width:110px;font-size:12px" onchange="renderFornecedoresVis()"><option value="">Todos</option><option value="Ativo">Ativos</option><option value="Inativo">Inativos</option></select>'
-      +'<button class="btn" onclick="erpCarregarFornecedores(true).then(function(){renderFornecedoresVis();})" title="Forçar sincronização com ERP">🔄 Sincronizar</button>'
+      +'<button class="btn" onclick="erpSincronizarFornecedores(\'auto\')" title="Atualiza agora o cadastro com o ERP CENA (também roda todo dia às 03:00)">🔄 Sincronizar</button>'
       +'<button class="btn btn-sm" onclick="openFornAuditoriaLocacoes()" title="Ver quais locações estão vinculadas ao cadastro">📋 Auditar locações</button>'
       +'<button class="btn btn-sm" onclick="fornVincularLocacoesLote(true)" title="Vincular locações pendentes por nome/CNPJ">🏗 Vincular locações</button>'
       +'<button class="btn btn-pri" onclick="openNovoFornecedor()">+ Novo</button>'
@@ -18167,8 +18079,7 @@ function renderConteudoCadastro(id){
     return;
   }
   else if(id==='fornecedores') {
-    Promise.resolve(carregarFornDB())
-      .then(function(){ return erpCarregarFornecedores(false); })
+    Promise.all([erpCarregarFornecedores(false), erpCarregarUltimaSincFornecedores()])
       .then(function(){ renderFornecedoresVis(); })
       .catch(function(){ renderFornecedoresVis(); });
   }
@@ -18628,20 +18539,27 @@ function renderUsuariosVis(){
   });
 }
 
+function _fornEhErp(f){ return !!(f && (f.origem==='ERP' || f._erp)); }
+function _fornDataHora(v){
+  if(!v) return '';
+  var d=new Date(v);
+  return isNaN(d.getTime()) ? '' : d.toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+}
 function renderFornecedoresVis(){
   var tb = document.getElementById('tbody-forn-vis'); if(!tb) return;
 
   var cacheEl = document.getElementById('forn-cache-info');
   if(cacheEl){
     var nDb = (_fornDB||[]).length;
-    var nErp = (fornecedores||[]).filter(function(f){return f._erp;}).length;
-    cacheEl.textContent = (erpCacheInfo()||'') + (nDb||nErp ? ' · banco '+nDb+(nErp?' · ERP '+nErp:'') : '');
+    var nErp = (_fornDB||[]).filter(_fornEhErp).length;
+    var ex = _erpFornUltimaExec;
+    cacheEl.textContent = (nDb ? nDb+' no cadastro · '+nErp+' do ERP · '+(nDb-nErp)+' manuais' : '')
+      + (ex ? ' · última sincronização '+_fornDataHora(ex.finalizado_em||ex.iniciado_em)+' ('+ex.status+(ex.disparo==='CRON'?', automática':', manual')+')' : '');
   }
 
   var busca  = ((document.getElementById('forn-busca')||{}).value||'').trim();
   var status = ((document.getElementById('forn-fil-status')||{}).value||'');
 
-  // Mescla cadastro Supabase + ERP (antes o sync ERP apagava o local da tela)
   var merged = typeof _fornListaBusca==='function' ? _fornListaBusca() : (fornecedores||[]);
   var base = merged.filter(function(f){
     if(status && f.status !== status) return false;
@@ -18666,14 +18584,15 @@ function renderFornecedoresVis(){
     tb.innerHTML = '<tr><td colspan="9" style="padding:1.5rem;text-align:center;color:#aaa">'
       + (merged.length
           ? 'Nenhum resultado para os filtros aplicados.'
-          : 'Nenhum fornecedor. Clique em 🔄 Sincronizar para buscar do ERP ou + Novo para cadastrar.')
+          : 'Nenhum fornecedor. Clique em 🔄 Sincronizar para trazer do ERP ou + Novo para cadastrar.')
       + '</td></tr>';
     return;
   }
 
   tb.innerHTML = lista.map(function(f){
+    var doErp = _fornEhErp(f);
     var locStr = [f.cidade, f.estado].filter(Boolean).join('/');
-    var erpTag = f._erp ? '<span style="background:#E8F0FE;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px">ERP</span>' : '';
+    var erpTag = doErp ? '<span style="background:#E8F0FE;color:#185FA5;border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px">ERP</span>' : '';
     var email = (f.email||'').trim();
     var tel = (f.telefone||'').trim();
     return '<tr>'
@@ -18686,39 +18605,40 @@ function renderFornecedoresVis(){
       + '<td style="font-size:12px;color:#888">' + escHtml(locStr||'—') + '</td>'
       + '<td><span class="bdg ' + (f.status==='Ativo'?'ok':'gray') + '">' + escHtml(f.status||'—') + '</span></td>'
       + '<td style="display:flex;gap:4px">'
-      + (f._erp
-          ? '<button class="btn btn-sm" id="vver-forn-'+f.id+'">Ver</button>'
-          : '<button class="btn btn-sm" id="vedit-forn-'+f.id+'">Editar</button>'
-            + '<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="vdel-forn-'+f.id+'">Excluir</button>')
+      + (doErp
+          ? '<button class="btn btn-sm" id="vver-forn-'+escHtml(f.id)+'">Ver</button>'
+            + '<button class="btn btn-sm" id="vedit-forn-'+escHtml(f.id)+'" title="Só tipo e contato; o restante vem do ERP">Editar</button>'
+          : '<button class="btn btn-sm" id="vedit-forn-'+escHtml(f.id)+'">Editar</button>'
+            + '<button class="btn btn-sm" style="color:#A32D2D;border-color:#A32D2D" id="vdel-forn-'+escHtml(f.id)+'">Excluir</button>')
       + '</td></tr>';
   }).join('');
 
   lista.forEach(function(f){
-    if(f._erp){
-      var bv = document.getElementById('vver-forn-'+f.id);
-      if(bv) bv.onclick = function(){ erpVerFornecedor(f); };
-    } else {
-      var be = document.getElementById('vedit-forn-'+f.id); if(be) be.onclick = function(){ editarFornecedor(f.id); };
-      var bd = document.getElementById('vdel-forn-'+f.id); if(bd) bd.onclick = function(){ excluirFornecedor(f.id); setTimeout(function(){ renderFornecedoresVis(); }, 100); };
-    }
+    var bv = document.getElementById('vver-forn-'+f.id); if(bv) bv.onclick = function(){ erpVerFornecedor(f); };
+    var be = document.getElementById('vedit-forn-'+f.id); if(be) be.onclick = function(){ editarFornecedor(f.id); };
+    var bd = document.getElementById('vdel-forn-'+f.id); if(bd) bd.onclick = function(){ excluirFornecedor(f.id); setTimeout(function(){ renderFornecedoresVis(); }, 100); };
   });
 }
 
 function erpVerFornecedor(f){
-  var r=f._erp_raw||f;
-  var campos=Object.keys(r).filter(function(k){return k!=='_erp_raw'&&typeof r[k]!=='object';});
+  var e = escHtml;
+  var campos = [
+    {l:'Nome fantasia',v:f.nome_fantasia},{l:'CNPJ/CPF',v:f.cnpj_cpf},{l:'Tipo',v:f.tipo},{l:'Contato',v:f.contato},
+    {l:'E-mail',v:f.email},{l:'Telefone',v:f.telefone},{l:'Cidade',v:f.cidade},{l:'Estado',v:f.estado},{l:'Status',v:f.status},
+    {l:'ID no ERP',v:f.erp_id!=null?String(f.erp_id):''},{l:'Matriz no ERP',v:f.erp_parent_id!=null?String(f.erp_parent_id):''},
+    {l:'Última sincronização',v:_fornDataHora(f.erp_sincronizado_em)},
+    {l:'Não encontrado no ERP desde',v:_fornDataHora(f.erp_ausente_desde)}
+  ];
   setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
     +'<div class="modal" style="max-width:520px">'
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">'
-    +'<h3 style="margin:0">🏢 '+f.razao_social+'</h3>'
+    +'<h3 style="margin:0">🏢 '+e(f.razao_social||'')+'</h3>'
     +'<button onclick="closeModal()" style="background:none;border:none;font-size:20px;cursor:pointer;color:#888">✕</button>'
     +'</div>'
-    +'<span style="background:#E8F0FE;color:#185FA5;border-radius:4px;padding:2px 8px;font-size:11px">Fonte: ERP CenaBR</span>'
+    +'<span style="background:#E8F0FE;color:#185FA5;border-radius:4px;padding:2px 8px;font-size:11px">Fonte: ERP CENA — altere os dados no ERP</span>'
     +'<div style="margin-top:.75rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem">'
-    +[{l:'CNPJ/CPF',v:f.cnpj_cpf},{l:'Tipo',v:f.tipo},{l:'E-mail',v:f.email},
-      {l:'Telefone',v:f.telefone},{l:'Cidade',v:f.cidade},{l:'Estado',v:f.estado},{l:'Status',v:f.status}]
-      .filter(function(x){return x.v;})
-      .map(function(x){return '<div><div style="font-size:10px;color:#888;font-weight:600">'+x.l+'</div><div style="font-size:13px">'+x.v+'</div></div>';})
+    +campos.filter(function(x){return x.v;})
+      .map(function(x){return '<div><div style="font-size:10px;color:#888;font-weight:600">'+e(x.l)+'</div><div style="font-size:13px">'+e(x.v)+'</div></div>';})
       .join('')
     +'</div>'
     +'<div style="text-align:right;margin-top:1rem"><button class="btn" onclick="closeModal()">Fechar</button></div>'
@@ -23046,8 +22966,8 @@ async function excluirFornecedor(fid){
     else alert('Fornecedor não encontrado.');
     return;
   }
-  if(f._erp){
-    if(typeof progShowToast==='function') progShowToast('Fornecedor do ERP não pode ser excluído aqui.','erro');
+  if(_fornEhErp(f)){
+    if(typeof progShowToast==='function') progShowToast('Fornecedor do ERP não pode ser excluído aqui — inative no ERP CENA.','erro');
     return;
   }
   if(!confirm('Excluir fornecedor "'+(f.razao_social||'')+'"?\n\nO registro será removido da lista (soft-delete no banco quando disponível).'))return;
@@ -23067,34 +22987,39 @@ function editarFornecedor(fid){
     || (fornecedores||[]).find(function(x){return String(x.id)===String(fid);});
   if(!f)return;
   var esc=typeof escHtml==='function'?escHtml:function(s){return String(s||'').replace(/"/g,'&quot;');};
+  var doErp=_fornEhErp(f);
+  var ro=doErp?' disabled title="Mantido pelo ERP CENA — altere no ERP"':'';
   setModal('<div class="modal-bg"><div class="modal"><h3>Editar fornecedor</h3>'
+    +(doErp?'<div style="background:#E8F0FE;color:#185FA5;border-radius:8px;padding:.5rem .7rem;font-size:12px;margin-bottom:.6rem">Fornecedor do ERP CENA: razão social, CNPJ/CPF, telefone e e-mail vêm do ERP e são atualizados pela sincronização. Aqui só tipo e contato.</div>':'')
     +'<div class="g2">'
-    +'<div class="fg" style="grid-column:1/-1"><label>Razão social</label><input id="nf-rs" value="'+esc(f.razao_social||'')+'"/></div>'
-    +'<div class="fg"><label>CNPJ/CPF</label><input id="nf-cnpj" value="'+esc(f.cnpj_cpf||'')+'"/></div>'
+    +'<div class="fg" style="grid-column:1/-1"><label>Razão social</label><input id="nf-rs" value="'+esc(f.razao_social||'')+'"'+ro+'/></div>'
+    +'<div class="fg"><label>CNPJ/CPF</label><input id="nf-cnpj" value="'+esc(f.cnpj_cpf||'')+'"'+ro+'/></div>'
     +'<div class="fg"><label>Tipo</label><select id="nf-tipo">'+['Fornecedor','Locadora','Prestador','Transportadora'].map(function(t){return '<option'+(f.tipo===t?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div>'
     +'<div class="fg"><label>Contato</label><input id="nf-cont" value="'+esc(f.contato||'')+'"/></div>'
-    +'<div class="fg"><label>Telefone</label><input id="nf-tel" value="'+esc(f.telefone||'')+'"/></div>'
-    +'<div class="fg"><label>E-mail</label><input id="nf-email" value="'+esc(f.email||'')+'"/></div>'
+    +'<div class="fg"><label>Telefone</label><input id="nf-tel" value="'+esc(f.telefone||'')+'"'+ro+'/></div>'
+    +'<div class="fg"><label>E-mail</label><input id="nf-email" value="'+esc(f.email||'')+'"'+ro+'/></div>'
     +'</div>'
     +'<div class="ma"><button class="btn" onclick="closeModal()">Cancelar</button>'
     +'<button class="btn btn-pri" onclick="salvarEditarForn(\''+String(fid).replace(/'/g,"\\'")+'\')">Salvar</button></div></div></div>');
 }
-function salvarEditarForn(fid){
+async function salvarEditarForn(fid){
   var f=(typeof _fornFindById==='function'?_fornFindById(fid):null)
     || (fornecedores||[]).find(function(x){return String(x.id)===String(fid);});
   if(!f)return;
-  f.razao_social=(document.getElementById('nf-rs')||{}).value||f.razao_social;
-  f.cnpj_cpf=(document.getElementById('nf-cnpj')||{}).value||'';
-  f.tipo=(document.getElementById('nf-tipo')||{}).value||f.tipo;
-  f.contato=(document.getElementById('nf-cont')||{}).value||'';
-  f.telefone=(document.getElementById('nf-tel')||{}).value||'';
-  f.email=(document.getElementById('nf-email')||{}).value||'';
+  function g(id){ return (document.getElementById(id)||{}).value; }
+  var campos = _fornEhErp(f)
+    ? { tipo:g('nf-tipo')||f.tipo, contato:g('nf-cont')||'' }
+    : { razao_social:g('nf-rs')||f.razao_social, cnpj_cpf:g('nf-cnpj')||'', tipo:g('nf-tipo')||f.tipo,
+        contato:g('nf-cont')||'', telefone:g('nf-tel')||'', email:g('nf-email')||'', status:f.status||'Ativo' };
   if(!DEMO && typeof isUUID==='function' && isUUID(String(fid))){
-    sbUpdate('fornecedores',{
-      razao_social:f.razao_social,cnpj_cpf:f.cnpj_cpf,tipo:f.tipo,
-      contato:f.contato,telefone:f.telefone,email:f.email,status:f.status||'Ativo'
-    },'id=eq.'+fid);
+    var ok=await sbUpdate('fornecedores',campos,'id=eq.'+fid);
+    if(!ok){
+      if(typeof progShowToast==='function') progShowToast('Erro ao salvar fornecedor.','erro');
+      else alert('Erro ao salvar fornecedor.');
+      return;
+    }
   }
+  Object.assign(f,campos);
   closeModal();
   _fornRefreshLista();
 }
@@ -45837,10 +45762,15 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.210',
-  data:   '05/10/2026',
-  build:  '20261005-1730',
+  numero: '8.1.212',
+  data:   '06/10/2026',
+  build:  '20261006-1900',
   log: [
+    {v:'8.1.212', d:'06/10/2026', itens:[
+      'Fornecedores: o cadastro do ERP CENA agora é gravado na tabela de fornecedores pelo servidor, todo dia às 03:00 e pelo botão 🔄 Sincronizar (só o que mudou desde a última vez). O navegador não busca mais no ERP nem guarda cópia local; os selects de lançamentos, frota e locação mostram a base completa do banco.',
+      'Fornecedores do ERP aparecem com a etiqueta ERP: razão social, CNPJ/CPF, telefone, e-mail, cidade, UF e status vêm do ERP e só mudam lá; aqui dá para ajustar tipo e contato. Não é possível excluir fornecedor do ERP. Cadastros manuais com o mesmo CNPJ são vinculados ao ERP automaticamente; casos ambíguos ficam registrados para revisão. Dados bancários e PIX não são copiados.',
+      'Sincronizar: perfis admin, diretoria, gestor e administrativo. SQL: supabase/migrations/20261006190000_fornecedores_erp_sync.sql e 20261006190100_fornecedores_erp_sync_cron.sql; Edge erp-fornecedores-sync.',
+    ]},
     {v:'8.1.210', d:'05/10/2026', itens:[
       'Programação de Projetos: caminhão compartilhado por 2 equipes no mesmo dia e horário. Ao escolher uma placa que já está com outra equipe no mesmo horário, o sistema pergunta se o veículo será compartilhado e marca as duas equipes (🤝 na linha da equipe; não aparece mais "Veículo duplicado"). Uma 3ª equipe fica bloqueada. Para desfazer, troque a placa ou remova o veículo. O banco garante as mesmas regras.',
       'Programação de Projetos: "Sai com carreta?" no veículo da equipe — Carreta de cabos ou Compressor, com a placa da carreta obrigatória (lista das carretinhas da frota ou placa digitada). Aparece como 🚛 na linha da equipe.',
@@ -97268,57 +97198,32 @@ function frtModalVeiculo(v, opts){
 
 var FRT_POSSE_COM_FORN = ['Alugado','Comodato','Terceiro'];
 
-// Lista combinada: fornecedores cadastrados no banco (uuid) + lista do ERP (ids _erp_, sincronizados ao salvar)
+// Fornecedores do banco: cadastro manual + espelho do ERP CENA (sincronizado no servidor). erp fica vazio.
 function frtFornecedoresLista(){
   var db = _fornDB.length ? _fornDB.slice() : fornecedores.filter(function(f){return !f._erp;});
-  var erp = fornecedores.filter(function(f){return f._erp;});
-  if(!erp.length){
-    try{
-      var raw=localStorage.getItem(ERP.cache.key);
-      if(raw) erp=(JSON.parse(raw)||[]).filter(function(f){return f._erp;});
-    }catch(e){}
-  }
-  var cnpjsDb={};
-  db.forEach(function(f){var c=(f.cnpj_cpf||'').replace(/\D/g,'');if(c)cnpjsDb[c]=true;});
-  erp = erp.filter(function(f){
-    var c=(f.cnpj_cpf||'').replace(/\D/g,'');
-    return !(c&&cnpjsDb[c]); // já cadastrado no banco — não duplicar na lista
-  });
   function ordRS(a,b){return (a.razao_social||'').localeCompare(b.razao_social||'');}
   db.sort(function(a,b){
     var sa=a.status==='Ativo'?0:1, sb=b.status==='Ativo'?0:1;
     if(sa!==sb)return sa-sb;
     return ordRS(a,b);
   });
-  erp.sort(ordRS);
-  return {db:db, erp:erp};
+  return {db:db, erp:[]};
 }
 
-// Se o fornecedor selecionado é do ERP (_erp_), cadastra na tabela fornecedores (dedup por CNPJ) e retorna o uuid
+// IDs antigos da lista do ERP no navegador (_erp_<id>): o fornecedor já está na tabela pela sincronização
 function frtResolverFornecedorId(fornId){
   if(!fornId) return Promise.resolve(null);
   if(String(fornId).indexOf('_erp_')!==0) return Promise.resolve(fornId);
-  var lst=frtFornecedoresLista();
-  var f=lst.erp.find(function(x){return x.id===fornId;})
-       ||fornecedores.find(function(x){return x.id===fornId;});
-  if(!f) return Promise.reject(new Error('fornecedor do ERP não encontrado na lista'));
-  var cnpj=(f.cnpj_cpf||'').replace(/\D/g,'');
-  var busca = cnpj
-    ? sbFetch('fornecedores',{filters:['cnpj_cpf=eq.'+cnpj]})
-    : sbFetch('fornecedores',{filters:['razao_social=eq.'+encodeURIComponent(f.razao_social||'')]});
-  return busca.then(function(r){
-    if(r&&r.length){
+  var erpId=parseInt(String(fornId).slice(5),10);
+  if(!(erpId>0)) return Promise.reject(new Error('fornecedor do ERP inválido'));
+  var loc=(_fornDB||[]).find(function(x){return Number(x.erp_id)===erpId && x.deleted_at==null;});
+  if(loc) return Promise.resolve(loc.id);
+  return Promise.resolve(sbFetch('fornecedores',{filters:['erp_id=eq.'+erpId,'deleted_at=is.null'],limit:1})).then(function(r){
+    if(r&&r[0]&&r[0].id){
       if(!_fornDB.some(function(x){return x.id===r[0].id;}))_fornDB.push(r[0]);
       return r[0].id;
     }
-    var novo={razao_social:f.razao_social||'',cnpj_cpf:cnpj||'',tipo:'Fornecedor',
-      contato:'',telefone:f.telefone||'',email:f.email||'',status:'Ativo'};
-    return sbInsert('fornecedores',novo).then(function(ins){
-      if(!ins||!ins[0]||!ins[0].id) throw new Error('falha ao gravar fornecedor no banco');
-      _fornDB.push(ins[0]);
-      progShowToast('Fornecedor "'+(f.razao_social||'')+'" cadastrado no banco a partir do ERP.');
-      return ins[0].id;
-    });
+    throw new Error('fornecedor do ERP ainda não sincronizado — use 🔄 Sincronizar em Cadastros > Fornecedores');
   });
 }
 
