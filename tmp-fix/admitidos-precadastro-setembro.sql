@@ -1,0 +1,224 @@
+-- PRÉ-CADASTRO DE ADMITIDOS — aDMINTIDOS sETEMBRO.xlsx — 33 colaboradores (nenhum existia no CENA na conferência de 07/10/2026)
+-- Igual ao pré-cadastro do sistema (importação RH): ativo = false, situação "pré-admissão", sem contrato/base/equipe.
+-- RE = matrícula. CPF gravado só com dígitos. O RH completa contrato/equipe e ativa pelo sistema.
+-- Rodar o arquivo INTEIRO (sem texto selecionado). O bloco DO é atômico: grava tudo ou nada.
+
+DO $$
+DECLARE
+  v_faltando text;
+  v_erros text;
+  v_n integer;
+BEGIN
+  SELECT string_agg(x.coluna, ', ')
+    INTO v_faltando
+  FROM unnest(ARRAY['nome', 're', 'bro', 'cargo', 'ativo', 'dispensado', 'synergy_matricula', 'admissao',
+                    'fonte_dp', 'synergy_synced_at', 'situacao_vinculo', 'situacao_inicio', 'vinculo_ref']) AS x(coluna)
+  WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns ic
+                    WHERE ic.table_schema = 'public' AND ic.table_name = 'colaboradores' AND ic.column_name = x.coluna);
+  IF v_faltando IS NOT NULL THEN
+    RAISE EXCEPTION 'PRÉ-CADASTRO CANCELADO — nada foi gravado: faltam colunas em colaboradores: %', v_faltando;
+  END IF;
+
+  WITH t(matricula, nome, cpf, cargo, centro_custo, data_admissao) AS (VALUES
+      ('1989', 'ROMARIO DE CASTRO MARQUES DOS SANTOS', '37905833836', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1990', 'LUCIO SIMPLICIO DE ARAUJO', '27046767807', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1991', 'MICHAEL DURIA BONFATI', '37812462803', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-15'),
+      ('1992', 'GUSTAVO HENRIQUE EVARISTO RIBEIRO', '54502414883', 'AUXILIAR ADMINISTRATIVO', 'RDSC', DATE '2026-09-16'),
+      ('1993', 'MAURICIO FRANCISCO DORNELLES', '10172557844', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-21'),
+      ('1994', 'ALDO JUSTINO DOS SANTOS', '32967539821', 'ENCARREGADO DE LINHA VIVA', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1995', 'RODRIGO SANTANA DOS SANTOS JUNIOR', '48135271832', 'ELETRICISTA I', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1996', 'GABRIEL DOS SANTOS', '47036933801', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-23'),
+      ('1997', 'ALBERTO VIEIRA DA PAZ', '18240345808', 'AJUDANTE GERAL', 'ADM', DATE '2026-09-28'),
+      ('1998', 'DANUBIA TEIXEIRA BORGES SILVA', '33059317879', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('1999', 'ALINE LIMEIRA LIMA', '34385508810', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('2008', 'FRANCISCO SILVESTRE DA SILVA NETO', '13975357410', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2009', 'RAFAEL MANOEL DO NASCIMENTO', '13568261480', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2010', 'JOSENILTON SANTOS DE JESUS', '03454248590', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2011', 'JEOVA DE JESUS SANTANA LOPES', '63460817305', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2012', 'TIAGO BATISTA DOS SANTOS', '35764853842', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2013', 'FRANCISCO DE ASSIS DA SILVA', '23189190895', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2014', 'EDILSON ALVES BEZERRA', '04037718111', 'PEDREIRO', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2015', 'GENESIO RAEL DE RAMOS', '50150685149', 'OPERADOR DE GUINDAUTO JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2016', 'ANTONIO LIMA DA COSTA', '84369450349', 'ENCARREGADO GERAL JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2017', 'ALEXANDRE AGUIAR BRUNO', '30217619843', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-10-05'),
+      ('2018', 'LUIZ ROBERTO GUANABARA DOS SANTOS', '31996166824', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2019', 'MATEUS MARTINS BEZERRA', '51322837805', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2020', 'DAVID MOREIRA', '40250390876', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2021', 'LUIZ ROBERTO IGNACIO JUNIOR', '26330278814', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2022', 'WILLIAN DOS SANTOS', '42732091871', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2023', 'WILLIAM BARBOSA LIMA', '34376102873', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-05'),
+      ('2024', 'THAIRONE DE JESUS SOUZA', '11559600500', 'ELETRICISTA', 'BT0', DATE '2026-10-06'),
+      ('2025', 'PAULO EDUARDO ROSA', '11115868888', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-06'),
+      ('2026', 'KLEBER CERQUEIRA', '28225094840', 'ENCARREGADO DE ALMOXARIFADO JR', 'RDSE', DATE '2026-10-07'),
+      ('2027', 'DIEGO ALEXANDRE DA SILVA', '34040910869', 'MEIO OFICIAL DE ALMOXARIFE', 'RDSE', DATE '2026-10-07'),
+      ('2028', 'WELLINGTON PEREIRA DO NASCIMENTO', '60919668801', 'AJUDANTE GERAL', 'ADM', DATE '2026-10-07'),
+      ('2029', 'WALEFER MOURA CELESTINO', '41635580803', 'SUPERVISOR DE OBRAS JUNIOR', 'RDSC', DATE '2026-10-07')
+    )
+  SELECT string_agg(format('Matrícula %s - %s: já existe no CENA por %s', t.matricula, t.nome, x.motivo), E'\n')
+    INTO v_erros
+  FROM t
+  CROSS JOIN LATERAL (
+    SELECT concat_ws(' + ',
+             CASE WHEN EXISTS (SELECT 1 FROM public.colaboradores c
+                               WHERE coalesce(c.bro, '') !~ '[A-Za-z]'
+                                 AND lpad(regexp_replace(coalesce(c.bro, ''), '\D', '', 'g'), 11, '0') = t.cpf) THEN 'CPF' END,
+             CASE WHEN EXISTS (SELECT 1 FROM public.colaboradores c
+                               WHERE ltrim(regexp_replace(coalesce(c.re, ''), '\D', '', 'g'), '0') = t.matricula) THEN 'RE' END,
+             CASE WHEN EXISTS (SELECT 1 FROM public.colaboradores c
+                               WHERE upper(regexp_replace(coalesce(c.synergy_matricula::text, ''), '\s', '', 'g')) = t.matricula) THEN 'MATRÍCULA SYNERGY' END
+           ) AS motivo
+  ) x
+  WHERE x.motivo <> '';
+  IF v_erros IS NOT NULL THEN
+    RAISE EXCEPTION E'PRÉ-CADASTRO CANCELADO — nada foi gravado:\n%', v_erros;
+  END IF;
+
+  WITH t(matricula, nome, cpf, cargo, centro_custo, data_admissao) AS (VALUES
+      ('1989', 'ROMARIO DE CASTRO MARQUES DOS SANTOS', '37905833836', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1990', 'LUCIO SIMPLICIO DE ARAUJO', '27046767807', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1991', 'MICHAEL DURIA BONFATI', '37812462803', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-15'),
+      ('1992', 'GUSTAVO HENRIQUE EVARISTO RIBEIRO', '54502414883', 'AUXILIAR ADMINISTRATIVO', 'RDSC', DATE '2026-09-16'),
+      ('1993', 'MAURICIO FRANCISCO DORNELLES', '10172557844', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-21'),
+      ('1994', 'ALDO JUSTINO DOS SANTOS', '32967539821', 'ENCARREGADO DE LINHA VIVA', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1995', 'RODRIGO SANTANA DOS SANTOS JUNIOR', '48135271832', 'ELETRICISTA I', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1996', 'GABRIEL DOS SANTOS', '47036933801', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-23'),
+      ('1997', 'ALBERTO VIEIRA DA PAZ', '18240345808', 'AJUDANTE GERAL', 'ADM', DATE '2026-09-28'),
+      ('1998', 'DANUBIA TEIXEIRA BORGES SILVA', '33059317879', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('1999', 'ALINE LIMEIRA LIMA', '34385508810', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('2008', 'FRANCISCO SILVESTRE DA SILVA NETO', '13975357410', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2009', 'RAFAEL MANOEL DO NASCIMENTO', '13568261480', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2010', 'JOSENILTON SANTOS DE JESUS', '03454248590', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2011', 'JEOVA DE JESUS SANTANA LOPES', '63460817305', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2012', 'TIAGO BATISTA DOS SANTOS', '35764853842', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2013', 'FRANCISCO DE ASSIS DA SILVA', '23189190895', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2014', 'EDILSON ALVES BEZERRA', '04037718111', 'PEDREIRO', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2015', 'GENESIO RAEL DE RAMOS', '50150685149', 'OPERADOR DE GUINDAUTO JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2016', 'ANTONIO LIMA DA COSTA', '84369450349', 'ENCARREGADO GERAL JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2017', 'ALEXANDRE AGUIAR BRUNO', '30217619843', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-10-05'),
+      ('2018', 'LUIZ ROBERTO GUANABARA DOS SANTOS', '31996166824', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2019', 'MATEUS MARTINS BEZERRA', '51322837805', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2020', 'DAVID MOREIRA', '40250390876', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2021', 'LUIZ ROBERTO IGNACIO JUNIOR', '26330278814', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2022', 'WILLIAN DOS SANTOS', '42732091871', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2023', 'WILLIAM BARBOSA LIMA', '34376102873', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-05'),
+      ('2024', 'THAIRONE DE JESUS SOUZA', '11559600500', 'ELETRICISTA', 'BT0', DATE '2026-10-06'),
+      ('2025', 'PAULO EDUARDO ROSA', '11115868888', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-06'),
+      ('2026', 'KLEBER CERQUEIRA', '28225094840', 'ENCARREGADO DE ALMOXARIFADO JR', 'RDSE', DATE '2026-10-07'),
+      ('2027', 'DIEGO ALEXANDRE DA SILVA', '34040910869', 'MEIO OFICIAL DE ALMOXARIFE', 'RDSE', DATE '2026-10-07'),
+      ('2028', 'WELLINGTON PEREIRA DO NASCIMENTO', '60919668801', 'AJUDANTE GERAL', 'ADM', DATE '2026-10-07'),
+      ('2029', 'WALEFER MOURA CELESTINO', '41635580803', 'SUPERVISOR DE OBRAS JUNIOR', 'RDSC', DATE '2026-10-07')
+    )
+  INSERT INTO public.colaboradores
+    (nome, bro, re, cargo, ativo, dispensado, synergy_matricula, admissao, fonte_dp, synergy_synced_at,
+     situacao_vinculo, situacao_inicio, vinculo_ref)
+  SELECT t.nome, t.cpf, t.matricula, t.cargo, false, false, t.matricula, t.data_admissao, 'import_planilha', now(),
+         'pre_admissao', t.data_admissao, gen_random_uuid()
+  FROM t;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n <> 33 THEN
+    RAISE EXCEPTION 'PRÉ-CADASTRO CANCELADO: % cadastros criados, esperado 33', v_n;
+  END IF;
+
+  IF to_regclass('public.rh_colaborador_eventos') IS NOT NULL THEN
+    WITH t(matricula, nome, cpf, cargo, centro_custo, data_admissao) AS (VALUES
+      ('1989', 'ROMARIO DE CASTRO MARQUES DOS SANTOS', '37905833836', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1990', 'LUCIO SIMPLICIO DE ARAUJO', '27046767807', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-14'),
+      ('1991', 'MICHAEL DURIA BONFATI', '37812462803', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-15'),
+      ('1992', 'GUSTAVO HENRIQUE EVARISTO RIBEIRO', '54502414883', 'AUXILIAR ADMINISTRATIVO', 'RDSC', DATE '2026-09-16'),
+      ('1993', 'MAURICIO FRANCISCO DORNELLES', '10172557844', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-21'),
+      ('1994', 'ALDO JUSTINO DOS SANTOS', '32967539821', 'ENCARREGADO DE LINHA VIVA', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1995', 'RODRIGO SANTANA DOS SANTOS JUNIOR', '48135271832', 'ELETRICISTA I', 'SOT OBRAS', DATE '2026-09-23'),
+      ('1996', 'GABRIEL DOS SANTOS', '47036933801', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-09-23'),
+      ('1997', 'ALBERTO VIEIRA DA PAZ', '18240345808', 'AJUDANTE GERAL', 'ADM', DATE '2026-09-28'),
+      ('1998', 'DANUBIA TEIXEIRA BORGES SILVA', '33059317879', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('1999', 'ALINE LIMEIRA LIMA', '34385508810', 'ASSISTENTE ADMINISTRATIVO JUNIOR', 'ADM', DATE '2026-10-01'),
+      ('2008', 'FRANCISCO SILVESTRE DA SILVA NETO', '13975357410', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2009', 'RAFAEL MANOEL DO NASCIMENTO', '13568261480', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2010', 'JOSENILTON SANTOS DE JESUS', '03454248590', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2011', 'JEOVA DE JESUS SANTANA LOPES', '63460817305', 'AJUDANTE GERAL', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2012', 'TIAGO BATISTA DOS SANTOS', '35764853842', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2013', 'FRANCISCO DE ASSIS DA SILVA', '23189190895', 'INSTALADOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2014', 'EDILSON ALVES BEZERRA', '04037718111', 'PEDREIRO', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2015', 'GENESIO RAEL DE RAMOS', '50150685149', 'OPERADOR DE GUINDAUTO JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2016', 'ANTONIO LIMA DA COSTA', '84369450349', 'ENCARREGADO GERAL JUNIOR', 'COMGAS CAMPINAS', DATE '2026-10-05'),
+      ('2017', 'ALEXANDRE AGUIAR BRUNO', '30217619843', 'ELETRICISTA I', 'TMA OESTE', DATE '2026-10-05'),
+      ('2018', 'LUIZ ROBERTO GUANABARA DOS SANTOS', '31996166824', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2019', 'MATEUS MARTINS BEZERRA', '51322837805', 'ELETRICISTA', 'BT0', DATE '2026-10-05'),
+      ('2020', 'DAVID MOREIRA', '40250390876', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2021', 'LUIZ ROBERTO IGNACIO JUNIOR', '26330278814', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2022', 'WILLIAN DOS SANTOS', '42732091871', 'ELETRICISTA II', 'TMA OESTE', DATE '2026-10-05'),
+      ('2023', 'WILLIAM BARBOSA LIMA', '34376102873', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-05'),
+      ('2024', 'THAIRONE DE JESUS SOUZA', '11559600500', 'ELETRICISTA', 'BT0', DATE '2026-10-06'),
+      ('2025', 'PAULO EDUARDO ROSA', '11115868888', 'MEIO OFICIAL DE ALMOXARIFE', 'SOT OBRAS', DATE '2026-10-06'),
+      ('2026', 'KLEBER CERQUEIRA', '28225094840', 'ENCARREGADO DE ALMOXARIFADO JR', 'RDSE', DATE '2026-10-07'),
+      ('2027', 'DIEGO ALEXANDRE DA SILVA', '34040910869', 'MEIO OFICIAL DE ALMOXARIFE', 'RDSE', DATE '2026-10-07'),
+      ('2028', 'WELLINGTON PEREIRA DO NASCIMENTO', '60919668801', 'AJUDANTE GERAL', 'ADM', DATE '2026-10-07'),
+      ('2029', 'WALEFER MOURA CELESTINO', '41635580803', 'SUPERVISOR DE OBRAS JUNIOR', 'RDSC', DATE '2026-10-07')
+    )
+    INSERT INTO public.rh_colaborador_eventos
+      (colaborador_id, vinculo_ref, tipo, situacao, inicio, cargo, motivo, fonte,
+       origem_modulo, origem_ref, payload, criado_por)
+    SELECT c.id, c.vinculo_ref, 'pre_admissao', 'pre_admissao', t.data_admissao, t.cargo,
+           'Pré-cadastro conforme relatório RH de admitidos', 'import', 'rh_sql',
+           'admissao_sql:' || t.matricula || ':' || t.data_admissao::text,
+           jsonb_build_object('matricula', t.matricula, 'admissao', t.data_admissao, 'centro_custo', t.centro_custo,
+                              'origem', 'Relatório RH aDMINTIDOS sETEMBRO.xlsx'),
+           'Carga SQL RH'
+    FROM t
+    JOIN public.colaboradores c
+      ON ltrim(regexp_replace(coalesce(c.re, ''), '\D', '', 'g'), '0') = t.matricula
+     AND c.bro = t.cpf
+     AND c.situacao_vinculo = 'pre_admissao'
+    WHERE NOT EXISTS (SELECT 1 FROM public.rh_colaborador_eventos e
+                      WHERE e.colaborador_id::text = c.id::text AND e.tipo = 'pre_admissao'
+                        AND e.origem_ref = 'admissao_sql:' || t.matricula || ':' || t.data_admissao::text
+                        AND e.anulado_em IS NULL);
+    GET DIAGNOSTICS v_n = ROW_COUNT;
+    IF v_n <> 33 THEN
+      RAISE EXCEPTION 'PRÉ-CADASTRO CANCELADO: % eventos criados, esperado 33', v_n;
+    END IF;
+  END IF;
+END $$;
+
+-- Conferência (somente leitura, pode rodar sozinha): deve listar 33 linhas, todas com ativo = false e situacao_vinculo = pre_admissao
+WITH t(matricula, centro_custo) AS (VALUES
+  ('1989', 'TMA OESTE'),
+  ('1990', 'TMA OESTE'),
+  ('1991', 'TMA OESTE'),
+  ('1992', 'RDSC'),
+  ('1993', 'TMA OESTE'),
+  ('1994', 'SOT OBRAS'),
+  ('1995', 'SOT OBRAS'),
+  ('1996', 'TMA OESTE'),
+  ('1997', 'ADM'),
+  ('1998', 'ADM'),
+  ('1999', 'ADM'),
+  ('2008', 'COMGAS CAMPINAS'),
+  ('2009', 'COMGAS CAMPINAS'),
+  ('2010', 'COMGAS CAMPINAS'),
+  ('2011', 'COMGAS CAMPINAS'),
+  ('2012', 'COMGAS CAMPINAS'),
+  ('2013', 'COMGAS CAMPINAS'),
+  ('2014', 'COMGAS CAMPINAS'),
+  ('2015', 'COMGAS CAMPINAS'),
+  ('2016', 'COMGAS CAMPINAS'),
+  ('2017', 'TMA OESTE'),
+  ('2018', 'BT0'),
+  ('2019', 'BT0'),
+  ('2020', 'TMA OESTE'),
+  ('2021', 'TMA OESTE'),
+  ('2022', 'TMA OESTE'),
+  ('2023', 'SOT OBRAS'),
+  ('2024', 'BT0'),
+  ('2025', 'SOT OBRAS'),
+  ('2026', 'RDSE'),
+  ('2027', 'RDSE'),
+  ('2028', 'ADM'),
+  ('2029', 'RDSC')
+)
+SELECT t.matricula, t.centro_custo, c.id, c.nome, c.re, c.cargo, c.ativo, c.dispensado, c.admissao,
+       c.situacao_vinculo, c.contrato_id
+FROM t
+LEFT JOIN public.colaboradores c
+  ON ltrim(regexp_replace(coalesce(c.re, ''), '\D', '', 'g'), '0') = t.matricula
+ORDER BY t.matricula::int;
