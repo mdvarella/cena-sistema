@@ -53,6 +53,21 @@ ok('não altera usuarios_sistema / perfis_sistema / contratos',
   !/(ALTER TABLE|UPDATE|INSERT INTO)\s+public\.(usuarios_sistema|perfis_sistema|contratos)\b/i.test(codigo));
 ok('não cadastra ALM_SAP_RESERVAR', !/ALM_SAP_RESERVAR/.test(codigo));
 ok('não usa db reset / DROP TABLE fora do bloco de desfazer', !/\bDROP TABLE\b/i.test(codigo));
+const codigoLimpo = codigo.trim();
+ok('transação explícita: BEGIN; é o primeiro comando (antes das pré-condições)',
+  codigoLimpo.startsWith('BEGIN;') && codigoLimpo.indexOf('BEGIN;') < codigoLimpo.indexOf('DO $$'));
+ok('transação explícita: COMMIT; é o último comando, depois do NOTIFY',
+  codigoLimpo.endsWith('COMMIT;') && codigoLimpo.indexOf("NOTIFY pgrst, 'reload schema';") < codigoLimpo.lastIndexOf('COMMIT;'));
+ok('transação explícita: um único BEGIN; e um único COMMIT; de topo, sem ROLLBACK',
+  (codigo.match(/^BEGIN;/gm) || []).length === 1 && (codigo.match(/^COMMIT;/gm) || []).length === 1 && !/\bROLLBACK\b/i.test(codigo));
+ok('não percorre pg_policies nem apaga policy por nome dinâmico',
+  !/pg_policies/i.test(codigo) && !/DROP POLICY\s+%I/i.test(codigo));
+const dropsPolicy = [...codigo.matchAll(/DROP POLICY\s+(?:IF EXISTS\s+)?(\w+)\s+ON\s+public\.(\w+)/gi)].map(m => `${m[2]}.${m[1]}`).sort();
+ok('DROP POLICY só das 3 policies desta migration', JSON.stringify(dropsPolicy) === JSON.stringify([
+  'cena_acoes.cena_acoes_select_erp',
+  'cena_permissoes_acao.cena_permissoes_acao_select_admin',
+  'cena_permissoes_acao_eventos.cena_permissoes_acao_eventos_select_admin']), dropsPolicy);
+ok('todo DROP POLICY é IF EXISTS', !/DROP POLICY\s+(?!IF EXISTS)/i.test(codigo));
 
 // ── Banco ───────────────────────────────────────────────────────
 const U = n => `a0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -119,7 +134,13 @@ async function como(db, role, uid, fn, email) {
   }
 }
 const tenta = async (db, sql, params) => { try { await db.query(sql, params); return null; } catch (e) { return e.message; } };
-const tentaExec = async (db, sql) => { try { await db.exec(sql); return null; } catch (e) { return e.message; } };
+// Falha dentro do BEGIN explícito deixa a sessão em transação abortada: ROLLBACK como faria o SQL Editor ao descartar.
+const tentaExec = async (db, sql) => {
+  try { await db.exec(sql); return null; } catch (e) {
+    try { await db.exec('ROLLBACK'); } catch (_) {}
+    return e.message;
+  }
+};
 const pode = (db, uid, acao, contrato) => como(db, 'authenticated', uid, async () =>
   (await db.query('select public.cena_pode($1, $2::uuid) v', [acao, contrato || null])).rows[0].v);
 
@@ -473,6 +494,84 @@ await db.exec(migSeg);
 await db.exec(fnProg);
 erro = await tentaExec(db, mig);
 ok('contratos.id não uuid: recusa', /contratos\.id não é uuid/.test(erro || ''), erro);
+await db.close();
+
+// ── Transação explícita: falha intencional no meio não deixa nada da Etapa 1.1 ──
+const FALHA = `\nDO $$ BEGIN RAISE EXCEPTION 'falha intencional de teste'; END $$;\n`;
+const comFalhaAntes = marca => {
+  const i = mig.indexOf(marca);
+  if (i < 0) throw new Error('marca não encontrada na migration: ' + marca);
+  return mig.slice(0, i) + FALHA + mig.slice(i);
+};
+const PONTOS_FALHA = [
+  ['depois das tabelas', '-- ── 4. Contrato válido'],
+  ['depois das funções e gatilhos', '-- ── 8. RLS e grants'],
+  ['depois de RLS, policies e grants', '-- ── 9. Ações e matriz inicial'],
+  ['depois do seed (antes do COMMIT)', '\nCOMMIT;'],
+];
+const objetosEtapa = async (db) => (await db.query(`
+  select (select count(*) from pg_class where relnamespace = 'public'::regnamespace
+            and relname in ('cena_acoes','cena_permissoes_acao','cena_permissoes_acao_eventos'))::int tabelas,
+         (select count(*) from pg_proc where pronamespace = 'public'::regnamespace
+            and (proname like 'cena_permiss%' or proname in ('cena_pode', 'cena_contrato_ativo')))::int funcoes,
+         (select count(*) from pg_trigger where tgname like 'trg_cena_permissoes%')::int gatilhos,
+         (select count(*) from pg_policies where tablename in ('cena_acoes','cena_permissoes_acao','cena_permissoes_acao_eventos'))::int policies,
+         (select count(*) from pg_class where relkind = 'i' and relname like 'cena_permissoes_acao%')::int indices`)).rows[0];
+for (const [nome, marca] of PONTOS_FALHA) {
+  db = await novoBanco();
+  erro = await tentaExec(db, comFalhaAntes(marca));
+  ok(`falha intencional ${nome}: migration aborta`, /falha intencional de teste/.test(erro || ''), erro);
+  const o = await objetosEtapa(db);
+  ok(`falha intencional ${nome}: nenhum objeto da Etapa 1.1 permanece`, Object.values(o).every(n => n === 0), o);
+  erro = await tentaExec(db, mig);
+  ok(`falha intencional ${nome}: depois aplica normalmente`, erro === null, erro);
+  await db.close();
+}
+
+// Falha ao reaplicar sobre uma instalação existente: estado anterior intacto (policies inclusive)
+db = await novoBanco();
+erro = await tentaExec(db, mig);
+ok('reaplicação com falha: instalação inicial ok', erro === null, erro);
+const objInst = await objetosEtapa(db);
+ok('controle: a contagem de objetos enxerga tabelas, funções, gatilhos, policies e índices instalados',
+  objInst.tabelas === 3 && objInst.funcoes === 10 && objInst.gatilhos === 4 && objInst.policies === 3 && objInst.indices > 0, objInst);
+await como(db, 'authenticated', UID.admin, () => db.query(`select public.cena_permissao_acao_conceder('rh', 'PROJ_EDITAR_WL', 'Antes da reaplicação')`));
+const retrato = async () => JSON.stringify({
+  objetos: await objetosEtapa(db),
+  regras: (await db.query(`select perfil, acao, permitido, deleted_at is null viva from public.cena_permissoes_acao order by perfil, acao`)).rows,
+  eventos: (await db.query(`select count(*)::int n from public.cena_permissoes_acao_eventos`)).rows[0].n,
+  policies: (await db.query(`select tablename, policyname, cmd, roles::text, qual from pg_policies
+    where tablename in ('cena_acoes','cena_permissoes_acao','cena_permissoes_acao_eventos') order by 1, 2`)).rows,
+});
+const antesReap = await retrato();
+erro = await tentaExec(db, comFalhaAntes('\nCOMMIT;'));
+ok('reaplicação com falha: aborta', /falha intencional de teste/.test(erro || ''), erro);
+ok('reaplicação com falha: matriz, eventos, objetos e policies iguais aos de antes', await retrato() === antesReap);
+ok('reaplicação com falha: cena_pode continua respondendo', await pode(db, UID.rh, 'PROJ_EDITAR_WL') === true
+  && await pode(db, UID.equipe, 'PROJ_EDITAR_WL') === false);
+await db.close();
+
+// ── Policy fictícia de migration futura sobrevive à reaplicação ──
+db = await novoBanco();
+erro = await tentaExec(db, mig);
+ok('policy futura: instalação inicial ok', erro === null, erro);
+await db.exec(`
+  create policy cena_acoes_futura_teste on public.cena_acoes for select to authenticated using (false);
+  create policy cena_permissoes_acao_futura_teste on public.cena_permissoes_acao for select to authenticated using (false);
+  create policy cena_permissoes_acao_eventos_futura_teste on public.cena_permissoes_acao_eventos for select to authenticated using (false);`);
+const polsFuturas = async () => (await db.query(`select tablename, policyname, cmd, roles::text roles, qual from pg_policies
+  where tablename in ('cena_acoes','cena_permissoes_acao','cena_permissoes_acao_eventos') order by 1, 2`)).rows;
+const antesFut = await polsFuturas();
+erro = await tentaExec(db, mig);
+ok('policy futura: reaplicação sem erro', erro === null, erro);
+const depoisFut = await polsFuturas();
+ok('policy futura: as 3 policies fictícias continuam existindo após reaplicar',
+  ['cena_acoes_futura_teste', 'cena_permissoes_acao_futura_teste', 'cena_permissoes_acao_eventos_futura_teste']
+    .every(n => depoisFut.some(p => p.policyname === n && p.qual === 'false')), depoisFut);
+ok('policy futura: policies próprias recriadas e nada mais mudou', JSON.stringify(antesFut) === JSON.stringify(depoisFut), [antesFut, depoisFut]);
+ok('policy futura: total de 6 policies (3 próprias + 3 fictícias)', depoisFut.length === 6, depoisFut.length);
+ok('policy futura: cena_pode inalterado', await pode(db, UID.gestor, 'PROJ_ALTERAR_PERFIL_PROCESSO') === true
+  && await pode(db, UID.escritorio, 'PROJ_ALTERAR_PERFIL_PROCESSO') === false);
 await db.close();
 
 if (failed.length) {

@@ -26,6 +26,8 @@ Implementada e testada localmente em 07/10/2026. **Migration não aplicada no Su
 - `PROJ_PROGRAMAR`: a migration lê `cena_prog_pode_programar_projetos()` no banco e só semeia se a lista for exatamente `admin, diretoria, gestor, coordenador, supervisor, administrativo, escritorio`. Diferente → a migration inteira falha.
 - Gestor não altera regras dos perfis `admin` e `diretoria` (mesmo critério do gatilho de `usuarios_sistema`).
 - Reaplicar a migration não sobrescreve ação existente nem recria regra que já existiu (mesmo revogada).
+- Migration em `BEGIN; … COMMIT;` explícito: qualquer falha (pré-condição, tabela, função, gatilho, policy, grant, seed) desfaz a Etapa 1.1 inteira, também no SQL Editor.
+- A migration recria só as próprias 3 policies (`DROP POLICY IF EXISTS` + `CREATE POLICY` por nome); policy de outra migration não é apagada.
 
 ## Auditoria dos logs anon
 

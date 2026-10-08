@@ -5,6 +5,9 @@
 -- Aditiva e idempotente. Não altera usuarios_sistema, perfis_sistema, contratos, TMA nem a Programação atual.
 -- Autorização só por auth.uid() → usuarios_sistema.auth_user_id. E-mail nunca autoriza.
 -- Precedência: regra viva do contrato > regra viva global (contrato_id NULL) > FALSE.
+-- Transação explícita (também no SQL Editor): qualquer falha desfaz a Etapa 1.1 inteira.
+
+BEGIN;
 
 -- ── 0. Pré-condições (falha inteira, nada é aplicado) ────────────────────
 DO $$
@@ -445,21 +448,7 @@ GRANT SELECT ON TABLE public.cena_acoes TO authenticated, service_role;
 GRANT SELECT ON TABLE public.cena_permissoes_acao TO authenticated, service_role;
 GRANT SELECT ON TABLE public.cena_permissoes_acao_eventos TO authenticated, service_role;
 
-DO $$
-DECLARE
-  p record;
-BEGIN
-  FOR p IN
-    SELECT tablename, policyname FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename IN ('cena_acoes', 'cena_permissoes_acao', 'cena_permissoes_acao_eventos')
-      AND policyname NOT IN ('cena_acoes_select_erp', 'cena_permissoes_acao_select_admin',
-                             'cena_permissoes_acao_eventos_select_admin')
-  LOOP
-    EXECUTE format('DROP POLICY %I ON public.%I', p.policyname, p.tablename);
-  END LOOP;
-END $$;
-
+-- Recria somente as policies desta migration; policies criadas por migrations futuras não são tocadas.
 DROP POLICY IF EXISTS cena_acoes_select_erp ON public.cena_acoes;
 CREATE POLICY cena_acoes_select_erp ON public.cena_acoes
   FOR SELECT TO authenticated USING ((SELECT public.cena_usuario_erp_ativo()));
@@ -533,6 +522,8 @@ BEGIN
 END $$;
 
 NOTIFY pgrst, 'reload schema';
+
+COMMIT;
 
 -- Validação
 -- SELECT acao, string_agg(perfil, ', ' ORDER BY perfil) AS perfis
