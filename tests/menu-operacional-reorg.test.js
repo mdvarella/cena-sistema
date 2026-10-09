@@ -54,9 +54,12 @@ function dados() {
   const ant = flat(B.operacional), novo = flat(op);
   ok('mesmas páginas (ids) do menu anterior', JSON.stringify(ant.map(i => i.id).sort()) === JSON.stringify(novo.map(i => i.id).sort()));
   ok('mesmos nomes e ícones dos itens', ant.every(a => { const n = novo.find(x => x.id === a.id); return n && n.label === a.label && n.icon === a.icon; }));
+  // 8.1.213: Frotas ganhou o atalho Entrada Inteligente (menu e MAIN_CONFIG); fora isso, igual à base.
+  const Gc = Object.assign({}, G, { frotas: G.frotas.map(g => Object.assign({}, g, { items: (g.items || []).filter(i => i.id !== 'rh-entrada-ia') })) });
+  const mcAtual = vrEm(html, 'MAIN_CONFIG').replace("{id:'frotas-documentos',   label:'📄 Documentos'},\n    {id:'rh-entrada-ia',       label:'🤖 Entrada Inteligente'},", "{id:'frotas-documentos',   label:'📄 Documentos'},");
   const outros = Object.keys(B).filter(k => k !== 'operacional');
-  ok('demais módulos do menu inalterados', JSON.stringify(Object.keys(G).sort()) === JSON.stringify(Object.keys(B).sort()) && outros.every(k => JSON.stringify(B[k]) === JSON.stringify(G[k])), outros.filter(k => JSON.stringify(B[k]) !== JSON.stringify(G[k])));
-  ok('MAIN_CONFIG inalterado (página inicial do Operacional)', vrEm(base, 'MAIN_CONFIG') === vrEm(html, 'MAIN_CONFIG'));
+  ok('demais módulos do menu inalterados', JSON.stringify(Object.keys(Gc).sort()) === JSON.stringify(Object.keys(B).sort()) && outros.every(k => JSON.stringify(B[k]) === JSON.stringify(Gc[k])), outros.filter(k => JSON.stringify(B[k]) !== JSON.stringify(Gc[k])));
+  ok('MAIN_CONFIG inalterado (página inicial do Operacional)', vrEm(base, 'MAIN_CONFIG') === mcAtual);
   ok('permissões de perfil inalteradas', ['perfilDpRhFiltrarSidebar', 'perfilModuloBloqueado', 'perfilFrotasModuloBloqueado'].every(n => fnEm(base, n) === fnEm(html, n)));
 }
 
