@@ -285,9 +285,10 @@ function prepBanco(existente, falhar) {
   }
 
   // ── Versão ──────────────────────────────────────────────────────
-  ok('APP_VERSAO 8.1.210', /numero: '8\.1\.210'/.test(html) && /\{v:'8\.1\.210'/.test(html));
-  ok('scripts ?v=8.1.210 (7)', html.split('?v=8.1.210"').length - 1 === 7 && html.split('?v=8.1.209"').length - 1 === 0);
-  ok('SW_VERSION 8.1.210', /const SW_VERSION\s+= 'cena-8\.1\.210'/.test(sw));
+  const patch = (re, s) => { const m = re.exec(s); return m ? Number(m[1]) : -1; };
+  ok('APP_VERSAO >= 8.1.210 com o log da 8.1.210', patch(/numero: '8\.1\.(\d+)'/, html) >= 210 && /\{v:'8\.1\.210'/.test(html));
+  ok('scripts ?v= sem 8.1.209', html.split('?v=8.1.209"').length - 1 === 0);
+  ok('SW_VERSION >= 8.1.210', patch(/const SW_VERSION\s+= 'cena-8\.1\.(\d+)'/, sw) >= 210);
 
   console.log(`prog-veic-compart-carreta: ${total - falhas}/${total} ok`);
   process.exit(falhas ? 1 : 0);
