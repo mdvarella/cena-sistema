@@ -224,6 +224,22 @@ Suíte completa: 64 arquivos, 64 passaram (inclui 1.1 com 185 e 1.2 com 271 veri
 5. Arquivo próximo dos limites (linhas e tamanho) para medir memória/tempo da Edge e o corpo da RPC.
 6. Logs da Edge sem nome de arquivo/conteúdo.
 
+## Estado de homologação (10/10/2026)
+
+- Migration `20261009193000_proj_lms_origem.sql` **aplicada e validada** (`tmp-fix/etapa-1.3-conferencia-producao.sql`, 28/28 ok).
+- Edge `proj-lms-receber` **publicada** em produção.
+- SheetJS 0.20.3 **vendorizado** (`supabase/functions/_shared/vendor/xlsx-0.20.3.mjs`), hash conferido contra o CDN, **licença Apache-2.0 incluída** (`xlsx-0.20.3.LICENSE`).
+- Primeiro envio real: **1 importação**, **200 linhas**; eventos **`CRIADA = 1`**, **`REENVIO = 1`**.
+- Testes negativos executados **sem gravação indevida** (segue 1 importação / 200 linhas / `CRIADA,REENVIO` / 1 objeto no bucket).
+- Bucket `proj-lms` **privado** e sem policies aplicáveis; `sot_wl` **não criada**; `sot_materiais`, `sot_atividades` e **TMA intactos**.
+
+### Pendências (bloqueiam declarar a etapa homologada)
+
+1. Teste com usuário real **sem `PROJ_IMPORTAR_LMS`** ainda **não executado** (precisa de segunda conta).
+2. Arquivo **> 12 MiB retornou HTTP 504** no runtime (não 413); o **limite real de 12 MiB ainda NÃO está homologado** (homologar limite real / gateway).
+
+> ⚠️ A Etapa 1.3 **não** está 100% homologada enquanto as pendências 1 e 2 existirem.
+
 ## Próxima etapa
 
 Confirmação humana do RASCUNHO (ORIGINAL + `ESTRUTURA_NOVA`), que poderá congelar o perfil de processo na mesma transação (origem `LMS_ORIGINAL_ESTRUTURA_NOVA` da 1.2), e depois `sot_wl`/conciliação. Para isso: ampliar o CHECK de `status`, criar a função controlada de status e a tela de upload/preview.
