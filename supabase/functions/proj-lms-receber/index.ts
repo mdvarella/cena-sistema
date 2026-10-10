@@ -18,7 +18,9 @@
 // O parse vem antes do Storage para arquivo inválido nunca chegar ao bucket.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
-import * as XLSX from "https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs";
+// Cópia local de cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs: o bundler do Supabase não importa desse host
+// e o npm só tem a 0.18.5 (vulnerável). Hash conferido em tests/proj-lms-receber-edge.test.mjs.
+import * as XLSX from "../_shared/vendor/xlsx-0.20.3.mjs";
 import {
   amostraPreview,
   LIMITES,

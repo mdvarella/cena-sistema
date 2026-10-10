@@ -16,7 +16,7 @@ try {
   const dir = process.env.PGLITE_PATH || path.join(process.env.TEMP || '/tmp', 'pglite-cena');
   const req = createRequire(path.join(dir, 'package.json'));
   ({ PGlite } = await import(pathToFileURL(req.resolve('@electric-sql/pglite')).href));
-  xlsxPath = process.env.XLSX_PATH || path.join(process.env.TEMP || '/tmp', 'cena-lms-parse', 'node_modules', 'xlsx', 'xlsx.mjs');
+  xlsxPath = process.env.XLSX_PATH || path.join(raiz, 'supabase', 'functions', '_shared', 'vendor', 'xlsx-0.20.3.mjs');
   XLSX = await import(pathToFileURL(xlsxPath).href);
 } catch {
   console.log('proj-lms-receber-edge: SKIP (defina PGLITE_PATH e XLSX_PATH)');
@@ -52,7 +52,13 @@ ok('não congela perfil, não toca materiais/atividades/WL/TMA', !/congelar|sot_
 ok('sem URL pública nem signed URL', !/getPublicUrl|createSignedUrl/.test(edgeCodigo));
 ok('upload sem sobrescrever (upsert: false)', /upsert: false/.test(edgeCodigo) && !/upsert: true/.test(edgeCodigo));
 ok('parser separado (Edge só orquestra)', /from "\.\.\/_shared\/lms-parser\.ts"/.test(edgeSrc) && !/function parseLms|XLSX\.read\(/.test(edgeCodigo));
-ok('SheetJS 0.20.3 fixado', /https:\/\/cdn\.sheetjs\.com\/xlsx-0\.20\.3\/package\/xlsx\.mjs/.test(edgeSrc));
+ok('SheetJS 0.20.3 fixado (cópia local, sem import de CDN)', /^import \* as XLSX from "\.\.\/_shared\/vendor\/xlsx-0\.20\.3\.mjs";$/m.test(edgeSrc)
+  && !/^import [^\n]*(cdn\.sheetjs\.com|npm:xlsx|esm\.sh\/xlsx)/m.test(edgeSrc));
+const vendorSrc = fs.readFileSync(path.join(raiz, 'supabase', 'functions', '_shared', 'vendor', 'xlsx-0.20.3.mjs'), 'utf8').replace(/\r\n/g, '\n');
+ok('cópia local idêntica ao cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs (SHA-256)',
+  createHash('sha256').update(vendorSrc, 'utf8').digest('hex') === '1a0fb062ee9781b13f6687371b202aaefc53b6ce55b530c027e01f9c087b77db'
+  && /^XLSX\.version = '0\.20\.3';$/m.test(vendorSrc));
+ok('licença da cópia local presente', fs.existsSync(path.join(raiz, 'supabase', 'functions', '_shared', 'vendor', 'xlsx-0.20.3.LICENSE')));
 const cfg = fs.readFileSync(path.join(raiz, 'supabase', 'config.toml'), 'utf8');
 ok('config.toml: proj-lms-receber com verify_jwt = true', /\[functions\.proj-lms-receber\]\r?\nverify_jwt = true/.test(cfg));
 
@@ -189,7 +195,7 @@ let handler = null;
 globalThis.Deno = { env: { get: k => S.env[k] }, serve: h => { handler = h; } };
 const codigoEdge = edgeSrc
   .replace(/^import \{ createClient \} from "[^"]+";$/m, 'const createClient = globalThis.__cenaCreateClient;')
-  .replace(/from "https:\/\/cdn\.sheetjs\.com\/[^"]+";/, `from ${JSON.stringify(pathToFileURL(xlsxPath).href)};`)
+  .replace(/from "\.\.\/_shared\/vendor\/xlsx-0\.20\.3\.mjs";/, `from ${JSON.stringify(pathToFileURL(xlsxPath).href)};`)
   .replace(/from "\.\.\/_shared\/lms-parser\.ts";/, `from ${JSON.stringify(pathToFileURL(parserPath).href)};`);
 const tmp = path.join(os.tmpdir(), `cena-proj-lms-receber-${process.pid}-${Date.now()}.mts`);
 fs.writeFileSync(tmp, codigoEdge);

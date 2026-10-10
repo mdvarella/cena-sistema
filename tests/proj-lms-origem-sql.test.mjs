@@ -16,7 +16,7 @@ try {
   const dir = process.env.PGLITE_PATH || path.join(process.env.TEMP || '/tmp', 'pglite-cena');
   const req = createRequire(path.join(dir, 'package.json'));
   ({ PGlite } = await import(pathToFileURL(req.resolve('@electric-sql/pglite')).href));
-  XLSX = await import(pathToFileURL(process.env.XLSX_PATH || path.join(process.env.TEMP || '/tmp', 'cena-lms-parse', 'node_modules', 'xlsx', 'xlsx.mjs')).href);
+  XLSX = await import(pathToFileURL(process.env.XLSX_PATH || path.join(raiz, 'supabase', 'functions', '_shared', 'vendor', 'xlsx-0.20.3.mjs')).href);
 } catch {
   console.log('proj-lms-origem-sql: SKIP (defina PGLITE_PATH e XLSX_PATH)');
   process.exit(0);

@@ -127,7 +127,7 @@ Puro: recebe bytes + SheetJS e devolve estrutura; não acessa rede, banco nem St
 - Aba `Planilha1`; cabeçalho da linha 3 conferido coluna a coluna em A:N (comparação com NFC, espaços colapsados e maiúsculas: `Quant. Plan`, `Cód. Ma` etc.). Qualquer diferença → `FORMATO_LMS_INCOMPATIVEL`, sem adivinhar e sem gravar nada.
 - D1 = identificação do projeto (`projeto_identificacao_raw`), guardada como texto, sem interpretação.
 - Só refs `A1..N∞` são lidas; o resto da planilha é descartado na leitura.
-- SheetJS 0.20.3 (mesma versão do `index.html`) com `cellFormula: false`, sem HTML, estilos, datas, VBA nem arquivos internos.
+- SheetJS 0.20.3 (mesma versão do `index.html`), cópia local em `supabase/functions/_shared/vendor/xlsx-0.20.3.mjs` (+ licença Apache-2.0): o bundler do Supabase recusa import de `cdn.sheetjs.com` e o npm só tem a 0.18.5. SHA-256 `1a0fb062…77db`, igual ao arquivo do CDN, conferido no teste da Edge. Lido com `cellFormula: false`, sem HTML, estilos, datas, VBA nem arquivos internos.
 
 ### Linha operacional (critério exato)
 
@@ -198,7 +198,7 @@ Conteúdo de O em diante (no modelo real: listas de pessoas com RE nas colunas R
 |---|---|---|
 | `proj-lms-parser.test.mjs` | 127 | Oráculo `modelo-lms-esperado.json` (linhas, WLs, materiais, FT=R, serviços, UPS por WL, duplicidades), comparação célula a célula independente do parser, hash, normalização, números pt-BR, linha fantasma, Plan=0/Real>0, KIT, FT=R, Estorno/Adicionais, fora de A:N, fórmula, cabeçalho/aba, limites, arquivos maliciosos montados em memória (CSV, XLS, XLSM, VBA, ZIP criptografado, path traversal, ZIP bomb, tamanho declarado falso). |
 | `proj-lms-origem-sql.test.mjs` | 141 | PGlite com as migrations reais (sessão, 1.1, 1.2, 1.3): estáticos, RLS/FORCE, grants, autorização (todos os motivos, negação/concessão por contrato), registro da fixture linha a linha, reenvio, 17 adulterações recusadas sem gravação parcial, imutabilidade para dono/authenticated/anon/service_role, consulta paginada, legado intacto, desfazer/reaplicar, pré-condições. |
-| `proj-lms-receber-edge.test.mjs` | 63 | `index.ts` real com Auth/Storage simulados e banco PGlite: lista de segurança da seção 46, sucesso, preview, reenvio, fora de A:N, compensação (Storage falha, banco falha, remoção falha, objeto em uso, objeto recriado), logs sem PII/segredos, ordem usuário → serviço. |
+| `proj-lms-receber-edge.test.mjs` | 65 | `index.ts` real com Auth/Storage simulados e banco PGlite: lista de segurança da seção 46, SheetJS local com hash do CDN, sucesso, preview, reenvio, fora de A:N, compensação (Storage falha, banco falha, remoção falha, objeto em uso, objeto recriado), logs sem PII/segredos, ordem usuário → serviço. |
 
 Mutações (cópias temporárias; arquivos definitivos intactos), todas detectadas: Quant. Real no lugar de Plan; agregação de códigos repetidos; descarte de FT=R; remoção do KIT; importação de conteúdo fora de A:N; anon com SELECT nas linhas; anon com EXECUTE na autorização; banco ignorando `cena_pode`; Edge ignorando a autorização; hash calculado depois do parse (Edge); hash sobre outra coisa (parser).
 
@@ -208,7 +208,7 @@ Suíte completa: 64 arquivos, 64 passaram (inclui 1.1 com 185 e 1.2 com 271 veri
 
 1. Janela residual de autorização descrita acima (revogação entre autorizar e registrar).
 2. Registro em uma chamada (até 5.000 linhas, alguns MB de JSON). Garante tudo-ou-nada; limite de corpo do PostgREST/Edge precisa de conferência remota com arquivo grande.
-3. SheetJS importado de `cdn.sheetjs.com` no deploy; memória da Edge com planilha de 30 MiB descompactada não foi medida no Supabase.
+3. SheetJS em cópia local (atualizar = trocar o arquivo e o hash do teste juntos); memória da Edge com planilha de 30 MiB descompactada não foi medida no Supabase.
 4. Policies em `storage.objects` criadas fora das migrations (painel) que não filtram `bucket_id` liberariam o bucket novo. Query de conferência no fim da migration.
 5. Compensação `PENDENTE` deixa objeto órfão (privado, sem importação): limpeza manual pelo log.
 6. Existência de projeto distinguível para usuário ERP ativo sem permissão (`PROJETO_INEXISTENTE` × `SEM_PERMISSAO`).
@@ -217,9 +217,9 @@ Suíte completa: 64 arquivos, 64 passaram (inclui 1.1 com 185 e 1.2 com 271 veri
 
 ## Validação remota necessária
 
-1. Aplicar a migration no SQL Editor (role `postgres`) e rodar o bloco "Validação" do fim do arquivo (bucket privado, policies de `storage.objects`, RLS/FORCE, grants, normalização).
-2. `supabase functions deploy proj-lms-receber` e conferir que o import do SheetJS resolve no runtime.
-3. Upload da fixture com usuário real autorizado: 200, 200 linhas, objeto em `proj-lms/<projeto>/<hash>.xlsx`, reenvio idempotente.
+1. Aplicar a migration no SQL Editor (role `postgres`) e rodar `tmp-fix/etapa-1.3-conferencia-producao.sql`. **Feito em 09/10/2026: 28/28 ok** (policies de `storage.objects` conferidas antes: só `cena-docs` e `cena-rh-pj-documentos`).
+2. `supabase functions deploy proj-lms-receber` e conferir que a função sobe sem erro. Primeira tentativa recusada pelo bundler (import de `cdn.sheetjs.com`); corrigido com a cópia local. **Feito em 10/10/2026**; projeto inexistente com JWT real → 404 `PROJETO_INEXISTENTE`, sem gravação.
+3. Upload da fixture com usuário real autorizado: 200, 200 linhas, objeto em `proj-lms/<projeto>/<hash>.xlsx`, reenvio idempotente. **Feito em 10/10/2026** no projeto de teste "TESTE 1" do contrato ENEL RDSE (`92722d1e-…24da`): importação `aac33bfb-…347f` RASCUNHO/ORIGINAL, Planilha1, 200 linhas gravadas, 12 WLs, 0 linhas divergentes da célula, hash `b8e3b9d4…37a4` e tamanho 4.481.455 bytes iguais à fixture, eventos `CRIADA,REENVIO`, reenvio devolveu a mesma importação, 1 objeto no bucket no caminho esperado. A importação fica permanente nesse projeto de teste.
 4. Negativas reais: sem JWT, usuário sem `PROJ_IMPORTAR_LMS`, projeto excluído, contrato texto, arquivo inválido.
 5. Arquivo próximo dos limites (linhas e tamanho) para medir memória/tempo da Edge e o corpo da RPC.
 6. Logs da Edge sem nome de arquivo/conteúdo.

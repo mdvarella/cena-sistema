@@ -1,7 +1,7 @@
 // ETAPA 1.3 — parser do LMS original (supabase/functions/_shared/lms-parser.ts).
 // Oráculo: tests/fixtures/lms/modelo-lms-esperado.json + leitura independente das células da fixture.
 // Variações sintéticas montadas em memória (nunca gravadas no repositório).
-// Uso: XLSX_PATH=<.../node_modules/xlsx/xlsx.mjs> node tests/proj-lms-parser.test.mjs (padrão: %TEMP%/cena-lms-parse)
+// Uso: node tests/proj-lms-parser.test.mjs (SheetJS padrão: supabase/functions/_shared/vendor/xlsx-0.20.3.mjs; XLSX_PATH troca)
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
@@ -12,10 +12,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const raiz = path.join(here, '..');
 let XLSX;
 try {
-  const p = process.env.XLSX_PATH || path.join(process.env.TEMP || '/tmp', 'cena-lms-parse', 'node_modules', 'xlsx', 'xlsx.mjs');
+  const p = process.env.XLSX_PATH || path.join(raiz, 'supabase', 'functions', '_shared', 'vendor', 'xlsx-0.20.3.mjs');
   XLSX = await import(pathToFileURL(p).href);
 } catch {
-  console.log('proj-lms-parser: SKIP (instale xlsx 0.20.3 e defina XLSX_PATH)');
+  console.log('proj-lms-parser: SKIP (SheetJS não carregou; confira XLSX_PATH)');
   process.exit(0);
 }
 const parserPath = process.env.LMS_PARSER_PATH || path.join(raiz, 'supabase', 'functions', '_shared', 'lms-parser.ts');
