@@ -38596,6 +38596,444 @@ async function projLmsConfirmar(importacaoId, modo){
   await projLmsCarregar();
 }
 
+// ══════════════════════════════════════════════════════════════
+// ETAPA 1.3 — LMS: envio do LMS ORIGINAL (ENEL) no detalhe do projeto (aba "📥 LMS")
+// Pré-checa o XLSX no navegador (regras básicas da Edge) e envia para a Edge proj-lms-receber, que revalida tudo
+// e grava o RASCUNHO. NÃO confirma: a confirmação continua só na aba "LMS — Confirmação".
+// Bloqueia o envio quando o projeto já tem ORIGINAL confirmada (o RASCUNHO nunca poderia ser confirmado).
+// Não toca sot_materiais/sot_atividades/WL/TMA. A importação de materiais por planilha (aba Materiais) segue separada.
+// ══════════════════════════════════════════════════════════════
+var PROJ_LMS_UP_MAX_BYTES = 12 * 1024 * 1024;
+var PROJ_LMS_UP_MAX_LINHAS = 5000;
+var PROJ_LMS_UP_ABA = 'Planilha1';
+var PROJ_LMS_UP_CABECALHO = ['WL','CTG','FT','Cód. Ma','KIT','UMD','Descrição','Quant. Plan','Quant. Real','VALOR DE UPS ITEM','VALOR FINAL','VALOR FINAL PLAN','Estorno','Adicionais'];
+var PROJ_LMS_UP_COLS = 'ABCDEFGHIJKLMN';
+var PROJ_LMS_UP_XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+var PROJ_LMS_UP_MIMES_ACEITOS = [PROJ_LMS_UP_XLSX_MIME, 'application/octet-stream', 'application/zip', 'application/x-zip-compressed'];
+var PROJ_LMS_UP_MSG_BLOQUEIO_CONFIRMADA = 'Este projeto já possui LMS ORIGINAL confirmado. Revisões do LMS serão tratadas em etapa futura.';
+var PROJ_LMS_UP_MSG = {
+  'SEM_SESSAO': 'Sessão expirada. Faça login novamente.',
+  'SESSAO_INVALIDA': 'Sessão expirada. Faça login novamente.',
+  'PROJETO_INVALIDO': 'Projeto inválido.',
+  'USUARIO_ERP_INATIVO': 'Seu usuário do ERP está inativo ou não vinculado ao login.',
+  'SEM_PERMISSAO': 'Você não tem a permissão PROJ_IMPORTAR_LMS para este projeto.',
+  'CONTRATO_NAO_IDENTIFICADO': 'O contrato do projeto não foi identificado; envio bloqueado.',
+  'PROJETO_INEXISTENTE': 'Projeto não encontrado.',
+  'PROJETO_EXCLUIDO': 'O projeto foi excluído.',
+  'ARQUIVO_GRANDE_DEMAIS': 'Arquivo grande demais (máximo 12 MB).',
+  'TAMANHO_EXCEDIDO': 'Arquivo grande demais (máximo 12 MB).',
+  'ZIP_DESCOMPACTADO_EXCEDIDO': 'Planilha grande demais depois de descompactada.',
+  'ZIP_RAZAO_SUSPEITA': 'Arquivo com compactação suspeita; recusado por segurança.',
+  'ARQUIVO_VAZIO': 'Arquivo vazio.',
+  'EXTENSAO_OU_NOME_INVALIDO': 'Nome ou extensão inválidos: envie um arquivo .xlsx (sem macros).',
+  'MIME_NAO_ACEITO': 'Tipo de arquivo não aceito: envie um .xlsx.',
+  'ARQUIVO_COM_MACRO': 'Arquivo com macro não é aceito. Salve como .xlsx sem macros.',
+  'NAO_E_XLSX': 'O arquivo não é uma planilha .xlsx válida.',
+  'ZIP_INCONSISTENTE': 'Arquivo .xlsx corrompido.',
+  'XLSX_ILEGIVEL': 'Não foi possível ler a planilha.',
+  'WORKSHEET_AUSENTE': 'A planilha não tem a aba "Planilha1" do modelo LMS ENEL.',
+  'CABECALHO_INCOMPATIVEL': 'O cabeçalho da linha 3 (colunas A a N) não é o do modelo LMS ENEL.',
+  'CELULA_GRANDE_DEMAIS': 'Há célula com texto grande demais (máximo 2000 caracteres).',
+  'LIMITE_LINHAS_EXCEDIDO': 'Mais de 5000 linhas: acima do limite do LMS.',
+  'SEM_LINHAS_OPERACIONAIS': 'A planilha não tem linhas de LMS a partir da linha 4.',
+  'FALHA_STORAGE': 'Falha ao guardar o arquivo. Tente de novo.',
+  'FALHA_REGISTRO': 'Falha ao gravar o RASCUNHO. Tente de novo.',
+  'REGISTRO_INCONSISTENTE': 'O banco recusou o conteúdo lido do arquivo.',
+  'ERRO_AUTORIZACAO': 'Falha ao verificar a permissão. Tente de novo.',
+  'NAO_CONFIGURADO': 'Recebimento do LMS não configurado no servidor.',
+  'ERRO_INTERNO': 'Erro interno no recebimento do LMS. Tente de novo.'
+};
+var PROJ_LMS_UP_ALERTA_LABEL = {
+  'WL_VAZIA': 'WL vazia', 'CODIGO_VAZIO': 'Código vazio', 'QTD_PLAN_VAZIA': 'Quant. Plan vazia',
+  'QTD_PLAN_INVALIDA': 'Quant. Plan inválida', 'QTD_REAL_INVALIDA': 'Quant. Real inválida',
+  'VALOR_UPS_ITEM_INVALIDO': 'Valor UPS inválido', 'VALOR_FINAL_INVALIDO': 'Valor final inválido',
+  'VALOR_FINAL_PLAN_INVALIDO': 'Valor final plan inválido', 'QTD_NEGATIVA': 'Quantidade negativa',
+  'PLAN_ZERO_REAL_POSITIVO': 'Plan zero com Real positivo', 'CELULA_COM_ERRO': 'Célula com erro (#)',
+  'ESTORNO_INFORMADO': 'Estorno informado', 'ADICIONAIS_INFORMADO': 'Adicionais informado',
+  'SERVICO_PREFIXO_DIFERENTE_FT': 'Serviço com prefixo diferente do FT', 'SERVICO_KIT_FORA_DO_PADRAO': 'Serviço com KIT fora do padrão',
+  'LINHA_REPETIDA': 'Linha repetida'
+};
+var _projLmsUpSt = {projetoId:null, situacao:null, carregando:false, arquivo:null, pre:null, enviando:false, resultado:null, erro:''};
+
+function projLmsUpProjeto(projetoId){
+  var lista = (typeof sot_projetos !== 'undefined' && Array.isArray(sot_projetos)) ? sot_projetos : [];
+  return lista.filter(function(x){ return x && x.id === projetoId; })[0] || {id:projetoId};
+}
+
+function projLmsUpNomeProjeto(p){
+  if(!p) return '';
+  var nome = p.nome || '(projeto sem nome)';
+  return p.codigo_cliente ? (nome+' — '+p.codigo_cliente) : nome;
+}
+
+// Mesma normalização de cabeçalho da Edge (NFC, espaços colapsados, maiúsculas).
+function projLmsUpCabNorm(v){
+  var s = String(v==null ? '' : v);
+  if(s.normalize) s = s.normalize('NFC');
+  return s.replace(/\s+/g, ' ').trim().toUpperCase();
+}
+
+function projLmsUpIdNorm(v){ return projLmsUpCabNorm(v).replace(/\s+/g, ''); }
+
+// Identificação do arquivo (D1) × projeto aberto: código do cliente, código ou nome. Só alerta, não bloqueia.
+function projLmsUpProjetoConfere(ident, p){
+  var id = projLmsUpIdNorm(ident);
+  if(!id) return 'SEM_IDENTIFICACAO';
+  var cands = [p && p.codigo_cliente, p && p.codigo, p && p.nome].map(projLmsUpIdNorm).filter(function(c){ return c.length >= 4; });
+  for(var i=0; i<cands.length; i++){
+    if(cands[i] === id) return 'CONFERE';
+    if(id.length >= 4 && (cands[i].indexOf(id) >= 0 || id.indexOf(cands[i]) >= 0)) return 'CONFERE';
+  }
+  return 'DIFERENTE';
+}
+
+// Procura texto ASCII nos bytes (nomes das partes do ZIP ficam sem compressão): detecta macro antes de enviar.
+function projLmsUpBytesTem(bytes, txt){
+  var n = txt.length, c0 = txt.charCodeAt(0), lim = bytes.length - n;
+  for(var i=0; i<=lim; i++){
+    if(bytes[i] !== c0) continue;
+    var k = 1;
+    while(k < n && bytes[i+k] === txt.charCodeAt(k)) k++;
+    if(k === n) return true;
+  }
+  return false;
+}
+
+function projLmsUpLerBytes(arq){
+  if(arq && typeof arq.arrayBuffer === 'function') return arq.arrayBuffer().then(function(b){ return new Uint8Array(b); });
+  return new Promise(function(resolve, reject){
+    var fr = new FileReader();
+    fr.onload = function(){ resolve(new Uint8Array(fr.result)); };
+    fr.onerror = function(){ reject(fr.error); };
+    fr.readAsArrayBuffer(arq);
+  });
+}
+
+// Pré-checagem no navegador. A Edge revalida tudo e é a autoridade final.
+function projLmsUpPrechecar(arquivo, bytes, p){
+  var r = {ok:false, erros:[], avisos:[], detalhes:[], nome:String(arquivo && arquivo.name || ''), tamanho: bytes ? bytes.length : 0,
+    identificacao:null, confere:null, linhas:0};
+  if(!/\.xlsx$/i.test(r.nome) || /[\/\\]/.test(r.nome) || r.nome.length > 200){ r.erros.push('EXTENSAO_OU_NOME_INVALIDO'); return r; }
+  if(!r.tamanho){ r.erros.push('ARQUIVO_VAZIO'); return r; }
+  if(r.tamanho > PROJ_LMS_UP_MAX_BYTES){ r.erros.push('ARQUIVO_GRANDE_DEMAIS'); return r; }
+  if(bytes[0] !== 0x50 || bytes[1] !== 0x4B){ r.erros.push('NAO_E_XLSX'); return r; }
+  if(projLmsUpBytesTem(bytes, 'vbaProject.bin') || projLmsUpBytesTem(bytes, 'xl/macrosheets/') || projLmsUpBytesTem(bytes, 'xl/activeX/')){
+    r.erros.push('ARQUIVO_COM_MACRO'); return r;
+  }
+  var wb;
+  try{
+    wb = XLSX.read(bytes, {type:'array', sheets:PROJ_LMS_UP_ABA, cellFormula:false, cellHTML:false, cellNF:false,
+      cellStyles:false, cellDates:false, bookVBA:false});
+  }catch(e){ r.erros.push('XLSX_ILEGIVEL'); return r; }
+  if(!wb || !wb.SheetNames || wb.SheetNames.indexOf(PROJ_LMS_UP_ABA) < 0 || !wb.Sheets || !wb.Sheets[PROJ_LMS_UP_ABA]){
+    r.erros.push('WORKSHEET_AUSENTE'); return r;
+  }
+  var ws = wb.Sheets[PROJ_LMS_UP_ABA];
+  for(var i=0; i<PROJ_LMS_UP_CABECALHO.length; i++){
+    var col = PROJ_LMS_UP_COLS.charAt(i), c = ws[col+'3'];
+    var achado = projLmsUpCabNorm(c ? c.v : '');
+    if(achado !== projLmsUpCabNorm(PROJ_LMS_UP_CABECALHO[i])){
+      r.detalhes.push(col+'3: esperado "'+PROJ_LMS_UP_CABECALHO[i]+'", encontrado "'+(achado.slice(0, 40) || 'vazio')+'"');
+    }
+  }
+  if(r.detalhes.length){ r.erros.push('CABECALHO_INCOMPATIVEL'); return r; }
+  var d1 = ws['D1'];
+  r.identificacao = (d1 && d1.v != null && String(d1.v).trim() !== '') ? String(d1.v).trim() : null;
+  // Linhas a partir da 4 com conteúdo em A:G ou quantidade (H/I) diferente de zero — mesma ideia da Edge.
+  var linhas = {};
+  Object.keys(ws).forEach(function(ref){
+    var m = /^([A-N])([1-9][0-9]*)$/.exec(ref);
+    if(!m || Number(m[2]) < 4) return;
+    var cel = ws[ref];
+    if(!cel || cel.v == null || cel.v === '') return;
+    if('ABCDEFG'.indexOf(m[1]) >= 0){
+      if(cel.t === 's' && String(cel.v).replace(/^[\s ]+|[\s ]+$/g, '') === '') return;
+      linhas[m[2]] = true;
+    } else if(m[1] === 'H' || m[1] === 'I'){
+      var num = typeof cel.v === 'number' ? cel.v : Number(String(cel.v).replace(/\./g, '').replace(',', '.'));
+      if(isFinite(num) && num !== 0) linhas[m[2]] = true;
+    }
+  });
+  r.linhas = Object.keys(linhas).length;
+  if(!r.linhas){ r.erros.push('SEM_LINHAS_OPERACIONAIS'); return r; }
+  if(r.linhas > PROJ_LMS_UP_MAX_LINHAS){ r.erros.push('LIMITE_LINHAS_EXCEDIDO'); return r; }
+  r.confere = projLmsUpProjetoConfere(r.identificacao, p);
+  if(r.confere === 'SEM_IDENTIFICACAO') r.avisos.push('O arquivo não tem a identificação do projeto em D1. Confira se é o LMS deste projeto.');
+  else if(r.confere === 'DIFERENTE') r.avisos.push('A identificação do arquivo ("'+r.identificacao+'") não bate com o projeto aberto ('+projLmsUpNomeProjeto(p)+'). Confira se é o LMS deste projeto.');
+  r.ok = true;
+  return r;
+}
+
+function projLmsUpTraduzErro(status, data, txt){
+  var cod = data && (data.error || data.code) ? String(data.error || data.code) : '';
+  var erros = (data && Array.isArray(data.erros)) ? data.erros : [];
+  var sub = erros[0] && erros[0].codigo ? String(erros[0].codigo) : '';
+  if(status === 401 || /invalid jwt/i.test(String((data && data.message) || txt || ''))) return PROJ_LMS_UP_MSG.SEM_SESSAO;
+  if(sub && PROJ_LMS_UP_MSG[sub]){
+    var m = PROJ_LMS_UP_MSG[sub];
+    if(sub === 'CABECALHO_INCOMPATIVEL'){
+      var cols = erros.filter(function(e){ return e && e.codigo === 'CABECALHO_INCOMPATIVEL' && e.detalhe; }).slice(0, 5)
+        .map(function(e){ return e.detalhe.coluna+': esperado "'+e.detalhe.esperado+'"'; });
+      if(cols.length) m += ' ('+cols.join('; ')+')';
+    }
+    return m;
+  }
+  if(cod && PROJ_LMS_UP_MSG[cod]) return PROJ_LMS_UP_MSG[cod];
+  if(status === 404) return 'Recebimento do LMS indisponível (função proj-lms-receber não encontrada no servidor).';
+  if(cod) return 'Erro no recebimento do LMS: '+cod;
+  return 'Erro HTTP '+status+' no recebimento do LMS.';
+}
+
+async function projLmsUpPost(projetoId, arquivo){
+  if(DEMO) return {ok:false, error:'Indisponível no modo demonstração.'};
+  var tok = null;
+  try{
+    tok = await cenaAuthGetValidToken({requireAuth:true, forceLogin:false, reason:'lms:receber'});
+  }catch(e){ tok = null; }
+  if(!tok || tok==='demo' || (typeof sbAuthJwtIsAuthenticated==='function' && !sbAuthJwtIsAuthenticated(tok))){
+    return {ok:false, error:'Sessão Auth obrigatória para o LMS. Faça login autenticado (não MD5).'};
+  }
+  var tipo = String(arquivo && arquivo.type || '').toLowerCase();
+  if(PROJ_LMS_UP_MIMES_ACEITOS.indexOf(tipo) < 0) tipo = PROJ_LMS_UP_XLSX_MIME;
+  try{
+    var r = await fetch(SB.url+'/functions/v1/proj-lms-receber?projeto_id='+encodeURIComponent(projetoId), {
+      method:'POST',
+      headers:{
+        'Authorization': 'Bearer '+tok,
+        'apikey': SB.key,
+        'x-lms-nome': encodeURIComponent(String(arquivo && arquivo.name || '')),
+        'Content-Type': tipo
+      },
+      body: arquivo
+    });
+    var txt = await r.text();
+    var data = null;
+    try{ data = txt ? JSON.parse(txt) : null; }catch(e1){ data = null; }
+    if(!r.ok || !data || data.ok !== true){
+      console.error('projLmsUpPost', r.status, txt);
+      return {ok:false, error: projLmsUpTraduzErro(r.status, data, txt), status:r.status};
+    }
+    return {ok:true, data:data};
+  }catch(e){
+    console.error('projLmsUpPost', e);
+    return {ok:false, error:'Falha de rede ao enviar o LMS: '+String(e && e.message || e)};
+  }
+}
+
+async function projLmsUpSituacao(projetoId){
+  var res = await Promise.all([
+    projLmsRpc('sot_lms_autorizar_recebimento', {p_projeto_id:projetoId}),
+    projLmsRpc('sot_lms_estado_wl', {p_projeto_id:projetoId}),
+    projLmsRpc('sot_lms_rascunhos_listar', {})
+  ]);
+  var aut = res[0], est = res[1], ras = res[2];
+  var s = {
+    podeEnviar: !!(aut.ok && aut.data && aut.data.permitido === true),
+    motivo: aut.ok ? String((aut.data && aut.data.motivo) || '') : '',
+    erroAut: aut.ok ? '' : (aut.error || ''),
+    estado: est.ok ? String(est.data || '') : '',
+    erroEstado: est.ok ? '' : (est.error || ''),
+    rascunhos: (ras.ok && Array.isArray(ras.data)) ? ras.data.filter(function(x){ return x && x.projeto_id === projetoId && x.status === 'RASCUNHO'; }) : [],
+    erroRascunhos: ras.ok ? '' : (ras.error || '')
+  };
+  s.originalConfirmada = s.estado === 'EM_CONCILIACAO' || s.estado === 'ESTRUTURADO';
+  // Fail-closed: sem permissão, ORIGINAL confirmada ou estado desconhecido → não envia.
+  s.bloqueio = !s.podeEnviar ? (PROJ_LMS_UP_MSG[s.motivo] || s.erroAut || PROJ_LMS_UP_MSG.SEM_PERMISSAO)
+    : s.originalConfirmada ? PROJ_LMS_UP_MSG_BLOQUEIO_CONFIRMADA
+    : !s.estado ? ('Não foi possível verificar o estado LMS do projeto'+(s.erroEstado ? ': '+s.erroEstado : '')+'. Envio bloqueado por segurança.')
+    : '';
+  return s;
+}
+
+async function projLmsUpCarregar(projetoId, container){
+  if(_projLmsUpSt.projetoId !== projetoId){
+    _projLmsUpSt = {projetoId:projetoId, situacao:null, carregando:false, arquivo:null, pre:null, enviando:false, resultado:null, erro:''};
+  }
+  await projLmsUpAtualizarSituacao(projetoId, container);
+}
+
+async function projLmsUpAtualizarSituacao(projetoId, container){
+  var st = _projLmsUpSt;
+  st.carregando = true;
+  projLmsUpRender(projetoId, container);
+  var s = await projLmsUpSituacao(projetoId);
+  if(_projLmsUpSt !== st) return;
+  st.carregando = false;
+  st.situacao = s;
+  projLmsUpRender(projetoId, container);
+}
+
+function projLmsUpNum(v){
+  if(v == null || v === '') return '';
+  return typeof v === 'number' ? v.toLocaleString('pt-BR', {maximumFractionDigits:4}) : String(v);
+}
+
+function projLmsUpResultadoHtml(d){
+  var hash = String(d.arquivo && d.arquivo.sha256 || '');
+  var avisos = d.avisos && typeof d.avisos === 'object' ? d.avisos : {};
+  var chaves = Object.keys(avisos);
+  var amostra = Array.isArray(d.amostra) ? d.amostra.slice(0, 50) : [];
+  var th = 'style="padding:4px 6px;text-align:left;font-size:10px;color:#888;border-bottom:.5px solid #e0dfd8;white-space:nowrap"';
+  var td = 'style="padding:3px 6px;font-size:11px;border-bottom:.5px solid #f0efe8;vertical-align:top"';
+  return '<div class="card" style="padding:.75rem;margin-top:.75rem;border:1px solid #3B6D11">'
+    + '<div style="font-weight:700;font-size:13px;color:#27500A;margin-bottom:.4rem">'
+    + (d.reenvio ? 'Este arquivo já tinha sido recebido para este projeto (mesmo conteúdo). Nada foi duplicado.' : 'LMS recebido e gravado como RASCUNHO.')
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:4px 12px;font-size:12px">'
+    + '<div><span style="color:#888">Importação:</span> <code>'+projLmsEsc(d.importacao_id)+'</code></div>'
+    + '<div><span style="color:#888">Status:</span> '+projLmsEsc(d.status)+(d.reenvio ? ' (reenvio)' : '')+'</div>'
+    + '<div><span style="color:#888">Arquivo:</span> '+projLmsEsc(d.arquivo && d.arquivo.nome)+'</div>'
+    + '<div><span style="color:#888">Hash:</span> <code title="'+projLmsEsc(hash)+'">'+projLmsEsc(hash.slice(0, 12))+'…</code></div>'
+    + '<div><span style="color:#888">Linhas:</span> '+projLmsEsc(d.qtd_linhas)+'</div>'
+    + '<div><span style="color:#888">WLs distintas:</span> '+projLmsEsc(d.qtd_wls_distintas)+'</div>'
+    + '<div><span style="color:#888">Identificação no arquivo:</span> '+projLmsEsc(d.projeto_identificacao_raw || '—')+'</div>'
+    + '</div>'
+    + '<div style="margin-top:.5rem;font-size:12px"><b>Avisos do leitor:</b> '
+    + (chaves.length ? chaves.map(function(k){ return projLmsEsc(PROJ_LMS_UP_ALERTA_LABEL[k] || k)+': '+projLmsEsc(avisos[k]); }).join(' · ') : 'nenhum')
+    + '</div>'
+    + '<div style="margin-top:.5rem;font-size:12px;font-weight:600">Amostra ('+amostra.length+' primeiras linhas)</div>'
+    + (amostra.length
+      ? '<div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:6px;margin-top:4px">'
+        + '<table style="border-collapse:collapse;width:100%"><thead><tr>'
+        + ['Linha','WL','CTG','FT','Código','KIT','UMD','Descrição','Qtd Plan','Qtd Real','Alertas'].map(function(c){ return '<th '+th+'>'+c+'</th>'; }).join('')
+        + '</tr></thead><tbody>'
+        + amostra.map(function(l){
+            var al = Array.isArray(l.alertas) ? l.alertas.map(function(a){ return PROJ_LMS_UP_ALERTA_LABEL[a] || a; }).join(', ') : '';
+            return '<tr>'+[l.linha_excel, l.wl_raw, l.ctg_raw, l.ft_raw, l.codigo_raw, l.kit_raw, l.umd_raw, l.descricao_raw,
+              projLmsUpNum(l.qtd_plan), projLmsUpNum(l.lms_qtd_real_informada), al].map(function(v){ return '<td '+td+'>'+projLmsEsc(v)+'</td>'; }).join('')+'</tr>';
+          }).join('')
+        + '</tbody></table></div>'
+      : '<div style="font-size:11px;color:#888">Amostra indisponível (arquivo lido por outra versão do leitor).</div>')
+    + '<div style="margin-top:.5rem;font-size:11px;color:#888">Próximo passo: a confirmação é feita na aba "LMS — Confirmação".</div>'
+    + '</div>';
+}
+
+function projLmsUpRender(projetoId, container){
+  if(typeof window !== 'undefined' && window._sotTabAtiva && window._sotTabAtiva !== 'lms') return;
+  var el = container || document.getElementById('sot-tab-content');
+  if(!el) return;
+  var st = _projLmsUpSt;
+  if(st.projetoId !== projetoId){ projLmsUpCarregar(projetoId, el); return; }
+  var p = projLmsUpProjeto(projetoId);
+  var s = st.situacao;
+  var h = '<div style="padding:1rem" id="proj-lms-up-root">'
+    + '<div style="font-size:13px;font-weight:700">📥 LMS ORIGINAL (ENEL) — fonte oficial</div>'
+    + '<div style="font-size:11px;color:#888;margin:.2rem 0 .75rem">Envia o LMS ORIGINAL do projeto (modelo ENEL: aba Planilha1, cabeçalho na linha 3, colunas A a N). '
+    + 'O arquivo vira RASCUNHO e só passa a valer depois da confirmação na aba "LMS — Confirmação". Não altera materiais, atividades nem WL. '
+    + 'A importação de materiais por planilha (aba Materiais) continua separada.</div>';
+  if(!s){
+    h += '<div style="padding:1rem;text-align:center;color:#aaa">Carregando situação do LMS...</div>';
+  } else {
+    var estLabel = s.estado ? ((PROJ_LMS_ESTADO_WL_LABEL[s.estado] || s.estado)+' <span style="color:#aaa;font-size:10px">('+projLmsEsc(s.estado)+')</span>')
+      : '<span style="color:#A32D2D" title="'+projLmsEsc(s.erroEstado)+'">indisponível</span>';
+    var podeIr = s.rascunhos.some(function(x){ return x.pode_confirmar === true; });
+    h += '<div class="card" style="padding:.75rem;margin-bottom:.75rem">'
+      + '<div style="font-size:12px"><span style="color:#888">Estado WL do projeto:</span> '+estLabel+'</div>'
+      + (s.rascunhos.length
+        ? '<div style="margin-top:.5rem;font-size:12px"><b>RASCUNHO pendente de confirmação:</b>'
+          + s.rascunhos.map(function(x){
+              return '<div style="font-size:11px;color:#555;margin-top:2px">'+projLmsEsc(x.arquivo_nome_original)+' · '+projLmsEsc(x.qtd_linhas)+' linhas · '
+                + projLmsEsc(projLmsFmtData(x.criado_em))+' · <code title="'+projLmsEsc(x.hash_sha256)+'">'+projLmsEsc(String(x.hash_sha256||'').slice(0, 12))+'…</code></div>';
+            }).join('')
+          + (podeIr
+            ? '<button class="btn btn-pri" id="proj-lms-up-ir" style="margin-top:.5rem" onclick="projLmsUpIrConfirmacao()">Ir para confirmação</button>'
+            : '<div style="font-size:11px;color:#888;margin-top:.4rem">Aguardando confirmação por quem tem a permissão PROJ_CONFIRMAR_LMS (gestor, coordenador, escritório ou admin).</div>')
+          + '</div>'
+        : (s.erroRascunhos
+          ? '<div style="margin-top:.4rem;font-size:11px;color:#A32D2D">Não foi possível verificar RASCUNHOS: '+projLmsEsc(s.erroRascunhos)+'</div>'
+          : '<div style="margin-top:.4rem;font-size:11px;color:#888">Nenhum RASCUNHO pendente para este projeto.</div>'))
+      + '</div>';
+    if(s.bloqueio){
+      h += '<div id="proj-lms-up-bloqueio" style="padding:.6rem .8rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
+        + projLmsEsc(s.bloqueio)+'</div>';
+    } else {
+      h += '<div class="card" style="padding:.75rem">'
+        + '<div style="font-size:12px;font-weight:600;margin-bottom:.4rem">Enviar LMS ORIGINAL (.xlsx, até 12 MB)</div>'
+        + (s.rascunhos.length ? '<div style="font-size:11px;color:#854F0B;margin-bottom:.4rem">Já existe RASCUNHO pendente para este projeto. Reenviar o mesmo arquivo não duplica; um arquivo diferente cria outro RASCUNHO, e só um deles poderá ser confirmado.</div>' : '')
+        + '<input type="file" id="proj-lms-up-arquivo" accept=".xlsx,'+PROJ_LMS_UP_XLSX_MIME+'" onchange="projLmsUpSelecionar(this)"'+(st.enviando ? ' disabled' : '')+'/>';
+      var pre = st.pre;
+      if(pre && !pre.ok){
+        h += '<div id="proj-lms-up-recusado" style="margin-top:.5rem;padding:.6rem .8rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
+          + 'Arquivo recusado na pré-checagem: '+projLmsEsc(PROJ_LMS_UP_MSG[pre.erros[0]] || pre.erros[0])
+          + (pre.detalhes.length ? '<ul style="margin:.3rem 0 0 1rem;padding:0">'+pre.detalhes.slice(0, 14).map(function(x){ return '<li>'+projLmsEsc(x)+'</li>'; }).join('')+'</ul>' : '')
+          + '</div>';
+      } else if(pre && pre.ok){
+        h += '<div id="proj-lms-up-pre" style="margin-top:.5rem;font-size:12px">'
+          + '<div style="color:#27500A;font-weight:600">Pré-checagem OK (a Edge ainda revalida tudo ao enviar).</div>'
+          + '<div style="color:#555">'+projLmsEsc(pre.nome)+' · '+projLmsEsc((pre.tamanho/1048576).toFixed(2).replace('.', ','))+' MB · aba Planilha1 · cabeçalho OK · '
+          + projLmsEsc(pre.linhas)+' linhas · identificação no arquivo: <b>'+projLmsEsc(pre.identificacao || '(vazia)')+'</b>'
+          + (pre.confere === 'CONFERE' ? ' <span style="color:#27500A">✓ confere com o projeto</span>' : '')+'</div>'
+          + pre.avisos.map(function(a){ return '<div style="margin-top:.3rem;padding:.4rem .6rem;border-radius:6px;background:#FFF8E1;color:#854F0B">⚠ '+projLmsEsc(a)+'</div>'; }).join('')
+          + '<button class="btn btn-pri" id="proj-lms-up-enviar" style="margin-top:.5rem"'+(st.enviando ? ' disabled' : '')+' onclick="projLmsUpEnviar()">'
+          + (st.enviando ? 'Enviando…' : 'Enviar e gravar como RASCUNHO')+'</button>'
+          + '</div>';
+      }
+      h += '</div>';
+    }
+  }
+  if(st.erro){
+    h += '<div id="proj-lms-up-erro" style="margin-top:.75rem;padding:.6rem .8rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
+      + projLmsEsc(st.erro)+'</div>';
+  }
+  if(st.resultado) h += projLmsUpResultadoHtml(st.resultado);
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+async function projLmsUpSelecionar(input){
+  var st = _projLmsUpSt;
+  var arq = input && input.files && input.files[0];
+  st.resultado = null; st.erro = ''; st.pre = null; st.arquivo = null;
+  if(!arq){ projLmsUpRender(st.projetoId); return; }
+  var p = projLmsUpProjeto(st.projetoId);
+  if(arq.size > PROJ_LMS_UP_MAX_BYTES){
+    st.pre = {ok:false, erros:['ARQUIVO_GRANDE_DEMAIS'], avisos:[], detalhes:[]};
+    projLmsUpRender(st.projetoId);
+    return;
+  }
+  var bytes;
+  try{ bytes = await projLmsUpLerBytes(arq); }
+  catch(e){ st.erro = 'Não foi possível ler o arquivo selecionado.'; projLmsUpRender(st.projetoId); return; }
+  if(_projLmsUpSt !== st) return;
+  st.pre = projLmsUpPrechecar(arq, bytes, p);
+  if(st.pre.ok) st.arquivo = arq;
+  projLmsUpRender(st.projetoId);
+}
+
+// Envio: só depois da pré-checagem OK, sem bloqueio e com confirm() explícito. Nunca confirma o LMS.
+async function projLmsUpEnviar(){
+  var st = _projLmsUpSt;
+  var projetoId = st.projetoId;
+  if(st.enviando || !st.arquivo || !st.pre || !st.pre.ok || !st.situacao || st.situacao.bloqueio) return;
+  if(!PROJ_LMS_UUID_RE.test(String(projetoId || ''))) return;
+  var p = projLmsUpProjeto(projetoId);
+  var msg = 'Enviar e gravar como RASCUNHO?\n\nProjeto: '+projLmsUpNomeProjeto(p)+'\nArquivo: '+st.arquivo.name
+    + '\nLinhas: '+st.pre.linhas+'\nIdentificação no arquivo: '+(st.pre.identificacao || '(vazia)')
+    + (st.pre.confere === 'DIFERENTE' ? '\n\n⚠ ATENÇÃO: a identificação do arquivo NÃO bate com o projeto aberto.' : '')
+    + (st.pre.confere === 'SEM_IDENTIFICACAO' ? '\n\n⚠ O arquivo não tem a identificação do projeto em D1.' : '')
+    + '\n\nO RASCUNHO não altera materiais, atividades nem WL. A confirmação é feita depois, na aba "LMS — Confirmação".';
+  if(!confirm(msg)) return;
+  st.enviando = true; st.erro = ''; st.resultado = null;
+  projLmsUpRender(projetoId);
+  var r = await projLmsUpPost(projetoId, st.arquivo);
+  st.enviando = false;
+  if(_projLmsUpSt !== st) return;
+  if(!r.ok){
+    st.erro = 'LMS não enviado: '+(r.error || 'erro desconhecido');
+    projLmsUpRender(projetoId);
+    return;
+  }
+  st.resultado = r.data; st.pre = null; st.arquivo = null;
+  projLmsUpRender(projetoId);
+  await projLmsUpAtualizarSituacao(projetoId);
+}
+
+function projLmsUpIrConfirmacao(){
+  var pgCo = document.getElementById('pg-contrato-obras');
+  if(pgCo && !pgCo.classList.contains('hidden') && typeof coMostrarTab === 'function'){ coMostrarTab('lms_confirmar'); return; }
+  if(typeof projMostrarTab === 'function') projMostrarTab('lms_confirmar');
+}
+
 
 function renderProjetosPorContrato(tab, contrato_id){
   var wrap = document.getElementById('proj-lista-'+tab);
@@ -40194,9 +40632,10 @@ function sotRenderDetalhe(p, docs){
     +'<div style="display:flex;border-bottom:.5px solid #e0dfd8;overflow-x:auto">'
     +'<button id="sot-tab-jornada" onclick="sotMostrarTab(\'jornada\')" '
     +'style="padding:.6rem 1rem;border:none;border-bottom:2px solid '+sc.cor+';background:none;cursor:pointer;font-size:12px;font-weight:700;color:'+sc.cor+';white-space:nowrap">Jornada</button>'
-    +['atividades','materiais','reserva','resumo','plano','documentos','adicional','medicao'].map(function(t,i){
+    +['atividades','materiais','lms','reserva','resumo','plano','documentos','adicional','medicao'].map(function(t,i){
       var labels={atividades:'📋 Atividades ('+sotContagemAba(sot_atividades,sot_atividades_desc)+')',
         materiais:'📦 Materiais ('+sotContagemAba(sot_materiais_proj,sot_materiais_desc)+')',
+        lms:'📥 LMS',
         reserva:'🧰 Reservar Materiais',
         resumo:'📊 Resumo',
         plano:'📋 Plano de Execução'+(sotPlanoContarWls(p)?' ('+sotPlanoContarWls(p)+' WLs)':''),
@@ -40252,7 +40691,7 @@ function sotAtualizarAbaAtual(projetoId){
   // Verificar qual aba está ativa — usar variável global ou border-bottom
   var tabAtiva = window._sotTabAtiva || 'jornada';
   if(!window._sotTabAtiva){
-    ['jornada','atividades','materiais','reserva','resumo','plano','documentos','adicional','medicao'].forEach(function(t){
+    ['jornada','atividades','materiais','lms','reserva','resumo','plano','documentos','adicional','medicao'].forEach(function(t){
       var btn = document.getElementById('sot-tab-'+t);
       if(btn && (btn.style.fontWeight==='700' || btn.style.borderBottomColor==='rgb(26, 26, 24)' || btn.classList.contains('active')))
         tabAtiva = t;
@@ -40267,6 +40706,8 @@ function sotAtualizarAbaAtual(projetoId){
     content.innerHTML = sotRenderTabAtividades(projetoId);
   } else if(tabAtiva==='materiais'){
     sotRenderTabMateriaisComSaldoAuto(projetoId, content);
+  } else if(tabAtiva==='lms'){
+    projLmsUpRender(projetoId, content);
   } else if(tabAtiva==='reserva'){
     sotRenderTabReserva(projetoId, content);
   } else if(tabAtiva==='resumo'){
@@ -40302,7 +40743,7 @@ function sotMostrarTab(tab){
   if(!p)return;
   window._sotTabAtiva = tab; // track active tab for sotAtualizarAbaAtual
   var sc=SOT_STATUS_COR[p.status]||{cor:'#555'};
-  ['jornada','atividades','materiais','reserva','resumo','plano','documentos','adicional','medicao'].forEach(function(t){
+  ['jornada','atividades','materiais','lms','reserva','resumo','plano','documentos','adicional','medicao'].forEach(function(t){
     var btn=document.getElementById('sot-tab-'+t);
     if(btn){
       btn.style.borderBottomColor=t===tab?sc.cor:'transparent';
@@ -40324,6 +40765,7 @@ function sotMostrarTab(tab){
   }
   else if(tab==='atividades')content.innerHTML=sotRenderTabAtividades(p.id);
   else if(tab==='materiais') sotRenderTabMateriaisComSaldoAuto(p.id, content);
+  else if(tab==='lms') projLmsUpCarregar(p.id, content);
   else if(tab==='documentos')content.innerHTML=sotRenderTabDocumentos(p.id);
   else if(tab==='reserva') sotRenderTabReserva(p.id, content);
   else if(tab==='resumo') sotRenderTabResumo(p.id, content);
