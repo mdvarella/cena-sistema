@@ -242,6 +242,13 @@ const nFetch = (c, fn) => c.chamadas.fetch.filter(x => x.fn === fn);
   h = t.els['proj-lms-lista'].innerHTML;
   ok('estado WL negado: mostra "indisponível" e mantém a lista', /indisponível/.test(h) && h.indexOf('Obra Rua das Flores') >= 0);
 
+  // Estado ESTRUTURA_PENDENTE (Etapa 1.4) tem rótulo próprio
+  t = montar({ resp: { sot_lms_estado_wl: () => ({ status: 200, body: 'ESTRUTURA_PENDENTE' }) } });
+  await t.sb.projLmsCarregar();
+  ok('estado ESTRUTURA_PENDENTE aparece como "Estrutura pendente"', /Estrutura pendente <span[^>]*>\(ESTRUTURA_PENDENTE\)/.test(t.els['proj-lms-lista'].innerHTML));
+  ok('mapa de rótulos cobre os 4 estados derivados',
+    ['LEGADO_SEM_WL', 'EM_CONCILIACAO', 'ESTRUTURA_PENDENTE', 'ESTRUTURADO'].every(k => typeof t.sb.PROJ_LMS_ESTADO_WL_LABEL[k] === 'string'));
+
   // Escape de HTML
   t = montar({ lista: [Object.assign(itens()[0], { projeto_nome: '<img src=x onerror=alert(1)>' })] });
   await t.sb.projLmsCarregar();

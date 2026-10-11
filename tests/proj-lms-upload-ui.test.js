@@ -177,6 +177,26 @@ ok('envio só pelo botão (definição + 1 onclick)', chamadasEnviar.length === 
   t = montar({ estado: 'ESTRUTURADO' });
   await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
   ok('ORIGINAL confirmada (ESTRUTURADO): também bloqueia', /proj-lms-up-bloqueio/.test(t.html()) && !/proj-lms-up-arquivo/.test(t.html()));
+  t = montar({ estado: 'ESTRUTURA_PENDENTE' });
+  await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
+  h = t.html();
+  ok('ESTRUTURA_PENDENTE (Etapa 1.4): bloqueia com a mensagem de ORIGINAL confirmada e mostra o rótulo "Estrutura pendente"',
+    /proj-lms-up-bloqueio/.test(h) && h.indexOf('Este projeto já possui LMS ORIGINAL confirmado.') >= 0
+    && /Estrutura pendente <span[^>]*>\(ESTRUTURA_PENDENTE\)/.test(h) && !/proj-lms-up-arquivo/.test(h));
+  t = montar({ estado: 'ESTADO_FUTURO_X' });
+  await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
+  ok('estado que esta versão não conhece: bloqueia (fail-closed)',
+    /Estado LMS do projeto não reconhecido \(ESTADO_FUTURO_X\)\. Envio bloqueado por segurança/.test(t.html()) && !/proj-lms-up-arquivo/.test(t.html()));
+  t = montar({ rpc: { sot_lms_estado_wl: () => ({ status: 200, body: '' }) } });
+  await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
+  ok('estado vazio: bloqueia (fail-closed)', /Envio bloqueado por segurança/.test(t.html()) && !/proj-lms-up-arquivo/.test(t.html()));
+  t = montar({ estado: 'ESTRUTURA_PENDENTE', rpc: { sot_lms_autorizar_recebimento: () => ({ status: 200, body: { permitido: false, motivo: 'SEM_PERMISSAO' } }) } });
+  await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
+  ok('sem permissão vence o estado: motivo de permissão', /PROJ_IMPORTAR_LMS/.test(t.html()) && !/proj-lms-up-arquivo/.test(t.html()));
+  const blocoSemComent = blocoUp.replace(/\/\/[^\n]*/g, '');
+  ok('envio só é liberado com estado exatamente LEGADO_SEM_WL',
+    /s\.estado !== 'LEGADO_SEM_WL' \?/.test(blocoSemComent)
+    && /PROJ_LMS_UP_ESTADOS_CONFIRMADA = \['EM_CONCILIACAO', 'ESTRUTURA_PENDENTE', 'ESTRUTURADO'\]/.test(blocoSemComent));
 
   t = montar({ rpc: { sot_lms_autorizar_recebimento: () => ({ status: 200, body: { permitido: false, motivo: 'SEM_PERMISSAO' } }) } });
   await t.sb.projLmsUpCarregar(PJ, t.els['sot-tab-content']);
