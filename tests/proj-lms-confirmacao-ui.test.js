@@ -30,17 +30,30 @@ function fnTexto(nome) {
 const semComentarios = bloco.replace(/\/\/[^\n]*/g, '');
 ok('ES5 no bloco: sem let/const/arrow/template literal',
   !/\blet\s|\bconst\s|=>|`/.test(semComentarios));
-ok('aba e conteúdo existem em pg-obras-projetos (aba oculta por padrão)',
-  /<button id="proj-tab-lms_confirmar"[^>]*style="display:none;/.test(html)
-  && html.indexOf('id="proj-tab-content-lms_confirmar"') > html.indexOf('id="pg-obras-projetos"')
-  && /id="proj-lms-lista"/.test(html) && /id="proj-lms-msg"/.test(html));
+// A tela visível de Obras → Projetos é pg-contrato-obras (coAbrirContrato esconde pg-obras-projetos):
+// a aba precisa estar nas sub-abas co-tabs, logo depois de "📋 Projetos".
+const iCoTabs = html.indexOf('<div id="co-tabs"');
+const fCoTabs = html.indexOf('</div>', iCoTabs);
+const coTabs = html.slice(iCoTabs, fCoTabs);
+const btnsCo = coTabs.match(/<button id="co-tab-[a-z_]+"/g) || [];
+ok('aba LMS nas sub-abas do painel de contrato, logo depois de Projetos, oculta por padrão',
+  btnsCo[0] === '<button id="co-tab-projetos"' && btnsCo[1] === '<button id="co-tab-lms_confirmar"'
+  && /<button id="co-tab-lms_confirmar" onclick="coMostrarTab\('lms_confirmar'\)" style="display:none;/.test(coTabs), btnsCo);
+const iPgCo = html.indexOf('<div id="pg-contrato-obras"');
+const iCont = html.indexOf('<div id="co-content-lms_confirmar"');
+ok('conteúdo LMS dentro de pg-contrato-obras, entre Projetos e Equipe, com lista/mensagem',
+  iPgCo > 0 && iCont > html.indexOf('<div id="co-content-projetos"') && iCont < html.indexOf('<div id="co-content-equipe"')
+  && html.indexOf('id="proj-lms-lista"') > iCont && html.indexOf('id="proj-lms-msg"') > iCont
+  && html.indexOf('id="proj-lms-lista"') < html.indexOf('<div id="co-content-equipe"'));
+ok('ids únicos e nada restou em pg-obras-projetos',
+  (html.match(/id="proj-lms-lista"/g) || []).length === 1 && (html.match(/id="proj-lms-msg"/g) || []).length === 1
+  && (html.match(/id="co-tab-lms_confirmar"/g) || []).length === 1
+  && html.indexOf('proj-tab-lms_confirmar') < 0 && html.indexOf('proj-tab-content-lms_confirmar') < 0);
 const mostrar = fnTexto('projMostrarTab');
-ok('projMostrarTab conhece lms_confirmar e sai antes do mapa de contratos',
-  /'lms_confirmar'\]/.test(mostrar)
-  && mostrar.indexOf("if(tab==='lms_confirmar'){ projLmsCarregar(); return; }") > 0
-  && mostrar.indexOf("if(tab==='lms_confirmar')") < mostrar.indexOf('var tabMap'));
+ok('projMostrarTab: lms_confirmar fora das abas de contrato de pg-obras-projetos',
+  !/allKeys = \[[^\]]*lms_confirmar/.test(mostrar));
 const chamadasConfirmar = html.match(/projLmsConfirmar\(/g) || [];
-ok('sem confirmação automática: projLmsConfirmar só na definição e nos 2 onclick',
+ok('sem confirmação automática: projLmsConfirmar só na definição e nos 2 onclick (ativar a aba só lista)',
   chamadasConfirmar.length === 3
   && (html.match(/onclick="projLmsConfirmar\(\\''\+id\+'\\',\\'(ESTRUTURA_NOVA|CONCILIACAO)\\'\)"/g) || []).length === 2,
   chamadasConfirmar.length);
@@ -73,10 +86,10 @@ function montar(cfg) {
   cfg = cfg || {};
   const els = {};
   function el(id) {
-    if (!els[id]) els[id] = { id, innerHTML: '', value: '', style: { display: id === 'proj-tab-lms_confirmar' ? 'none' : '' } };
+    if (!els[id]) els[id] = { id, innerHTML: '', value: '', style: { display: id === 'co-tab-lms_confirmar' ? 'none' : '' } };
     return els[id];
   }
-  ['proj-tab-lms_confirmar', 'proj-lms-msg', 'proj-lms-lista'].forEach(el);
+  ['co-tab-lms_confirmar', 'proj-lms-msg', 'proj-lms-lista'].forEach(el);
   const chamadas = { fetch: [], confirm: [] };
   let lista = cfg.lista || itens();
   const resp = cfg.resp || {};
@@ -239,15 +252,103 @@ const nFetch = (c, fn) => c.chamadas.fetch.filter(x => x.fn === fn);
   await t.sb.projLmsVerificarAba();
   let cp = nFetch(t, 'cena_pode');
   ok('com permissão: aba aparece (cena_pode PROJ_CONFIRMAR_LMS)',
-    t.els['proj-tab-lms_confirmar'].style.display === '' && cp.length === 1 && cp[0].body.p_acao === 'PROJ_CONFIRMAR_LMS');
+    t.els['co-tab-lms_confirmar'].style.display === '' && cp.length === 1 && cp[0].body.p_acao === 'PROJ_CONFIRMAR_LMS');
   await t.sb.projLmsVerificarAba();
   ok('verificação da aba é cacheada por usuário', nFetch(t, 'cena_pode').length === 1);
   t = montar({ pode: false });
   await t.sb.projLmsVerificarAba();
-  ok('sem permissão: aba continua oculta', t.els['proj-tab-lms_confirmar'].style.display === 'none');
+  ok('sem permissão: aba continua oculta', t.els['co-tab-lms_confirmar'].style.display === 'none');
   t = montar({ semUsuario: true });
   await t.sb.projLmsVerificarAba();
-  ok('sem usuário logado: aba oculta e sem chamada', t.els['proj-tab-lms_confirmar'].style.display === 'none' && t.chamadas.fetch.length === 0);
+  ok('sem usuário logado: aba oculta e sem chamada', t.els['co-tab-lms_confirmar'].style.display === 'none' && t.chamadas.fetch.length === 0);
+
+  // ── Ativação real da aba (coMostrarTab / projMostrarTab executados) ──
+  function montarNav(cfg) {
+    cfg = cfg || {};
+    const els = {};
+    const mk = (id, hidden) => {
+      const cls = new Set(hidden ? ['hidden'] : []);
+      els[id] = { id, innerHTML: '', value: '', style: { display: '' },
+        classList: { contains: c => cls.has(c), add: c => cls.add(c), remove: c => cls.delete(c), toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) } };
+      return els[id];
+    };
+    ['projetos', 'lms_confirmar', 'equipe', 'programacao', 'servicos', 'materiais', 'indicadores'].forEach(a => {
+      mk('co-tab-' + a); mk('co-content-' + a).style.display = a === 'projetos' ? '' : 'none';
+    });
+    els['co-tab-lms_confirmar'].style.display = 'none';
+    mk('pg-contrato-obras', !cfg.painelAberto);
+    mk('proj-lms-msg'); mk('proj-lms-lista');
+    const log = { render: [], abrir: [], fetch: [] };
+    const sb = {
+      console: { error() {}, warn() {}, log() {} },
+      DEMO: false, SB: { url: 'https://x.supabase.co', key: 'anon' },
+      usuarioLogado: { id: 'u1' }, window: {},
+      _coContratoAtual: 'c1', _coTabAtual: 'projetos',
+      cenaAuthGetValidToken: async () => 'jwt-auth', sbAuthJwtIsAuthenticated: t => t === 'jwt-auth',
+      document: { getElementById: id => els[id] || null },
+      confirm: () => { throw new Error('confirm não pode ser chamado ao ativar a aba'); },
+      fetch: async (url, opt) => {
+        const fn = url.split('/rpc/')[1];
+        log.fetch.push(fn);
+        const body = fn === 'cena_pode' ? true : fn === 'sot_lms_rascunhos_listar' ? itens() : fn === 'sot_lms_estado_wl' ? 'LEGADO_SEM_WL' : null;
+        return { ok: true, status: 200, text: async () => JSON.stringify(body) };
+      },
+      coRenderProjetos: () => log.render.push('projetos'), coRenderEquipe: () => log.render.push('equipe'),
+      coRenderProgramacao() {}, coRenderServicos() {}, coRenderMateriais() {}, coRenderIndicadores() {}, _coEnsureComposicao() {},
+      verificarContratoObras() {}, sotInit() {},
+      coAbrirContrato: cid => { log.abrir.push(cid); els['pg-contrato-obras'].classList.remove('hidden'); }
+    };
+    vm.createContext(sb);
+    vm.runInContext(bloco + '\n' + fnTexto('coMostrarTab') + '\n' + fnTexto('projMostrarTab'), sb);
+    return { sb, els, log };
+  }
+  const espera = () => new Promise(r => setTimeout(r, 0));
+
+  let n = montarNav({ painelAberto: true });
+  n.sb.coMostrarTab('lms_confirmar');
+  await espera(); await espera(); await espera();
+  ok('clique (coMostrarTab) ativa botão LMS e desativa Projetos',
+    n.els['co-tab-lms_confirmar'].style.borderBottomColor === '#1a1a18' && n.els['co-tab-lms_confirmar'].style.fontWeight === '700'
+    && n.els['co-tab-projetos'].style.borderBottomColor === 'transparent', n.els['co-tab-lms_confirmar'].style);
+  ok('clique mostra só o conteúdo LMS',
+    n.els['co-content-lms_confirmar'].style.display === '' && n.els['co-content-projetos'].style.display === 'none'
+    && n.els['co-content-equipe'].style.display === 'none');
+  ok('clique carrega a lista (projLmsCarregar) e não renderiza Projetos',
+    n.log.fetch.indexOf('sot_lms_rascunhos_listar') >= 0 && n.log.render.length === 0
+    && /Obra Rua das Flores/.test(n.els['proj-lms-lista'].innerHTML));
+  ok('ativar a aba não confirma nada', n.log.fetch.indexOf('sot_lms_confirmar') < 0);
+  ok('ao abrir o painel, a aba aparece para quem tem PROJ_CONFIRMAR_LMS', n.els['co-tab-lms_confirmar'].style.display === '');
+  n.sb.coMostrarTab('projetos');
+  ok('voltar para Projetos esconde o conteúdo LMS',
+    n.els['co-content-lms_confirmar'].style.display === 'none' && n.els['co-content-projetos'].style.display === '' && n.log.render[0] === 'projetos');
+
+  n = montarNav({ painelAberto: true });
+  n.sb.projMostrarTab('lms_confirmar');
+  await espera(); await espera();
+  ok("projMostrarTab('lms_confirmar') com painel aberto ativa botão, conteúdo e carregamento",
+    n.els['co-content-lms_confirmar'].style.display === '' && n.els['co-tab-lms_confirmar'].style.fontWeight === '700'
+    && n.log.fetch.indexOf('sot_lms_rascunhos_listar') >= 0 && n.log.abrir.length === 0);
+
+  n = montarNav({ painelAberto: false });
+  n.sb.projMostrarTab('lms_confirmar');
+  ok("projMostrarTab('lms_confirmar') com painel fechado abre o painel pelo caminho normal",
+    n.log.abrir.length === 1 && n.log.abrir[0] === '04277076-baa5-4ea4-85dc-bddf55541e68', n.log.abrir);
+  n.sb.coMostrarTab('projetos'); // o que coAbrirContrato chama ao terminar de carregar
+  await espera(); await espera();
+  ok('…e quando o painel termina de abrir, cai na aba LMS (uma vez só)',
+    n.els['co-content-lms_confirmar'].style.display === '' && n.log.render.length === 0
+    && n.log.fetch.indexOf('sot_lms_rascunhos_listar') >= 0);
+  n.sb.coMostrarTab('projetos');
+  ok('pedido pendente é consumido: próxima abertura volta ao normal (Projetos)',
+    n.els['co-content-projetos'].style.display === '' && n.log.render[0] === 'projetos');
+
+  n = montarNav({ painelAberto: false });
+  n.sb.coAbrirContrato = cid => { n.log.abrir.push(cid); }; // contrato não abre (ex.: fora da lista)
+  n.sb.projMostrarTab('lms_confirmar');
+  n.els['pg-contrato-obras'].classList.remove('hidden');
+  n.sb.coMostrarTab('projetos');
+  ok('se o painel não abrir, o pedido LMS não vaza para a próxima abertura',
+    n.els['co-content-projetos'].style.display === '' && n.log.render[0] === 'projetos');
 
   if (failed.length) {
     console.log(`proj-lms-confirmacao-ui: FALHOU ${failed.length}/${total}`);
