@@ -8280,6 +8280,8 @@ function _podeExcluirCritico(nivel){
   return p==='admin' || p==='gestor';
 }
 
+// Retorno (Etapa 1.5a): true = excluído; false = recusado/erro (detalhe em window._sbLastDeleteErr).
+// Chamadas antigas que ignoram o retorno continuam iguais. DEMO e id não-UUID seguem sem efeito (undefined).
 async function sbDelete(table, filter){
   if(DEMO) return;
   // Validar UUID somente quando o filtro é EXATAMENTE id=eq.UUID
@@ -8287,6 +8289,7 @@ async function sbDelete(table, filter){
   if(mSimples && !isUUID(mSimples[1])){ console.warn('sbDelete ignorado — ID não é UUID:', mSimples[1]); return; }
 
   var h = {'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),'Content-Type':'application/json'};
+  window._sbLastDeleteErr = '';
 
   // SOFT DELETE: tabelas com deleted_at → UPDATE; se coluna ausente, cai no hard delete
   if(_SOFT_DELETE_TABLES.indexOf(table) >= 0){
@@ -8300,9 +8303,15 @@ async function sbDelete(table, filter){
       if(r.ok){
         console.log('[soft-delete] '+table+' | '+filter+' → deleted_at='+now);
         _auditAuto('excluir', table, null, filter);
-        return;
+        return true;
       }
       var err=await r.text();
+      // Recusa da proteção de WL (Etapa 1.4): não tentar o DELETE físico (também seria recusado).
+      if(/LINHA_ESTRUTURADA|WL_SO_POR_FUNCAO|PROJETO_ESTRUTURADO/.test(err||'')){
+        console.warn('sbDelete(soft) recusado pela proteção de WL ['+table+']', r.status, err);
+        window._sbLastDeleteErr = err;
+        return false;
+      }
       console.warn('sbDelete(soft) falhou ['+table+']', r.status, err, '— tentando hard delete');
     }catch(e){ console.warn('sbDelete(soft) exception', e, '— tentando hard delete'); }
   }
@@ -8311,9 +8320,10 @@ async function sbDelete(table, filter){
   console.warn('[hard-delete]', table, filter);
   try{
     var r2 = await fetch(SB.url+'/rest/v1/'+table+'?'+filter, {method:'DELETE', headers:h});
-    if(!r2.ok){ var err2=await r2.text(); console.error('sbDelete erro ['+table+']', r2.status, err2); }
-    else{ _auditAuto('excluir', table, null, filter); }
-  }catch(e2){ console.error('sbDelete exception', e2); }
+    if(!r2.ok){ var err2=await r2.text(); console.error('sbDelete erro ['+table+']', r2.status, err2); window._sbLastDeleteErr = err2; return false; }
+    _auditAuto('excluir', table, null, filter);
+    return true;
+  }catch(e2){ console.error('sbDelete exception', e2); window._sbLastDeleteErr = String(e2 && e2.message || e2); return false; }
 }
 async function sbUpdate(table,data,filter,opts){
   if(DEMO)return true;
@@ -27548,13 +27558,13 @@ function plptConfirmarAplicacaoDevolucao(projId){
     return sbUpdate('plpt_requisicoes_materiais', payload, 'id=eq.'+req.id).then(function(){
       itensN.forEach(function(it){
         if((it.qtd_aplicada||0) <= 0) return;
-        var filt = ['projeto_id=eq.'+projId];
-        if(it.codigo) filt.push('codigo_sap=eq.'+it.codigo);
-        else if(it.nome) filt.push('descricao=eq.'+encodeURIComponent(it.nome));
-        sbFetch('sot_materiais', {filters:filt, limit:1}).then(function(rows){
-          var row = rows && rows[0]; if(!row) return;
+        // Etapa 1.5a (E6): pela linha do item (mat_id); fallback só em material operacional, sem escolher linha de WL errada
+        sotMatBuscarLinha(projId, it).then(function(row){
+          if(!row) return;
           var nova = (row.qtd_aplicada||0) + it.qtd_aplicada;
-          sbUpdate('sot_materiais', {qtd_aplicada: nova}, 'id=eq.'+row.id);
+          sbUpdate('sot_materiais', {qtd_aplicada: nova}, 'id=eq.'+row.id).then(function(ok){
+            if(ok === false) progShowToast('⚠ Aplicação de '+(it.nome||it.codigo||'material')+' não gravada: '+sotWlTraduzErro(window._sbLastUpdateErr),'erro');
+          });
         }).catch(function(){});
       });
     });
@@ -29325,13 +29335,17 @@ function plptAprovarAdicional(projId, adicId, catalogId, descricao, qtd, unidade
         return;
       }
 
-      // 1. Atualizar sot_adicionais
-      sbUpdate('sot_adicionais', {
-        status:       'aprovado',
-        qtd_aprovada: qtdAp,
-        aprovado_por: nome,
-        aprovado_em:  new Date().toISOString(),
-      }, 'id=eq.'+adicId)
+      // Etapa 1.5a (E5): projeto com estrutura de WL não recebe material por adicional (nada é gravado)
+      sotWlBloqueioInsercaoAsync(projId).then(function(_bloq){
+        if(_bloq) throw {wlBloqueio:_bloq};
+        // 1. Atualizar sot_adicionais
+        return sbUpdate('sot_adicionais', {
+          status:       'aprovado',
+          qtd_aprovada: qtdAp,
+          aprovado_por: nome,
+          aprovado_em:  new Date().toISOString(),
+        }, 'id=eq.'+adicId);
+      })
       .then(function(){
         // 2. Verificar se já existe entrada em sot_materiais para este projeto+catálogo
         return sbFetch('sot_materiais', {
@@ -29363,6 +29377,7 @@ function plptAprovarAdicional(projId, adicId, catalogId, descricao, qtd, unidade
         _plptAplicarAprovacaoAdicional(projId, adicId, catalogId, descricao, qtdAp, unidade, codigoSap, nome);
       })
       .catch(function(e){
+        if(e && e.wlBloqueio){ progShowToast('🔒 '+e.wlBloqueio+' O adicional não foi aprovado.','erro'); return; }
         progShowToast('⚠ Erro ao aprovar: '+(e&&e.message||e),'erro');
       });
     };
@@ -37029,11 +37044,8 @@ function _coSalvarPlptRequisicao(m, kanbanStatus, itensAtualizados, extra, cb){
         (m._req_itens || []).forEach(function(it){
           var qtdEnt = it.qtd_ret != null ? it.qtd_ret : (it.qtd_sep != null ? it.qtd_sep : (it.qtd_req || 0));
           if(qtdEnt <= 0) return;
-          sbFetch('sot_materiais', {
-            filters: ['projeto_id=eq.'+m.projeto_id, it.codigo ? 'codigo_sap=eq.'+it.codigo : 'descricao=eq.'+encodeURIComponent(it.nome||'')],
-            limit: 1
-          }).then(function(rows){
-            var row = rows && rows[0];
+          // Etapa 1.5a (E6): pela linha do item (mat_id); retirada (descritivo) nunca recebe entrega
+          sotMatBuscarLinha(m.projeto_id, it).then(function(row){
             if(!row) return;
             var novaQtd = (row.qtd_entregue || 0) + qtdEnt;
             sbUpdate('sot_materiais', {qtd_entregue: novaQtd}, 'id=eq.'+row.id);
@@ -37083,16 +37095,10 @@ function _coSalvarStatusMaterial(m, novoStatus, extra){
   if(extra) Object.assign(m, extra);
 
   // Quando material é confirmado como Entregue → atualizar qtd_entregue em sot_materiais
-  if(novoStatus === 'Entregue' && m.projeto_id && !DEMO){
+  if(novoStatus === 'Entregue' && m.projeto_id && !DEMO && !(m._from_plpt && m._req_id)){
     var qtdEnt = m.qtd || 0;
-    // Buscar sot_materiais row pelo projeto e material
-    sbFetch('sot_materiais', {
-      filters: [
-        'projeto_id=eq.'+m.projeto_id,
-        m.codigo_sap ? 'codigo_sap=eq.'+m.codigo_sap : 'descricao=eq.'+encodeURIComponent(m.descricao||'')
-      ], limit: 1
-    }).then(function(rows){
-      var row = rows && rows[0];
+    // Etapa 1.5a (E6): linha do material (mat_id) ou fallback filtrado; item do PLPT é somado em _coSalvarPlptRequisicao
+    sotMatBuscarLinha(m.projeto_id, {mat_id:m.mat_id||m.sot_material_id||'', codigo:m.codigo_sap||'', nome:m.descricao||''}).then(function(row){
       if(row){
         var novaQtd = (row.qtd_entregue||0) + qtdEnt;
         sbUpdate('sot_materiais', {qtd_entregue: novaQtd}, 'id=eq.'+row.id)
@@ -39039,6 +39045,234 @@ function projLmsUpIrConfirmacao(){
   if(typeof projMostrarTab === 'function') projMostrarTab('lms_confirmar');
 }
 
+// ══════════════════════════════════════════════════════════════
+// ETAPA 1.5a — WL oficial nas telas do projeto
+// Estado/selo, WL das linhas (sot_wl), bloqueio de inclusão em projeto estruturado, tradução das recusas do banco
+// (proteção da 1.4) e busca de material pelo id da linha (mat_id). O banco continua sendo a autoridade.
+// Legado (projeto sem WL) mantém o comportamento de hoje.
+// Botão "Aplicar estrutura" fica para a 1.5b: precisa de RPC/fonte de dados própria para localizar a ORIGINAL
+// confirmada pendente (o front não lê sot_lms_importacoes; decisão do dono em 11/10/2026).
+// ══════════════════════════════════════════════════════════════
+var SOT_WL_ESTADOS_BLOQUEIO = ['ESTRUTURADO', 'ESTRUTURA_PENDENTE'];
+var _sotWlCtx = {projetoId:'', estado:'', estadoOk:false, wls:{}, wlsLista:[]};
+
+function sotWlLinhaEstruturada(x){ return !!(x && (x.wl_id || x.lms_linha_id)); }
+
+// Algum item carregado do projeto aberto tem WL (fallback quando o estado não pode ser lido).
+function sotWlProjetoTemWl(projetoId){
+  var listas = [typeof sot_atividades!=='undefined'?sot_atividades:[], typeof sot_atividades_desc!=='undefined'?sot_atividades_desc:[],
+    typeof sot_materiais_proj!=='undefined'?sot_materiais_proj:[], typeof sot_materiais_desc!=='undefined'?sot_materiais_desc:[]];
+  for(var i=0; i<listas.length; i++){
+    var l = listas[i] || [];
+    for(var j=0; j<l.length; j++){
+      if(l[j] && l[j].projeto_id === projetoId && sotWlLinhaEstruturada(l[j])) return true;
+    }
+  }
+  return false;
+}
+
+// Carrega estado (quem tem PROJ_IMPORTAR_LMS) e WLs oficiais (authenticated). Nunca rejeita: falha = sem dado.
+function sotWlCarregarProjeto(projetoId){
+  _sotWlCtx = {projetoId:projetoId, estado:'', estadoOk:false, wls:{}, wlsLista:[]};
+  if(DEMO || !projetoId) return Promise.resolve(_sotWlCtx);
+  var ctx = _sotWlCtx;
+  var pEstado = (typeof projLmsRpc === 'function')
+    ? projLmsRpc('sot_lms_estado_wl', {p_projeto_id:projetoId}).then(function(r){
+        if(r && r.ok && r.data){ ctx.estado = String(r.data); ctx.estadoOk = true; }
+      }).catch(function(){})
+    : Promise.resolve();
+  var pWl = Promise.resolve(sbFetch('sot_wl', {filters:['projeto_id=eq.'+projetoId, 'cancelada_em=is.null'], order:'ordem'}))
+    .then(function(rows){
+      (rows||[]).forEach(function(w){ if(w && w.id){ ctx.wls[w.id] = w; ctx.wlsLista.push(w); } });
+    }).catch(function(){});
+  return Promise.all([pEstado, pWl]).then(function(){ return ctx; });
+}
+
+// Estado efetivo: o lido do banco; sem permissão/anon, derivado das linhas (alguma com WL → ESTRUTURADO).
+function sotWlEstadoEfetivo(projetoId){
+  if(_sotWlCtx.projetoId === projetoId && _sotWlCtx.estadoOk) return {estado:_sotWlCtx.estado, derivado:false};
+  if(sotWlProjetoTemWl(projetoId)) return {estado:'ESTRUTURADO', derivado:true};
+  return {estado:'', derivado:true};
+}
+
+function sotWlSeloHtml(projetoId){
+  var e = sotWlEstadoEfetivo(projetoId);
+  if(!e.estado) return '';
+  var cores = {LEGADO_SEM_WL:['#f5f5f3','#666'], EM_CONCILIACAO:['#FEF3E2','#854F0B'],
+    ESTRUTURA_PENDENTE:['#FFF8E1','#854F0B'], ESTRUTURADO:['#EAF3DE','#27500A']}[e.estado] || ['#f5f5f3','#555'];
+  var label = (typeof PROJ_LMS_ESTADO_WL_LABEL!=='undefined' && PROJ_LMS_ESTADO_WL_LABEL[e.estado]) || e.estado;
+  if(e.derivado && e.estado === 'ESTRUTURADO') label = 'Estruturado (WL)';
+  return '<span id="sot-selo-wl" title="Estado da estrutura de WL (LMS)" style="background:'+cores[0]+';color:'+cores[1]
+    +';border:1px solid '+cores[1]+'55;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600">🧩 '+_escapeHtml(label)+'</span>';
+}
+
+// Mensagem de bloqueio de inclusão/importação (E5). '' = liberado (legado, EM_CONCILIACAO ou estado desconhecido sem WL).
+function sotWlBloqueioInsercao(projetoId){
+  var e = sotWlEstadoEfetivo(projetoId);
+  if(SOT_WL_ESTADOS_BLOQUEIO.indexOf(e.estado) >= 0 || sotWlProjetoTemWl(projetoId)){
+    return 'Projeto com estrutura de WL do LMS ORIGINAL'+(e.estado==='ESTRUTURA_PENDENTE' ? ' (estrutura pendente)' : '')
+      +': inclusão manual e importação de atividades/materiais estão bloqueadas. A estrutura vem do LMS.';
+  }
+  return '';
+}
+
+function sotWlAvisarBloqueio(projetoId){
+  var msg = sotWlBloqueioInsercao(projetoId);
+  if(msg && typeof progShowToast === 'function') progShowToast('🔒 '+msg, 'erro');
+  return !!msg;
+}
+
+// Versão que consulta o banco (projeto pode não estar aberto: salvar pelo modal, importar, PLPT).
+// Resolve com a mensagem de bloqueio ou ''. Falha de consulta não bloqueia o legado (o banco segue protegendo a WL).
+function sotWlBloqueioInsercaoAsync(projetoId){
+  var msg = sotWlBloqueioInsercao(projetoId);
+  if(msg || DEMO || !projetoId || !isUUID(String(projetoId))) return Promise.resolve(msg);
+  try{
+    return _sotWlBloqueioConsultar(projetoId);
+  }catch(e){
+    console.warn('[WL] verificação de estrutura indisponível', e);
+    return Promise.resolve('');
+  }
+}
+
+function _sotWlBloqueioConsultar(projetoId){
+  var pLinhas = Promise.all([
+    Promise.resolve(sbFetch('sot_atividades', {select:'id,wl_id', filters:['projeto_id=eq.'+projetoId, 'wl_id=not.is.null'], limit:1})).catch(function(){ return []; }),
+    Promise.resolve(sbFetch('sot_materiais', {select:'id,wl_id', filters:['projeto_id=eq.'+projetoId, 'wl_id=not.is.null'], limit:1})).catch(function(){ return []; })
+  ]);
+  var pEstado = (_sotWlCtx.projetoId === projetoId && _sotWlCtx.estadoOk) ? Promise.resolve({ok:true, data:_sotWlCtx.estado})
+    : (typeof projLmsRpc === 'function' ? projLmsRpc('sot_lms_estado_wl', {p_projeto_id:projetoId}).catch(function(){ return {ok:false}; }) : Promise.resolve({ok:false}));
+  return Promise.all([pLinhas, pEstado]).catch(function(){ return [[[], []], {ok:false}]; }).then(function(r){
+    var comWl = function(rows){ return (rows||[]).some(function(x){ return x && x.wl_id; }); };
+    var temWl = comWl(r[0][0]) || comWl(r[0][1]);
+    var est = (r[1] && r[1].ok) ? String(r[1].data || '') : '';
+    if(temWl || SOT_WL_ESTADOS_BLOQUEIO.indexOf(est) >= 0){
+      return 'Projeto com estrutura de WL do LMS ORIGINAL'+(est==='ESTRUTURA_PENDENTE' ? ' (estrutura pendente)' : '')
+        +': inclusão manual e importação de atividades/materiais estão bloqueadas. A estrutura vem do LMS.';
+    }
+    return '';
+  });
+}
+
+function sotWlCodigo(wlId){
+  var w = wlId ? _sotWlCtx.wls[wlId] : null;
+  return w ? String(w.codigo) : '';
+}
+
+// Rótulo curto da linha estruturada: "WL 3 · FT I · KIT NK" (WL sem código se sot_wl não pôde ser lida, ex.: anon).
+function sotWlRotuloLinha(x){
+  if(!sotWlLinhaEstruturada(x)) return '';
+  var cod = sotWlCodigo(x.wl_id);
+  var partes = ['WL'+(cod ? ' '+cod : '')];
+  if(x.ft) partes.push('FT '+x.ft);
+  if(x.kit) partes.push('KIT '+x.kit);
+  return partes.join(' · ');
+}
+
+function sotWlRotuloHtml(x){
+  var r = sotWlRotuloLinha(x);
+  return r ? '<div style="font-size:9px;color:#185FA5;font-family:inherit;margin-top:1px">🔒 '+_escapeHtml(r)+'</div>' : '';
+}
+
+// Ordena por WL (ordem oficial) mantendo a ordem original dentro de cada WL; sem WL = lista intacta.
+function sotWlOrdenarLinhas(lista){
+  lista = lista || [];
+  var tem = lista.some(sotWlLinhaEstruturada);
+  if(!tem) return lista;
+  var ordWl = function(x){ var w = x.wl_id ? _sotWlCtx.wls[x.wl_id] : null; return w ? Number(w.ordem)||0 : (x.wl_id ? 999998 : 999999); };
+  return lista.map(function(x, i){ return {x:x, i:i}; })
+    .sort(function(a, b){ var d = ordWl(a.x) - ordWl(b.x); return d !== 0 ? d : a.i - b.i; })
+    .map(function(o){ return o.x; });
+}
+
+// E9 — aviso fixo da aba Plano: o plano do croqui (IA) é só planejamento visual; a WL oficial vem do LMS (sot_wl).
+function sotWlAvisoPlanoHtml(projetoId){
+  var n = (_sotWlCtx.projetoId === projetoId) ? _sotWlCtx.wlsLista.length : 0;
+  return '<div id="sot-wl-aviso-plano" style="margin-bottom:.75rem;padding:.55rem .8rem;border-radius:8px;border:1px solid #854F0B55;background:#FFF8E1;color:#854F0B;font-size:12px">'
+    +'⚠ <b>WL do croqui (IA) não é a WL oficial.</b> Este plano é só planejamento visual: não cria WL, não programa e não calcula material.'
+    +(n ? ' Este projeto tem <b>'+n+' WL(s) oficial(is) do LMS</b> — veja nas abas Atividades e Materiais.' : '')
+    +'</div>';
+}
+
+// Linha de cabeçalho de grupo por WL (devolve '' quando a WL não mudou).
+function sotWlCabecalhoGrupo(x, anterior, colspan){
+  if(!sotWlLinhaEstruturada(x)) return '';
+  if(anterior && anterior.wl_id === x.wl_id) return '';
+  var cod = sotWlCodigo(x.wl_id);
+  return '<tr class="sot-wl-grupo"><td colspan="'+colspan+'" style="background:#EBF4FD;color:#185FA5;font-size:11px;font-weight:700;padding:4px 8px">'
+    +'🧩 WL '+_escapeHtml(cod || '—')+'</td></tr>';
+}
+
+// Tradução das recusas do banco (gatilhos/CHECKs da 1.4).
+function sotWlTraduzErro(txt){
+  var s = String(txt || '');
+  if(/LINHA_ESTRUTURADA_SEM_EXCLUSAO/.test(s)) return 'Linha da estrutura de WL (LMS): não pode ser excluída pela tela.';
+  if(/LINHA_ESTRUTURADA_CAMPO_PROTEGIDO/.test(s)) return 'Linha da estrutura de WL (LMS): código, descrição, unidade e quantidade não podem ser alterados pela tela.';
+  if(/WL_SO_POR_FUNCAO/.test(s)) return 'Campos de WL só são preenchidos pela aplicação da estrutura do LMS.';
+  if(/PROJETO_ESTRUTURADO_SEM_EXCLUSAO/.test(s)) return 'Projeto com estrutura de WL não pode ser excluído pela tela.';
+  if(/descritivo_sem_operacao/.test(s)) return 'Item somente descritivo (ex.: retirada do LMS) não recebe quantidade operacional.';
+  if(/legado_uidx|projeto_codigo_unique|duplicate key/i.test(s)) return 'Já existe item com este código no projeto.';
+  var m = s.match(/"message"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : (s ? s.slice(0, 200) : 'Erro desconhecido no banco.');
+}
+
+// E6 — material do projeto pelo id da linha (mat_id). Fallback por código/descrição só com material operacional e não
+// excluído; se houver mais de uma linha e alguma for de WL, aborta (null) em vez de escolher a errada. Legado ambíguo
+// (sem WL) mantém o comportamento antigo (primeira linha).
+function sotMatEscolher(cands, contexto, silencioso){
+  cands = cands || [];
+  if(cands.length <= 1) return cands[0] || null;
+  if(cands.some(sotWlLinhaEstruturada)){
+    console.warn('[WL] material com mais de uma linha (WL/FT/KIT) — atualização ignorada', contexto);
+    if(!silencioso && typeof progShowToast === 'function') progShowToast('⚠ Material com mais de uma linha de WL: lance pela tela do projeto (linha certa).', 'erro');
+    return null;
+  }
+  return cands[0];
+}
+
+function sotMatBuscarLinha(projetoId, item){
+  if(!projetoId || !item) return Promise.resolve(null);
+  var matId = item.mat_id ? String(item.mat_id) : '';
+  var base = ['projeto_id=eq.'+projetoId, 'deleted_at=is.null', 'somente_descritivo=is.false'];
+  if(matId && isUUID(matId)){
+    return Promise.resolve(sbFetch('sot_materiais', {filters:['id=eq.'+matId].concat(base), limit:1}))
+      .then(function(rows){ return (rows && rows[0]) || null; });
+  }
+  var f = base.slice();
+  if(item.codigo) f.push('codigo_sap=eq.'+encodeURIComponent(item.codigo));
+  else if(item.nome) f.push('descricao=eq.'+encodeURIComponent(item.nome));
+  else return Promise.resolve(null);
+  return Promise.resolve(sbFetch('sot_materiais', {filters:f, limit:2}))
+    .then(function(rows){ return sotMatEscolher(rows || [], item); });
+}
+
+function sotMatAcharLocal(lista, item){
+  if(!item || !lista) return null;
+  if(item.mat_id){
+    var porId = lista.filter(function(m){ return m && m.id === item.mat_id; })[0];
+    if(porId) return porId;
+  }
+  var nome = item.nome ? String(item.nome).toLowerCase() : '';
+  var cands = lista.filter(function(m){
+    return m && ((m.codigo_sap && item.codigo && m.codigo_sap === item.codigo)
+      || (m.descricao && nome && m.descricao.toLowerCase() === nome));
+  });
+  return sotMatEscolher(cands, item, true);
+}
+
+async function sotExcluirAtividade(id){
+  var a = (sot_atividades||[]).filter(function(x){ return x.id === id; })[0];
+  if(!a) return;
+  if(sotWlLinhaEstruturada(a)){ progShowToast('🔒 '+sotWlTraduzErro('LINHA_ESTRUTURADA_SEM_EXCLUSAO'), 'erro'); return; }
+  if(!confirm('Excluir atividade?')) return;
+  if(!DEMO){
+    var ok = await sbDelete('sot_atividades', 'id=eq.'+id);
+    if(ok === false){ progShowToast('⚠ Não excluída: '+sotWlTraduzErro(window._sbLastDeleteErr), 'erro'); return; }
+  }
+  sot_atividades = sot_atividades.filter(function(x){ return x.id !== id; });
+  sotAtualizarAbaAtual(a.projeto_id);
+}
+
 
 function renderProjetosPorContrato(tab, contrato_id){
   var wrap = document.getElementById('proj-lista-'+tab);
@@ -39592,6 +39826,7 @@ function sotAbrirProjeto(projetoId){
     DEMO?Promise.resolve([]):sbFetch('sot_projetos_historico',{filters:['projeto_id=eq.'+projetoId],order:'criado_em.desc'}),
     DEMO?Promise.resolve([]):sbFetch('sot_medicoes',{filters:['projeto_id=eq.'+projetoId],order:'numero'}),
     DEMO?Promise.resolve([]):sbFetch('sot_med_itens',{filters:['projeto_id=eq.'+projetoId]}),
+    sotWlCarregarProjeto(projetoId),   // Etapa 1.5a: estado WL + WLs oficiais (nunca rejeita)
   ]).then(function(res){
     sot_atividades      = (res[0]||[]).filter(function(a){ return !a.somente_descritivo; });
     sot_atividades_desc = (res[0]||[]).filter(function(a){ return !!a.somente_descritivo; });
@@ -39635,10 +39870,7 @@ function sotAbrirProjeto(projetoId){
           var isHoje  = reqData === hoje;
           var itens   = parseJsonField(r.itens,[]);
           itens.forEach(function(it){
-            var mat = sot_materiais_proj.find(function(m){
-              return (m.codigo_sap && it.codigo && m.codigo_sap===it.codigo)
-                  || (m.descricao && it.nome && m.descricao.toLowerCase()===it.nome.toLowerCase());
-            });
+            var mat = sotMatAcharLocal(sot_materiais_proj, it);   // Etapa 1.5a (E6): mat_id primeiro
             if(!mat) return;
             var qtdReserva = (it.adicional_pendente && it.qtd_prevista!=null)
               ? (it.qtd_prevista||0)
@@ -40535,6 +40767,7 @@ function sotRenderDetalhe(p, docs){
     +'<span style="color:#aaa;font-size:12px">/</span>'
     +'<span style="font-size:13px;font-weight:500">'+p.nome+'</span>'
     +'<span style="background:'+sc.bg+';color:'+sc.cor+';border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;margin-left:auto">'+p.status+'</span>'
+    +sotWlSeloHtml(p.id)
     +'<button class="btn btn-sm" onclick="sotAlterarStatus(\''+p.id+'\')" style="color:'+sc.cor+';border-color:'+sc.cor+'">'+(isContratoPLPT(p.contrato_id)?'⚡ Esteira':'↑ Status')+'</button>'
     +'<button class="btn btn-sm" onclick="sotAbrirEditarProjeto(\''+p.id+'\')" style="color:#185FA5;border-color:#185FA5">✎ Editar</button>'
     +'</div>'
@@ -40917,7 +41150,28 @@ function _sotRenderTabAtividadesOper(projetoId){
     +'<th>Status</th><th></th>'
     +'</tr></thead>'
     +'<tbody>'
-    +sot_atividades.map(function(a){
+    +_sotLinhasAtividadesHtml(isUPS)
+    +'<tr style="background:#f9f9f7;font-weight:600">'
+    +(isUPS
+      ? '<td colspan="8" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>'
+      : '<td colspan="7" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>')
+    +'<td style="font-size:12px;text-align:right">'+fmtMoeda(valTotal)+'</td>'
+    +'<td style="font-size:12px;text-align:right;color:#185FA5">'+fmtMoeda(valViab)+'</td>'
+    +'<td colspan="3"></td></tr>'
+    +'</tbody></table></div>';
+}
+
+// Etapa 1.5a: linhas da aba Atividades agrupadas por WL oficial (legado sem WL: ordem de sempre).
+function _sotLinhasAtividadesHtml(isUPS){
+  var ant = null, cols = isUPS ? 13 : 12;
+  return sotWlOrdenarLinhas(sot_atividades).map(function(a){
+    var cab = sotWlCabecalhoGrupo(a, ant, cols); ant = a;
+    return cab + _sotLinhaAtividadeHtml(a, isUPS);
+  }).join('');
+}
+
+function _sotLinhaAtividadeHtml(a, isUPS){
+      var _wl = sotWlLinhaEstruturada(a);
       var st=a.status||'pendente';
       var stCor={pendente:'#888',em_execucao:'#185FA5',executada:'#3B6D11',
         executada_parcial:'#854F0B',cancelada:'#A32D2D',divergente:'#534AB7',
@@ -40929,7 +41183,7 @@ function _sotRenderTabAtividadesOper(projetoId){
       var pctExec = a.qtd_prevista>0?Math.min(100,Math.round((a.qtd_executada||0)/a.qtd_prevista*100)):0;
       return '<tr>'
         +'<td style="color:#888;font-size:11px">'+a.ordem_exec+'</td>'
-        +'<td style="font-size:11px;font-family:monospace">'+(a.codigo||'—')+'</td>'
+        +'<td style="font-size:11px;font-family:monospace">'+(a.codigo||'—')+sotWlRotuloHtml(a)+'</td>'
         +'<td style="font-weight:500;font-size:12px">'+a.descricao+'</td>'
         +'<td style="font-size:11px;color:#888">'+(a.etapa||'—')+'</td>'
         +'<td style="font-size:12px;text-align:right">'+(a.qtd_prevista||0)+'</td>'
@@ -40965,19 +41219,12 @@ function _sotRenderTabAtividadesOper(projetoId){
         +'<button class="btn btn-sm btn-pri" style="font-size:10px;padding:3px 7px" '
         +'onclick="sotMenuLancamento(\''+a.id+'\',this)" title="Lançar">▶ Lançar</button>'
         +'</div>'
-        +'<button class="btn btn-sm" onclick="sotEditarAtividade(\''+a.id+'\')" style="font-size:10px" title="Editar">✎</button>'
-        +'<button class="btn btn-sm" onclick="if(confirm(\'Excluir atividade?\')){sot_atividades=sot_atividades.filter(function(x){return x.id!==\''+a.id+'\';});if(!DEMO)sbDelete(\'sot_atividades\',\'id=eq.'+a.id+'\');sotAtualizarAbaAtual(\''+a.projeto_id+'\');}" style="font-size:10px;color:#A32D2D" title="Excluir">🗑</button>'
+        +'<button class="btn btn-sm" onclick="sotEditarAtividade(\''+a.id+'\')" style="font-size:10px" title="'+(_wl?'Editar campos livres (linha da WL)':'Editar')+'">✎</button>'
+        +(_wl
+          ? '<span class="sot-wl-lock" title="Linha da estrutura de WL (LMS): não pode ser excluída nem ter código, descrição, unidade ou quantidade alterados" style="font-size:12px;padding:2px 4px;cursor:help">🔒</span>'
+          : '<button class="btn btn-sm" onclick="sotExcluirAtividade(\''+a.id+'\')" style="font-size:10px;color:#A32D2D" title="Excluir">🗑</button>')
         +'</td>'
         +'</tr>';
-    }).join('')
-    +'<tr style="background:#f9f9f7;font-weight:600">'
-    +(isUPS
-      ? '<td colspan="8" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>'
-      : '<td colspan="7" style="text-align:right;font-size:12px;padding:6px 8px">Totais:</td>')
-    +'<td style="font-size:12px;text-align:right">'+fmtMoeda(valTotal)+'</td>'
-    +'<td style="font-size:12px;text-align:right;color:#185FA5">'+fmtMoeda(valViab)+'</td>'
-    +'<td colspan="3"></td></tr>'
-    +'</tbody></table></div>';
 }
 
 function sotRenderTabMateriais(projetoId, saldosInfo){
@@ -41022,7 +41269,9 @@ function _sotRenderTabMateriaisOper(projetoId, saldosInfo){
     +'<th style="padding:4px 6px;text-align:right" title="Aplicado hoje">Hoje</th>'
     +'<th style="padding:4px 6px;text-align:right;font-weight:700;color:#81C995">Total</th>'
     +'</tr></thead><tbody>'
-    +sot_materiais_proj.filter(function(m){return m.projeto_id===projetoId;}).map(function(m){
+    +(function(){ var _antM = null; return sotWlOrdenarLinhas(sot_materiais_proj.filter(function(m){return m.projeto_id===projetoId;})).map(function(m){
+      var _cabM = sotWlCabecalhoGrupo(m, _antM, 16); _antM = m;
+      var _wlM = sotWlLinhaEstruturada(m);
       var un          = escHtml(m.unidade||'UN');
       var prog        = m.qtd_projetada  || 0;
       var adicionado  = m._adicionado    || 0;
@@ -41054,8 +41303,8 @@ function _sotRenderTabMateriaisOper(projetoId, saldosInfo){
             +'<div style="font-size:12px">'+(sal.ok?'✅':sal.parcial?'⚠':'❌')+'</div></div>';
         }
       }
-      return '<tr style="border-bottom:.5px solid #f0efe8">'
-        +'<td style="padding:6px 8px;font-size:10px;font-family:monospace;color:#888">'+(m.codigo_sap||'—')+'</td>'
+      return _cabM + '<tr style="border-bottom:.5px solid #f0efe8">'
+        +'<td style="padding:6px 8px;font-size:10px;font-family:monospace;color:#888">'+(m.codigo_sap||'—')+sotWlRotuloHtml(m)+'</td>'
         +'<td style="padding:6px 8px;font-weight:500">'+escHtml(m.descricao||'Material')+'</td>'
         +'<td style="padding:6px 8px;text-align:center;color:#888">'+un+'</td>'
         +'<td style="padding:6px 6px;text-align:right;color:#854F0B;border-left:1px solid #f0efe8">'+prog+'</td>'
@@ -41073,9 +41322,10 @@ function _sotRenderTabMateriaisOper(projetoId, saldosInfo){
         +'<td style="padding:6px 6px;text-align:right;color:'+(devHoje>0?'#854F0B':'#ccc')+';border-left:1px solid #f0efe8">'+( devHoje||'—')+'</td>'
         +'<td style="padding:6px 8px;border-left:1px solid #f0efe8"><div style="display:flex;gap:3px">'
         +'<button class="btn btn-sm btn-pri" onclick="sotMenuLancamentoMat(\''+m.id+'\',this)" style="font-size:10px;background:linear-gradient(135deg,#185FA5,#3B6D11);border:none" title="Lançar">▶ Lançar</button>'
-        +'<button class="btn btn-sm" onclick="sotEditarMaterial(\''+m.id+'\')" style="font-size:10px" title="Editar">✎</button>'
+        +'<button class="btn btn-sm" onclick="sotEditarMaterial(\''+m.id+'\')" style="font-size:10px" title="'+(_wlM?'Editar observação/adicional (linha da WL)':'Editar')+'">✎</button>'
+        +(_wlM ? '<span class="sot-wl-lock" title="Linha da estrutura de WL (LMS): não pode ser excluída nem ter código, descrição, unidade ou quantidade alterados" style="font-size:12px;padding:2px 4px;cursor:help">🔒</span>' : '')
         +'</div></td></tr>';
-    }).join('')
+    }).join(''); })()
     +'</tbody></table></div>'
     +'<div style="margin-top:.5rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">'
     +'<button class="btn btn-pri" onclick="sotAbrirNovoMaterial(\''+projetoId+'\'  )" style="font-size:12px">+ Adicionar material</button>'
@@ -41103,22 +41353,34 @@ function sotRenderBlocoDescritivo(projetoId, tipo){
     +'<table style="width:100%;border-collapse:collapse;font-size:11px">'
     +'<tr style="background:#fafaf8;color:#666"><th style="padding:4px 8px;text-align:left">Código</th><th style="padding:4px 8px;text-align:left">Descrição</th>'
     +'<th style="padding:4px 8px;text-align:right">Qtd</th><th style="padding:4px 8px;text-align:left">Un</th><th></th></tr>'
-    +lista.map(function(x){
+    +sotWlOrdenarLinhas(lista).map(function(x){
+      var wl = sotWlLinhaEstruturada(x);
       return '<tr style="border-top:.5px solid #f0efe8;color:#555">'
-        +'<td style="padding:4px 8px;font-family:monospace">'+_escapeHtml((serv ? x.codigo : x.codigo_sap) || '—')+'</td>'
-        +'<td style="padding:4px 8px">'+_escapeHtml(x.descricao || '')+'</td>'
+        +'<td style="padding:4px 8px;font-family:monospace">'+_escapeHtml((serv ? x.codigo : x.codigo_sap) || '—')+sotWlRotuloHtml(x)+'</td>'
+        +'<td style="padding:4px 8px">'+_escapeHtml(x.descricao || '')
+        +(wl && !serv && String(x.ft||'').toUpperCase()==='R' ? '<div style="font-size:9px;color:#854F0B">Retirada (FT=R): fora de requisição, reserva, entrega e almoxarifado</div>' : '')+'</td>'
         +'<td style="padding:4px 8px;text-align:right">'+Number(serv ? (x.qtd_prevista||0) : (x.qtd_projetada||0))+'</td>'
         +'<td style="padding:4px 8px">'+_escapeHtml(x.unidade || 'UN')+'</td>'
-        +'<td style="padding:4px 8px;text-align:right"><button class="btn btn-sm" style="font-size:10px;color:#A32D2D" title="Excluir" '
-        +'onclick="sotExcluirDescritivo(\''+tabela+'\',\''+x.id+'\',\''+projetoId+'\')">🗑</button></td>'
+        +'<td style="padding:4px 8px;text-align:right">'
+        +(wl
+          ? '<span class="sot-wl-lock" title="Linha da estrutura de WL (LMS): não pode ser excluída" style="font-size:12px;cursor:help">🔒</span>'
+          : '<button class="btn btn-sm" style="font-size:10px;color:#A32D2D" title="Excluir" '
+            +'onclick="sotExcluirDescritivo(\''+tabela+'\',\''+x.id+'\',\''+projetoId+'\')">🗑</button>')
+        +'</td>'
         +'</tr>';
     }).join('')+'</table></div>';
 }
 
 async function sotExcluirDescritivo(tabela, id, projetoId){
   if(tabela !== 'sot_atividades' && tabela !== 'sot_materiais') return;
+  var lista = (tabela === 'sot_atividades' ? sot_atividades_desc : sot_materiais_desc) || [];
+  var it = lista.filter(function(x){ return x.id === id; })[0];
+  if(it && sotWlLinhaEstruturada(it)){ progShowToast('🔒 '+sotWlTraduzErro('LINHA_ESTRUTURADA_SEM_EXCLUSAO'), 'erro'); return; }
   if(!confirm('Excluir este item descritivo do projeto?')) return;
-  if(!DEMO) await sbDelete(tabela, 'id=eq.'+id);
+  if(!DEMO){
+    var ok = await sbDelete(tabela, 'id=eq.'+id);
+    if(ok === false) progShowToast('⚠ Não excluído: '+sotWlTraduzErro(window._sbLastDeleteErr), 'erro');
+  }
   sotAbrirProjeto(projetoId);
 }
 
@@ -43320,6 +43582,8 @@ async function _sotLancarPendentes(projetoId, contratoId, pend){
   if(!mats.length && !srvs.length) return;
   if(DEMO){ progShowToast('Lista não lançada (modo demonstração).'); return; }
   if(!isUUID(projetoId)){ progShowToast('⚠ Projeto sem id do banco; a lista de materiais e serviços não foi lançada.','erro'); return; }
+  var _bloqWl = await sotWlBloqueioInsercaoAsync(projetoId);   // Etapa 1.5a (E5)
+  if(_bloqWl){ progShowToast('🔒 '+_bloqWl+' A lista não foi lançada.','erro'); return; }
 
   var atuais = await Promise.all([
     sbFetch('sot_materiais', {select:'codigo_sap', filters:['projeto_id=eq.'+projetoId,'deleted_at=is.null'], limit:5000}),
@@ -43450,6 +43714,7 @@ function sotAlterarStatus(projetoId){
 
 // ── Nova atividade ────────────────────────────────────────────
 function sotAbrirNovaAtividade(projetoId){
+  if(sotWlAvisarBloqueio(projetoId)) return;   // Etapa 1.5a (E5)
   var proj = sot_projetos.find(function(x){return x.id===projetoId;});
   var contId = proj ? proj.contrato_id : '';
   var servsCont = servicos.filter(function(s){return !contId||s.contrato_id===contId;});
@@ -43721,6 +43986,7 @@ function sotRenderOptsMatCatalogo(mats){
 
 // ── Novo material ─────────────────────────────────────────────
 function sotAbrirNovoMaterial(projetoId){
+  if(sotWlAvisarBloqueio(projetoId)) return;   // Etapa 1.5a (E5)
   var proj = sot_projetos.find(function(p){return p.id===projetoId;});
   var contId = proj ? proj.contrato_id : (_coContratoAtual||'');
 
@@ -44096,9 +44362,14 @@ function sotEditarAtividade(id){
   var proj = sot_projetos.find(function(x){ return x.id===a.projeto_id; });
   var contId = proj ? proj.contrato_id : '';
   var servsCont = servicos.filter(function(s){ return !contId||s.contrato_id===contId; });
+  var wl = sotWlLinhaEstruturada(a);   // Etapa 1.5a: linha da WL → só campos livres
+  var trava = wl ? ' disabled title="Linha da estrutura de WL (LMS): não pode ser alterado pela tela" style="width:100%;background:#f5f5f3;color:#888"' : ' style="width:100%"';
 
   var html = '<div class="modal-bg"><div class="modal" style="max-width:520px">'
     +'<h3 style="margin-bottom:.75rem">Editar Atividade</h3>'
+    +(wl ? '<div style="margin-bottom:.6rem;padding:.5rem .7rem;border-radius:6px;background:#EBF4FD;color:#185FA5;font-size:11px">🔒 '
+      +_escapeHtml(sotWlRotuloLinha(a))+' — linha da estrutura do LMS. Código, descrição, unidade e quantidade não mudam pela tela; '
+      +'é possível ajustar etapa, valor, ordem, observações e serviço.</div>' : '')
     +'<div style="margin-bottom:.75rem">'
     +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:3px">Serviço do contrato — pesquisar por código ou nome</label>'
     +'<div style="position:relative">'
@@ -44111,15 +44382,15 @@ function sotEditarAtividade(id){
     +'</div></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Código</label>'
-    +'<input class="inp" id="sot-at-cod" value="'+(a.codigo||'')+'" style="width:100%" oninput="sotBuscarPorCodigo(\''+contId+'\')"/></div>'
+    +'<input class="inp" id="sot-at-cod" value="'+(a.codigo||'')+'"'+trava+(wl ? '' : ' oninput="sotBuscarPorCodigo(\''+contId+'\')"')+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Etapa</label>'
     +'<input class="inp" id="sot-at-etapa" value="'+(a.etapa||'')+'" style="width:100%"/></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Descrição *</label>'
-    +'<input class="inp" id="sot-at-desc" value="'+(a.descricao||'')+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-at-desc" value="'+(a.descricao||'')+'"'+trava+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Unidade</label>'
-    +'<input class="inp" id="sot-at-un" value="'+(a.unidade||'UN')+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-at-un" value="'+(a.unidade||'UN')+'"'+trava+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd prevista</label>'
-    +'<input class="inp" id="sot-at-qtd" type="number" value="'+(a.qtd_prevista||0)+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-at-qtd" type="number" value="'+(a.qtd_prevista||0)+'"'+trava+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Valor unitário (R$)</label>'
     +'<input class="inp" id="sot-at-vu" type="number" value="'+(a.valor_unitario||0)+'" step="0.01" style="width:100%"/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Ordem</label>'
@@ -44129,7 +44400,7 @@ function sotEditarAtividade(id){
     +'</div>'
     +'<div style="display:flex;gap:8px">'
     +'<button class="btn" onclick="closeModal()" style="flex:1">Cancelar</button>'
-    +'<button class="btn" id="sot-excluir-at" style="flex:1;color:#A32D2D;border-color:#A32D2D">🗑 Excluir</button>'
+    +(wl ? '' : '<button class="btn" id="sot-excluir-at" style="flex:1;color:#A32D2D;border-color:#A32D2D">🗑 Excluir</button>')
     +'<button class="btn btn-pri" id="sot-salvar-at" style="flex:2">Salvar alterações</button>'
     +'</div></div></div>';
 
@@ -44142,32 +44413,44 @@ function sotEditarAtividade(id){
     var btnSalvar = document.getElementById('sot-salvar-at');
     if(btnSalvar) btnSalvar.onclick = function(){
       var g = function(id){ return (document.getElementById(id)||{}).value||''; };
-      var desc = g('sot-at-desc').trim();
+      var desc = wl ? (a.descricao||'') : g('sot-at-desc').trim();
       if(!desc){ alert('Informe a descrição.'); return; }
-      a.codigo        = g('sot-at-cod');
-      a.descricao     = desc;
+      var antes = {codigo:a.codigo, descricao:a.descricao, etapa:a.etapa, unidade:a.unidade, qtd_prevista:a.qtd_prevista,
+        valor_unitario:a.valor_unitario, ordem_exec:a.ordem_exec, observacoes:a.observacoes, servico_id:a.servico_id};
+      if(!wl){
+        a.codigo        = g('sot-at-cod');
+        a.descricao     = desc;
+        a.unidade       = g('sot-at-un')||'UN';
+        a.qtd_prevista  = parseFloat(g('sot-at-qtd'))||0;
+      }
       a.etapa         = g('sot-at-etapa');
-      a.unidade       = g('sot-at-un')||'UN';
-      a.qtd_prevista  = parseFloat(g('sot-at-qtd'))||0;
       a.valor_unitario= parseFloat(g('sot-at-vu'))||0;
       a.ordem_exec    = parseInt(g('sot-at-ordem'))||1;
       a.observacoes   = g('sot-at-obs');
       a.servico_id    = window._sotServSelecionadoId||null;
-      if(!DEMO) sbUpdate('sot_atividades',{
-        codigo:a.codigo,descricao:a.descricao,etapa:a.etapa,
-        unidade:a.unidade,qtd_prevista:a.qtd_prevista,valor_unitario:a.valor_unitario,
-        ordem_exec:a.ordem_exec,observacoes:a.observacoes,servico_id:a.servico_id
-      },'id=eq.'+id);
+      // Linha da WL: payload só com campos livres (os estruturais nem vão ao banco).
+      var payload = {etapa:a.etapa, valor_unitario:a.valor_unitario, ordem_exec:a.ordem_exec,
+        observacoes:a.observacoes, servico_id:a.servico_id};
+      if(!wl){ payload.codigo = a.codigo; payload.descricao = a.descricao; payload.unidade = a.unidade; payload.qtd_prevista = a.qtd_prevista; }
       closeModal();
       sotAtualizarAbaAtual(a.projeto_id);
+      if(!DEMO) Promise.resolve(sbUpdate('sot_atividades', payload, 'id=eq.'+id)).then(function(ok){
+        if(ok !== false) return;
+        Object.keys(antes).forEach(function(k){ a[k] = antes[k]; });   // banco recusou: volta o que estava
+        progShowToast('⚠ Atividade não alterada: '+sotWlTraduzErro(window._sbLastUpdateErr), 'erro');
+        sotAtualizarAbaAtual(a.projeto_id);
+      });
     };
 
     // Excluir
     var btnExcluir = document.getElementById('sot-excluir-at');
-    if(btnExcluir) btnExcluir.onclick = function(){
+    if(btnExcluir) btnExcluir.onclick = async function(){
       if(!confirm('Excluir a atividade "'+a.descricao+'"? Esta ação não pode ser desfeita.')) return;
+      if(!DEMO){
+        var okDel = await sbDelete('sot_atividades','id=eq.'+id);
+        if(okDel === false){ progShowToast('⚠ Atividade não excluída: '+sotWlTraduzErro(window._sbLastDeleteErr), 'erro'); return; }
+      }
       sot_atividades = sot_atividades.filter(function(x){ return x.id!==id; });
-      if(!DEMO) sbDelete('sot_atividades','id=eq.'+id);
       closeModal();
       sotAtualizarAbaAtual(a.projeto_id);
     };
@@ -44671,6 +44954,7 @@ function sotValidarLancamento(lancId, projetoId, aprovar){
   });
 
   if(!ativ){
+    if(sotWlAvisarBloqueio(projetoId)) return;   // Etapa 1.5a (E5): sem atividade automática em projeto com WL
     if(!confirm('Atividade com código "'+lanc.codigo+'" não encontrada no projeto.\nDeseja criar automaticamente?'))return;
     ativ = {
       id:'sa'+Date.now(), projeto_id:projetoId,
@@ -44847,6 +45131,7 @@ function sotLancarExecucaoAtividade(id){
 
 // ── Importar atividades ───────────────────────────────────────
 function sotImportarAtividades(projetoId){
+  if(sotWlAvisarBloqueio(projetoId)) return;   // Etapa 1.5a (E5)
   var proj = sot_projetos.find(function(x){ return x.id===projetoId; });
   var isListaPrecos = proj&&(proj.modalidade||'').toLowerCase().indexOf('lista')>=0;
   var contId = proj?proj.contrato_id:'';
@@ -45074,6 +45359,8 @@ async function sotConfirmarImportacao(projetoId){
   if(!itens.length){alert('Nenhuma linha válida para importar.');return;}
   if(DEMO){ progShowToast('Lista não importada (modo demonstração).'); return; }
   if(!isUUID(projetoId)){ progShowToast('⚠ Projeto sem id do banco; nada foi importado.','erro'); return; }
+  var _bloqWl = await sotWlBloqueioInsercaoAsync(projetoId);   // Etapa 1.5a (E5): nem insere nem soma em projeto com WL
+  if(_bloqWl){ progShowToast('🔒 '+_bloqWl+' Nada foi importado.','erro'); return; }
   if(itens.some(function(it){ return sotTextoBinario(it.codigo)||sotTextoBinario(it.descricao); })){
     progShowToast('⚠ A lista tem caracteres inválidos (conteúdo binário); nada foi importado. Cole o texto direto do Excel.','erro'); return;
   }
@@ -45139,6 +45426,7 @@ async function sotConfirmarImportacao(projetoId){
 }
 
 function sotImportarMateriais(projetoId){
+  if(sotWlAvisarBloqueio(projetoId)) return;   // Etapa 1.5a (E5)
   setModal('<div class="modal-bg"><div class="modal" style="max-width:560px">'
     +'<h3 style="margin-bottom:.5rem">📥 Importar Materiais</h3>'
     +'<div style="font-size:12px;color:#666;margin-bottom:.75rem">'
@@ -45409,7 +45697,7 @@ function sotRenderTabPlano(projetoId, container){
   window._sotPlanoEdit = plano ? JSON.parse(JSON.stringify(plano)) : null;
 
   if(!plano || !plano.wls || !plano.wls.length){
-    el.innerHTML = '<div style="padding:2rem;text-align:center">'
+    el.innerHTML = sotWlAvisoPlanoHtml(projetoId) + '<div style="padding:2rem;text-align:center">'
       +'<div style="font-size:40px;margin-bottom:.5rem">📋</div>'
       +'<div style="font-size:14px;font-weight:600;color:#444;margin-bottom:.5rem">Nenhum plano de execução</div>'
       +'<div style="font-size:12px;color:#888;margin-bottom:1rem">Analise o croqui com IA para gerar a estratégia e distribuição de WLs por equipe.</div>'
@@ -45426,6 +45714,7 @@ function sotRenderTabPlano(projetoId, container){
   var wls = plano.wls;
 
   var html = '<div style="padding:.75rem">'
+    +sotWlAvisoPlanoHtml(projetoId)
     +'<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:.75rem">'
     +'<div><div style="font-size:14px;font-weight:700">📋 Plano de Execução</div>'
     +'<div style="font-size:11px;color:#888">'+(plano.atualizado_em ? 'Atualizado '+fmtD(plano.atualizado_em.split('T')[0])+(plano.atualizado_por?' · '+escHtml(plano.atualizado_por):'') : '')+'</div></div>'
@@ -45997,7 +46286,8 @@ function sotLancarBaixaMaterial(id){
       (reqs||[]).forEach(function(r){
         var itens = parseJsonField(r.itens,[]);
         itens.forEach(function(it){
-          if(it.codigo===m.codigo_sap || it.nome===m.descricao){
+          // Etapa 1.5a (E6): item com mat_id conta só para a própria linha (antes somava linhas irmãs do mesmo código)
+          if(it.mat_id ? it.mat_id === m.id : (it.codigo===m.codigo_sap || it.nome===m.descricao)){
             qtdRet += (it.qtd_ret||it.qtd_req||0);
           }
         });
@@ -46114,46 +46404,62 @@ function sotEditarMaterial(id){
   var m = sot_materiais_proj.find(function(x){ return x.id===id; });
   if(!m) return;
   var qtdAdic = m._adicionado != null ? m._adicionado : 0;
+  var wl = sotWlLinhaEstruturada(m);   // Etapa 1.5a: linha da WL → só observação e adicional
+  var trava = wl ? ' disabled title="Linha da estrutura de WL (LMS): não pode ser alterado pela tela" style="width:100%;background:#f5f5f3;color:#888"' : ' style="width:100%"';
   setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
     +'<h3 style="margin-bottom:.75rem">Editar Material</h3>'
+    +(wl ? '<div style="margin-bottom:.6rem;padding:.5rem .7rem;border-radius:6px;background:#EBF4FD;color:#185FA5;font-size:11px">🔒 '
+      +_escapeHtml(sotWlRotuloLinha(m))+' — linha da estrutura do LMS. Código, descrição, unidade e quantidade não mudam pela tela; '
+      +'é possível ajustar a observação e o adicional.</div>' : '')
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.75rem">'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Código SAP</label>'
-    +'<input class="inp" id="sot-mat-cod" value="'+(m.codigo_sap||'')+'" style="width:100%" oninput="sotAutoFillEditBySAP(this.value)"/></div>'
+    +'<input class="inp" id="sot-mat-cod" value="'+(m.codigo_sap||'')+'"'+trava+(wl ? '' : ' oninput="sotAutoFillEditBySAP(this.value)"')+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Unidade</label>'
-    +'<input class="inp" id="sot-mat-un" value="'+(m.unidade||'UN')+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-mat-un" value="'+(m.unidade||'UN')+'"'+trava+'/></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Descrição *</label>'
-    +'<input class="inp" id="sot-mat-desc" value="'+escHtml(m.descricao||'')+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-mat-desc" value="'+escHtml(m.descricao||'')+'"'+trava+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Projetada</label>'
-    +'<input class="inp" id="sot-mat-qtd" type="number" step="0.01" value="'+(m.qtd_projetada||0)+'" style="width:100%"/></div>'
+    +'<input class="inp" id="sot-mat-qtd" type="number" step="0.01" value="'+(m.qtd_projetada||0)+'"'+trava+'/></div>'
     +'<div><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Qtd Adicional</label>'
     +'<input class="inp" id="sot-mat-adic" type="number" step="0.01" min="0" value="'+qtdAdic+'" style="width:100%"/></div>'
     +'<div style="grid-column:span 2"><label style="font-size:11px;font-weight:500;display:block;margin-bottom:2px">Observação</label>'
     +'<input class="inp" id="sot-mat-obs" value="'+escHtml(m.observacao||'')+'" style="width:100%"/></div>'
     +'</div>'
     +'<div style="display:flex;gap:.5rem">'
-    +'<button class="btn" id="sot-excluir-mat" style="color:#A32D2D;border-color:#A32D2D">Excluir</button>'
+    +(wl ? '' : '<button class="btn" id="sot-excluir-mat" style="color:#A32D2D;border-color:#A32D2D">Excluir</button>')
     +'<button class="btn btn-pri" id="sot-salvar-mat" style="flex:2">Salvar</button>'
     +'</div></div></div>');
   setTimeout(function(){
     var btnS = document.getElementById('sot-salvar-mat');
     if(btnS) btnS.onclick = function(){
       var g=function(id){return(document.getElementById(id)||{}).value||'';};
-      var desc=g('sot-mat-desc').trim();
+      var desc = wl ? (m.descricao||'') : g('sot-mat-desc').trim();
       if(!desc){progShowToast('⚠ Informe a descrição.','erro');return;}
-      m.codigo_sap      = g('sot-mat-cod').trim();
-      m.descricao       = desc;
-      m.unidade         = g('sot-mat-un')||'UN';
-      m.qtd_projetada   = parseFloat(g('sot-mat-qtd'))||0;
+      var antesM = {codigo_sap:m.codigo_sap, descricao:m.descricao, unidade:m.unidade, qtd_projetada:m.qtd_projetada, observacao:m.observacao};
+      if(!wl){
+        m.codigo_sap      = g('sot-mat-cod').trim();
+        m.descricao       = desc;
+        m.unidade         = g('sot-mat-un')||'UN';
+        m.qtd_projetada   = parseFloat(g('sot-mat-qtd'))||0;
+      }
       var qtdAdicSalvar = parseFloat(g('sot-mat-adic'))||0;
       m.observacao      = g('sot-mat-obs');
       var projId = m.projeto_id;
+      function _falhaEdicao(){
+        Object.keys(antesM).forEach(function(k){ m[k] = antesM[k]; });   // banco recusou: volta o que estava
+        closeModal();
+        sotAtualizarAbaAtual(projId);
+        progShowToast('⚠ Material não alterado: '+sotWlTraduzErro(window._sbLastUpdateErr), 'erro');
+      }
       function _finalizarEdicao(){
         closeModal();
         sotAtualizarAbaAtual(projId);
         progShowToast('✅ Material atualizado.');
       }
       if(!DEMO){
-        var _payload={codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
+        // Linha da WL: só a observação vai ao banco (estruturais nem são enviados).
+        var _payload = wl ? {observacao:m.observacao}
+          : {codigo_sap:m.codigo_sap,descricao:m.descricao,unidade:m.unidade,
           qtd_projetada:m.qtd_projetada,
           observacao:m.observacao};
         function _aposMaterial(){
@@ -46161,7 +46467,7 @@ function sotEditarMaterial(id){
         }
         if(isUUID(id)){
           sbUpdate('sot_materiais',_payload,'id=eq.'+id).then(function(ok){
-            if(!ok) progShowToast('⚠ Erro ao salvar material no banco.','erro');
+            if(!ok){ _falhaEdicao(); return; }
             _aposMaterial();
           }).catch(function(e){
             console.error('Edit mat:',e);
@@ -46169,7 +46475,7 @@ function sotEditarMaterial(id){
             _aposMaterial();
           });
         } else {
-          sbFetch('sot_materiais',{filters:['projeto_id=eq.'+m.projeto_id,'codigo_sap=eq.'+m.codigo_sap,'deleted_at=is.null']})
+          sbFetch('sot_materiais',{filters:['projeto_id=eq.'+m.projeto_id,'codigo_sap=eq.'+m.codigo_sap,'deleted_at=is.null','wl_id=is.null','somente_descritivo=is.false']})
             .then(function(rows){
               if(rows&&rows[0]&&rows[0].id){
                 m.id=rows[0].id;
@@ -46196,26 +46502,18 @@ function sotEditarMaterial(id){
       return;
     };
     var btnE = document.getElementById('sot-excluir-mat');
-    if(btnE) btnE.onclick = function(){
+    if(btnE) btnE.onclick = async function(){
       if(!confirm('Excluir "'+m.descricao+'"?')) return;
       var projId = m.projeto_id;
-      // Remove from local array immediately
+      if(!DEMO){
+        // Etapa 1.5a: só some da tela se o banco confirmar a exclusão
+        var okDel = await sbDelete('sot_materiais','id=eq.'+id);
+        if(okDel === false){ progShowToast('⚠ Material não excluído: '+sotWlTraduzErro(window._sbLastDeleteErr),'erro'); return; }
+      }
       sot_materiais_proj = sot_materiais_proj.filter(function(x){ return x.id !== id; });
       closeModal();
       sotAtualizarAbaAtual(projId);
-      if(!DEMO){
-        // sbDelete is async — wait for result
-        Promise.resolve(sbDelete('sot_materiais','id=eq.'+id))
-          .then(function(){
-            progShowToast('✅ Material excluído.');
-          })
-          .catch(function(e){
-            // Rollback: re-add to local array
-            progShowToast('⚠ Erro ao excluir: '+(e&&e.message||e),'erro');
-          });
-      } else {
-        progShowToast('✅ Material excluído (demo).');
-      }
+      progShowToast(DEMO ? '✅ Material excluído (demo).' : '✅ Material excluído.');
     };
   },50);
 }

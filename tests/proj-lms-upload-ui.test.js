@@ -18,7 +18,9 @@ const INI_CONF = '// ETAPA 1.3 — LMS: Confirmação humana do RASCUNHO (Projet
 const INI_UP = '// ETAPA 1.3 — LMS: envio do LMS ORIGINAL (ENEL) no detalhe do projeto';
 const iConf = html.indexOf(INI_CONF);
 const iUp = html.indexOf(INI_UP);
-const fim = html.indexOf('\nfunction renderProjetosPorContrato(', iUp);
+// Fim do bloco de envio: antes do bloco da Etapa 1.5a (WL nas telas), quando existir.
+const i15 = html.indexOf('\n// ══════════════════════════════════════════════════════════════\n// ETAPA 1.5a', iUp);
+const fim = i15 > 0 ? i15 : html.indexOf('\nfunction renderProjetosPorContrato(', iUp);
 if (iConf < 0 || iUp < 0 || fim < 0) throw new Error('blocos LMS não encontrados');
 const blocoLms = html.slice(iConf, fim);       // confirmação (helpers reutilizados) + envio
 const blocoUp = html.slice(iUp, fim);
