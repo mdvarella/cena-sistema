@@ -17,6 +17,20 @@
     return rows.some(function(m){ return String(m && m.status || '')===nome; });
   }
 
+  // Estado da estrutura de WL (LMS): o informado no contexto (wlEstado) ou o do detalhe do projeto (sotWlEstadoEfetivo).
+  // Sem informação = '' (comportamento de antes).
+  function jornadaEstadoWl(projeto, contexto){
+    var c = contexto && (contexto.contexto || contexto);
+    if(c && typeof c.wlEstado === 'string') return c.wlEstado;
+    try{
+      if(projeto && projeto.id && typeof global.sotWlEstadoEfetivo === 'function'){
+        var e = global.sotWlEstadoEfetivo(projeto.id);
+        return (e && e.estado) ? String(e.estado) : '';
+      }
+    }catch(e){}
+    return '';
+  }
+
   function jornadaObterProximaAcao(projeto, contexto){
     var estado = (contexto && contexto.fases && contexto.contexto)
       ? contexto
@@ -30,6 +44,14 @@
     }
     var resumo = estado.resumo || {qtd:0, algumaExec:false, pendenteExec:false, pendenteMedir:false};
     if(!resumo.qtd){
+      // Etapa 1.5b-2 (F8): projeto com estrutura de WL (pendente ou aplicada) não importa lista; a estrutura vem do LMS.
+      var wl = jornadaEstadoWl(projeto, contexto);
+      if(wl === 'ESTRUTURA_PENDENTE'){
+        return acao('aplicar_estrutura','Aplicar estrutura','pendente','O LMS ORIGINAL foi confirmado como estrutura nova; falta aplicar a estrutura de WL (aba 📥 LMS).', 'lms', 1);
+      }
+      if(wl === 'ESTRUTURADO'){
+        return acao('estrutura_wl','Conferir estrutura de WL','aguardando','Projeto estruturado pelo LMS: atividades e materiais vêm da estrutura de WL, não de importação manual.', 'lms', 1);
+      }
       return acao('importar_lista','Importar lista','pendente','O projeto não tem atividades operacionais.', 'atividades', 1);
     }
 
@@ -161,6 +183,7 @@
       if(!acaoAtual || !projeto) return;
       var id = acaoAtual.id;
       if(id==='importar_lista' && typeof global.sotImportarAtividades==='function') global.sotImportarAtividades(projeto.id);
+      else if((id==='aplicar_estrutura' || id==='estrutura_wl') && typeof global.sotMostrarTab==='function') global.sotMostrarTab('lms');
       else if((id==='programar_execucao' || id==='programar_proxima' || id==='continuar_execucao') && typeof global.progAgendaPedirData==='function') global.progAgendaPedirData(projeto);
       else if(id==='aguardar_execucao' && global._jornadaDetalheProgramacao && global._jornadaDetalheProgramacao.data && typeof global.jornadaAbrirProgramacao==='function') global.jornadaAbrirProgramacao(projeto, global._jornadaDetalheProgramacao.data);
       else if(id==='criar_requisicao' && typeof global.sotMostrarTab==='function') global.sotMostrarTab('reserva');
