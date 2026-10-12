@@ -30,7 +30,24 @@ const semComent = s => s.replace(/\/\/[^\n]*/g, '');
 ok('ES5 no bloco 1.5a (sem let/const/arrow/template)', !/\blet\s|\bconst\s|=>|`/.test(semComent(bloco)));
 ok('selo no detalhe do projeto (ao lado do status)', /\+sotWlSeloHtml\(p\.id\)/.test(fnTexto('sotRenderDetalhe')));
 ok('sotAbrirProjeto carrega o contexto WL junto com o projeto', /sotWlCarregarProjeto\(projetoId\)/.test(fnTexto('sotAbrirProjeto')));
-ok('cards da lista intactos (sem selo na 1.5a)', !/sotWlSelo/.test(fnTexto('sotRenderCardProjeto')));
+// 1.5a: card sem selo. 1.5b-1: selo aprovado, opcional — o card renderiza igual com ou sem sotWlSeloCardHtml.
+{
+  const cardFn = fnTexto('sotRenderCardProjeto');
+  const rodarCard = comSelo => {
+    const c = { SOT_STATUS_COR: {}, fmtD: v => String(v), dataHoje: () => '2026-10-11', fmtMoeda: v => String(v),
+      escHtml: v => String(v == null ? '' : v), _escapeHtml: v => String(v == null ? '' : v), _sotWlSelosCache: { p1: 'ESTRUTURADO' } };
+    if (comSelo) c.sotWlSeloCardHtml = e => (e ? '<span class="selo-x">' + e + '</span>' : '');
+    vm.createContext(c);
+    vm.runInContext(cardFn, c);
+    return c.sotRenderCardProjeto({ id: 'p1', nome: 'Obra', status: 'Em andamento', valor_previsto: 10, valor_executado: 5 });
+  };
+  let semSelo = '', comSelo = '';
+  try { semSelo = rodarCard(false); comSelo = rodarCard(true); } catch (e) { semSelo = 'ERRO: ' + e.message; }
+  ok('card: selo protegido por typeof (opcional)', /typeof sotWlSeloCardHtml\s*===\s*'function'/.test(cardFn));
+  ok('card sem sotWlSeloCardHtml: renderiza, espaço do selo vazio', /id="sot-card-selo-p1"><\/div>/.test(semSelo), semSelo.slice(0, 300));
+  ok('card com sotWlSeloCardHtml: mesmo card + selo do cache', /id="sot-card-selo-p1"><span class="selo-x">ESTRUTURADO<\/span><\/div>/.test(comSelo)
+    && comSelo.replace(/<span class="selo-x">ESTRUTURADO<\/span>/, '') === semSelo);
+}
 ok('aba Plano tem o aviso fixo nos dois caminhos', (fnTexto('sotRenderTabPlano').match(/sotWlAvisoPlanoHtml\(projetoId\)/g) || []).length === 2);
 ok('lixeira inline da aba Atividades substituída por sotExcluirAtividade (checa o banco)',
   !/onclick="if\(confirm\(\\'Excluir atividade\?/.test(html) && /sotExcluirAtividade\(\\''\+a\.id\+'\\'\)/.test(html));
