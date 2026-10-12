@@ -38967,6 +38967,8 @@ function projLmsUpRender(projetoId, container){
     } else {
       h += '<div class="card" style="padding:.75rem">'
         + '<div style="font-size:12px;font-weight:600;margin-bottom:.4rem">Enviar LMS ORIGINAL (.xlsx, até 12 MB)</div>'
+        + '<div style="margin-bottom:.5rem"><button type="button" class="btn" id="proj-lms-up-modelo" onclick="projLmsUpModeloBaixar()">⬇ Baixar modelo LMS (.xlsx)</button>'
+        + ' <span style="font-size:11px;color:#888">Planilha em branco no formato aceito, com instruções.</span></div>'
         + (s.rascunhos.length ? '<div style="font-size:11px;color:#854F0B;margin-bottom:.4rem">Já existe RASCUNHO pendente para este projeto. Reenviar o mesmo arquivo não duplica; um arquivo diferente cria outro RASCUNHO, e só um deles poderá ser confirmado.</div>' : '')
         + '<input type="file" id="proj-lms-up-arquivo" accept=".xlsx,'+PROJ_LMS_UP_XLSX_MIME+'" onchange="projLmsUpSelecionar(this)"'+(st.enviando ? ' disabled' : '')+'/>';
       var pre = st.pre;
@@ -39109,6 +39111,73 @@ async function projLmsUpAplicar(){
     : '✅ Estrutura aplicada: '+(d.wls||0)+' WL(s), '+(d.atividades||0)+' atividade(s), '+(d.materiais_operacionais||0)
       +' material(is) e '+(d.materiais_retirada_descritivos||0)+' retirada(s) descritivas.');
   if(typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);   // selo, grupos WL e 🔒 aparecem na hora
+}
+
+// Modelo LMS em branco, gerado no navegador com o SheetJS já carregado: mesma aba, D1 e cabeçalho que a Edge lê.
+// Sem linha de exemplo na Planilha1 (seria importada como dado); exemplos só na aba Instruções, que a Edge ignora.
+function projLmsUpModeloWorkbook(p){
+  var ident = String((p && (p.codigo_cliente || p.codigo)) || '');
+  var ws = XLSX.utils.aoa_to_sheet([
+    ['Definição de projeto:', '', '', ident],
+    [],
+    PROJ_LMS_UP_CABECALHO.slice()
+  ]);
+  ws['!cols'] = [{wch:6},{wch:6},{wch:5},{wch:14},{wch:16},{wch:6},{wch:40},{wch:11},{wch:11},{wch:16},{wch:13},{wch:16},{wch:9},{wch:11}];
+  var instr = XLSX.utils.aoa_to_sheet([
+    ['Modelo LMS ENEL — instruções'],
+    [],
+    ['1. Preencha somente a aba "Planilha1". Não renomeie a aba nem altere os cabeçalhos da linha 3 (colunas A a N).'],
+    ['2. D1 = definição do projeto. Já vem com o código do projeto aberto no ERP; confira antes de enviar.'],
+    ['3. Itens a partir da linha 4, uma linha por item, sem somar nem agrupar. Linhas vazias são ignoradas. Máximo de 5000 linhas.'],
+    ['4. Salve como "Pasta de Trabalho do Excel (.xlsx)", sem macros, até 12 MB. Colunas depois da N não são lidas.'],
+    ['5. O envio cria um RASCUNHO; nada entra no projeto antes da confirmação na aba "LMS — Confirmação".'],
+    [],
+    ['Coluna', 'Cabeçalho', 'O que preencher'],
+    ['A', 'WL', 'Número da WL'],
+    ['B', 'CTG', 'Categoria da WL (ex.: WP)'],
+    ['C', 'FT', 'I = instalação, R = retirada'],
+    ['D', 'Cód. Ma', 'Código do material; serviço com prefixo igual ao FT (I-... ou R-...)'],
+    ['E', 'KIT', 'Kit do material; para serviço, S- seguido do código sem o prefixo'],
+    ['F', 'UMD', 'Unidade (M, PC, ROL, UN...)'],
+    ['G', 'Descrição', 'Descrição do item'],
+    ['H', 'Quant. Plan', 'Quantidade planejada (número; vazia gera alerta)'],
+    ['I', 'Quant. Real', 'Quantidade real informada no LMS (opcional)'],
+    ['J', 'VALOR DE UPS ITEM', 'Opcional (número)'],
+    ['K', 'VALOR FINAL', 'Opcional (número)'],
+    ['L', 'VALOR FINAL PLAN', 'Opcional (número)'],
+    ['M', 'Estorno', 'Opcional; quando preenchido gera alerta para conferência'],
+    ['N', 'Adicionais', 'Opcional; quando preenchido gera alerta para conferência'],
+    [],
+    ['Exemplo de linhas (fictício — não copie sem ajustar):'],
+    PROJ_LMS_UP_CABECALHO.slice(),
+    ['1', 'WP', 'I', '123456', 'NK-123456', 'PC', 'DESCRIÇÃO DO MATERIAL', 6, 6],
+    ['1', 'WP', 'I', 'I-654321', 'S-654321', 'UN', 'DESCRIÇÃO DO SERVIÇO', 1, 1],
+    ['2', 'WP', 'R', '123456', 'NK-123456', 'PC', 'DESCRIÇÃO DO MATERIAL RETIRADO', 2, 2]
+  ]);
+  instr['!cols'] = [{wch:8},{wch:18},{wch:70}];
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, PROJ_LMS_UP_ABA);
+  XLSX.utils.book_append_sheet(wb, instr, 'Instruções');
+  return wb;
+}
+
+function projLmsUpModeloNome(p){
+  var base = String((p && (p.codigo_cliente || p.codigo)) || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[_.]+|[_.]+$/g, '').slice(0, 80);
+  return 'modelo-lms-'+(base || 'projeto')+'.xlsx';
+}
+
+function projLmsUpModeloBaixar(){
+  if(typeof XLSX === 'undefined' || !XLSX.utils || typeof XLSX.writeFile !== 'function'){
+    progShowToast('Biblioteca de planilha não carregada. Recarregue a página e tente de novo.', 'erro');
+    return;
+  }
+  var p = projLmsUpProjeto(_projLmsUpSt.projetoId);
+  try {
+    XLSX.writeFile(projLmsUpModeloWorkbook(p), projLmsUpModeloNome(p));
+  } catch(e){
+    console.error('[LMS] modelo:', e);
+    progShowToast('Não foi possível gerar o modelo LMS.', 'erro');
+  }
 }
 
 function projLmsUpIrConfirmacao(){
