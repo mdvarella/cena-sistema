@@ -19,11 +19,12 @@ function fn(nome) {
   const ini = html.search(re) + 1;
   return html.slice(ini, html.indexOf('\n}\n', ini) + 2);
 }
+const BLOCO_15A = (() => { const i = html.indexOf('// ETAPA 1.5a — WL oficial nas telas do projeto'); const f = html.indexOf('\nfunction renderProjetosPorContrato(', i); return i < 0 ? '' : html.slice(i, f); })();
 const vr = nome => { const i = html.indexOf('\nvar ' + nome + ' ') + 1; if (i < 1) throw new Error('var ' + nome); return html.slice(i, html.indexOf('\n', i)); };
 const codigo = ['SOT_LMS_ABA_RE', 'SOT_LMS_EXTRACAO_RE', 'SOT_LMS_CONFERENCIA_MIN'].map(vr)
   .concat(['sotLmsNum', 'sotLmsNormCodProjeto', 'sotLmsNormCodMaterial', 'sotLmsExtrair', 'sotLmsLerPlanilha', 'sotLmsAplicar',
     '_sotPendentesDoModal', 'sotParseContratosIds', 'sotFiltrarMatsContrato', 'sotBuildListaAlmSAP', 'sotCarregarCatalogoAlmSAP',
-    '_sotCatalogoAlmSAPContrato', '_sotGravarListaProjeto', '_sotAvisoGravacaoLista', '_sotLancarPendentes', 'sotSalvarProjeto', 'sotListaHandleFile'].map(fn)).join('\n');
+    '_sotCatalogoAlmSAPContrato', '_sotGravarListaProjeto', '_sotAvisoGravacaoLista', '_sotLancarPendentes', 'sotSalvarProjeto', 'sotListaHandleFile'].map(fn)).join('\n') + '\n' + BLOCO_15A;
 
 const PID = '20002920-9d52-4b6d-878d-9870da3fb62a';
 const CID = '3925df4e-7e39-498d-8c96-891a7f4d415c';

@@ -16,6 +16,7 @@ function fn(nome) {
   const ini = html.search(re) + 1;
   return html.slice(ini, html.indexOf('\n}\n', ini) + 2);
 }
+const BLOCO_15A = (() => { const i = html.indexOf('// ETAPA 1.5a — WL oficial nas telas do projeto'); const f = html.indexOf('\nfunction renderProjetosPorContrato(', i); return i < 0 ? '' : html.slice(i, f); })();
 const PID = '20002920-9d52-4b6d-878d-9870da3fb62a';
 
 function sandbox(opts) {
@@ -35,7 +36,7 @@ function sandbox(opts) {
   };
   vm.createContext(c);
   vm.runInContext(['_escapeHtml', 'sotRenderBlocoDescritivo', 'sotExcluirDescritivo', 'sotRenderTabAtividades', '_sotRenderTabAtividadesOper',
-    'sotRenderTabMateriais', '_sotRenderTabMateriaisOper', 'sotRenderTabReserva'].map(fn).join('\n'), c);
+    'sotRenderTabMateriais', '_sotRenderTabMateriaisOper', 'sotRenderTabReserva', '_sotLinhasAtividadesHtml', '_sotLinhaAtividadeHtml'].map(fn).join('\n') + '\n' + BLOCO_15A, c);
   return c;
 }
 

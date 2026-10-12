@@ -13,7 +13,9 @@ function ok(name, cond, detail) { total++; if (!cond) failed.push(name + (detail
 
 const INI = '// ETAPA 1.3 — LMS: Confirmação humana do RASCUNHO (Projetos)';
 const iBloco = html.indexOf(INI);
-const fBloco = html.indexOf('\nfunction renderProjetosPorContrato(', iBloco);
+// Fim do bloco LMS: antes do bloco da Etapa 1.5a (WL nas telas), quando existir.
+const i15 = html.indexOf('\n// ══════════════════════════════════════════════════════════════\n// ETAPA 1.5a', iBloco);
+const fBloco = i15 > 0 ? i15 : html.indexOf('\nfunction renderProjetosPorContrato(', iBloco);
 if (iBloco < 0 || fBloco < 0) throw new Error('bloco projLms não encontrado');
 const bloco = html.slice(iBloco, fBloco);
 
