@@ -2232,13 +2232,13 @@ body.insp-campo-ativo #app-content-area {
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
-<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada-state.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.217"></script>
-<script src="modules/projetos/jornada/jornada.js?v=8.1.217"></script>
+<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada-state.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.218"></script>
+<script src="modules/projetos/jornada/jornada.js?v=8.1.218"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios.js?v=8.1.166"></script>
@@ -36723,6 +36723,7 @@ function coRenderProjetos(){
       var btnSt=document.getElementById('sot-btn-status-'+p.id);
       if(btnSt)btnSt.onclick=function(e){e.stopPropagation();sotAlterarStatus(p.id);};
     });
+    if(typeof sotWlSelosCards==='function') sotWlSelosCards(rows.map(function(p){ return p.id; }));   // Etapa 1.5b-1: selo WL em lote
   } else {
     // Render tabela padrão
     wrap.innerHTML = '<div style="overflow-x:auto"><table class="tbl tbl-responsive">'
@@ -38833,9 +38834,10 @@ async function projLmsUpSituacao(projetoId){
   var res = await Promise.all([
     projLmsRpc('sot_lms_autorizar_recebimento', {p_projeto_id:projetoId}),
     projLmsRpc('sot_lms_estado_wl', {p_projeto_id:projetoId}),
-    projLmsRpc('sot_lms_rascunhos_listar', {})
+    projLmsRpc('sot_lms_rascunhos_listar', {}),
+    projLmsRpc('sot_lms_original_do_projeto', {p_projeto_id:projetoId})   // Etapa 1.5b-1
   ]);
-  var aut = res[0], est = res[1], ras = res[2];
+  var aut = res[0], est = res[1], ras = res[2], ori = res[3];
   var s = {
     podeEnviar: !!(aut.ok && aut.data && aut.data.permitido === true),
     motivo: aut.ok ? String((aut.data && aut.data.motivo) || '') : '',
@@ -38845,6 +38847,10 @@ async function projLmsUpSituacao(projetoId){
     rascunhos: (ras.ok && Array.isArray(ras.data)) ? ras.data.filter(function(x){ return x && x.projeto_id === projetoId && x.status === 'RASCUNHO'; }) : [],
     erroRascunhos: ras.ok ? '' : (ras.error || '')
   };
+  // Etapa 1.5b-1: ORIGINAL confirmada (para o botão "Aplicar estrutura"); sem a migration → aviso claro, tela segue.
+  s.original = (ori && ori.ok && ori.data) ? ori.data : null;
+  s.erroOriginal = (ori && !ori.ok) ? (ori.error || '') : '';
+  s.originalAusente = !!(ori && !ori.ok && (ori.status === 404 || /Função do banco ausente/.test(ori.error || '')));
   s.originalConfirmada = PROJ_LMS_UP_ESTADOS_CONFIRMADA.indexOf(s.estado) >= 0;
   // Fail-closed: envio só com permissão e estado LEGADO_SEM_WL. ORIGINAL confirmada (inclusive ESTRUTURA_PENDENTE),
   // estado ilegível ou estado que esta versão não conhece → não envia.
@@ -38954,12 +38960,15 @@ function projLmsUpRender(projetoId, container){
           ? '<div style="margin-top:.4rem;font-size:11px;color:#A32D2D">Não foi possível verificar RASCUNHOS: '+projLmsEsc(s.erroRascunhos)+'</div>'
           : '<div style="margin-top:.4rem;font-size:11px;color:#888">Nenhum RASCUNHO pendente para este projeto.</div>'))
       + '</div>';
+    if(s.estado === 'ESTRUTURA_PENDENTE') h += projLmsUpCardPendenteHtml(s, st);
     if(s.bloqueio){
       h += '<div id="proj-lms-up-bloqueio" style="padding:.6rem .8rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
         + projLmsEsc(s.bloqueio)+'</div>';
     } else {
       h += '<div class="card" style="padding:.75rem">'
         + '<div style="font-size:12px;font-weight:600;margin-bottom:.4rem">Enviar LMS ORIGINAL (.xlsx, até 12 MB)</div>'
+        + '<div style="margin-bottom:.5rem"><button type="button" class="btn" id="proj-lms-up-modelo" onclick="projLmsUpModeloBaixar()">⬇ Baixar modelo LMS (.xlsx)</button>'
+        + ' <span style="font-size:11px;color:#888">Planilha em branco no formato aceito, com instruções.</span></div>'
         + (s.rascunhos.length ? '<div style="font-size:11px;color:#854F0B;margin-bottom:.4rem">Já existe RASCUNHO pendente para este projeto. Reenviar o mesmo arquivo não duplica; um arquivo diferente cria outro RASCUNHO, e só um deles poderá ser confirmado.</div>' : '')
         + '<input type="file" id="proj-lms-up-arquivo" accept=".xlsx,'+PROJ_LMS_UP_XLSX_MIME+'" onchange="projLmsUpSelecionar(this)"'+(st.enviando ? ' disabled' : '')+'/>';
       var pre = st.pre;
@@ -39037,6 +39046,138 @@ async function projLmsUpEnviar(){
   st.resultado = r.data; st.pre = null; st.arquivo = null;
   projLmsUpRender(projetoId);
   await projLmsUpAtualizarSituacao(projetoId);
+}
+
+// ── Etapa 1.5b-1: "Aplicar estrutura" (ESTRUTURA_PENDENTE com pode_aplicar) ──
+function projLmsUpCardPendenteHtml(s, st){
+  var o = s.original;
+  var h = '<div class="card" id="proj-lms-up-pendente" style="padding:.75rem;margin-bottom:.75rem;border:1px solid #854F0B66;background:#FFF8E1">'
+    + '<div style="font-size:12px;font-weight:700;color:#854F0B">🧩 Estrutura pendente</div>'
+    + '<div style="font-size:11px;color:#555;margin:.2rem 0 .4rem">O LMS ORIGINAL foi confirmado como ESTRUTURA_NOVA, mas a estrutura (WLs, atividades e materiais) ainda não foi aplicada ao projeto.</div>';
+  if(s.originalAusente){
+    h += '<div id="proj-lms-up-pendente-ausente" style="font-size:11px;color:#A32D2D">Botão "Aplicar estrutura" indisponível: aplique no banco a migration 20261012100000_proj_lms_leitura_wl.sql.</div>';
+  } else if(!o){
+    h += '<div style="font-size:11px;color:#A32D2D">Não foi possível localizar a ORIGINAL confirmada'+(s.erroOriginal ? ': '+projLmsEsc(s.erroOriginal) : '')+'.</div>';
+  } else if(o.pode_aplicar === true && o.importacao_id){
+    h += '<div style="font-size:11px;color:#555">'+projLmsEsc(o.arquivo_nome_original||'')+' · '+projLmsEsc(o.qtd_linhas)+' linhas · '+projLmsEsc(o.qtd_wls_distintas)+' WL(s)</div>'
+      + '<button class="btn btn-pri" id="proj-lms-up-aplicar" style="margin-top:.5rem"'+(st.aplicando ? ' disabled' : '')+' onclick="projLmsUpAplicar()">'
+      + (st.aplicando ? 'Aplicando…' : 'Aplicar estrutura')+'</button>';
+  } else {
+    h += '<div style="font-size:11px;color:#888">Aguardando quem tem a permissão PROJ_CONFIRMAR_LMS (gestor, coordenador, escritório ou admin) aplicar a estrutura.</div>';
+  }
+  if(st.erroAplicar) h += '<div id="proj-lms-up-aplicar-erro" style="margin-top:.5rem;font-size:12px;color:#791F1F">'+projLmsEsc(st.erroAplicar)+'</div>';
+  return h + '</div>';
+}
+
+function projLmsUpTraduzAplicar(msg){
+  var m = String(msg || '');
+  var g;
+  if((g = m.match(/PROJETO_COM_LEGADO \(atividades (\d+), materiais (\d+)\)/))) return 'O projeto tem itens legados ativos ('+g[1]+' atividade(s), '+g[2]+' material(is)). Para estrutura nova o projeto precisa estar sem itens legados (ou use CONCILIACAO).';
+  if((g = m.match(/LINHA_NAO_CLASSIFICADA \(linhas ([^)]+)\)/))) return 'Há linhas do LMS com código fora do padrão (serviço I-/R- ou material numérico): linha(s) '+g[1]+'.';
+  if((g = m.match(/LINHAS_REPETIDAS_NA_CHAVE \(linhas ([^)]+)\)/))) return 'O LMS repete a mesma WL + código + FT + KIT: linhas '+g[1]+'.';
+  if(/LINHA_SEM_WL_OU_DESCRICAO/.test(m)) return 'Há linhas do LMS sem WL ou sem descrição.';
+  if(/IMPORTACAO_NAO_ELEGIVEL/.test(m)) return 'A importação não está confirmada como ESTRUTURA_NOVA.';
+  if(/PROJETO_JA_TEM_WL/.test(m)) return 'O projeto já tem WL oficial.';
+  return m || 'Erro desconhecido ao aplicar a estrutura.';
+}
+
+// Única porta de aplicação: botão + confirm() explícito; o banco decide (fn_proj_lms_aplicar_estrutura_nova).
+async function projLmsUpAplicar(){
+  var st = _projLmsUpSt;
+  var projetoId = st.projetoId;
+  var s = st.situacao;
+  var o = s && s.original;
+  if(st.aplicando || !o || o.pode_aplicar !== true || !PROJ_LMS_UUID_RE.test(String(o.importacao_id || ''))) return;
+  var p = projLmsUpProjeto(projetoId);
+  var ok = confirm('Aplicar a estrutura do LMS ORIGINAL ao projeto "'+projLmsUpNomeProjeto(p)+'"?\n\n'
+    + 'Arquivo: '+(o.arquivo_nome_original||'')+'\nLinhas: '+o.qtd_linhas+' · WLs: '+o.qtd_wls_distintas+'\n\n'
+    + 'Serão criadas as WLs, as atividades (serviços) e os materiais do LMS. Materiais de retirada (FT=R) entram como descritivos. '
+    + 'As linhas criadas ficam protegidas (🔒) e esta ação não pode ser desfeita pela tela.');
+  if(!ok) return;
+  st.aplicando = true; st.erroAplicar = '';
+  projLmsUpRender(projetoId);
+  var r = await projLmsRpc('fn_proj_lms_aplicar_estrutura_nova', {p_importacao_id:o.importacao_id});
+  st.aplicando = false;
+  if(_projLmsUpSt !== st) return;
+  if(!r.ok){
+    st.erroAplicar = 'Estrutura não aplicada: '+projLmsUpTraduzAplicar(r.error);
+    projLmsUpRender(projetoId);
+    return;
+  }
+  var d = r.data || {};
+  if(typeof sotWlSelosInvalidar === 'function') sotWlSelosInvalidar(projetoId);
+  progShowToast(d.operacao === 'JA_APLICADA'
+    ? '✅ A estrutura já estava aplicada.'
+    : '✅ Estrutura aplicada: '+(d.wls||0)+' WL(s), '+(d.atividades||0)+' atividade(s), '+(d.materiais_operacionais||0)
+      +' material(is) e '+(d.materiais_retirada_descritivos||0)+' retirada(s) descritivas.');
+  if(typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);   // selo, grupos WL e 🔒 aparecem na hora
+}
+
+// Modelo LMS em branco, gerado no navegador com o SheetJS já carregado: mesma aba, D1 e cabeçalho que a Edge lê.
+// Sem linha de exemplo na Planilha1 (seria importada como dado); exemplos só na aba Instruções, que a Edge ignora.
+function projLmsUpModeloWorkbook(p){
+  var ident = String((p && (p.codigo_cliente || p.codigo)) || '');
+  var ws = XLSX.utils.aoa_to_sheet([
+    ['Definição de projeto:', '', '', ident],
+    [],
+    PROJ_LMS_UP_CABECALHO.slice()
+  ]);
+  ws['!cols'] = [{wch:6},{wch:6},{wch:5},{wch:14},{wch:16},{wch:6},{wch:40},{wch:11},{wch:11},{wch:16},{wch:13},{wch:16},{wch:9},{wch:11}];
+  var instr = XLSX.utils.aoa_to_sheet([
+    ['Modelo LMS ENEL — instruções'],
+    [],
+    ['1. Preencha somente a aba "Planilha1". Não renomeie a aba nem altere os cabeçalhos da linha 3 (colunas A a N).'],
+    ['2. D1 = definição do projeto. Já vem com o código do projeto aberto no ERP; confira antes de enviar.'],
+    ['3. Itens a partir da linha 4, uma linha por item, sem somar nem agrupar. Linhas vazias são ignoradas. Máximo de 5000 linhas.'],
+    ['4. Salve como "Pasta de Trabalho do Excel (.xlsx)", sem macros, até 12 MB. Colunas depois da N não são lidas.'],
+    ['5. O envio cria um RASCUNHO; nada entra no projeto antes da confirmação na aba "LMS — Confirmação".'],
+    [],
+    ['Coluna', 'Cabeçalho', 'O que preencher'],
+    ['A', 'WL', 'Número da WL'],
+    ['B', 'CTG', 'Categoria da WL (ex.: WP)'],
+    ['C', 'FT', 'I = instalação, R = retirada'],
+    ['D', 'Cód. Ma', 'Código do material; serviço com prefixo igual ao FT (I-... ou R-...)'],
+    ['E', 'KIT', 'Kit do material; para serviço, S- seguido do código sem o prefixo'],
+    ['F', 'UMD', 'Unidade (M, PC, ROL, UN...)'],
+    ['G', 'Descrição', 'Descrição do item'],
+    ['H', 'Quant. Plan', 'Quantidade planejada (número; vazia gera alerta)'],
+    ['I', 'Quant. Real', 'Quantidade real informada no LMS (opcional)'],
+    ['J', 'VALOR DE UPS ITEM', 'Opcional (número)'],
+    ['K', 'VALOR FINAL', 'Opcional (número)'],
+    ['L', 'VALOR FINAL PLAN', 'Opcional (número)'],
+    ['M', 'Estorno', 'Opcional; quando preenchido gera alerta para conferência'],
+    ['N', 'Adicionais', 'Opcional; quando preenchido gera alerta para conferência'],
+    [],
+    ['Exemplo de linhas (fictício — não copie sem ajustar):'],
+    PROJ_LMS_UP_CABECALHO.slice(),
+    ['1', 'WP', 'I', '123456', 'NK-123456', 'PC', 'DESCRIÇÃO DO MATERIAL', 6, 6],
+    ['1', 'WP', 'I', 'I-654321', 'S-654321', 'UN', 'DESCRIÇÃO DO SERVIÇO', 1, 1],
+    ['2', 'WP', 'R', '123456', 'NK-123456', 'PC', 'DESCRIÇÃO DO MATERIAL RETIRADO', 2, 2]
+  ]);
+  instr['!cols'] = [{wch:8},{wch:18},{wch:70}];
+  var wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, PROJ_LMS_UP_ABA);
+  XLSX.utils.book_append_sheet(wb, instr, 'Instruções');
+  return wb;
+}
+
+function projLmsUpModeloNome(p){
+  var base = String((p && (p.codigo_cliente || p.codigo)) || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[_.]+|[_.]+$/g, '').slice(0, 80);
+  return 'modelo-lms-'+(base || 'projeto')+'.xlsx';
+}
+
+function projLmsUpModeloBaixar(){
+  if(typeof XLSX === 'undefined' || !XLSX.utils || typeof XLSX.writeFile !== 'function'){
+    progShowToast('Biblioteca de planilha não carregada. Recarregue a página e tente de novo.', 'erro');
+    return;
+  }
+  var p = projLmsUpProjeto(_projLmsUpSt.projetoId);
+  try {
+    XLSX.writeFile(projLmsUpModeloWorkbook(p), projLmsUpModeloNome(p));
+  } catch(e){
+    console.error('[LMS] modelo:', e);
+    progShowToast('Não foi possível gerar o modelo LMS.', 'erro');
+  }
 }
 
 function projLmsUpIrConfirmacao(){
@@ -39258,6 +39399,81 @@ function sotMatAcharLocal(lista, item){
       || (m.descricao && nome && m.descricao.toLowerCase() === nome));
   });
   return sotMatEscolher(cands, item, true);
+}
+
+// ── Etapa 1.5b-1: selo WL nos cards (uma chamada em lote; cache por sessão) ──
+// Cache: projeto → estado ('' = legado/sem selo; 'ESTRUTURADO_WL' = derivado da sot_wl sem permissão de estado).
+// Sem a RPC (migration ausente) ou sem permissão: fallback pela sot_wl (authenticated). anon: sem selo.
+var SOT_WL_LOTE_MAX = 500, SOT_WL_FALLBACK_MAX = 100;
+var _sotWlSelosCache = {};
+var _sotWlSelosPendentes = {};
+
+function sotWlSeloCardHtml(estado){
+  if(!estado || estado === 'LEGADO_SEM_WL') return '';
+  var info = {EM_CONCILIACAO:['#FEF3E2','#854F0B','Em conciliação'], ESTRUTURA_PENDENTE:['#FFF8E1','#854F0B','Estrutura pendente'],
+    ESTRUTURADO:['#EAF3DE','#27500A','Estruturado'], ESTRUTURADO_WL:['#EAF3DE','#27500A','Estruturado (WL)']}[estado];
+  if(!info) return '';
+  return '<span title="Estrutura de WL (LMS)" style="display:inline-block;margin-top:3px;background:'+info[0]+';color:'+info[1]
+    +';border:1px solid '+info[1]+'55;border-radius:5px;padding:1px 6px;font-size:9px;font-weight:700">🧩 '+info[2]+'</span>';
+}
+
+function sotWlSelosAplicar(ids){
+  (ids||[]).forEach(function(id){
+    var el = document.getElementById('sot-card-selo-'+id);
+    if(el) el.innerHTML = sotWlSeloCardHtml(_sotWlSelosCache[id]);
+  });
+}
+
+function sotWlSelosInvalidar(projetoId){
+  if(projetoId) delete _sotWlSelosCache[projetoId]; else _sotWlSelosCache = {};
+}
+
+function _sotWlFatias(lista, n){
+  var out = [];
+  for(var i=0; i<lista.length; i+=n) out.push(lista.slice(i, i+n));
+  return out;
+}
+
+// Fallback sem permissão de estado: projeto com WL oficial = "Estruturado (WL)"; demais ficam sem selo.
+function _sotWlSelosFallback(ids){
+  if(!ids.length) return Promise.resolve();
+  return Promise.all(_sotWlFatias(ids, SOT_WL_FALLBACK_MAX).map(function(fatia){
+    return Promise.resolve(sbFetch('sot_wl', {select:'projeto_id', filters:['cancelada_em=is.null', 'projeto_id=in.('+fatia.join(',')+')']}))
+      .then(function(rows){
+        var com = {};
+        (rows||[]).forEach(function(r){ if(r && r.projeto_id) com[r.projeto_id] = true; });
+        fatia.forEach(function(id){ _sotWlSelosCache[id] = com[id] ? 'ESTRUTURADO_WL' : ''; });
+      }).catch(function(){ fatia.forEach(function(id){ _sotWlSelosCache[id] = ''; }); });
+  }));
+}
+
+function sotWlSelosCards(ids){
+  if(DEMO) return Promise.resolve();
+  var faltam = (ids||[]).filter(function(id){
+    return id && isUUID(String(id)) && !_sotWlSelosCache.hasOwnProperty(id) && !_sotWlSelosPendentes[id];
+  });
+  sotWlSelosAplicar((ids||[]).filter(function(id){ return _sotWlSelosCache.hasOwnProperty(id); }));
+  if(!faltam.length) return Promise.resolve();
+  faltam.forEach(function(id){ _sotWlSelosPendentes[id] = true; });
+  var semPermissao = [];
+  var pLote = (typeof projLmsRpc === 'function')
+    ? Promise.all(_sotWlFatias(faltam, SOT_WL_LOTE_MAX).map(function(fatia){
+        return projLmsRpc('sot_lms_estado_wl_lote', {p_projeto_ids:fatia}).then(function(r){
+          if(r && r.ok && r.data && typeof r.data === 'object'){
+            fatia.forEach(function(id){
+              if(r.data.hasOwnProperty(id)) _sotWlSelosCache[id] = String(r.data[id] || '');
+              else semPermissao.push(id);
+            });
+          } else {
+            fatia.forEach(function(id){ semPermissao.push(id); });   // RPC ausente/sem sessão Auth
+          }
+        });
+      }))
+    : Promise.resolve(faltam.forEach(function(id){ semPermissao.push(id); }));
+  return pLote.then(function(){ return _sotWlSelosFallback(semPermissao); }).catch(function(){}).then(function(){
+    faltam.forEach(function(id){ delete _sotWlSelosPendentes[id]; if(!_sotWlSelosCache.hasOwnProperty(id)) _sotWlSelosCache[id] = ''; });
+    sotWlSelosAplicar(faltam);
+  });
 }
 
 async function sotExcluirAtividade(id){
@@ -39743,6 +39959,7 @@ function sotRenderProjetos(){
     var btnSt=document.getElementById('sot-btn-status-'+p.id);
     if(btnSt)btnSt.onclick=function(e){e.stopPropagation();sotAlterarStatus(p.id);};
   });
+  if(typeof sotWlSelosCards==='function') sotWlSelosCards(rows.map(function(p){ return p.id; }));   // Etapa 1.5b-1: selo WL em lote
 }
 
 function sotRenderCardProjeto(p){
@@ -39783,6 +40000,7 @@ function sotRenderCardProjeto(p){
     +'<div>'
     +'<div style="font-size:15px;color:#1a1a18;font-weight:700;letter-spacing:.2px;overflow-wrap:anywhere">'+escHtml(p.codigo_cliente||'S/N')+'</div>'
     +'<div style="font-size:10px;color:#888">'+(p.tipo_servico||'')+'</div>'
+    +'<div class="sot-card-selo" id="sot-card-selo-'+p.id+'">'+(typeof sotWlSeloCardHtml==='function' ? sotWlSeloCardHtml(_sotWlSelosCache[p.id]) : '')+'</div>'
     +'</div>'
     +'<button id="sot-btn-status-'+p.id+'" style="background:'+sc.bg+';color:'+sc.cor+';border:.5px solid '+sc.cor+'44;'
     +'border-radius:6px;padding:2px 8px;font-size:10px;font-weight:600;cursor:pointer">'+p.status+' ▾</button>'
@@ -46775,10 +46993,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.217',
+  numero: '8.1.218',
   data:   '12/10/2026',
-  build:  '20261012-0900',
+  build:  '20261012-1200',
   log: [
+    {v:'8.1.218', d:'12/10/2026', itens:[
+      'Projetos — LMS: na aba 📥 LMS, projeto com LMS confirmado como estrutura nova (Estrutura pendente) mostra o arquivo, as linhas e as WLs e o botão "Aplicar estrutura" para quem tem a permissão PROJ_CONFIRMAR_LMS (com confirmação; recusas do banco aparecem explicadas). Quem não tem a permissão vê o aviso de que a aplicação está pendente.',
+      'Cards da lista de projetos mostram o selo da estrutura WL (Em conciliação, Estrutura pendente, Estruturado), lido em lote. Novo botão "Baixar modelo LMS (.xlsx)" na aba 📥 LMS: planilha em branco no formato aceito, com o código do projeto e uma aba de instruções. SQL: 20261012100000_proj_lms_leitura_wl.sql (só leitura, já aplicado).',
+    ]},
     {v:'8.1.217', d:'12/10/2026', itens:[
       'Projetos — WL oficial nas telas: o detalhe do projeto mostra o selo do estado da estrutura (Legado, Em conciliação, Estrutura pendente, Estruturado). Nas abas Atividades e Materiais, projetos estruturados pelo LMS aparecem agrupados por WL, com WL, FT e KIT em cada linha.',
       'Linhas da estrutura do LMS têm 🔒: não podem ser excluídas e código, descrição, unidade e quantidade não mudam pela tela (dá para lançar quantidades e ajustar etapa, valor, ordem, observações, serviço e adicional). Materiais de retirada (FT=R) ficam como descritivos, fora de requisição, reserva, entrega e almoxarifado. Quando o banco recusa uma alteração ou exclusão, a tela mostra o motivo e não finge sucesso.',
