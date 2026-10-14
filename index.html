@@ -83002,57 +83002,53 @@ function progProjetoCoreStatusInfoColab(colabId){
   return _progStatusInfo[colabId] || {};
 }
 
+// Status da Programação de Projetos pertence a UMA data (_pp.statusData). Trocar de data zera a memória;
+// o banco (prog_status_diario) é a única fonte. Não soma mais o que estava guardado no navegador: era isso
+// que repetia no dia seguinte os status do dia anterior (Faltou/Pátio/Observação).
 function progProjCarregarStatus(data){
-  try{
-    var s = localStorage.getItem('pp_status_'+data);
-    if(s){
-      var leg = JSON.parse(s);
-      Object.keys(leg||{}).forEach(function(id){
-        if(leg[id]) _progStatus[id] = leg[id];
-        else delete _progStatus[id];
-      });
-    }
-    var si = localStorage.getItem('pp_statusinfo_'+data);
-    if(si){
-      var legi = JSON.parse(si);
-      Object.keys(legi||{}).forEach(function(id){
-        _progStatusInfo[id] = Object.assign(_progStatusInfo[id]||{}, legi[id]);
-      });
-    }
-    var saved = _progLS.carregarStatus(data);
-    if(saved){
-      if(saved.status) Object.keys(saved.status).forEach(function(id){
-        if(saved.status[id]) _progStatus[id] = saved.status[id];
-        else delete _progStatus[id];
-      });
-      if(saved.info) Object.keys(saved.info).forEach(function(id){
-        _progStatusInfo[id] = Object.assign(_progStatusInfo[id]||{}, saved.info[id]);
-      });
-    }
-  }catch(e){}
+  if(_pp && _pp.statusData === data) return;
+  _progStatus = {};
+  _progStatusInfo = {};
+  if(_pp) _pp.statusData = data;
 }
 
-function progProjSalvarStatus(){
-  var data = progProjGetData();
-  try{
-    _progLS.salvarStatus(data);
-    localStorage.setItem('pp_status_'+data, JSON.stringify(_progStatus));
-    localStorage.setItem('pp_statusinfo_'+data, JSON.stringify(_progStatusInfo));
-  }catch(e){}
+// Zera e recarrega do banco o status do dia da tela; traz o ponto do dia (Faltou automático) se for hoje/passado.
+function progProjCarregarStatusDia(data, forcar){
+  if(!data) return;
+  if(!forcar && _pp && _pp.statusData === data) return;
+  _progStatus = {};
+  _progStatusInfo = {};
+  if(_pp){ _pp.statusData = data; _pp.statusCarregando = !DEMO; }
+  progProjCarregarStatusBanco(data, function(){
+    if(_pp && _pp.statusData === data){ _pp.statusCarregando = false; progProjRenderQuadro(); }
+  });
+  if(!DEMO && data <= dataHojeLocal() && typeof progCarregarPontoDoSupabase==='function'
+     && !(typeof _pontoCacheTemDia==='function' && _pontoCacheTemDia(data))){
+    progCarregarPontoDoSupabase(data, function(){ if(_pp && _pp.statusData === data) progProjRenderQuadro(); });
+  }
 }
+
+// Não grava mais status no navegador: as chaves locais (inclusive prog_status_<data> do TMA) eram
+// regravadas com a memória de outro dia. O status do dia fica só no banco.
+function progProjSalvarStatus(){}
 
 // Carrega o status REAL do banco (prog_status_diario) para _progStatus/_progStatusInfo
 // — fonte usada por ppRenderPainelDisp. Sem isso, status (verificar/falta) e observação
 // salvos pelo menu de status não aparecem na Programação de Projetos.
 function progProjCarregarStatusBanco(data, cb){
   if(DEMO){ if(cb) cb(); return; }
+  var seq = window._ppStatusSeq = (window._ppStatusSeq || 0) + 1;
+  // A memória só é preservada se já for desta mesma data (nunca leva status de outro dia).
+  var mesmoDia = !!(_pp && _pp.statusData === data);
   Promise.all([
     sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
     sbFetch('prog_status_diario',{filters:progFiltrosStatusPersistentes(data),order:'data.desc',limit:500})
   ]).then(function(res){
+    if(seq !== window._ppStatusSeq){ return; }   // chegou depois de uma carga mais nova (outra data)
     if(res[0]===null){ if(cb) cb(); return; }
-    var localRecente = (window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
+    var localRecente = (mesmoDia && window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
     progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
+    if(_pp) _pp.statusData = data;
     if(localRecente){ Object.keys(localRecente).forEach(function(id){ if(localRecente[id] && !_progStatus[id]) _progStatus[id]=localRecente[id]; }); }
     if(cb) cb();
   }).catch(function(){ if(cb) cb(); });
@@ -83313,11 +83309,9 @@ function progProjRenderQuadro(){
   var data = progProjGetData();
   var cid  = progProjGetCid();
 
-  if(data !== _pp.data){
-    _pp.data = data;
-    progProjCarregarStatus(data);
-  }
   _pp.data = data;
+  // Memória de status de outra data (TMA, PLPT ou o dia anterior): zera e recarrega o dia da tela.
+  if(_pp.statusData !== data) progProjCarregarStatusDia(data);
   progAplicarTreinoTurmas(_progStatus, _progStatusInfo, data);
 
   // Carregar veículos do banco se ainda não carregados para esta data
@@ -84223,10 +84217,22 @@ var PP_DISP_LIVRE_ST = ['disponivel','observacao'];
 var PP_DISP_INDISP_ST = ['falta','folga','ferias','afastado','integracao','patio','verificar','fraude','demitido','inapto'];
 var PP_DISP_BADGE_ORDEM = ['disponivel','falta','ferias','afastado','treinamento','observacao','folga','integracao','patio','verificar','fraude','demitido','inapto'];
 
-function ppDispStatusColab(c){
+function ppDispStatusColab(c, data){
   var st = progProjetoCoreStatusColab(c.id);
   if(st==='faltou') st='falta';
-  return PROG_STATUS[st] ? st : 'disponivel';
+  st = PROG_STATUS[st] ? st : 'disponivel';
+  // Faltou pelo relógio de ponto (só Programação de Projetos; nada é gravado):
+  // entrada registrada tira do Faltou; sem entrada depois do horário (nunca em data futura) vira Faltou.
+  var dia = data || (typeof progProjGetData==='function' ? progProjGetData() : '');
+  var p = dia ? ppDispPonto(c, dia) : null;
+  if(st==='falta' && p && typeof _pontoTemEntrada==='function' && _pontoTemEntrada(p)) return 'disponivel';
+  if((st==='disponivel' || st==='observacao') && (c.vinculo||'campo')==='campo' && p
+     && typeof _pontoDeveMostrarAusente==='function' && _pontoDeveMostrarAusente(p, dia)) return 'falta';
+  return st;
+}
+/** Faltou calculado pelo ponto (não há registro de falta gravado para o dia). */
+function ppDispFaltaPeloPonto(c, data){
+  return ppDispStatusColab(c, data)==='falta' && progProjetoCoreStatusColab(c.id)!=='falta' && progProjetoCoreStatusColab(c.id)!=='faltou';
 }
 function ppDispEscaladosDia(data){
   var dia = String(data||'').split('T')[0];
@@ -84258,7 +84264,7 @@ function ppDispCalcular(cols, data, filtroEscala){
   });
   var livres = [], indisp = [], treino = [], porStatus = {}, contagem = {};
   base.forEach(function(c){
-    var st = ppDispStatusColab(c);
+    var st = ppDispStatusColab(c, data);
     if(PP_DISP_LIVRE_ST.indexOf(st)>=0){
       if(escalado(c)) return;
       livres.push(c);
@@ -84308,7 +84314,7 @@ function ppDispEscalasUsadas(cols){
   return usadas;
 }
 function ppDispChipLivreHtml(c, data){
-  var st = ppDispStatusColab(c);
+  var st = ppDispStatusColab(c, data);
   var sObs = st==='observacao';
   var sI = PROG_STATUS[st] || PROG_STATUS.disponivel;
   var info = progProjetoCoreStatusInfoColab(c.id);
@@ -84325,24 +84331,26 @@ function ppDispChipLivreHtml(c, data){
     +(sObs?'<span title="'+escHtml(obs)+(autor?' — 👤 '+escHtml(autor):'')+'" style="background:'+sI.cor+';color:#fff;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700;cursor:help">📝 '+escHtml((obs||'Obs').slice(0,22))+(obs.length>22?'…':'')+'</span>':'')
     +(esc?'<span style="background:#F0E8F8;color:#8B1A6B;border-radius:3px;padding:0 4px;font-size:8px;font-weight:700">'+escHtml(esc.tipo||'')+'</span>':'')
     +ppDispBadgePontoHtml(c, data)
-    +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" '
+    +'<span onclick="ppMenuSlot(\''+c.id+'\',\'\',undefined)" title="Alterar status do dia" '
     +'style="cursor:pointer;color:#888;font-size:12px;margin-left:2px;user-select:none" '
     +'ondragstart="event.stopPropagation()">⋮</span>'
     +'</div>';
 }
 function ppDispChipStatusHtml(c, data){
-  var st = ppDispStatusColab(c);
+  var st = ppDispStatusColab(c, data);
   var s = PROG_STATUS[st] || {label:st, cor:'#555', bg:'#f5f5f3'};
   var info = progProjetoCoreStatusInfoColab(c.id);
   var obs = info.obs || info.justificativa || '';
   var ret = info.retorno ? ' · retorno '+fmtD(info.retorno) : '';
+  var peloPonto = typeof ppDispFaltaPeloPonto==='function' && ppDispFaltaPeloPonto(c, data);
   return '<div style="display:inline-flex;flex-direction:column;background:'+s.bg+';border:.5px solid '+ppDispCorHex(s.cor)+'44;border-radius:6px;padding:4px 8px;font-size:11px;max-width:230px;margin:2px">'
     +'<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">'
     +'<span style="color:'+s.cor+';font-weight:500">'+escHtml(nomeAbrev(c.nome))+'</span>'
-    +'<span style="color:'+s.cor+';font-size:9px;font-weight:600">'+escHtml(s.label)+ret+'</span>'
+    +'<span style="color:'+s.cor+';font-size:9px;font-weight:600"'+(peloPonto?' title="Sem entrada no relógio de ponto depois do horário. Sai do Faltou sozinho quando o ponto registrar a entrada."':'')+'>'
+    +escHtml(s.label)+(peloPonto?' · ponto':'')+ret+'</span>'
     +ppDispBadgePontoHtml(c, data)
     +(st==='verificar'?'<span onclick="progAbrirVerificar(\''+c.id+'\')" title="Tratar caso" style="cursor:pointer;color:#8B1A6B;font-size:10px">🔍</span>':'')
-    +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" title="Alterar status" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
+    +'<span onclick="ppMenuSlot(\''+c.id+'\',\'\',undefined)" title="Alterar status do dia" style="cursor:pointer;color:#888;font-size:11px;margin-left:auto">⋮</span>'
     +'</div>'
     +(obs?progObsLinhaHtml(obs, info, s):'')
     +'</div>';
@@ -84383,14 +84391,14 @@ function ppRenderPainelDisp(eqs, data, cid){
         var obs = info.obs ? ' · '+escHtml(info.obs) : '';
         return '<div style="background:#fff;border:.5px solid #534AB744;border-radius:6px;padding:3px 8px;font-size:11px;color:#534AB7">'
           +'<b>'+escHtml(nomeAbrev(c.nome))+'</b><span style="font-size:9px;color:#7a72c9">'+volta+obs+'</span> '
-          +'<span onclick="progMenuSlot(\''+c.id+'\',null,undefined)" style="cursor:pointer;color:#888" title="Alterar status">⋮</span></div>';
+          +'<span onclick="ppMenuSlot(\''+c.id+'\',\'\',undefined)" style="cursor:pointer;color:#888" title="Alterar status do dia">⋮</span></div>';
       }).join('')
       +'</div></div>'
     : '';
 
   // ── Indisponíveis (filtros só dos status presentes nos dados) ──
   var indPorSt = {};
-  calc.indisp.forEach(function(c){ var st = ppDispStatusColab(c); (indPorSt[st] = indPorSt[st] || []).push(c); });
+  calc.indisp.forEach(function(c){ var st = ppDispStatusColab(c, data); (indPorSt[st] = indPorSt[st] || []).push(c); });
   var filtroInd = _pp.filtroIndisp || 'todos';
   if(filtroInd!=='todos' && !indPorSt[filtroInd]) filtroInd = 'todos';
   var indLista = ppDispFiltrarPonto(filtroInd==='todos' ? calc.indisp : indPorSt[filtroInd], data, filtroPonto);
@@ -84452,7 +84460,10 @@ function ppRenderPainelDisp(eqs, data, cid){
     : '<div id="pp-disp-filtro-info" style="font-size:11px;color:'+PROG_STATUS[filtroSt].cor+';margin-bottom:4px">Filtro: <b>'+escHtml(PROG_STATUS[filtroSt].label)+'</b> ('+lista.length+(lista.length!==listaBase.length?'/'+listaBase.length:'')+')</div>';
   var nLivresF = filtroSt==='todos' ? lista.length : ppDispFiltrarPonto(calc.livres, data, filtroPonto).length;
 
-  return treinoHtml + indispHtml
+  var carregandoHtml = (_pp && _pp.statusCarregando)
+    ? '<div id="pp-status-carregando" style="font-size:12px;color:#854F0B;background:#FFF8E1;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⏳ Carregando status do dia '+escHtml(fmtD(data))+'…</div>'
+    : '';
+  return carregandoHtml + treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem" id="pp-painel-disp">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:6px">'
     +'<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b id="pp-disp-total">'+nLivresF+(nLivresF!==calc.livres.length?'/'+calc.livres.length:'')+'</b>)</span>'
@@ -85378,20 +85389,31 @@ function progProjetoCoreMenuSlot(colabId, eqId, pos){
   }
 
   var escalaHistHtml = typeof progColabUltimasEscalasHtml==='function' ? progColabUltimasEscalasHtml(colabId, data) : '';
+  // Modal sempre do DIA da tela; guarda o status anterior para "Fechar" desfazer a seleção não salva.
+  var stGravado = _progStatus[colabId];
+  window._ppMenuStatusCtx = {colabId:colabId, dia:data, st:stGravado,
+    info:_progStatusInfo[colabId] ? JSON.parse(JSON.stringify(_progStatusInfo[colabId])) : undefined};
+  var dispBtn = eqId ? '' :
+    '<button data-st="disponivel" onclick="ppSetStatusMenu(\''+colabId+'\',\'disponivel\')" '
+    +'style="background:'+(st==='disponivel'?'#EAF3DE':'#fff')+';color:'+(st==='disponivel'?'#3B6D11':'#555')+';border:.5px solid '+(st==='disponivel'?'#3B6D1188':'#e0dfd8')+';border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;display:flex;justify-content:space-between;align-items:center">'
+    +'<span>✅ Disponível</span>'+(st==='disponivel'?'<span style="font-weight:700;font-size:14px">✓</span>':'')+'</button>';
 
-  var html = '<div class="modal-bg" onclick="if(event.target===this)closeModal()">'
+  var html = '<div class="modal-bg" onclick="if(event.target===this)ppFecharMenuStatus()">'
     +'<div class="modal" style="max-width:340px;max-height:92vh;overflow-y:auto">'
     +'<div style="font-weight:700;font-size:13px;margin-bottom:.25rem">'+nomeAbrev(col.nome)+'</div>'
-    +'<div style="font-size:11px;color:#888;margin-bottom:.75rem">RE '+(col.re||'—')+' · '+(col.cargo||'')+(col.cnh_categoria?' · CNH '+col.cnh_categoria:'')+'</div>'
+    +'<div style="font-size:11px;color:#888;margin-bottom:.25rem">RE '+(col.re||'—')+' · '+(col.cargo||'')+(col.cnh_categoria?' · CNH '+col.cnh_categoria:'')+'</div>'
+    +'<div id="pp-menu-dia" style="font-size:11px;font-weight:600;color:#185FA5;margin-bottom:.75rem">📅 Status do dia '+escHtml(fmtD(data))+'</div>'
     +escalaHistHtml
     +motHtml
     +'<div style="display:flex;flex-direction:column;gap:5px">'
-    +'<button onclick="ppRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" '
-    +'style="background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D1144;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
-    +'✅ Disponível — retirar da equipe</button>'
-    +'<button onclick="closeModal();ppEmprestarColab(\''+colabId+'\',\''+eqId+'\')" '
-    +'style="background:#EBF4FF;color:#185FA5;border:.5px solid #185FA544;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
-    +'🔄 Emprestar para outra equipe</button>'
+    +(eqId
+      ? '<button onclick="ppRetirarDaEquipe(\''+colabId+'\',\''+eqId+'\','+pos+')" '
+        +'style="background:#EAF3DE;color:#3B6D11;border:.5px solid #3B6D1144;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
+        +'✅ Disponível — retirar da equipe</button>'
+        +'<button onclick="closeModal();ppEmprestarColab(\''+colabId+'\',\''+eqId+'\')" '
+        +'style="background:#EBF4FF;color:#185FA5;border:.5px solid #185FA544;border-radius:6px;padding:8px 12px;cursor:pointer;font-size:12px;text-align:left;font-weight:600">'
+        +'🔄 Emprestar para outra equipe</button>'
+      : dispBtn)
     + PP_MENU_STATUS.map(function(k){
         var s=PROG_STATUS[k];
         var ativo = k===st;
@@ -85405,12 +85427,12 @@ function progProjetoCoreMenuSlot(colabId, eqId, pos){
     +'<input type="date" id="pp-st-retorno" value="'+progDataRetornoStr(info.retorno)+'" class="inp" style="width:100%"/>'
     +'<div style="font-size:10px;color:#888;margin-top:3px">Status se repete automaticamente até esta data</div>'
     +'</div>'
-    +'<div id="pp-obs-status-wrap" style="display:'+(PP_MENU_STATUS.indexOf(st)>=0&&['patio','verificar','observacao'].indexOf(st)>=0?'block':'none')+';margin-top:8px">'
+    +'<div id="pp-obs-status-wrap" style="display:'+((PP_MENU_STATUS.indexOf(st)>=0&&['patio','verificar','observacao'].indexOf(st)>=0)||(!eqId&&st==='disponivel')?'block':'none')+';margin-top:8px">'
     +'<label style="font-size:11px;font-weight:600;color:#555;display:block;margin-bottom:4px">📝 Observação'+(st==='observacao'?' <span style="color:#A32D2D">*</span>':'')+'</label>'
-    +'<textarea id="pp-obs-status-input" class="inp" style="width:100%;height:60px;font-size:12px" placeholder="'+(st==='observacao'?'Motivo da observação (ex.: restrição médica leve, atenção...)':st==='verificar'?'O que precisa ser verificado...':'Motivo / observação...')+'">'+(info.obs||'')+'</textarea>'
+    +'<textarea id="pp-obs-status-input" class="inp" style="width:100%;height:60px;font-size:12px" placeholder="'+(st==='observacao'?'Motivo da observação (ex.: restrição médica leve, atenção...)':st==='verificar'?'O que precisa ser verificado...':st==='disponivel'?'Opcional — com observação fica Disponível com observação':'Motivo / observação...')+'">'+(info.obs||'')+'</textarea>'
     +'</div>'
     +'<div style="display:flex;gap:6px;margin-top:.75rem">'
-    +'<button class="btn" onclick="closeModal()" style="flex:1">Fechar</button>'
+    +'<button class="btn" onclick="ppFecharMenuStatus()" style="flex:1">Fechar</button>'
     +'<button class="btn btn-pri" onclick="ppSalvarMenuStatus(\''+colabId+'\')" style="flex:1">💾 Salvar</button>'
     +'</div>'
     +'</div></div>';
@@ -85487,11 +85509,14 @@ function progProjetoCoreSetStatusMenu(colabId, status){
   var rw = document.getElementById('pp-retorno-wrap');
   if(rw) rw.style.display = ['ferias','afastado','treinamento'].indexOf(status)>=0 ? 'block' : 'none';
   var ow = document.getElementById('pp-obs-status-wrap');
-  if(ow) ow.style.display = PEDE_OBS_PP.indexOf(status)>=0 ? 'block' : 'none';
+  // Painel (sem equipe): "Disponível" aceita observação opcional → Disponível com observação
+  var dispComObs = status==='disponivel' && !!document.querySelector('button[data-st="disponivel"]');
+  if(ow) ow.style.display = (PEDE_OBS_PP.indexOf(status)>=0 || dispComObs) ? 'block' : 'none';
   var oi = document.getElementById('pp-obs-status-input');
   if(oi){
     var ph = status==='verificar'?'O que precisa ser verificado...'
            : status==='observacao'?'Motivo da observação (ex.: restrição médica leve, atenção...)'
+           : dispComObs?'Opcional — com observação fica Disponível com observação'
            : 'Motivo / observação...';
     oi.placeholder = ph;
   }
@@ -85515,65 +85540,80 @@ function ppEmprestarColab(colabId, fromEqId){
 function ppSalvarMenuStatus(colabId){
   return progProjetoCoreSalvarMenuStatus(colabId);
 }
+// Grava SÓ este colaborador, NA DATA DA TELA (não usa progSalvarStatus do TMA, que regrava em lote
+// todos os status da memória na data do TMA). Status do dia (falta, pátio, folga, observação…) valem só
+// para o dia; férias/afastado/treinamento seguem até a data de retorno.
 function progProjetoCoreSalvarMenuStatus(colabId){
+  var ctx = (window._ppMenuStatusCtx && window._ppMenuStatusCtx.colabId===colabId) ? window._ppMenuStatusCtx : null;
+  var data = (ctx && ctx.dia) || progProjGetData();
+  var anterior = ctx ? (ctx.st || 'disponivel') : 'disponivel';
   var novoSt  = progProjetoCoreStatusColab(colabId);
-  var obsInput = (document.getElementById('pp-obs-status-input')||{}).value||'';
+  var obsInput = String((document.getElementById('pp-obs-status-input')||{}).value||'').trim();
   var retorno = progDataRetornoStr(((document.getElementById('pp-st-retorno')||{}).value||'')
     || ((_progStatusInfo[colabId]||{}).retorno||''));
-  if(novoSt==='observacao' && !obsInput.trim()){ progShowToast('⚠ Informe o motivo da observação.','erro'); return; }
-  if(['ferias','afastado','treinamento'].indexOf(novoSt)>=0 && !retorno){
+  // "Disponível" com observação = Disponível com observação (continua escalável)
+  if(novoSt==='disponivel' && obsInput && document.querySelector('button[data-st="disponivel"]')) novoSt = 'observacao';
+  if(novoSt==='observacao' && !obsInput){ progShowToast('⚠ Informe o motivo da observação.','erro'); return; }
+  if(PROG_STATUS_PERSISTENTES.indexOf(novoSt)>=0 && ['ferias','afastado','treinamento'].indexOf(novoSt)>=0 && !retorno){
     progShowToast('⚠ Informe a data prevista de retorno.','erro');
     return;
   }
-  if(obsInput){
-    if(!_progStatusInfo[colabId]) _progStatusInfo[colabId]={};
-    _progStatusInfo[colabId].obs = obsInput;
-  }
-  var data = progProjGetData();
-
-  if(novoSt==='disponivel'){
-    progRemoverPersistente(colabId);
-    delete _progStatus[colabId];
-    delete _progStatusInfo[colabId];
-    _progStatusDateCache = null;
-    if(!DEMO){
-      sbUpsert('prog_status_diario',{
-        colaborador_id:colabId, data:data, status:'disponivel',
-        data_retorno:null, obs:null,
-        registrado_por:usuarioLogado?usuarioLogado.nome:''
-      },'prog_status_diario_colaborador_id_data_key');
-    }
-  } else {
-    progSalvarPersistente(colabId, novoSt, data, retorno||'', '');
-    _progStatus[colabId] = novoSt;
-    if(!_progStatusInfo[colabId]) _progStatusInfo[colabId]={};
-    if(obsInput) _progStatusInfo[colabId].obs = obsInput;
-    if(retorno) _progStatusInfo[colabId].retorno = retorno;
-    progMarcarAutorStatus(colabId);
-    progSalvarStatus();
-    progProjSalvarStatus();
-    if(!DEMO){
-      var _obsParaSalvar = obsInput || (_progStatusInfo[colabId]||{}).obs || '';
-      sbUpsert('prog_status_diario',{
-        colaborador_id:colabId, data:data, status:novoSt,
-        data_retorno:retorno||null,
-        obs:_obsParaSalvar||null,
-        registrado_por:usuarioLogado?usuarioLogado.nome:''
-      },'prog_status_diario_colaborador_id_data_key').then(function(){
-        progShowToast('✅ Status salvo.');
-        if(novoSt==='verificar'){
-          vtGarantirTratamento(colabId, data, _obsParaSalvar||'');
-          vtAtualizarAbaAlerta();
-        }
-        if(['ferias','afastado','treinamento','demitido'].indexOf(novoSt)>=0) _progStatusDateCache = null;
-      }).catch(function(e){
-        console.error('ppSalvarMenuStatus erro:', e);
-        progShowToast('⚠️ Erro ao salvar no banco.','erro');
-      });
-    }
-  }
+  var persistente = PROG_STATUS_PERSISTENTES.indexOf(novoSt)>=0;
+  var linha = {
+    colaborador_id:colabId, data:data, status:novoSt,
+    data_retorno: persistente ? (retorno||null) : null,
+    obs: novoSt==='disponivel' ? null : (obsInput||null),
+    registrado_por: usuarioLogado ? usuarioLogado.nome : ''
+  };
+  if(window._ppMenuStatusCtx && window._ppMenuStatusCtx.colabId===colabId) window._ppMenuStatusCtx = null;
   closeModal();
-  progProjRenderQuadro();
+  if(DEMO){
+    if(novoSt==='disponivel'){ delete _progStatus[colabId]; delete _progStatusInfo[colabId]; }
+    else { _progStatus[colabId] = novoSt; _progStatusInfo[colabId] = {obs:linha.obs||'', retorno:linha.data_retorno||''}; }
+    progProjRenderQuadro();
+    return;
+  }
+  Promise.resolve(sbUpsert('prog_status_diario', linha, 'prog_status_diario_colaborador_id_data_key')).then(function(r){
+    if(!r){ throw new Error(window._sbLastUpsertErr || 'o banco recusou a gravação'); }
+    var extras = [];
+    // Saiu de férias/afastado/treinamento/demitido/inapto: a ausência termina neste dia (histórico mantido).
+    if(PROG_STATUS_PERSISTENTES.indexOf(anterior)>=0 && !persistente){
+      extras.push(sbUpdate('prog_status_diario', {data_retorno:data},
+        'colaborador_id=eq.'+colabId+'&status=eq.'+anterior+'&data=lt.'+data+'&deleted_at=is.null'
+        +'&or=(data_retorno.is.null,data_retorno.gt.'+data+')'));
+    }
+    // Nova data de retorno vale também para os dias seguintes já gravados com o mesmo status.
+    if(persistente && retorno){
+      extras.push(sbUpdate('prog_status_diario', {data_retorno:retorno},
+        'colaborador_id=eq.'+colabId+'&status=eq.'+novoSt+'&data=gt.'+data+'&deleted_at=is.null'));
+    }
+    if(novoSt==='verificar' && typeof vtGarantirTratamento==='function'){
+      vtGarantirTratamento(colabId, data, linha.obs||'');
+      if(typeof vtAtualizarAbaAlerta==='function') vtAtualizarAbaAlerta();
+    }
+    return Promise.all(extras);
+  }).then(function(){
+    progShowToast('✅ Status do dia '+fmtD(data)+' salvo.');
+  }).catch(function(e){
+    console.error('ppSalvarMenuStatus erro:', e);
+    progShowToast('⚠️ Status não salvo: '+(e && e.message || e),'erro');
+  }).then(function(){
+    // Relê o dia do banco (fonte única) e redesenha.
+    if(_pp) _pp.statusData = null;
+    progProjCarregarStatusDia(data, true);
+  });
+}
+
+// Fechar sem salvar desfaz a seleção feita na modal (a seleção altera a memória na hora).
+function ppFecharMenuStatus(){
+  var ctx = window._ppMenuStatusCtx;
+  if(ctx && ctx.colabId){
+    if(ctx.st) _progStatus[ctx.colabId] = ctx.st; else delete _progStatus[ctx.colabId];
+    if(ctx.info) _progStatusInfo[ctx.colabId] = ctx.info; else delete _progStatusInfo[ctx.colabId];
+  }
+  window._ppMenuStatusCtx = null;
+  closeModal();
+  if(typeof progProjRenderQuadro==='function') progProjRenderQuadro();
 }
 
 function ppRetirarDaEquipe(colabId, eqId, pos){
@@ -85598,8 +85638,7 @@ function progProjetoCoreRetirarDaEquipe(colabId, eqId, pos){
   }
   delete _progStatus[colabId];
   delete _progStatusInfo[colabId];
-  progProjSalvarStatus();
-  progSalvarStatus();
+  // Sem progSalvarStatus (TMA): ele regravava em lote toda a memória na data do TMA.
   closeModal();
   progProjRenderQuadro();
   progShowToast('✅ Colaborador movido para disponíveis');
@@ -85662,6 +85701,7 @@ function ppToggleStatus(colabId){
 
 function ppDefinirStatus(colabId, status, dataRetorno){
   if(status==='disponivel'){
+    var antPP = _progStatus[colabId];
     delete _progStatus[colabId];
     delete _progStatusInfo[colabId];
     progRemoverPersistente(colabId);
@@ -85673,9 +85713,12 @@ function ppDefinirStatus(colabId, status, dataRetorno){
         data_retorno:null, obs:null,
         registrado_por:usuarioLogado?usuarioLogado.nome:''
       },'prog_status_diario_colaborador_id_data_key');
-      sbDelete('prog_status_diario',
-        'colaborador_id=eq.'+colabId+'&data=neq.'+dataPP+
-        '&status=in.(ferias,afastado,treinamento,demitido)');
+      // A ausência termina neste dia; o histórico de outros dias é mantido (antes era apagado).
+      if(PROG_STATUS_PERSISTENTES.indexOf(antPP)>=0){
+        sbUpdate('prog_status_diario', {data_retorno:dataPP},
+          'colaborador_id=eq.'+colabId+'&status=eq.'+antPP+'&data=lt.'+dataPP+'&deleted_at=is.null'
+          +'&or=(data_retorno.is.null,data_retorno.gt.'+dataPP+')');
+      }
     }
   } else {
     _progStatus[colabId] = status;
@@ -85689,8 +85732,7 @@ function ppDefinirStatus(colabId, status, dataRetorno){
       registrado_por:usuarioLogado?usuarioLogado.nome:''
     },'prog_status_diario_colaborador_id_data_key');
   }
-  progProjSalvarStatus();
-  progSalvarStatus();
+  // Sem progSalvarStatus (TMA): ele regravava em lote toda a memória na data do TMA.
   closeModal();
   progProjRenderQuadro();
 }
