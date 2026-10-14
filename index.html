@@ -2232,13 +2232,13 @@ body.insp-campo-ativo #app-content-area {
 <script src="portaria-camera.js?v=8.1.159"></script>
 <script src="sesmt-alm-shell.js?v=8.1.175"></script>
 <script src="prog-projetos-shell.js?v=8.1.148"></script>
-<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada-state.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.219"></script>
-<script src="modules/projetos/jornada/jornada.js?v=8.1.219"></script>
+<script src="modules/projetos/agenda/prog-projetos-agenda.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada-profiles.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada-resolver.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada-state.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada-actions.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada-ui.js?v=8.1.220"></script>
+<script src="modules/projetos/jornada/jornada.js?v=8.1.220"></script>
 <script src="modules/frotas/pedagios/pedagios-repository.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios-service.js?v=8.1.149"></script>
 <script src="modules/frotas/pedagios/pedagios.js?v=8.1.166"></script>
@@ -38865,6 +38865,14 @@ async function projLmsUpSituacao(projetoId){
   s.erroOriginal = (ori && !ori.ok) ? (ori.error || '') : '';
   s.originalAusente = !!(ori && !ori.ok && (ori.status === 404 || /Função do banco ausente/.test(ori.error || '')));
   s.originalConfirmada = PROJ_LMS_UP_ESTADOS_CONFIRMADA.indexOf(s.estado) >= 0;
+  // Etapa 1.6b: prévia da conciliação (só em EM_CONCILIACAO; demais estados não fazem chamada nova).
+  s.conc = null; s.erroConc = ''; s.concAusente = false;
+  if(s.estado === 'EM_CONCILIACAO' && s.original && PROJ_LMS_UUID_RE.test(String(s.original.importacao_id || ''))){
+    var pv = await projLmsRpc('sot_lms_conciliacao_previa', {p_importacao_id:s.original.importacao_id});
+    s.conc = (pv && pv.ok && pv.data && typeof pv.data === 'object') ? pv.data : null;
+    s.erroConc = (pv && !pv.ok) ? (pv.error || '') : (s.conc ? '' : 'resposta vazia');
+    s.concAusente = !!(pv && !pv.ok && (pv.status === 404 || /Função do banco ausente/.test(pv.error || '')));
+  }
   // Fail-closed: envio só com permissão e estado LEGADO_SEM_WL. ORIGINAL confirmada (inclusive ESTRUTURA_PENDENTE),
   // estado ilegível ou estado que esta versão não conhece → não envia.
   s.bloqueio = !s.podeEnviar ? (PROJ_LMS_UP_MSG[s.motivo] || s.erroAut || PROJ_LMS_UP_MSG.SEM_PERMISSAO)
@@ -38974,6 +38982,7 @@ function projLmsUpRender(projetoId, container){
           : '<div style="margin-top:.4rem;font-size:11px;color:#888">Nenhum RASCUNHO pendente para este projeto.</div>'))
       + '</div>';
     if(s.estado === 'ESTRUTURA_PENDENTE') h += projLmsUpCardPendenteHtml(s, st);
+    if(s.estado === 'EM_CONCILIACAO' && typeof projLmsUpCardConciliacaoHtml === 'function') h += projLmsUpCardConciliacaoHtml(s, st);
     if(s.bloqueio){
       h += '<div id="proj-lms-up-bloqueio" style="padding:.6rem .8rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
         + projLmsEsc(s.bloqueio)+'</div>';
@@ -39124,6 +39133,206 @@ async function projLmsUpAplicar(){
     : '✅ Estrutura aplicada: '+(d.wls||0)+' WL(s), '+(d.atividades||0)+' atividade(s), '+(d.materiais_operacionais||0)
       +' material(is) e '+(d.materiais_retirada_descritivos||0)+' retirada(s) descritivas.');
   if(typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);   // selo, grupos WL e 🔒 aparecem na hora
+}
+
+// ── Etapa 1.6b: conciliação com o LMS (projeto EM_CONCILIACAO) ──
+// Prévia (sot_lms_conciliacao_previa, só leitura) + botão "Aplicar conciliação" (fn_proj_lms_aplicar_conciliacao).
+// O banco decide e revalida tudo; a tela só mostra e pede confirmação.
+var PROJ_LMS_CONC_SIT = {
+  'BATE': 'Bate', 'SEM_LEGADO': 'Novo (sem cadastro antigo)',
+  'UNIDADE_DIFERENTE': 'Unidade diferente', 'QTD_DIFERENTE': 'Quantidade diferente',
+  'SO_NO_LEGADO': 'Só no cadastro antigo', 'SO_NO_LMS': 'Só no LMS', 'SEM_CODIGO': 'Item antigo sem código',
+  'TIPO_DIFERENTE': 'Tipo trocado (atividade × material)', 'COM_MOVIMENTO': 'Item antigo com movimento'
+};
+var PROJ_LMS_CONC_BLOQ = {
+  'PROJETO_JA_TEM_WL': 'O projeto já tem WL oficial.',
+  'LINHA_NAO_CLASSIFICADA': 'Há linha do LMS com código fora do padrão (serviço I-/R- ou material numérico).',
+  'LINHA_SEM_WL_OU_DESCRICAO': 'Há linha do LMS sem WL ou sem descrição.',
+  'LINHAS_REPETIDAS_NA_CHAVE': 'O LMS repete a mesma WL + código + FT + KIT.',
+  'IMPORTACAO_NAO_ELEGIVEL': 'A importação não está confirmada como CONCILIACAO.',
+  'JA_APLICADA': 'A conciliação já foi aplicada.'
+};
+var PROJ_LMS_CONC_MOV = {
+  'QTD_VIABILIZADA': 'viabilizado', 'QTD_EXECUTADA': 'executado', 'QTD_MEDIDA': 'medido', 'QTD_FATURADA': 'faturado',
+  'MEDICAO': 'item de medição', 'HISTORICO': 'histórico', 'QTD_REQUISITADA': 'requisitado', 'QTD_ENTREGUE': 'entregue',
+  'QTD_APLICADA': 'aplicado', 'QTD_DEVOLVIDA': 'devolvido', 'QTD_PROCESSADA_SAP': 'processado no SAP',
+  'REQUISICAO': 'requisição', 'ADICIONAL': 'adicional'
+};
+
+function projLmsUpConcItens(c){ return (c && Array.isArray(c.itens)) ? c.itens : []; }
+
+function projLmsUpConcMotivos(it){
+  var vistos = {};
+  var out = [];
+  (it && Array.isArray(it.legado) ? it.legado : []).forEach(function(l){
+    (Array.isArray(l.movimento) ? l.movimento : []).forEach(function(m){
+      if(!vistos[m]){ vistos[m] = true; out.push(PROJ_LMS_CONC_MOV[m] || m); }
+    });
+  });
+  return out;
+}
+
+function projLmsUpConcQtd(q, un){
+  if(q == null || q === '') return '—';
+  return projLmsEsc(projLmsUpNum(Number(q)))+(un ? ' '+projLmsEsc(un) : '');
+}
+
+// Texto de cada bloqueio, com quantidade de códigos quando for situação de batimento.
+function projLmsUpConcBloqueios(c){
+  var por = (c && c.resumo && c.resumo.por_situacao) || {};
+  var nMov = projLmsUpConcItens(c).filter(function(it){ return it.com_movimento === true; }).length;
+  return (c && Array.isArray(c.bloqueios) ? c.bloqueios : []).map(function(b){
+    if(PROJ_LMS_CONC_BLOQ[b]) return PROJ_LMS_CONC_BLOQ[b];
+    var n = b === 'COM_MOVIMENTO' ? nMov : (por[b] || 0);
+    return (PROJ_LMS_CONC_SIT[b] || b)+(n ? ': '+n+' código(s)' : '');
+  });
+}
+
+function projLmsUpCardConciliacaoHtml(s, st){
+  var c = s.conc;
+  var h = '<div class="card" id="proj-lms-up-conc" style="padding:.75rem;margin-bottom:.75rem;border:1px solid #185FA566;background:#F3F8FD">'
+    + '<div style="font-size:12px;font-weight:700;color:#185FA5">🔗 Conciliação com o LMS</div>'
+    + '<div style="font-size:11px;color:#555;margin:.2rem 0 .4rem">O LMS ORIGINAL foi confirmado como CONCILIACAO. Quando todos os códigos batem '
+    + '(código, unidade e soma iguais) e nenhum item antigo tem movimento, a conciliação troca os itens antigos pela estrutura do LMS '
+    + '(WLs, atividades e materiais). Os itens antigos ficam registrados e marcados como excluídos — nada é apagado.</div>';
+  if(s.originalAusente || s.concAusente){
+    return h + '<div id="proj-lms-up-conc-ausente" style="font-size:11px;color:#A32D2D">Prévia da conciliação indisponível: aplique no banco a migration '
+      + (s.originalAusente ? '20261012100000_proj_lms_leitura_wl.sql e a ' : '')+'20261012200000_proj_lms_conciliacao.sql.</div></div>';
+  }
+  if(!s.original){
+    return h + '<div id="proj-lms-up-conc-erro" style="font-size:11px;color:#A32D2D">Não foi possível localizar a ORIGINAL confirmada'
+      + (s.erroOriginal ? ': '+projLmsEsc(s.erroOriginal) : '')+'.</div></div>';
+  }
+  if(!c){
+    return h + '<div id="proj-lms-up-conc-erro" style="font-size:11px;color:#A32D2D">Não foi possível ler a prévia da conciliação'
+      + (s.erroConc ? ': '+projLmsEsc(projLmsUpTraduzConciliacao(s.erroConc)) : '')+'.</div></div>';
+  }
+  var itens = projLmsUpConcItens(c);
+  var r = c.resumo || {};
+  var por = r.por_situacao || {};
+  var nBate = (por.BATE || 0) + (por.SEM_LEGADO || 0);
+  h += '<div id="proj-lms-up-conc-resumo" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:4px 12px;font-size:12px">'
+    + '<div><span style="color:#888">Itens antigos:</span> <b>'+projLmsEsc(r.legado_itens == null ? '—' : r.legado_itens)+'</b></div>'
+    + '<div><span style="color:#888">Códigos:</span> <b>'+projLmsEsc(r.codigos == null ? itens.length : r.codigos)+'</b></div>'
+    + '<div><span style="color:#888">Batem:</span> <b>'+projLmsEsc(nBate)+'</b></div>'
+    + '<div><span style="color:#888">LMS:</span> '+projLmsEsc(r.linhas_lms == null ? '—' : r.linhas_lms)+' linhas · '+projLmsEsc(r.wls == null ? '—' : r.wls)+' WL(s)</div>'
+    + '</div>';
+  if(Number(r.legado_itens) === 0) h += '<div style="font-size:11px;color:#555;margin-top:.3rem">O projeto não tem cadastro antigo: a conciliação só aplica a estrutura do LMS.</div>';
+
+  var bloq = projLmsUpConcBloqueios(c);
+  if(bloq.length){
+    h += '<div id="proj-lms-up-conc-bloqueios" style="margin-top:.5rem;padding:.5rem .7rem;border-radius:8px;border:1px solid #A32D2D;background:#FCEBEB;color:#791F1F;font-size:12px">'
+      + '<b>Conciliação bloqueada:</b><ul style="margin:.2rem 0 0 1rem;padding:0">'
+      + bloq.map(function(b){ return '<li>'+projLmsEsc(b)+'</li>'; }).join('')+'</ul></div>';
+  }
+
+  var th = 'style="padding:4px 6px;text-align:left;font-size:10px;color:#888;border-bottom:.5px solid #e0dfd8;white-space:nowrap"';
+  var td = 'style="padding:3px 6px;font-size:11px;border-bottom:.5px solid #f0efe8;vertical-align:top"';
+  var divergentes = itens.filter(function(it){ return (it.situacao !== 'BATE' && it.situacao !== 'SEM_LEGADO') || it.com_movimento === true; });
+  if(divergentes.length){
+    h += '<div style="margin-top:.5rem;font-size:12px;font-weight:600">Códigos que não batem ('+divergentes.length+')</div>'
+      + '<div style="overflow-x:auto;border:.5px solid #e0dfd8;border-radius:6px;margin-top:4px"><table id="proj-lms-up-conc-divergentes" style="border-collapse:collapse;width:100%"><thead><tr>'
+      + ['Código','Tipo','Cadastro antigo','LMS','Situação','Movimento'].map(function(x){ return '<th '+th+'>'+x+'</th>'; }).join('')
+      + '</tr></thead><tbody>'
+      + divergentes.map(function(it){
+          var mot = projLmsUpConcMotivos(it);
+          return '<tr data-codigo="'+projLmsEsc(it.codigo)+'"><td '+td+'><code>'+projLmsEsc(it.codigo == null ? '(sem código)' : it.codigo)+'</code></td>'
+            + '<td '+td+'>'+(it.tipo === 'ATIVIDADE' ? 'Atividade' : 'Material')+'</td>'
+            + '<td '+td+'>'+projLmsUpConcQtd(it.qtd_legado, it.unidade_legado)+'</td>'
+            + '<td '+td+'>'+projLmsUpConcQtd(it.qtd_lms, it.unidade_lms)+'</td>'
+            + '<td style="padding:3px 6px;font-size:11px;border-bottom:.5px solid #f0efe8;vertical-align:top;color:#A32D2D">'+projLmsEsc(PROJ_LMS_CONC_SIT[it.situacao] || it.situacao)+'</td>'
+            + '<td '+td+'>'+projLmsEsc(mot.join(', ') || '—')+'</td></tr>';
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  if(itens.length){
+    h += '<details id="proj-lms-up-conc-lista" style="margin-top:.5rem"><summary style="cursor:pointer;font-size:12px">Ver todos os códigos ('+itens.length+')</summary>'
+      + '<div style="overflow-x:auto;max-height:360px;overflow-y:auto;border:.5px solid #e0dfd8;border-radius:6px;margin-top:4px">'
+      + '<table style="border-collapse:collapse;width:100%"><thead><tr>'
+      + ['Código','Tipo','Situação','Cadastro antigo','LMS por WL (FT · KIT · quantidade)'].map(function(x){ return '<th '+th+'>'+x+'</th>'; }).join('')
+      + '</tr></thead><tbody>'
+      + itens.map(function(it){
+          var lms = (Array.isArray(it.lms) ? it.lms : []).map(function(l){
+            return 'WL '+projLmsEsc(l.wl == null ? '—' : l.wl)+' · FT '+projLmsEsc(l.ft == null ? '—' : l.ft)+' · KIT '+projLmsEsc(l.kit == null ? '—' : l.kit)
+              +' · '+projLmsUpConcQtd(l.qtd, l.unidade);
+          }).join('<br>');
+          return '<tr><td '+td+'><code>'+projLmsEsc(it.codigo == null ? '(sem código)' : it.codigo)+'</code></td>'
+            + '<td '+td+'>'+(it.tipo === 'ATIVIDADE' ? 'Atividade' : 'Material')+'</td>'
+            + '<td '+td+'>'+projLmsEsc(PROJ_LMS_CONC_SIT[it.situacao] || it.situacao)+'</td>'
+            + '<td '+td+'>'+projLmsUpConcQtd(it.qtd_legado, it.unidade_legado)+'</td>'
+            + '<td '+td+'>'+(lms || '—')+'</td></tr>';
+        }).join('')
+      + '</tbody></table></div></details>';
+  }
+
+  if(c.pode_aplicar === true && !bloq.length){
+    h += '<button class="btn btn-pri" id="proj-lms-up-conc-aplicar" style="margin-top:.6rem"'+(st.conciliando ? ' disabled' : '')
+      + ' onclick="projLmsUpAplicarConciliacao()">'+(st.conciliando ? 'Aplicando…' : 'Aplicar conciliação')+'</button>';
+  } else if(!bloq.length){
+    h += '<div id="proj-lms-up-conc-permissao" style="margin-top:.5rem;font-size:11px;color:#888">Prévia liberada. Aguardando quem tem a permissão PROJ_CONFIRMAR_LMS '
+      + '(gestor, coordenador, escritório ou admin) aplicar a conciliação.</div>';
+  } else {
+    h += '<div id="proj-lms-up-conc-bloqueada" style="margin-top:.5rem;font-size:11px;color:#888">O projeto continua em conciliação até os itens acima serem resolvidos. '
+      + 'Os fluxos atuais do projeto seguem funcionando.</div>';
+  }
+  if(st.erroConciliar) h += '<div id="proj-lms-up-conc-erro-aplicar" style="margin-top:.5rem;font-size:12px;color:#791F1F">'+projLmsEsc(st.erroConciliar)+'</div>';
+  return h + '</div>';
+}
+
+function projLmsUpTraduzConciliacao(msg){
+  var m = String(msg || '');
+  var g;
+  if((g = m.match(/CONCILIACAO_BLOQUEADA \(([^)]*)\)/))){
+    return 'A conciliação está bloqueada — '+g[1].split(', ').map(function(p){
+      var x = p.split(' ');
+      return (PROJ_LMS_CONC_SIT[x[0]] || x[0])+(x[1] ? ': '+x[1]+' código(s)' : '');
+    }).join('; ')+'. Atualize a prévia.';
+  }
+  if(/SEM_PERMISSAO/.test(m)) return 'Você não tem a permissão PROJ_CONFIRMAR_LMS para este projeto.';
+  if(/USUARIO_ERP_INATIVO|inexistente ou inativo/.test(m)) return 'Seu usuário do ERP está inativo ou não vinculado ao login.';
+  if(/sem sessão/.test(m)) return 'Sessão expirada. Faça login novamente.';
+  if(/IMPORTACAO_NAO_ELEGIVEL/.test(m)) return 'A importação não está confirmada como CONCILIACAO.';
+  if(/PROJETO_JA_TEM_WL/.test(m)) return 'O projeto já tem WL oficial.';
+  if(/LINHA_NAO_CLASSIFICADA|LINHAS_REPETIDAS_NA_CHAVE|LINHA_SEM_WL_OU_DESCRICAO/.test(m)) return projLmsUpTraduzAplicar(m);
+  return m || 'Erro desconhecido na conciliação.';
+}
+
+// Única porta da conciliação: botão + confirm() explícito; o banco revalida tudo (fn_proj_lms_aplicar_conciliacao).
+async function projLmsUpAplicarConciliacao(){
+  var st = _projLmsUpSt;
+  var projetoId = st.projetoId;
+  var s = st.situacao;
+  var c = s && s.conc;
+  var impId = String((c && c.importacao_id) || (s && s.original && s.original.importacao_id) || '');
+  if(st.conciliando || !c || c.pode_aplicar !== true || (Array.isArray(c.bloqueios) && c.bloqueios.length) || !PROJ_LMS_UUID_RE.test(impId)) return;
+  var r0 = c.resumo || {};
+  var p = projLmsUpProjeto(projetoId);
+  var nLeg = Number(r0.legado_itens) || 0;
+  var ok = confirm('Aplicar a conciliação do LMS ao projeto "'+projLmsUpNomeProjeto(p)+'"?\n\n'
+    + (nLeg ? 'Itens antigos que serão substituídos: '+nLeg+' (marcados como excluídos e registrados — nada é apagado).\n'
+            : 'O projeto não tem cadastro antigo: entra só a estrutura do LMS.\n')
+    + 'Códigos: '+(r0.codigos == null ? '—' : r0.codigos)+' · Linhas do LMS: '+(r0.linhas_lms == null ? '—' : r0.linhas_lms)+' · WLs: '+(r0.wls == null ? '—' : r0.wls)+'\n\n'
+    + 'Serão criadas as WLs, as atividades (serviços) e os materiais do LMS. Materiais de retirada (FT=R) entram como descritivos. '
+    + 'As linhas criadas ficam protegidas (🔒) e esta ação não pode ser desfeita pela tela.');
+  if(!ok) return;
+  st.conciliando = true; st.erroConciliar = '';
+  projLmsUpRender(projetoId);
+  var r = await projLmsRpc('fn_proj_lms_aplicar_conciliacao', {p_importacao_id:impId});
+  st.conciliando = false;
+  if(_projLmsUpSt !== st) return;
+  if(!r.ok){
+    st.erroConciliar = 'Conciliação não aplicada: '+projLmsUpTraduzConciliacao(r.error);
+    projLmsUpRender(projetoId);
+    return;
+  }
+  var d = r.data || {};
+  if(typeof sotWlSelosInvalidar === 'function') sotWlSelosInvalidar(projetoId);
+  progShowToast(d.operacao === 'JA_APLICADA'
+    ? '✅ A conciliação já estava aplicada.'
+    : '✅ Conciliação aplicada: '+(d.wls||0)+' WL(s), '+(d.atividades||0)+' atividade(s), '+(d.materiais_operacionais||0)
+      +' material(is), '+(d.materiais_retirada_descritivos||0)+' retirada(s) descritivas; '+(d.itens_antigos_substituidos||0)+' item(ns) antigo(s) substituído(s).');
+  if(typeof sotAbrirProjeto === 'function') sotAbrirProjeto(projetoId);   // selo "Estruturado", grupos WL e 🔒 na hora
 }
 
 // Modelo LMS em branco, gerado no navegador com o SheetJS já carregado: mesma aba, D1 e cabeçalho que a Edge lê.
@@ -47106,10 +47315,14 @@ if(_isLocal){
 }
 
 var APP_VERSAO = {
-  numero: '8.1.219',
-  data:   '12/10/2026',
-  build:  '20261012-1800',
+  numero: '8.1.220',
+  data:   '13/10/2026',
+  build:  '20261013-2300',
   log: [
+    {v:'8.1.220', d:'13/10/2026', itens:[
+      'Projetos — LMS: conciliação de projeto com cadastro antigo. Na aba 📥 LMS, projeto com LMS confirmado em CONCILIACAO mostra a prévia (itens antigos, códigos que batem, bloqueios explicados, códigos que não batem e a lista completa com WL, FT e KIT). Quando código, unidade e soma batem e nenhum item antigo tem movimento, o botão "Aplicar conciliação" (permissão PROJ_CONFIRMAR_LMS, com confirmação) troca os itens antigos pela estrutura do LMS: os antigos ficam registrados e marcados como excluídos, nada é apagado, e o projeto passa a Estruturado.',
+      'Projetos com unidade ou quantidade diferente, código só de um lado ou item antigo com movimento (medição, requisição, adicional, quantidades lançadas) ficam bloqueados com o motivo e seguem operando como antes. SQL: 20261012200000_proj_lms_conciliacao.sql (já aplicado).',
+    ]},
     {v:'8.1.219', d:'12/10/2026', itens:[
       'Projetos — WL na operação: em projetos estruturados pelo LMS, a Medição mostra WL, FT e KIT de cada item (pela atividade) e o "Adicionar itens" ordena por WL e diferencia linhas de mesmo código. Reserva, adicional da reserva, De Para (tela e texto copiado), Diário de Bordo e Nova requisição mostram a WL; a requisição passa a guardar wl_id, FT e KIT de cada item e materiais de retirada (FT=R) ficam fora da reserva.',
       'Retirados e liberação de adicional passam a usar a linha exata do material em projeto com WL (retirada numa WL não marca as outras). Validação de lançamento do campo: só lançamentos do projeto, soma na atividade certa e não soma automaticamente código que existe em mais de uma WL. Jornada: projeto com estrutura pendente sugere "Aplicar estrutura"; estruturado não sugere "Importar lista". Projetos sem WL seguem iguais. Sem SQL.',
