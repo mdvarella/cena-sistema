@@ -261,3 +261,63 @@ descritivos), o que corrige a quantidade a requisitar.
 | H2 | Unidade | **Opção A** (corrigir as 9 unidades do cadastro antigo; G2 estrita mantida) |
 | H3 | Ordem | V0/A0 → unidade → prévia → medição → prévia → conciliação pela tela |
 | H4 | Quem aplica a conciliação | o dono, pela tela, depois da prévia liberada |
+
+---
+
+## 7. Leituras V0 e A0 (14/10/2026) — resultado
+
+Rodadas com autorização do dono, **somente SELECT** (sem UPDATE, DELETE, INSERT, correção de unidade, remoção de
+medição ou chamada de conciliação).
+
+### V0 — medição de teste: **limpo**
+| Leitura | Resultado |
+|---|---|
+| V0.1 colunas de `sot_medicoes` | id, projeto_id, numero, status, data_corte, data_envio, data_aprovacao, data_emissao, data_nf, valor_total, valor_nf, nfs, observacao, criado_por, criado_em, atualizado_em. **Sem `deleted_at`** (não há exclusão lógica: a Opção B é remoção do registro) |
+| V0.2 FKs para `sot_medicoes` | **nenhuma** |
+| V0.2 triggers em `sot_medicoes` / `sot_med_itens` | **nenhum** |
+| V0.2 colunas com "medic" no banco | `sot_med_itens.medicao_id` (os 2 itens desta medição) e `medicoes_obra_itens.medicao_id` (**0** referências a esta medição); `contrato_viabilidade_premissas.modelo_medicao` e `treinamentos.medico` não têm relação |
+| V0.3 medição e itens | 1 medição + 2 itens (retrato abaixo) |
+| V0.4 valores do projeto | `valor_medido` 0, `valor_faturado` 0, `valor_executado` 0, `valor_previsto` 0, `valor_viabilizado` 0 — a aprovação não gravou nada no projeto (o passo extra de zerar valores do §2 **não é necessário**) |
+| V0.5 atividades ligadas | I-8000656 e R-8000656 com `qtd_medida`, `qtd_faturada`, `qtd_executada` e `qtd_viabilizada` = 0 |
+| Situação do projeto | EM_CONCILIACAO · 7 atividades e 29 materiais ativos · 0 WLs · 0 requisições · 0 adicionais · 1 medição |
+
+#### Backup V0.3 (retrato integral, exatamente como lido)
+Medição:
+```json
+{"id":"7854cb60-32a1-4084-b5df-a12b17ce97e5","nfs":null,"numero":1,"status":"aprovado","data_nf":null,"valor_nf":0,
+ "criado_em":"2026-10-05T18:57:43.902-03:00","criado_por":null,"data_corte":"2026-10-05","data_envio":"2026-10-05",
+ "observacao":"Revisado","projeto_id":"5c7aa799-6205-4414-8466-3fda27ca3421","valor_total":7795.44,"data_emissao":null,
+ "atualizado_em":"2026-10-05T18:57:44.53373-03:00","data_aprovacao":"2026-10-05"}
+```
+Itens (`sot_med_itens`):
+```json
+[{"id":"d1fa2df7-dfb0-4cc3-801b-49789bfb6543","codigo":"I-8000656","qtd_ups":1,"unidade":"UN",
+  "criado_em":"2026-10-05T18:58:13.166683-03:00","descricao":"MO INSTAL MO PUXAR CB. DUTO 1 A 70 METRO","valor_ups":0,
+  "medicao_id":"7854cb60-32a1-4084-b5df-a12b17ce97e5","projeto_id":"5c7aa799-6205-4414-8466-3fda27ca3421","qtd_medida":16,
+  "atividade_id":"c7acf216-e4d5-4871-94a4-50c38860cc54","qtd_executada":0,"valor_unitario":216.54},
+ {"id":"f3ceafb3-3236-4b0a-a4f8-241faf468683","codigo":"R-8000656","qtd_ups":1,"unidade":"UN",
+  "criado_em":"2026-10-05T18:58:44.314732-03:00","descricao":"MO RETIRA MO PUXAR CB. DUTO 1 A 70 METRO","valor_ups":0,
+  "medicao_id":"7854cb60-32a1-4084-b5df-a12b17ce97e5","projeto_id":"5c7aa799-6205-4414-8466-3fda27ca3421","qtd_medida":20,
+  "atividade_id":"91b6540e-dbc3-4895-bfc9-c7002cb454fd","qtd_executada":0,"valor_unitario":216.54}]
+```
+Reversão da Opção B: reinserir esses três registros com os mesmos valores (SQL gerado na hora, com aprovação).
+
+### A0 — unidade: **9 itens confirmados exatamente como no §3**
+| Tipo | id | Código | Unidade | Qtd | Só descritivo |
+|---|---|---|---|---|---|
+| Atividade | `c7acf216-e4d5-4871-94a4-50c38860cc54` | I-8000656 | UN | 2 | não |
+| Atividade | `04465ca2-ba7a-4ee9-a3e8-47a39d9e1973` | I-8000670 | UN | 2 | não |
+| Atividade | `fd3d3596-8ef1-4a07-aa78-3c73fd16e1ed` | I-8000690 | UN | 2 | não |
+| Atividade | `368145ec-bb55-49a1-b450-f53d02623470` | I-ASQ03TI | UN | 2 | não |
+| Atividade | `32b8545c-cd60-4d0f-b7bd-fbc7eb1ca486` | I-ASQ04ES | UN | 2 | não |
+| Atividade | `91b6540e-dbc3-4895-bfc9-c7002cb454fd` | R-8000656 | UN | 2 | não |
+| Atividade | `633845cb-ab72-4581-8a07-9c98743be0cb` | R-ASQ03TI | UN | 2 | não |
+| Material | `a4c69b4a-7e69-4883-aeef-a94800184f81` | 325070 | UN | 100 | sim ("M-0325070") |
+| Material | `7adf33e2-9820-4253-a348-a2be5c34afe5` | 348165 | UN | 64 | sim ("K-ASQ04ES") |
+
+Todos ativos e sem WL. Os filtros do SQL da Opção A (§4) acertam exatamente 7 + 1 + 1 linhas.
+
+### Recomendação após as leituras
+- **H1 → Opção B** (remover a medição de teste com o backup acima): V0 limpo.
+- **H2 → Opção A** (corrigir as 9 unidades).
+- Ordem mantida: unidade → prévia → medição → prévia → conciliação pelo dono na tela. Nenhuma escrita foi feita até aqui.
