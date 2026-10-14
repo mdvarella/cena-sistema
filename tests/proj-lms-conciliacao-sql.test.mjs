@@ -372,6 +372,39 @@ r = await conciliar(db, S.mov.imp);
 ok('aplicar recusa item com movimento (revalida, não confia na prévia)', r.code === '55000' && /COM_MOVIMENTO 1/.test(r.e), r);
 await db.exec(`update public.sot_atividades set qtd_executada = 0 where id = '${aMov}'`);
 
+// ── Projeto que já tem WL ativa vinda de OUTRA importação (PROJETO_JA_TEM_WL) ──
+// Cenário montado pelo dono do banco: legado que bate + ORIGINAL L1 confirmada em CONCILIACAO + um RASCUNHO de outro
+// arquivo com uma WL ativa ligada a ele. Contraponto: WL cancelada não bloqueia.
+const L_OUTRA = lmsSint([['9', 'WP', 'I', '555', 'K-9', 'M', 'CABO', 5]], 'OUTRA');
+async function comWlDeOutra(proj, nome, cancelada) {
+  await projeto(db, proj, nome);
+  await legado(db, proj, LEG_BATE);
+  const outra = await registrar(db, proj, L_OUTRA);
+  const imp = await registrar(db, proj, L1);
+  await confirmar(db, imp, 'CONCILIACAO');
+  await db.query(`insert into public.sot_wl (projeto_id, codigo, origem, importacao_id, ordem, criado_por_auth,
+      cancelada_em, cancelada_por_auth, motivo_cancelamento) values ($1, '9', 'LMS', $2, 1, $3, $4, $5, $6)`,
+    [proj, outra, UID.gestor, cancelada ? new Date().toISOString() : null, cancelada ? UID.gestor : null, cancelada ? 'teste' : null]);
+  return { imp, outra };
+}
+const jaWl = await comWlDeOutra(PJ(15), 'Já tem WL', false);
+ok('cenário: WL ativa vinda de outra importação (RASCUNHO) no mesmo projeto', (await db.query(`select count(*)::int n from public.sot_wl
+  where projeto_id = $1 and importacao_id = $2 and cancelada_em is null`, [PJ(15), jaWl.outra])).rows[0].n === 1
+  && (await db.query(`select status from public.sot_lms_importacoes where id = $1`, [jaWl.outra])).rows[0].status === 'RASCUNHO');
+antes = await snap(db);
+pv = await previa(db, jaWl.imp);
+ok('projeto com WL de outra importação: prévia bloqueia com PROJETO_JA_TEM_WL', pv.r && pv.r.pode_aplicar === false
+  && JSON.stringify(pv.r.bloqueios) === '["PROJETO_JA_TEM_WL"]' && pv.r.resumo.por_situacao.BATE === 3, pv.r && { b: pv.r.bloqueios, s: pv.r.resumo });
+r = await conciliar(db, jaWl.imp);
+ok('projeto com WL de outra importação: aplicar recusa com PROJETO_JA_TEM_WL', r.code === '55000' && r.e === 'Conciliação: PROJETO_JA_TEM_WL', r);
+ok('projeto com WL de outra importação: nada é gravado (prévia + tentativa de aplicar)', JSON.stringify(await snap(db)) === JSON.stringify(antes)
+  && (await db.query(`select count(*)::int n from public.sot_atividades where projeto_id = $1 and deleted_at is not null`, [PJ(15)])).rows[0].n === 0
+  && (await db.query(`select count(*)::int n from public.sot_wl where projeto_id = $1`, [PJ(15)])).rows[0].n === 1
+  && (await calc(db, PJ(15))) === 'EM_CONCILIACAO');
+const wlCanc = await comWlDeOutra(PJ(16), 'WL cancelada', true);
+pv = await previa(db, wlCanc.imp);
+ok('WL cancelada de outra importação não bloqueia a prévia', pv.r && pv.r.pode_aplicar === true && pv.r.bloqueios.length === 0, pv.r && pv.r.bloqueios);
+
 // ── Permissão ───────────────────────────────────────────────────
 pv = await previa(db, S.bate.imp, UID.administrativo);
 ok('prévia com só PROJ_IMPORTAR_LMS (administrativo): lê, pode_aplicar = false', pv.r && pv.r.pode_aplicar === false && pv.r.bloqueios.length === 0, pv);
