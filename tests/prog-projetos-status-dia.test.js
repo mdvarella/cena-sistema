@@ -56,7 +56,7 @@ ok('Disponível não apaga mais o histórico de férias/afastamento de outros di
 
 // ── vm: carregamento por data ───────────────────────────────────
 const CARGA = ['progDataRetornoStr', 'progRetornoAindaFora', 'progRetornoExpirouNoDia', 'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha',
-  'progRemoverPersistente', 'progSalvarPersistente', 'progAplicarStatusDoBanco', 'progProjCarregarStatus', 'progProjCarregarStatusDia',
+  'progRemoverPersistente', 'progSalvarPersistente', 'progAplicarStatusDoBanco', 'progProjCarregarStatus', 'progProjStatusEhDoDia', 'progProjCarregarStatusDia',
   'progProjCarregarStatusBanco', 'progProjSalvarStatus'];
 function ctxCarga(cfg) {
   const log = { fetch: [], renders: 0, ponto: [], ls: 0 };
@@ -98,9 +98,22 @@ function ctxCarga(cfg) {
   ok('não lê nem grava status do dia no navegador (pp_status_*/prog_status_*)', log.ls === 0, log.ls);
   ok('data futura não busca ponto', log.ponto.length === 0);
 
-  ({ ctx, log } = ctxCarga({ statusData: '2026-10-15', memoria: { k: 'patio' } }));
+  // TMA troca a memória (objeto novo, status do dia 14) e o usuário volta à Programação de Projetos no dia 15
+  const memAntes = ctx._progStatus;
+  ok('memória carregada pela tela é reconhecida como do dia', ctx.progProjStatusEhDoDia('2026-10-15') === true);
+  ctx._progStatus = { x1: 'falta', x2: 'patio' };   // o que progCarregarStatus/progAplicarStatusDoBanco do TMA fazem
+  ok('memória trocada pelo TMA não é mais "do dia" (mesmo com a data igual)', ctx._pp.statusData === '2026-10-15' && ctx.progProjStatusEhDoDia('2026-10-15') === false);
+  const nFetch = log.fetch.length;
   ctx.progProjCarregarStatusDia('2026-10-15');
-  ok('mesma data: não recarrega à toa', log.fetch.length === 0 && ctx._progStatus.k === 'patio');
+  await tick(); await tick();
+  ok('ao voltar do TMA recarrega o dia 15 do banco (não mostra Faltou/Pátio do 14)', log.fetch.length === nFetch + 2
+    && JSON.stringify(ctx._progStatus) === JSON.stringify({ af1: 'afastado' }) && ctx._progStatus !== memAntes, ctx._progStatus);
+  ok('render recarrega quando a memória não é do dia', /if\(!progProjStatusEhDoDia\(data\)\) progProjCarregarStatusDia\(data, true\);/.test(fn('progProjRenderQuadro')));
+
+  ({ ctx, log } = ctxCarga({ statusData: '2026-10-15', memoria: { k: 'patio' } }));
+  ctx._pp.statusRef = ctx._progStatus;
+  ctx.progProjCarregarStatusDia('2026-10-15');
+  ok('mesma data e mesma memória: não recarrega à toa', log.fetch.length === 0 && ctx._progStatus.k === 'patio');
   ctx.progProjCarregarStatusDia('2026-10-14');
   await tick(); await tick();
   ok('hoje/passado: carrega o ponto do dia (Faltou automático)', JSON.stringify(log.ponto) === '["2026-10-14"]');

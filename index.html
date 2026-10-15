@@ -83006,19 +83006,25 @@ function progProjetoCoreStatusInfoColab(colabId){
 // o banco (prog_status_diario) é a única fonte. Não soma mais o que estava guardado no navegador: era isso
 // que repetia no dia seguinte os status do dia anterior (Faltou/Pátio/Observação).
 function progProjCarregarStatus(data){
-  if(_pp && _pp.statusData === data) return;
+  if(_pp && _pp.statusData === data && _pp.statusRef === _progStatus) return;
   _progStatus = {};
   _progStatusInfo = {};
-  if(_pp) _pp.statusData = data;
+  if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; }
+}
+
+// A memória _progStatus é compartilhada com TMA/PLPT, que a SUBSTITUEM (objeto novo) ao carregar o dia deles.
+// Ela só é da Programação de Projetos se for o mesmo objeto que esta tela carregou para a data da tela.
+function progProjStatusEhDoDia(data){
+  return !!(_pp && _pp.statusData === data && _pp.statusRef === _progStatus);
 }
 
 // Zera e recarrega do banco o status do dia da tela; traz o ponto do dia (Faltou automático) se for hoje/passado.
 function progProjCarregarStatusDia(data, forcar){
   if(!data) return;
-  if(!forcar && _pp && _pp.statusData === data) return;
+  if(!forcar && progProjStatusEhDoDia(data)) return;
   _progStatus = {};
   _progStatusInfo = {};
-  if(_pp){ _pp.statusData = data; _pp.statusCarregando = !DEMO; }
+  if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = !DEMO; }
   progProjCarregarStatusBanco(data, function(){
     if(_pp && _pp.statusData === data){ _pp.statusCarregando = false; progProjRenderQuadro(); }
   });
@@ -83039,7 +83045,7 @@ function progProjCarregarStatusBanco(data, cb){
   if(DEMO){ if(cb) cb(); return; }
   var seq = window._ppStatusSeq = (window._ppStatusSeq || 0) + 1;
   // A memória só é preservada se já for desta mesma data (nunca leva status de outro dia).
-  var mesmoDia = !!(_pp && _pp.statusData === data);
+  var mesmoDia = progProjStatusEhDoDia(data);
   Promise.all([
     sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
     sbFetch('prog_status_diario',{filters:progFiltrosStatusPersistentes(data),order:'data.desc',limit:500})
@@ -83048,7 +83054,7 @@ function progProjCarregarStatusBanco(data, cb){
     if(res[0]===null){ if(cb) cb(); return; }
     var localRecente = (mesmoDia && window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
     progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
-    if(_pp) _pp.statusData = data;
+    if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; }
     if(localRecente){ Object.keys(localRecente).forEach(function(id){ if(localRecente[id] && !_progStatus[id]) _progStatus[id]=localRecente[id]; }); }
     if(cb) cb();
   }).catch(function(){ if(cb) cb(); });
@@ -83105,6 +83111,7 @@ function progProjAtualizarQuadro(){
       }
 
       progAplicarStatusDoBanco(rowsDia, persistRows, data);
+      if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; }
 
       progProjSalvarStatus();
 
@@ -83310,8 +83317,8 @@ function progProjRenderQuadro(){
   var cid  = progProjGetCid();
 
   _pp.data = data;
-  // Memória de status de outra data (TMA, PLPT ou o dia anterior): zera e recarrega o dia da tela.
-  if(_pp.statusData !== data) progProjCarregarStatusDia(data);
+  // Memória de status de outra data ou trocada por outra tela (TMA, PLPT): zera e recarrega o dia da tela.
+  if(!progProjStatusEhDoDia(data)) progProjCarregarStatusDia(data, true);
   progAplicarTreinoTurmas(_progStatus, _progStatusInfo, data);
 
   // Carregar veículos do banco se ainda não carregados para esta data
