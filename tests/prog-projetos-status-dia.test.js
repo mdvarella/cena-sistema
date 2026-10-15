@@ -218,7 +218,7 @@ function ctxCarga(cfg) {
   await tick(); await tick(); await tick();
   ok('grava uma linha, só deste colaborador, na data da tela', t.log.upsert.length === 1 && t.log.upsert[0].colaborador_id === 'c1'
     && t.log.upsert[0].data === '2026-10-15' && t.log.upsert[0].status === 'patio' && t.log.upsert[0].obs === 'devido falta de uniforme'
-    && t.log.upsert[0].data_retorno === null, t.log.upsert);
+    && t.log.upsert[0].data_retorno === null && t.log.upsert[0].deleted_at === null, t.log.upsert);
   ok('não chama a gravação em lote do TMA', t.log.lote === 0);
   ok('relê o dia do banco depois de salvar', JSON.stringify(t.log.recarga) === '["2026-10-15:true"]' && /Status do dia 2026-10-15 salvo|Status do dia 15\/10\/2026 salvo/.test(t.log.toast.join('|')));
 
