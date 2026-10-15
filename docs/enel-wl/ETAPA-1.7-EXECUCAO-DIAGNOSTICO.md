@@ -127,3 +127,85 @@ Cada fatia com branch própria, aprovação antes de commit e, no caso da 1.7a, 
 
 - TMA, Programação PLPT (só leitura da precedência no diário, em D4), Frotas/Portaria, Almoxarifado.
 - ETD VARGINHA continua EM_CONCILIACAO (H1 pendente) — fica "Sem WL" na programação até ser conciliado.
+
+## 10. Decisões aprovadas (15/10/2026)
+
+> Aprovadas pelo dono após revisão de D1–D9. Substituem as propostas das §6–§8 onde houver diferença.
+> Leituras complementares (somente SELECT, 15/10): TESTE 1 (ESTRUTURADO) tem 1 atividade **sem WL** com `qtd_executada = 1`; as 7 atividades com execução no banco não têm WL; os três caminhos antigos (A1, A4, A5) **não verificam o retorno** de `sbUpdate` (A5 grava histórico e A4 marca o lançamento como aprovado mesmo se o PATCH falhar).
+
+### 10.1 Diretrizes gerais
+
+1. Execução por **lançamentos individuais** (equipe, dia, usuário, atividade exata, WL, histórico, estorno).
+2. Quantidade executada consolidada de atividade estruturada com **uma única fonte oficial, controlada pelo banco**.
+3. Projeto legado preserva o funcionamento atual.
+4. **Medição não é fonte** da quantidade executada.
+5. **Materiais fora da 1.7** (ficam para a 1.8).
+6. A ativação do novo lançamento exige **bloqueio simultâneo** dos caminhos antigos para atividades estruturadas, sem janela para duplicidade ou sobrescrita.
+
+### 10.2 Decisões
+
+**D1 — Fonte única (aprovada).** Razão append-only de lançamentos por item de execução (`LANCAMENTO`, `ESTORNO` com referência ao original e motivo; `SALDO_INICIAL` reservado — ver D9). `sot_atividades.qtd_executada` de atividade estruturada passa a ser **cópia derivada** (Σ razão), gravada só pela função DEFINER. Telas que leem o campo (Jornada, medição, SOT) seguem funcionando. Medição não entra na conta.
+
+**D2 — Abrangência (aprovada).** "Atividade estruturada" = projeto ESTRUTURADO **e** `sot_atividades.wl_id IS NOT NULL` **e** atividade viva. Atividade sem WL em projeto ESTRUTURADO (caso TESTE 1) e projetos LEGADO_SEM_WL / EM_CONCILIACAO seguem o fluxo atual, sem mudança.
+
+**D3 — Bloqueio dos caminhos antigos (aprovada).** Duas camadas, ativadas juntas:
+- Banco: gatilho em `sot_atividades` recusa alteração de `qtd_executada` de atividade estruturada fora da função oficial (e INSERT já com execução ≠ 0 em projeto ESTRUTURADO com WL); gatilho em `sot_atividades_historico` recusa linha de atividade estruturada.
+- Telas: A1, A4 e A5 detectam atividade estruturada **antes** de gravar e orientam para o novo lançamento; nenhum falso sucesso. Viabilidade e status continuam liberados.
+
+**D4 — Diário de Bordo (aprovada).** Em projeto ESTRUTURADO mostra os itens da execução da equipe no dia (WL → atividades, meta e saldo) e lança/estorna pela função. Lista de projetos do dia passa a ser a **união** de `plpt_prog_dia` e `composicao_dia`, sem duplicar; teste de paridade garante lista idêntica para quem não tem programação pela tela de Projetos. Lançamento exige conexão (fila offline fica para depois).
+
+**D5 — Ciclo de vida (aprovada com ajustes).**
+- Uma equipe pode trabalhar em **várias WLs no mesmo dia** (vários itens na mesma execução).
+- Uma WL pode receber **várias equipes em dias diferentes** (várias execuções do mesmo projeto; saldo por atividade soma todas).
+- Cada lançamento identifica **atividade, WL, equipe, data de execução, quantidade, usuário (auth), momento do registro e origem** (`DIARIO`, `SOT`, `SALDO_INICIAL`).
+- Alterações na programação **não apagam histórico**: nada de DELETE físico; item ou execução com lançamentos não pode ser cancelado (só sem lançamentos líquidos e com motivo); retirar o projeto da equipe com execução lançada é recusado com mensagem.
+- Execução nasce ao incluir projeto ESTRUTURADO numa equipe/dia; itens definidos em seguida (WL inteira expande por atividade). Lançar fora do programado exige antes incluir o item (ação auditada).
+
+**D6 — Datas (aprovada com ajustes).**
+- Retroativo até **7 dias** (data de execução ≥ hoje − 7).
+- Acima de 7 dias: somente gestão, com **justificativa obrigatória** gravada no lançamento.
+- **Data de execução futura proibida.**
+- Lançar exige composição confirmada; execução em rascunho é permitida para programar.
+
+**D7 — Permissões (aprovada com ajustes).**
+- Criar `PROJ_LANCAR_EXECUCAO` e `PROJ_ESTORNAR_EXECUCAO` (autorizações separadas). Programar itens usa `cena_prog_pode_programar_projetos()`. Tabelas novas com RLS FORCE e sem escrita direta.
+- **Compatibilidade com a autenticação do Diário — verificação feita (somente SELECT, 15/10):**
+
+  | Perfil | Usuários ativos | Com conta Auth | Login Auth nos últimos 30 dias | Sessão Auth renovada nos últimos 30 dias |
+  |---|---|---|---|---|
+  | encarregado | 81 | 81 | 0 | 0 |
+  | equipe | 693 | 692 | 0 | 0 |
+  | supervisor | 23 | 23 | 2 | 1 |
+  | gestor | 11 | 11 | 5 | 5 |
+
+  Conclusão: quase todos têm conta Auth, mas **o campo não está entrando por Auth** (cai no login MD5 legado, `_sbAuthToken = null`, index.html ~81907/81938). Funções que exigem `auth.uid()` **não funcionariam hoje no Diário**. **Bloqueio para a 1.7c** (não para a 1.7a/1.7b): antes da 1.7c é preciso decidir entre (a) migrar o login dos encarregados para Auth (recomendado, alinhado ao plano de endurecimento) ou (b) lançar inicialmente só pelo SOT (escritório) e levar o Diário para depois. Nunca aceitar lançamento anônimo.
+
+**D8 — `sot_lancamentos_campo` (aprovada).** Fica legado (0 linhas); validação recusa atividade estruturada; legado sem mudança.
+
+**D9 — Saldo inicial (aprovada conceitualmente).**
+- Execução existente em atividade que vier a ganhar WL vira lançamento `SALDO_INICIAL` (sem equipe, origem identificada).
+- **Nesta etapa `fn_proj_lms_aplicar_conciliacao` NÃO é alterada.** Hoje não há caso real (nenhuma atividade com WL tem execução; ETD VARGINHA sem execução).
+- Integração futura (documentada, não implementada): ao aplicar conciliação com o interruptor ligado, para cada atividade que recebe `wl_id` com `qtd_executada ≠ 0`, gravar `SALDO_INICIAL` na mesma transação. Testes previstos: (1) atividade com execução recebe WL → razão = valor anterior, campo inalterado; (2) atividade sem execução → nenhum lançamento; (3) reaplicação idempotente não duplica; (4) estorno de `SALDO_INICIAL` só com `PROJ_ESTORNAR_EXECUCAO`.
+- **Salvaguarda até lá:** a ativação (1.7d) e a conferência de consistência recusam ligar o interruptor se existir atividade estruturada com `qtd_executada` diferente da soma do razão.
+
+### 10.3 Transição aprovada (1.7a → 1.7d)
+
+| Fatia | Conteúdo | Em produção |
+|---|---|---|
+| 1.7a — banco | Tabelas, funções, views, RLS, permissões novas, interruptor geral (**desligado**) e gatilhos de proteção criados mas inertes com o interruptor desligado. Testes PGlite cobrindo ligado e desligado. | Nada visível; ninguém chama as funções novas. |
+| 1.7b — Programação de Projetos | Escolher WL/atividades ao programar projeto ESTRUTURADO. Grava só programação. | Pode publicar sozinha. |
+| 1.7c — Diário e SOT | Lançamento/estorno pelo novo fluxo + guardas de tela (D3), tudo atrás do interruptor. Depende da decisão de autenticação (D7). | Publicada com o interruptor desligado = comportamento atual. |
+| 1.7d — ativação | Pré-requisitos: versão mínima publicada, permissões concedidas, consistência (campo = Σ razão para toda atividade estruturada). Liga o interruptor **numa única operação no banco** (trava + novo fluxo). Jornada passa a ler a situação da execução. | Corte instantâneo; reverter = desligar (lançamentos preservados). |
+
+### 10.4 Condições obrigatórias
+
+1. Nunca dois caminhos simultâneos de escrita em quantidade executada estruturada.
+2. A trava do banco não é ligada enquanto telas puderem apresentar falso sucesso.
+3. Ativação exige versão mínima, permissões e consistência de dados (verificados pela função de ativação, que recusa se faltar algo).
+4. Projeto legado opera como antes.
+5. Materiais ficam para a 1.8.
+6. Medição não é fonte da quantidade executada.
+7. **Fail-closed** para atividades estruturadas quando houver inconsistência entre versão e proteção:
+   - interruptor ausente/ilegível no banco → gatilho trata como **ligado** (recusa caminho antigo) e a função nova recusa (nada grava) até correção;
+   - tela não consegue ler o interruptor, ou versão da tela abaixo da mínima com interruptor ligado → tela **não oferece nenhum** lançamento de executado em atividade estruturada (nem antigo, nem novo) e mostra "atualize o sistema";
+   - legado nunca é afetado pelo fail-closed.
