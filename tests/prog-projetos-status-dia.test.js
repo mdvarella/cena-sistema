@@ -52,6 +52,9 @@ ok('Programação de Projetos não lê nem grava status no navegador', !/localSt
 ok('ES5 nas funções alteradas', !/\blet\s|\bconst\s|=>|`/.test(semComent(['progProjCarregarStatus', 'progProjCarregarStatusDia', 'progProjCarregarStatusBanco',
   'progProjetoCoreSalvarMenuStatus', 'ppFecharMenuStatus', 'ppDispStatusColab', 'ppDispFaltaPeloPonto', 'progProjetoCoreMenuSlot',
   'progProjetoCoreSetStatusMenu', 'ppDefinirStatus', 'progProjetoCoreRetirarDaEquipe'].map(fn).join('\n'))));
+const upsertNomeConstraint = ppFuncs.filter(n => /prog_status_diario_colaborador_id_data_key/.test(fn(n)));
+ok('Programação de Projetos: on_conflict por colunas (colaborador_id,data), não pelo nome da constraint (PostgREST recusa 42703)',
+  upsertNomeConstraint.length === 0 && /sbUpsert\('prog_status_diario', linha, 'colaborador_id,data'\)/.test(fn('progProjetoCoreSalvarMenuStatus')), upsertNomeConstraint);
 ok('Disponível não apaga mais o histórico de férias/afastamento de outros dias', !/sbDelete\('prog_status_diario'/.test(fn('ppDefinirStatus')));
 
 // ── vm: carregamento por data ───────────────────────────────────
