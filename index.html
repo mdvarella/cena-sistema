@@ -90304,6 +90304,29 @@ function portReservaJaSaiu(r, data){
     return p.status==='Em campo' && portNormPlaca(p.placa)===pl && portDiaLocal(p.data_saida)===(data||dataHojeLocal());
   });
 }
+/** Saída ainda aberta (Em campo, sem retorno) da placa ou da equipe, de QUALQUER dia.
+ *  A saída da noite anterior (virada) também conta: o veículo só sai de novo depois do retorno registrado. */
+function portSaidaAbertaQualquerDia(placa, eqId){
+  var pl=placa?portNormPlaca(placa):'';
+  var eq=eqId!=null&&eqId!==''?String(eqId):'';
+  var achada=null;
+  (frt_portaria||[]).forEach(function(p){
+    if(!p || p.deleted_at || p.status!=='Em campo' || p.data_retorno) return;
+    var mesmaPlaca=pl && portNormPlaca(p.placa)===pl;
+    var mesmaEquipe=eq && (String(p.equipe_id||'')===eq || String(p.equipe||'')===eq);
+    if(!mesmaPlaca && !mesmaEquipe) return;
+    if(!achada || String(p.data_saida||'')<String(achada.data_saida||'')) achada=p;
+  });
+  return achada;
+}
+/** Mensagem do bloqueio: quem está com o veículo/equipe e desde quando. */
+function portMsgSaidaAberta(p, placa){
+  var d=p&&p.data_saida?new Date(p.data_saida):null;
+  var quando=d&&!isNaN(d)?d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'—';
+  var veic=(p&&p.placa)||placa||'O veículo';
+  return '⚠️ '+veic+' ainda está Em Campo com '+((p&&p.equipe)||'outra saída')+' desde '+quando
+    +'. Registre o retorno dessa saída (com o KM) antes de liberar uma nova.';
+}
 /** Texto de busca unificado (equipe/placa/motorista/contrato). */
 function portMatchBusca(q, blob){
   if(!q) return true;
@@ -92104,6 +92127,11 @@ function portLiberarReservaDireto(r, placa, destino, km, quem, obs, kmMeta){
     progShowToast('⚠️ Este veículo já está Em Campo hoje.','erro');
     return;
   }
+  var _abertaRsv=portSaidaAbertaQualquerDia(placa, null);
+  if(_abertaRsv){
+    progShowToast(portMsgSaidaAberta(_abertaRsv, placa),'erro');
+    return;
+  }
   if(!kmMeta){
     kmMeta=portKmPrepararLiberacao(placa, km, {fotoObrigatoria:true});
     if(!kmMeta) return;
@@ -92405,12 +92433,9 @@ function portAbrirLiberacaoEquipe(eqId, data){
           fotos_carga_extras:    fotosExtra.length?fotosExtra:[]
         };
         portKmAnexarSaida(saida, kmMeta);
-        var _jaEmCampo = frt_portaria.some(function(p){
-          return p.status==='Em campo' &&
-                 (String(p.equipe_id||'')===String(eqId) || p.equipe===eqId || (placa&&portNormPlaca(p.placa)===portNormPlaca(placa))) &&
-                 portDiaLocal(p.data_saida)===dataHojeLocal();
-        });
-        if(_jaEmCampo){ progShowToast('⚠️ Esta equipe/veículo já está Em Campo hoje.','erro'); return; }
+        // Qualquer dia: a saída da noite anterior sem retorno também bloqueia (o mesmo veículo não fica com duas saídas abertas).
+        var _jaEmCampo = portSaidaAbertaQualquerDia(placa, eqId);
+        if(_jaEmCampo){ progShowToast(portMsgSaidaAberta(_jaEmCampo, placa),'erro'); return; }
         frt_portaria.unshift(saida);
         portKmAposRegistrar(placa, saida, km, kmMeta);
         (composicao_dia||[]).forEach(function(cx){
@@ -94448,6 +94473,64 @@ async function portSaidaJaGravada(id){
   return rows && rows[0] ? [rows[0]] : null;
 }
 
+/* Fotos e dados do KM da saída: a tabela NÃO tem km_foto_url, foto_odometro_b64, fotos_carga_extras nem
+   foto_extra_1/2_b64 (cada PATCH com elas dava 400 PGRST204). KM e extras vão no pacote {v:1,carga,km,extras}
+   em foto_carga_saida_b64 — o mesmo que portAplicarFotosPacote já lê. As colunas de OCR só existem depois da
+   migration 20261017120000; são detectadas pela linha devolvida no insert. Sem elas, o OCR vai no pacote (km_ocr). */
+var PORT_SAIDA_COLS_OCR=['km_lido_ocr','km_ocr_confianca','km_confirmado_por','km_confirmado_em'];
+function portSaidaTemColsOcr(linha){
+  if(!linha || typeof linha!=='object') return false;
+  return PORT_SAIDA_COLS_OCR.every(function(k){ return k in linha; });
+}
+function portSaidaOcrMeta(saida){
+  var o={}, tem=false;
+  PORT_SAIDA_COLS_OCR.forEach(function(k){
+    var v=saida?saida[k]:null;
+    if(v!==undefined && v!==null && v!==''){ o[k]=v; tem=true; }
+  });
+  return tem?o:null;
+}
+/** PATCH único da saída, só com colunas reais. Devolve {patch, carga}. */
+function portSaidaPatchFotos(saida, extras, linhaServidor){
+  var km=saida.km_foto_url||null, carga=saida.foto_carga_saida_b64||null;
+  extras=Array.isArray(extras)?extras:[];
+  var ocr=portSaidaOcrMeta(saida);
+  var colsOcr=portSaidaTemColsOcr(linhaServidor);
+  var patch={};
+  if(km || extras.length){
+    var pack={v:1, carga:carga, km:km, extras:extras};
+    if(ocr && !colsOcr) pack.km_ocr=ocr;
+    patch.foto_carga_saida_b64=JSON.stringify(pack);
+  } else if(carga){
+    patch.foto_carga_saida_b64=carga;
+  }
+  if(saida.foto_carga_saida_ts) patch.foto_carga_saida_ts=saida.foto_carga_saida_ts;
+  if(saida.tem_materiais_saida!=null && saida.tem_materiais_saida!=='') patch.tem_materiais_saida=saida.tem_materiais_saida;
+  if(ocr && colsOcr) Object.keys(ocr).forEach(function(k){ patch[k]=ocr[k]; });
+  return {patch:patch, carga:carga};
+}
+/** Grava fotos/metadados numa chamada; se ela falhar, grava a foto sozinha (pacote → só a carga) e depois o resto. */
+async function portGravarFotosSaida(id, saida, extras, linhaServidor){
+  var m=portSaidaPatchFotos(saida, extras, linhaServidor);
+  var p=m.patch;
+  if(!Object.keys(p).length) return true;
+  var ok=await sbUpdate('frotas_portaria_saidas', p, 'id=eq.'+id);
+  if(ok!==false) return true;
+  var okFoto=true;
+  if(p.foto_carga_saida_b64){
+    var soFoto={foto_carga_saida_b64:p.foto_carga_saida_b64};
+    if(p.foto_carga_saida_ts) soFoto.foto_carga_saida_ts=p.foto_carga_saida_ts;
+    okFoto=await sbUpdate('frotas_portaria_saidas', soFoto, 'id=eq.'+id)!==false;
+    if(!okFoto && m.carga && m.carga!==p.foto_carga_saida_b64){
+      okFoto=await sbUpdate('frotas_portaria_saidas', {foto_carga_saida_b64:m.carga}, 'id=eq.'+id)!==false;
+    }
+  }
+  var resto={};
+  Object.keys(p).forEach(function(k){ if(k!=='foto_carga_saida_b64' && k!=='foto_carga_saida_ts') resto[k]=p[k]; });
+  if(Object.keys(resto).length) await sbUpdate('frotas_portaria_saidas', resto, 'id=eq.'+id);
+  return okFoto;
+}
+
 /** Insere uma NOVA saída e grava cada foto no mesmo formato da carga (texto). */
 async function portInsertSaidaDB(saida){
   if(DEMO||!saida) return null;
@@ -94495,31 +94578,8 @@ async function portInsertSaidaDB(saida){
   if(!r) r=await sbInsert('frotas_portaria_saidas', core);
   if(r && r[0] && r[0].id) saida.id=r[0].id;
   var id=saida.id;
-  if(id && typeof isUUID==='function' && isUUID(String(id))){
-    var km=saida.km_foto_url;
-    var carga=saida.foto_carga_saida_b64;
-    var okKm=await portPatchFotoCampo(id,'km_foto_url', km);
-    if(!okKm) okKm=await portPatchFotoCampo(id,'foto_odometro_b64', km);
-    var okCarga=await portPatchFotoCampo(id,'foto_carga_saida_b64', carga);
-    await portPatchFotoCampo(id,'foto_carga_saida_ts', saida.foto_carga_saida_ts);
-    var okEx=true;
-    if(extras.length){
-      okEx=await portPatchFotoCampo(id,'fotos_carga_extras', extras);
-      var e0=portFotoCampoSrc(extras[0]);
-      var e1=extras[1]?portFotoCampoSrc(extras[1]):'';
-      var okE1=e0?await portPatchFotoCampo(id,'foto_extra_1_b64', e0):true;
-      var okE2=e1?await portPatchFotoCampo(id,'foto_extra_2_b64', e1):true;
-      if(!okEx) okEx=okE1 && (!e1 || okE2);
-    }
-    if((km && !okKm) || (extras.length && !okEx)){
-      var pack=JSON.stringify({v:1, carga:carga||null, km:km||null, extras:extras||[]});
-      var okPack=await portPatchFotoCampo(id,'foto_carga_saida_b64', pack);
-      if(!okPack && carga && !okCarga) await portPatchFotoCampo(id,'foto_carga_saida_b64', carga);
-    }
-    await portPatchFotoCampo(id,'km_lido_ocr', saida.km_lido_ocr);
-    await portPatchFotoCampo(id,'km_ocr_confianca', saida.km_ocr_confianca);
-    await portPatchFotoCampo(id,'km_confirmado_por', saida.km_confirmado_por);
-    await portPatchFotoCampo(id,'tem_materiais_saida', saida.tem_materiais_saida);
+  if(id && typeof isUUID==='function' && isUUID(String(id)) && typeof portGravarFotosSaida==='function'){
+    await portGravarFotosSaida(id, saida, extras, r && r[0]);
   }
   return r;
 }
