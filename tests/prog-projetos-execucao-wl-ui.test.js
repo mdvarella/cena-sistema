@@ -41,10 +41,10 @@ const ticks = async (n = 12) => { for (let i = 0; i < n; i++) await tick(); };
 // (ex.: Portaria 8.1.224) são cobertas pelos testes do próprio módulo.
 ok('commits históricos certos: a 1.7b está na release e não na base',
   /\nfunction ppExecRpc\(/.test(htmlRelease) && !/\nfunction ppExecRpc\(/.test(htmlBase), { BASE, RELEASE });
-const nomesBase = [...htmlBase.matchAll(/\nfunction ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
+const nomesBase = [...htmlBase.matchAll(/\n(?:async )?function ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
 const difs = [...new Set(nomesBase)].filter(n => { try { return fnEm(htmlBase, n) !== fnEm(htmlRelease, n); } catch (e) { return true; } });
 ok('entrega da 1.7b: TMA (prog*), Diário (plpt*/db*), Portaria (port*) e SOT idênticos (' + BASE + ' → ' + RELEASE + ')', difs.length === 0 && nomesBase.length > 500, { difs: difs.slice(0, 10), n: nomesBase.length });
-const nomesRelease = [...htmlRelease.matchAll(/\nfunction ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
+const nomesRelease = [...htmlRelease.matchAll(/\n(?:async )?function ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
 const novasProtegidas = [...new Set(nomesRelease)].filter(n => !nomesBase.includes(n));
 ok('entrega da 1.7b: nenhuma função nova com prefixo de TMA/Diário/Portaria/SOT', novasProtegidas.length === 0, novasProtegidas);
 const ppMudadas = ['ppEqRemoverProjeto', 'ppEqSelecionarProjetos', 'ppFilaColocarNaEquipe', '_progProjRenderQuadroInterno', 'progProjetoCoreRenderEquipeRow'];
