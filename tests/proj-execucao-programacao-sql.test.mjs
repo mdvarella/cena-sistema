@@ -53,16 +53,17 @@ const corpo17a = nome => { const c = mig17a.replace(/--[^\n]*/g, ''); const i = 
 const cl = codigo.trim();
 ok('transação explícita: BEGIN; primeiro, COMMIT; último', cl.startsWith('BEGIN;') && cl.endsWith('COMMIT;') && !/\bROLLBACK\b/i.test(codigo));
 ok('não liga o interruptor nem cria lançamento', !/proj_execucao_config/.test(codigo) && !/INSERT INTO public\.prog_proj_execucao_lancamentos/.test(codigo));
-ok('nunca DELETE físico', !/DELETE\s+FROM/i.test(codigo) && !/TRUNCATE/i.test(codigo));
-ok('definir_itens = corpo da 1.7a + só a checagem de saldo', (() => {
-  const novo = corpo('fn_proj_execucao_definir_itens').replace(/\n\s*v_saldo\s+numeric;/, '')
-    .replace(/\n      IF v_qtd IS NOT NULL THEN\n        SELECT coalesce\(a\.qtd_prevista[\s\S]*?\n      END IF;\n(?=      v_alvo := v_alvo \|\| jsonb_build_array)/, '\n');
-  const semBrancas = s => s.split('\n').filter(l => l.trim() !== '').join('\n');
-  return semBrancas(novo) === semBrancas(corpo17a('fn_proj_execucao_definir_itens'));
-})());
-ok('gatilho da composição só age com execução ativa (atalho no começo)', corpo('fn_proj_execucao_protege_composicao').indexOf('IF NOT EXISTS (SELECT 1 FROM public.prog_proj_execucoes e WHERE e.composicao_dia_id = OLD.id AND e.cancelada_em IS NULL)')
-  < corpo('fn_proj_execucao_protege_composicao').indexOf('FOR v_exec IN'));
-ok('gatilho não olha o papel de quem grava (vale para SQL direto)', !/current_user/.test(corpo('fn_proj_execucao_protege_composicao')));
+ok('nunca DELETE físico nem TRUNCATE', !/DELETE\s+FROM/i.test(codigo) && !/TRUNCATE\s+(TABLE\s+)?public\./i.test(codigo));
+ok('nenhuma autoria fictícia (sem uuid zerado)', !/00000000-0000-0000-0000-000000000000/.test(codigo));
+ok('permissão de exceção própria (não reutiliza a de estorno)', /PROJ_AUTORIZAR_EXCESSO_META/.test(corpo('fn_proj_execucao_definir_itens'))
+  && !/PROJ_ESTORNAR_EXECUCAO/.test(corpo('fn_proj_execucao_definir_itens')));
+const di = corpo('fn_proj_execucao_definir_itens');
+ok('concorrência: trava as atividades (ordem por id) antes de conferir o saldo livre', /ORDER BY a\.id FOR UPDATE/.test(di)
+  && di.indexOf('FOR UPDATE;\n') < di.indexOf('fn_proj_execucao_saldo_livre('));
+ok('autor do cancelamento automático vem da sessão, não de parâmetro', /v_auth\s+uuid := auth\.uid\(\)/.test(corpo('fn_proj_execucao_cancelar_por_composicao'))
+  && !/p_auth/.test(codigo));
+ok('cancelamento automático só pelo gatilho (marca da transação)', /current_setting\('cena\.exec_comp_trg', true\)/.test(corpo('fn_proj_execucao_cancelar_por_composicao'))
+  && /set_config\('cena\.exec_comp_trg', OLD\.id::text, true\)/.test(corpo('fn_proj_execucao_protege_composicao')));
 
 // ── Banco ───────────────────────────────────────────────────────
 const U = n => `a0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -193,11 +194,13 @@ ok('reaplica sem erro (idempotente)', erro === null, erro);
 const sem17a = await (async () => { const d = new PGlite(); await d.exec(BASE); for (const m of CADEIA) await d.exec(m); return tentaExec(d, mig); })();
 ok('pré-condição: sem a 1.7a não aplica', /20261015120000_proj_execucao\.sql/.test(sem17a || ''), sem17a);
 const fpriv = async (role, fn) => (await db.query(`select has_function_privilege($1, $2, 'EXECUTE') v`, [role, fn])).rows[0].v;
-for (const fn of ['fn_proj_execucao_dia(date,uuid[])', 'fn_proj_execucao_retirar_projeto(uuid,uuid,text)', 'fn_proj_execucao_definir_itens(uuid,jsonb)'])
+for (const fn of ['fn_proj_execucao_dia(date,uuid[])', 'fn_proj_execucao_retirar_projeto(uuid,uuid,text)', 'fn_proj_execucao_definir_itens(uuid,jsonb)', 'fn_proj_saldo_atividades(uuid)'])
   ok(`${fn}: só authenticated`, await fpriv('authenticated', 'public.' + fn) && !(await fpriv('anon', 'public.' + fn)) && !(await fpriv('service_role', 'public.' + fn)));
-for (const fn of ['fn_proj_execucao_soma_atividade(uuid)', 'fn_proj_execucao_protege_composicao()'])
+for (const fn of ['fn_proj_execucao_soma_atividade(uuid)', 'fn_proj_execucao_protege_composicao()', 'fn_proj_execucao_compromissos(uuid,date,uuid)', 'fn_proj_execucao_saldo_livre(uuid,date,uuid)'])
   ok(`${fn}: interna`, !(await fpriv('authenticated', 'public.' + fn)) && !(await fpriv('anon', 'public.' + fn)));
 ok('interruptor continua INATIVO', (await db.query(`select public.fn_proj_execucao_estado() v`)).rows[0].v === 'INATIVO');
+const pmEx = (await db.query(`select string_agg(perfil, ',' order by perfil) p from public.cena_permissoes_acao where acao = 'PROJ_AUTORIZAR_EXCESSO_META' and deleted_at is null and permitido`)).rows[0].p;
+ok('PROJ_AUTORIZAR_EXCESSO_META: admin, coordenador, gestor', pmEx === 'admin,coordenador,gestor', pmEx);
 
 // ── Cenário ─────────────────────────────────────────────────────
 const PE = await estruturado(db, PJ(1), 'Estruturado');
@@ -206,93 +209,148 @@ await projeto(db, PJ(3), 'Em conciliação');
 await confirmar(db, await registrar(db, PJ(3), L('CONC')), 'CONCILIACAO');
 const A1 = await ativ(db, PE, 'I-100', '1'), A2 = await ativ(db, PE, 'I-200', '1'), A3 = await ativ(db, PE, 'I-100', '2');
 const H = await hoje(db);
-const C1 = await comp(db, 'EQ1', H, [PE, PJ(2)]);
-const C2 = await comp(db, 'EQ2', H, [PE]);
-const C3 = await comp(db, 'EQ3', H, [PJ(2)]);
-const E1 = (await criar(db, C1, PE)).r.execucao_id;
-const E2 = (await criar(db, C2, PE)).r.execucao_id;
+const dia2 = async n => (await db.query(`select to_char((now() at time zone 'America/Sao_Paulo')::date + $1::int, 'YYYY-MM-DD') d`, [n])).rows[0].d;
+const AMANHA = await dia2(1), ONTEM = await dia2(-1);
+const novaExec = async (eq, d, projs = [PE]) => { const c = await comp(db, eq, d, projs); return { c, e: (await criar(db, c, PE)).r.execucao_id }; };
+const meta = (e, a, q, uid, just) => itens(db, e, [Object.assign({ wl_id: a.wl_id, atividade_id: a.id, qtd_programada: q }, just ? { excesso_justificativa: just } : {})], uid);
+const saldoDe = async (a, uid = UID.gestor) => { const r = await saldo(db, PE, uid); return r.r && r.r.atividades.find(x => x.atividade_id === a.id); };
+const saldo = (db_, p, uid = UID.gestor) => api(db_, `select public.fn_proj_saldo_atividades($1::uuid) v`, [p], uid);
 
-// ── Meta do dia ≤ saldo ─────────────────────────────────────────
-ok('meta acima do saldo recusada (5 > previsto 4)', /QTD_ACIMA_DO_SALDO/.test((await itens(db, E1, [{ wl_id: A1.wl_id, atividade_id: A1.id, qtd_programada: 5 }])).e || ''));
-ok('lote com meta acima do saldo não grava nada', await itensAtivos(db, E1) === 0);
-let r = await itens(db, E1, [{ wl_id: A1.wl_id, atividade_id: A1.id, qtd_programada: 4 }, { wl_id: A2.wl_id, atividade_id: A2.id, qtd_programada: 2 }]);
-ok('meta igual ao saldo aceita', r.r && r.r.incluidos === 2, r);
-r = await itens(db, E2, [{ wl_id: A3.wl_id }]);
-ok('WL inteira (sem meta) continua aceita', r.r && r.r.incluidos === 1, r);
-const I_A1 = (await db.query(`select id from public.prog_proj_execucao_itens where execucao_id = $1 and atividade_id = $2`, [E1, A1.id])).rows[0].id;
+const X1 = await novaExec('EQ1', H, [PE, PJ(2)]);
+const X2 = await novaExec('EQ2', H);
+const X3 = await novaExec('EQ3', AMANHA);
+const XV = await novaExec('EQV', ONTEM);
 
-// ── Leitura do dia ──────────────────────────────────────────────
-r = await dia(db, H, [PE, PJ(2), PJ(3)], UID.supervisor);
-ok('dia: estados WL dos projetos (estruturado, legado, em conciliação)', r.r && r.r.estados[PE] === 'ESTRUTURADO' && r.r.estados[PJ(2)] === 'LEGADO_SEM_WL'
-  && r.r.estados[PJ(3)] === 'EM_CONCILIACAO', r);
-const ex1 = r.r && r.r.execucoes.find(x => x.execucao_id === E1);
-const it1 = ex1 && ex1.itens.find(i => i.atividade_id === A1.id);
-ok('dia: execuções ativas com itens (WL, atividade, meta, lançado, previsto, executado, quem incluiu)', r.r && r.r.execucoes.length === 2 && ex1.itens.length === 2
-  && it1.wl_codigo === '1' && it1.codigo === 'I-100' && Number(it1.qtd_programada) === 4 && Number(it1.qtd_lancada) === 0
-  && Number(it1.qtd_prevista) === 4 && Number(it1.qtd_executada) === 0 && it1.criado_por === 'Usuário gestor' && ex1.criado_por === 'Usuário gestor', ex1);
-ok('dia: encarregado (não programa) não lê', /SEM_PERMISSAO/.test((await dia(db, H, [PE], UID.encarregado)).e || ''));
-ok('dia: sem sessão recusa', /SEM_SESSAO/.test((await dia(db, H, [PE], null)).e || ''));
-ok('dia: anon não executa', /permission denied/.test((await api(db, `select public.fn_proj_execucao_dia($1::date) v`, [H], null, 'anon')).e || ''));
+// Metas em diferentes equipes (previsto I-100/WL1 = 4)
+let r = await meta(X1.e, A1, 2, UID.supervisor);
+ok('equipes: EQ1 meta 2 (livre 4)', r.r && r.r.incluidos === 1, r);
+r = await meta(X2.e, A1, 2, UID.coordenador);
+ok('equipes: EQ2 meta 2 (livre 2)', r.r && r.r.incluidos === 1, r);
+r = await meta(X3.e, A1, 1, UID.supervisor);
+ok('dias diferentes: EQ3 amanhã meta 1 recusada (livre 0 com metas de hoje)', /QTD_ACIMA_DO_SALDO.*saldo livre 0/.test(r.e || ''), r);
+// Programação simultânea por dois usuários (sequencial no banco local; a trava FOR UPDATE está verificada acima)
+const Y = await novaExec('EQY', AMANHA);
+ok('simultânea: segundo usuário vê o saldo já comprometido pelo primeiro e é bloqueado', /QTD_ACIMA_DO_SALDO/.test((await meta(Y.e, A1, 0.5, UID.coordenador)).e || ''));
+let s = await saldoDe(A1);
+ok('saldo na tela: previsto 4, executado 0, comprometido 4, livre 0, com equipes e datas', s && Number(s.qtd_prevista) === 4 && Number(s.qtd_executada) === 0
+  && Number(s.qtd_comprometida) === 4 && Number(s.saldo_livre) === 0 && s.compromissos.length === 2
+  && s.compromissos.map(k => k.equipe_id).sort().join() === 'EQ1,EQ2' && s.compromissos.every(k => k.data === H), s);
 
-// ── Retirar projeto (uma transação) ─────────────────────────────
-ok('retirar: sem motivo recusado', /MOTIVO_OBRIGATORIO/.test((await retirar(db, C2, PE, ' ')).e || ''));
-ok('retirar: encarregado não retira', /SEM_PERMISSAO/.test((await retirar(db, C2, PE, 'x', UID.encarregado)).e || ''));
-r = await retirar(db, C2, PE, 'equipe remanejada');
-let e2 = await exec(db, E2);
-ok('retirar: cancela execução e itens com o motivo e tira o projeto da composição', r.r && r.r.execucoes_canceladas === 1 && e2.c && e2.m === 'equipe remanejada'
-  && e2.p === UID.gestor && await itensAtivos(db, E2) === 0 && (await projIds(db, C2)).length === 0, { r, e2 });
-r = await retirar(db, C3, PJ(2), 'não vai mais');
-ok('retirar: projeto legado (sem execução) só sai da composição', r.r && r.r.execucoes_canceladas === 0 && (await projIds(db, C3)).length === 0, r);
+// Programação vencida (ontem) não prende saldo
+r = await meta(XV.e, A2, 2, UID.gestor);
+ok('vencida: meta em programação de ontem gravada (histórico)', r.r && r.r.incluidos === 1, r);
+s = await saldoDe(A2);
+ok('vencida: não compromete saldo (livre 2 de 2)', Number(s.qtd_comprometida) === 0 && Number(s.saldo_livre) === 2 && s.compromissos.length === 0, s);
+r = await meta(X3.e, A2, 2, UID.supervisor);
+ok('vencida: saldo liberado pode ser programado de novo', r.r && r.r.incluidos === 1, r);
 
-// ── Proteção da composição (TMA / SQL direto) ───────────────────
-const C4 = await comp(db, 'EQ4', H, [PE]);
-const E4 = (await criar(db, C4, PE)).r.execucao_id;
-let e = await tela(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${C4}'`, null, 'anon');
-let e4 = await exec(db, E4);
-ok('TMA (anon) retira projeto sem lançamento: passa e a execução é cancelada com motivo automático', e === null && e4.c
-  && /fora da Programação de Projetos \(automático\)/.test(e4.m) && e4.p === '00000000-0000-0000-0000-000000000000', { e, e4 });
-const C5 = await comp(db, 'EQ5', H, [PE]);
-const E5 = (await criar(db, C5, PE)).r.execucao_id;
-ok('outra coluna (colaboradores, confirmada) não mexe na execução', await tela(db, `update public.composicao_dia set colaborador_ids = '["x"]', confirmada = false where id = '${C5}'`, null, 'anon') === null
-  && !(await exec(db, E5)).c);
-e = await tela(db, `update public.composicao_dia set deleted_at = now() where id = '${C5}'`);
-ok('composição excluída (soft) sem lançamento: execução cancelada', e === null && /excluída \(automático\)/.test((await exec(db, E5)).m), e);
-const C6 = await comp(db, 'EQ6', H, [PE]);
-const E6 = (await criar(db, C6, PE)).r.execucao_id;
-ok('mudar equipe/data da composição: execução cancelada', await tentaExec(db, `update public.composicao_dia set equipe_id = 'EQ6B' where id = '${C6}'`) === null
-  && /Equipe ou data/.test((await exec(db, E6)).m));
-ok('composição sem execução: TMA grava como hoje', await tela(db, `update public.composicao_dia set projeto_ids = '["${PJ(2)}"]' where id = '${C3}'`, null, 'anon') === null);
+// Cancelamento libera o saldo
+const itemDe = async (e, a) => (await db.query(`select id from public.prog_proj_execucao_itens where execucao_id = $1 and atividade_id = $2 and cancelado_em is null`, [e, a])).rows[0].id;
+r = await api(db, `select public.fn_proj_execucao_cancelar_item($1::uuid, 'replanejado') v`, [await itemDe(X2.e, A1.id)]);
+s = await saldoDe(A1);
+ok('cancelamento: libera a meta (comprometido 2, livre 2)', r.r && Number(s.qtd_comprometida) === 2 && Number(s.saldo_livre) === 2, { r, s });
+const canc = (await db.query(`select cancelado_por_auth p, cancelado_origem o from public.prog_proj_execucao_itens where execucao_id = $1 and atividade_id = $2`, [X2.e, A1.id])).rows[0];
+ok('cancelamento pelo usuário registra o autor', canc.p === UID.gestor && canc.o === null, canc);
 
-// Com quantidade lançada (interruptor ligado só no teste)
+// Exceção de excesso
+ok('excesso sem justificativa: bloqueado por padrão', /QTD_ACIMA_DO_SALDO/.test((await meta(X3.e, A1, 3, UID.gestor)).e || ''));
+ok('excesso com justificativa sem permissão (supervisor): recusado', /EXCESSO_SEM_PERMISSAO/.test((await meta(X3.e, A1, 3, UID.supervisor, 'equipe extra')).e || ''));
+r = await meta(X3.e, A1, 3, UID.gestor, 'reforço autorizado pela coordenação');
+const exc = (await db.query(`select excesso_justificativa j, excesso_autorizado_por_auth p, excesso_saldo_livre l, criado_por_auth c, criado_em t
+  from public.prog_proj_execucao_itens where execucao_id = $1 and atividade_id = $2 and cancelado_em is null`, [X3.e, A1.id])).rows[0];
+ok('excesso com justificativa e permissão (gestor): gravado e auditado (quem, quando, saldo livre no momento)', r.r && r.r.excessos_autorizados === 1
+  && exc.j === 'reforço autorizado pela coordenação' && exc.p === UID.gestor && Number(exc.l) === 2 && exc.c === UID.gestor && exc.t, { r, exc });
+ok('excesso: CHECK impede justificativa sem autor', /prog_proj_execucao_itens_excesso_chk/.test(await tentaExec(db,
+  `insert into public.prog_proj_execucao_itens (execucao_id, projeto_id, wl_id, atividade_id, qtd_programada, criado_por_auth, excesso_justificativa)
+   values ('${X3.e}', '${PE}', '${A3.wl_id}', '${A3.id}', 1, '${UID.gestor}', 'x')`) || ''));
+
+// Execução parcial (interruptor ligado só no teste) — sem dupla contagem
 await db.exec(`update public.proj_execucao_config set ativo = true, versao_minima = '8.1.230', motivo = 'teste'`);
-r = await lancar(db, I_A1, 1);
-ok('cenário: lançamento de 1 no item de EQ1', r.r && r.r.operacao === 'LANCADO', r);
-const C7 = await comp(db, 'EQ7', H, [PE]);
-const E7 = (await criar(db, C7, PE)).r.execucao_id;
-ok('meta acima do saldo considera o executado (saldo 4 − 1 = 3): 3,5 recusado', /QTD_ACIMA_DO_SALDO/.test((await itens(db, E7, [{ wl_id: A1.wl_id, atividade_id: A1.id, qtd_programada: 3.5 }])).e || ''));
-ok('meta 3 (= saldo) aceita', (await itens(db, E7, [{ wl_id: A1.wl_id, atividade_id: A1.id, qtd_programada: 3 }])).r);
-const antes = JSON.stringify(await projIds(db, C1));
-e = await tela(db, `update public.composicao_dia set projeto_ids = '["${PJ(2)}"]' where id = '${C1}'`, null, 'anon');
-ok('TMA (anon) retira projeto com lançamento: recusado, nada muda', /EXECUCAO_COM_LANCAMENTO/.test(e || '') && JSON.stringify(await projIds(db, C1)) === antes && !(await exec(db, E1)).c, e);
-e = await tentaExec(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${C1}'`);
-ok('SQL direto (dono) retira projeto com lançamento: recusado', /EXECUCAO_COM_LANCAMENTO/.test(e || ''), e);
-ok('SQL direto exclui composição com lançamento: recusado', /EXECUCAO_COM_LANCAMENTO/.test(await tentaExec(db, `delete from public.composicao_dia where id = '${C1}'`) || ''));
-ok('soft delete com lançamento: recusado', /EXECUCAO_COM_LANCAMENTO/.test(await tela(db, `update public.composicao_dia set deleted_at = now() where id = '${C1}'`) || ''));
-r = await retirar(db, C1, PE, 'tentativa');
-ok('retirar pela tela com lançamento: recusado e nada muda', /EXECUCAO_COM_LANCAMENTO/.test(r.e || '') && JSON.stringify(await projIds(db, C1)) === antes && !(await exec(db, E1)).c, r);
-ok('retirar outro projeto (legado) da mesma composição continua possível', (await retirar(db, C1, PJ(2), 'legado saiu')).r
-  && JSON.stringify(await projIds(db, C1)) === JSON.stringify([PE]));
-ok('cancelar item com lançamento continua recusado', /ITEM_COM_LANCAMENTO/.test((await api(db, `select public.fn_proj_execucao_cancelar_item($1::uuid, 'x') v`, [I_A1])).e || ''));
+const I1 = await itemDe(X1.e, A1.id);
+r = await lancar(db, I1, 1);
+s = await saldoDe(A1);
+// previsto 4; executado 1; aberto: EQ1 (2−1=1) + EQ3 amanhã (3) = 4 → livre 0
+ok('parcial: executado 1 abate a meta da EQ1 (aberto 1) sem contar duas vezes', r.r && Number(s.qtd_executada) === 1 && Number(s.qtd_comprometida) === 4
+  && Number(s.saldo_livre) === 0 && s.compromissos.find(k => k.equipe_id === 'EQ1').qtd_aberta == 1, { r, s });
+r = await lancar(db, I1, 2);
+s = await saldoDe(A1);
+ok('parcial: executado acima da meta zera o aberto da EQ1 (nunca negativo)', Number(s.qtd_executada) === 3 && !s.compromissos.some(k => k.equipe_id === 'EQ1')
+  && Number(s.qtd_comprometida) === 3 && Number(s.saldo_livre) === 0, s);
+
+// Abertura do quadro e consultas não gravam
+const snap = async () => (await db.query(`select (select md5(coalesce(string_agg(t::text, '|' order by t.id), '')) from public.prog_proj_execucoes t) e,
+  (select md5(coalesce(string_agg(t::text, '|' order by t.id), '')) from public.prog_proj_execucao_itens t) i,
+  (select count(*) from public.prog_proj_execucao_lancamentos)::int l, (select md5(coalesce(string_agg(t::text, '|' order by t.id), '')) from public.composicao_dia t) c`)).rows[0];
+let antes = JSON.stringify(await snap());
+await dia(db, H, [PE, PJ(2), PJ(3)]); await dia(db, AMANHA, [PE]); await saldo(db, PE); await saldo(db, PE, UID.encarregado);
+await api(db, `select public.fn_proj_execucao_situacao($1::uuid) v`, [PE]);
+ok('abrir o quadro / consultas: nada é gravado', JSON.stringify(await snap()) === antes);
+r = await dia(db, H, [PE, PJ(2), PJ(3)], UID.supervisor);
+ok('dia: estados WL (estruturado, legado, em conciliação) e itens com meta', r.r && r.r.estados[PE] === 'ESTRUTURADO' && r.r.estados[PJ(2)] === 'LEGADO_SEM_WL'
+  && r.r.estados[PJ(3)] === 'EM_CONCILIACAO' && r.r.execucoes.find(x => x.execucao_id === X1.e).itens.length === 1, r);
+ok('dia: encarregado (não programa) não lê', /SEM_PERMISSAO/.test((await dia(db, H, [PE], UID.encarregado)).e || ''));
+
+// Retirada sem autenticação / autoria
+const Z = await novaExec('EQZ', H);
+await meta(Z.e, A3, 1, UID.gestor);
+antes = JSON.stringify(await projIds(db, Z.c));
+let e = await tela(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${Z.c}'`, null, 'anon');
+ok('sem autenticação (TMA em sessão legada): retirada de projeto programado recusada com orientação', /EXECUCAO_SEM_AUTORIA/.test(e || '') && /Programação de Projetos com login autenticado/.test(e || '')
+  && JSON.stringify(await projIds(db, Z.c)) === antes && !(await exec(db, Z.e)).c, e);
+ok('sem autenticação: exclusão (soft) da composição programada recusada', /EXECUCAO_SEM_AUTORIA/.test(await tela(db, `update public.composicao_dia set deleted_at = now() where id = '${Z.c}'`, null, 'anon') || ''));
+e = await tela(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${Z.c}'`, UID.supervisor, 'authenticated');
+let ez = (await db.query(`select cancelada_por_auth p, cancelada_origem o, motivo_cancelamento m from public.prog_proj_execucoes where id = $1`, [Z.e])).rows[0];
+ok('com login autenticado (TMA): retirada passa e o cancelamento registra o usuário', e === null && ez.p === UID.supervisor && ez.o === 'USUARIO'
+  && /fora da Programação de Projetos/.test(ez.m), { e, ez });
+const W = await novaExec('EQW', H);
+e = await tentaExec(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${W.c}'`);
+const ew = (await db.query(`select cancelada_por_auth p, cancelada_origem o, motivo_cancelamento m from public.prog_proj_execucoes where id = $1`, [W.e])).rows[0];
+ok('operação técnica (SQL direto): cancela com origem SISTEMA, sem autor fictício', e === null && ew.p === null && ew.o === 'SISTEMA' && /operação técnica \(papel postgres\)/.test(ew.m), { e, ew });
+ok('nenhum cancelamento sem autor fora da origem SISTEMA', (await db.query(`select count(*)::int n from public.prog_proj_execucoes
+  where cancelada_em is not null and cancelada_por_auth is null and coalesce(cancelada_origem, 'USUARIO') <> 'SISTEMA'`)).rows[0].n === 0);
+ok('cancelamento automático não pode ser chamado pela API', /só pelo gatilho/.test((await api(db,
+  `select public.fn_proj_execucao_cancelar_por_composicao($1::uuid, 'UPDATE', '[]', false, false, 'postgres')::text v`, [X1.c], UID.gestor)).e || '')
+  && /só pelo gatilho/.test((await api(db, `select public.fn_proj_execucao_cancelar_por_composicao($1::uuid, 'UPDATE', '[]', false, false, 'postgres')::text v`, [X1.c], null, 'anon')).e || ''));
+antes = JSON.stringify(await projIds(db, X1.c));
+ok('com quantidade lançada: recusado até por SQL direto', /EXECUCAO_COM_LANCAMENTO/.test(await tentaExec(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${X1.c}'`) || '')
+  && JSON.stringify(await projIds(db, X1.c)) === antes);
+ok('com quantidade lançada: retirar pela tela recusado', /EXECUCAO_COM_LANCAMENTO/.test((await retirar(db, X1.c, PE, 'tentativa')).e || ''));
+r = await retirar(db, X1.c, PJ(2), 'legado saiu');
+ok('legado na mesma composição: sai normalmente', r.r && r.r.execucoes_canceladas === 0 && JSON.stringify(await projIds(db, X1.c)) === JSON.stringify([PE]), r);
+const R = await novaExec('EQR', H);
+r = await retirar(db, R.c, PE, 'equipe remanejada', UID.coordenador);
+const er = (await db.query(`select cancelada_por_auth p, cancelada_origem o, motivo_cancelamento m from public.prog_proj_execucoes where id = $1`, [R.e])).rows[0];
+ok('retirar pela tela: motivo e autor registrados, projeto sai da composição', r.r && er.p === UID.coordenador && er.o === 'USUARIO' && er.m === 'equipe remanejada'
+  && (await projIds(db, R.c)).length === 0, { r, er });
+ok('retirar sem motivo recusado', /MOTIVO_OBRIGATORIO/.test((await retirar(db, X2.c, PE, ' ')).e || ''));
+
+// TMA sem programação ativa: igual a hoje
+const C9 = await comp(db, 'EQ9', H, [PJ(2)]);
+ok('TMA sem programação: anon grava projeto_ids, exclui e altera como hoje', await tela(db, `update public.composicao_dia set projeto_ids = '[]' where id = '${C9}'`, null, 'anon') === null
+  && await tela(db, `update public.composicao_dia set deleted_at = now() where id = '${C9}'`, null, 'anon') === null);
+ok('outra coluna (colaboradores/confirmada) não aciona a proteção', await tela(db, `update public.composicao_dia set colaborador_ids = '["x"]', confirmada = false where id = '${Y.c}'`, null, 'anon') === null);
+const C10 = await comp(db, 'EQ10', H, [PJ(2), PJ(3)]);
+ok('legado e em conciliação: criar programação continua recusado', /PROJETO_NAO_ESTRUTURADO.*LEGADO_SEM_WL/.test((await api(db, `select public.fn_proj_execucao_criar($1::uuid, $2::uuid) v`, [C10, PJ(2)])).e || '')
+  && /PROJETO_NAO_ESTRUTURADO.*EM_CONCILIACAO/.test((await api(db, `select public.fn_proj_execucao_criar($1::uuid, $2::uuid) v`, [C10, PJ(3)])).e || ''));
 
 // ── Rollback ────────────────────────────────────────────────────
+erro = await tentaExec(db, desfazer);
+ok('rollback recusado quando já há exceção de meta ou cancelamento com origem', /rollback automático recusado/.test(erro || ''), erro);
 const dbR = await novoBanco(true);
 erro = await tentaExec(dbR, desfazer);
-const restos = (await dbR.query(`select count(*)::int n from pg_proc where proname in ('fn_proj_execucao_dia', 'fn_proj_execucao_retirar_projeto', 'fn_proj_execucao_protege_composicao', 'fn_proj_execucao_soma_atividade')`)).rows[0].n;
+const restos = (await dbR.query(`select count(*)::int n from pg_proc where proname in ('fn_proj_execucao_dia', 'fn_proj_execucao_retirar_projeto', 'fn_proj_execucao_protege_composicao',
+  'fn_proj_execucao_soma_atividade', 'fn_proj_execucao_compromissos', 'fn_proj_execucao_saldo_livre', 'fn_proj_execucao_cancelar_por_composicao', 'fn_proj_execucao_composicao_tem_ativa')`)).rows[0].n;
 const trg = (await dbR.query(`select count(*)::int n from pg_trigger where tgname = 'proj_execucao_protege_composicao_trg'`)).rows[0].n;
-const src = async d => (await d.query(`select prosrc from pg_proc where proname = 'fn_proj_execucao_definir_itens'`)).rows[0].prosrc;
+const cols = (await dbR.query(`select count(*)::int n from information_schema.columns where table_name in ('prog_proj_execucao_itens', 'prog_proj_execucoes')
+  and column_name in ('excesso_justificativa', 'excesso_autorizado_por_auth', 'excesso_saldo_livre', 'cancelado_origem', 'cancelada_origem')`)).rows[0].n;
+ok('rollback sem uso: remove gatilho, funções e colunas novas', erro === null && restos === 0 && trg === 0 && cols === 0, { erro, restos, trg, cols });
 const db17a = await novoBanco(false);
-ok('rollback remove gatilho e funções novas', erro === null && restos === 0 && trg === 0, { erro, restos, trg });
-ok('rollback devolve a definir_itens da 1.7a (mesmo texto)', await src(dbR) === await src(db17a));
+const src = async (d, n) => (await d.query(`select prosrc from pg_proc where proname = $1`, [n])).rows[0].prosrc;
+for (const n of ['fn_proj_execucao_definir_itens', 'fn_proj_saldo_atividades', 'prog_proj_execucao_proteger'])
+  ok(`rollback devolve ${n} da 1.7a (mesmo texto)`, await src(dbR, n) === await src(db17a, n));
+const conDef = async (d, n) => (await d.query(`select pg_get_constraintdef(oid) v from pg_constraint where conname = $1`, [n])).rows[0].v;
+ok('rollback devolve as regras de cancelamento da 1.7a', await conDef(dbR, 'prog_proj_execucoes_cancelamento_chk') === await conDef(db17a, 'prog_proj_execucoes_cancelamento_chk')
+  && await conDef(dbR, 'prog_proj_execucao_itens_cancelamento_chk') === await conDef(db17a, 'prog_proj_execucao_itens_cancelamento_chk'));
 
 if (failed.length) { console.error('proj-execucao-programacao-sql: FALHOU ' + failed.length + '/' + total + '\n  - ' + failed.join('\n  - ')); process.exit(1); }
 console.log('proj-execucao-programacao-sql: OK (' + total + ' verificações)');

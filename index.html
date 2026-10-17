@@ -85176,11 +85176,11 @@ function ppEqRemoverProjeto(eqId, projetoId){
 // Projeto legado e em conciliação: nada muda.
 // ══════════════════════════════════════════════════════════════════
 var PP_EXEC_MSG_SEM_AUTH = 'Para programar as WLs entre pelo login autenticado (saia e entre de novo). A composição da equipe continua funcionando normalmente.';
-var _ppExec = {data:null, seq:0, carregando:false, carregado:false, estados:{}, execucoes:[], semAuth:false, erro:null, tentouCriar:{}};
+var _ppExec = {data:null, seq:0, carregando:false, carregado:false, estados:{}, execucoes:[], semAuth:false, erro:null};
 var PP_EXEC_ERROS = {
   SEM_SESSAO: PP_EXEC_MSG_SEM_AUTH,
   SEM_PERMISSAO: 'Seu perfil não pode programar projetos.',
-  QTD_ACIMA_DO_SALDO: 'A meta do dia não pode passar do saldo da atividade.',
+  QTD_ACIMA_DO_SALDO: 'A meta do dia não pode passar do saldo livre da atividade (já descontadas as metas em aberto de outras equipes e dias).',
   QTD_INVALIDA: 'Meta inválida: use zero ou um número positivo (até 3 casas).',
   QTD_WL_INTEIRA: 'Na WL inteira não há meta; para ter meta escolha a atividade.',
   ATIVIDADE_INVALIDA: 'A atividade não pertence a esta WL ou foi excluída. Atualize a tela.',
@@ -85188,6 +85188,7 @@ var PP_EXEC_ERROS = {
   WL_SEM_ATIVIDADES: 'Esta WL não tem atividade a executar.',
   ITENS_VAZIOS: 'Marque ao menos uma WL ou atividade.',
   EXECUCAO_INVALIDA: 'A programação deste projeto foi cancelada. Atualize a tela.',
+  EXCESSO_SEM_PERMISSAO: 'A meta passa do saldo livre e seu perfil não tem a permissão de exceção (PROJ_AUTORIZAR_EXCESSO_META).',
   EXECUCAO_COM_LANCAMENTO: 'Já há quantidade lançada nesta equipe/dia: o projeto não pode ser retirado.',
   ITEM_COM_LANCAMENTO: 'Já há quantidade lançada nesta atividade: ela não pode ser retirada da programação.',
   MOTIVO_OBRIGATORIO: 'Informe o motivo.',
@@ -85246,18 +85247,18 @@ function ppExecDaEquipe(eqId, data, pid){
 }
 function ppExecEstado(pid){ return (_ppExec.estados||{})[String(pid)] || ''; }
 
-/** Carrega o dia uma vez (ou de novo com forcar). Ao chegar, cria a execução que faltar (B1) e redesenha o quadro. */
+/** Carrega o dia uma vez (ou de novo com forcar) e redesenha o quadro. Só lê: abrir o quadro nunca grava nada. */
 function ppExecGarantirDia(data, forcar){
   if(DEMO || !data) return;
   if(!forcar && _ppExec.data===data && _ppExec.carregando) return;
   if(!forcar && _ppExec.data===data && _ppExec.carregado){
-    // Já carregado: projeto novo no dia (Auto Escalar, outra tela) → recarrega; senão só cria a execução que faltar.
+    // Já carregado: só relê se apareceu projeto novo no dia (Auto Escalar, outra tela).
     if(_ppExec.semAuth || _ppExec.erro) return;
     var novos = ppExecProjetosDoDia(data).filter(function(id){ return !Object.prototype.hasOwnProperty.call(_ppExec.estados||{}, String(id)); });
-    if(!novos.length){ ppExecCriarFaltantes(data); return; }
+    if(!novos.length) return;
   }
   var seq = ++_ppExec.seq;
-  if(_ppExec.data!==data){ _ppExec.estados={}; _ppExec.execucoes=[]; _ppExec.carregado=false; _ppExec.tentouCriar={}; }
+  if(_ppExec.data!==data){ _ppExec.estados={}; _ppExec.execucoes=[]; _ppExec.carregado=false; }
   _ppExec.data = data;
   _ppExec.carregando = true;
   ppExecRpc('fn_proj_execucao_dia', {p_data:data, p_projeto_ids:ppExecProjetosDoDia(data)}).then(function(r){
@@ -85270,40 +85271,12 @@ function ppExecGarantirDia(data, forcar){
       _ppExec.estados = r.data.estados || {};
       _ppExec.execucoes = r.data.execucoes || [];
     }
-    if(r && r.ok && ppExecCriarFaltantes(data)) return;
     if(progProjGetData()===data && typeof progProjRenderQuadro==='function') progProjRenderQuadro();
   });
 }
 
-/** B1 por qualquer caminho (fila, janela de projetos, Auto Escalar, TMA): projeto estruturado em composição salva do dia
- *  sem execução → cria (idempotente; o banco confere que a composição está salva com o projeto). Nunca em dia passado. */
-function ppExecCriarFaltantes(data){
-  if(data < dataHojeLocal() || _ppExec.semAuth) return false;
-  var faltam = [];
-  (composicao_dia||[]).forEach(function(c){
-    if(!ppExecCompReal(c) || String(c.data||'').split('T')[0]!==data) return;
-    progProjetoCoreListaProjetos(c.projeto_ids).forEach(function(pid){
-      if(ppExecEstado(pid)!=='ESTRUTURADO') return;
-      var chave = c.id+'|'+pid;
-      if(_ppExec.tentouCriar[chave]) return;
-      var tem = (_ppExec.execucoes||[]).some(function(x){ return String(x.composicao_dia_id)===String(c.id) && String(x.projeto_id)===String(pid); });
-      if(!tem){ _ppExec.tentouCriar[chave]=true; faltam.push({comp:c.id, pid:pid}); }
-    });
-  });
-  if(!faltam.length) return false;
-  var cadeia = Promise.resolve();
-  faltam.forEach(function(f){
-    cadeia = cadeia.then(function(){
-      return ppExecRpc('fn_proj_execucao_criar', {p_composicao_dia_id:f.comp, p_projeto_id:f.pid}).then(function(r){
-        if(!r.ok) console.warn('[1.7b] execução não criada', f, r.codigo, r.error);
-      });
-    });
-  });
-  cadeia.then(function(){ ppExecGarantirDia(data, true); });
-  return true;
-}
-
-/** Depois de incluir projeto pela fila ou pela janela de projetos: cria a execução e abre a janela das WLs (B2). */
+/** Ação explícita de incluir projeto (fila ou janela de projetos): cria a programação e abre a janela das WLs (B2).
+ *  Projetos que entram por outros caminhos (Auto Escalar, TMA) ficam com o alerta até alguém clicar para programar. */
 function ppExecAposIncluir(eqId, data, pids, opts){
   opts = opts || {};
   var comp = progFindCompDia(eqId, data);
@@ -85399,7 +85372,7 @@ function ppExecChipProjetoHtml(eqId, pid, p, data){
   var ex = ppExecDaEquipe(eqId, data, pid);
   var info, cor;
   if(_ppExec.semAuth){ info='🔒 WLs: entre pelo login autenticado'; cor='#888'; }
-  else if(!ex){ info='⏳ preparando WLs'; cor='#888'; }
+  else if(!ex){ info='⚠ sem WL programada — clique para programar'; cor='#A35A00'; }
   else {
     var rs = ppExecResumoWls(ex);
     if(!rs.n){ info='⚠ sem WL programada'; cor='#A35A00'; }
@@ -85450,7 +85423,7 @@ function ppExecRenderModalWls(eqId, pid, data, exec, atividades){
   var html = '<div class="modal-bg"><div class="modal" style="max-width:760px">'
     +'<h3 style="margin-bottom:.25rem">📋 WLs do dia</h3>'
     +'<div style="font-size:12px;color:#666;margin-bottom:.6rem"><b>'+escHtml(proj.nome||'Projeto')+'</b> · '+escHtml(eq.nome_equipe||eq.nome||'Equipe')+' · '+escHtml(fmtD(data))+'</div>'
-    +'<div style="font-size:11px;color:#185FA5;background:#EBF4FD;border-radius:6px;padding:6px 10px;margin-bottom:.6rem">Marque a WL inteira ou só as atividades. A meta do dia é opcional e não pode passar do saldo. Meta não é execução: a quantidade executada é lançada depois, pelo campo.</div>'
+    +'<div style="font-size:11px;color:#185FA5;background:#EBF4FD;border-radius:6px;padding:6px 10px;margin-bottom:.6rem">Marque a WL inteira ou só as atividades. A meta do dia é opcional e não pode passar do saldo livre (previsto − executado − metas em aberto de outras equipes/dias); acima disso só com permissão de exceção e justificativa. Meta não é execução: a quantidade executada é lançada depois, pelo campo.</div>'
     +'<div id="pp-exec-erro" style="display:none;font-size:12px;color:#A32D2D;background:#FCEBEB;border-radius:6px;padding:6px 10px;margin-bottom:.5rem"></div>'
     +'<div style="max-height:52vh;overflow:auto;border:.5px solid #e0dfd8;border-radius:8px">';
   if(!grupos.length) html += '<div style="padding:1.5rem;text-align:center;color:#888;font-size:12px">Este projeto não tem atividades por WL a executar.</div>';
@@ -85461,20 +85434,22 @@ function ppExecRenderModalWls(eqId, pid, data, exec, atividades){
       +' onchange="ppExecMarcarWl(this)"/> WL '+escHtml(g.codigo)+' <span style="font-weight:400;color:#888">(WL inteira · '+g.ativs.length+' ativ.)</span></label></div>'
       +'<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="color:#888;text-align:left">'
       +'<th style="padding:3px 6px;width:24px"></th><th style="padding:3px 6px">Atividade</th><th style="padding:3px 6px;text-align:right">Previsto</th>'
-      +'<th style="padding:3px 6px;text-align:right">Executado</th><th style="padding:3px 6px;text-align:right">Saldo</th><th style="padding:3px 6px;width:90px">Meta do dia</th><th style="padding:3px 6px"></th></tr></thead><tbody>';
+      +'<th style="padding:3px 6px;text-align:right">Executado</th><th style="padding:3px 6px;text-align:right">Comprometido</th><th style="padding:3px 6px;text-align:right">Livre</th><th style="padding:3px 6px;width:90px">Meta do dia</th><th style="padding:3px 6px"></th></tr></thead><tbody>';
     g.ativs.forEach(function(a){
       var it = progPorAtiv[String(a.atividade_id)];
-      var saldo = Math.max(ppExecNum(a.saldo), 0);
+      var livre = Math.max(ppExecNum(a.saldo_livre), 0);
       html += '<tr style="border-top:.5px solid #f0efe8'+(it?';background:#F2FAF2':'')+'">'
-        +'<td style="padding:4px 6px"><input type="checkbox" class="pp-exec-at" data-wl="'+g.wl_id+'" data-at="'+a.atividade_id+'" data-saldo="'+saldo+'"'+(it?' checked disabled':'')+'/></td>'
+        +'<td style="padding:4px 6px"><input type="checkbox" class="pp-exec-at" data-wl="'+g.wl_id+'" data-at="'+a.atividade_id+'" data-livre="'+livre+'"'+(it?' checked disabled':'')+'/></td>'
         +'<td style="padding:4px 6px"><b>'+escHtml(a.codigo||'—')+'</b> '+escHtml(a.descricao||'')+' <span style="color:#888">'+escHtml(a.unidade||'')+'</span>'
-        +(it?'<div style="font-size:10px;color:#0F6E3D">programada'+(it.criado_por?' por '+escHtml(it.criado_por):'')+(it.criado_em?' em '+escHtml(ppExecQuando(it.criado_em)):'')+'</div>':'')+'</td>'
+        +(it?'<div style="font-size:10px;color:#0F6E3D">programada'+(it.criado_por?' por '+escHtml(it.criado_por):'')+(it.criado_em?' em '+escHtml(ppExecQuando(it.criado_em)):'')+(it.excesso_justificativa?' · exceção: '+escHtml(it.excesso_justificativa):'')+'</div>':'')
+        +ppExecCompromissosHtml(a.compromissos)+'</td>'
         +'<td style="padding:4px 6px;text-align:right">'+ppExecFmt(a.qtd_prevista)+'</td>'
         +'<td style="padding:4px 6px;text-align:right">'+ppExecFmt(a.qtd_executada)+'</td>'
-        +'<td style="padding:4px 6px;text-align:right;font-weight:600">'+ppExecFmt(saldo)+(a.excedente?' <span title="Executado acima do previsto" style="color:#A32D2D">▲</span>':'')+'</td>'
+        +'<td style="padding:4px 6px;text-align:right">'+ppExecFmt(a.qtd_comprometida)+'</td>'
+        +'<td style="padding:4px 6px;text-align:right;font-weight:600">'+ppExecFmt(livre)+(a.excedente?' <span title="Executado acima do previsto" style="color:#A32D2D">▲</span>':'')+'</td>'
         +'<td style="padding:4px 6px">'+(it
           ? (it.qtd_programada!=null ? ppExecFmt(it.qtd_programada) : '<span style="color:#aaa">—</span>')
-          : '<input type="number" min="0" step="any" max="'+saldo+'" class="pp-exec-meta" data-at="'+a.atividade_id+'" placeholder="opcional" style="width:80px;font-size:11px"/>')+'</td>'
+          : '<input type="number" min="0" step="any" max="'+livre+'" class="pp-exec-meta" data-at="'+a.atividade_id+'" placeholder="opcional" style="width:80px;font-size:11px"/>')+'</td>'
         +'<td style="padding:4px 6px;text-align:right">'+(it
           ? (ppExecNum(it.qtd_lancada)!==0 ? '<span title="Já tem quantidade lançada" style="font-size:10px;color:#888">🔒 lançada</span>'
             : '<button class="btn" style="font-size:10px;padding:2px 6px" onclick="ppExecRetirarItem(\''+eqId+'\',\''+pid+'\',\''+it.item_id+'\')">Retirar</button>')
@@ -85491,6 +85466,15 @@ function ppExecRenderModalWls(eqId, pid, data, exec, atividades){
   setModal(html);
   var btn = document.getElementById('pp-exec-salvar');
   if(btn) btn.onclick = function(){ ppExecSalvarWls(eqId, pid, data, exec.execucao_id, btn); };
+}
+
+/** Onde o saldo está comprometido (equipe e data), com o nome da equipe. */
+function ppExecCompromissosHtml(lista){
+  if(!lista || !lista.length) return '';
+  return '<div style="font-size:10px;color:#854F0B">comprometido: '+lista.map(function(k){
+    var eq = (equipes||[]).find(function(e){ return String(e.id)===String(k.equipe_id); }) || {};
+    return escHtml(eq.nome_equipe||eq.nome||'Equipe')+' ('+escHtml(fmtD(String(k.data||'').split('T')[0]))+') '+ppExecFmt(k.qtd_aberta);
+  }).join(' · ')+'</div>';
 }
 
 function ppExecMarcarWl(cb){
@@ -85523,10 +85507,11 @@ function ppExecColetarItens(){
     var txt = mEl ? String(mEl.value||'').trim().replace(',', '.') : '';
     var item = {wl_id:wl, atividade_id:at};
     if(txt!==''){
-      var q = Number(txt), saldo = ppExecNum(cb.getAttribute('data-saldo'));
+      var q = Number(txt), livre = ppExecNum(cb.getAttribute('data-livre'));
       if(!isFinite(q) || q<0){ erro = PP_EXEC_ERROS.QTD_INVALIDA; return; }
-      if(q>saldo){ erro = PP_EXEC_ERROS.QTD_ACIMA_DO_SALDO+' (saldo '+ppExecFmt(saldo)+')'; return; }
       item.qtd_programada = q;
+      // Acima do saldo livre: bloqueado por padrão; só segue com justificativa (o banco exige a permissão de exceção).
+      if(q>livre){ item._excesso = {livre:livre, codigo:(cb.getAttribute('data-codigo')||'')}; }
     }
     itens.push(item);
   });
@@ -85541,6 +85526,14 @@ function ppExecSalvarWls(eqId, pid, data, execId, btn){
   if(col.erro){ mostrar(col.erro); return; }
   if(!col.itens.length){ mostrar(PP_EXEC_ERROS.ITENS_VAZIOS+' Ou feche sem programar.'); return; }
   if(btn.disabled) return;
+  for(var k=0;k<col.itens.length;k++){
+    var ex = col.itens[k]._excesso;
+    if(!ex) continue;
+    var just = prompt('A meta '+ppExecFmt(col.itens[k].qtd_programada)+' passa do saldo livre ('+ppExecFmt(ex.livre)+').\n\nIsso só é aceito com a permissão de exceção (PROJ_AUTORIZAR_EXCESSO_META) e fica registrado.\nJustificativa:', '');
+    if(just===null || !String(just).trim()){ mostrar(PP_EXEC_ERROS.QTD_ACIMA_DO_SALDO+' (saldo livre '+ppExecFmt(ex.livre)+'). Nada foi gravado.'); return; }
+    col.itens[k].excesso_justificativa = String(just).trim();
+    delete col.itens[k]._excesso;
+  }
   btn.disabled = true; btn.textContent = '⏳ Programando…';
   ppExecRpc('fn_proj_execucao_definir_itens', {p_execucao_id:execId, p_itens:col.itens}).then(function(r){
     btn.disabled = false; btn.textContent = '✓ Programar marcadas';

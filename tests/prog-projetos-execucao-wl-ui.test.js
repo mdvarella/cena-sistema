@@ -38,9 +38,9 @@ const ppMudadas = ['ppEqRemoverProjeto', 'ppEqSelecionarProjetos', 'ppFilaColoca
 const ppDifs = [...htmlBase.matchAll(/\nfunction ((?:pp|_?progProj|progProjetoCore)\w*)\(/g)].map(m => m[1]).filter(n => fnEm(htmlBase, n) !== fn(n));
 ok('na Programação de Projetos só mudaram os 5 pontos de entrada', JSON.stringify(ppDifs.sort()) === JSON.stringify(ppMudadas.slice().sort()), ppDifs);
 
-const NOVAS = ['ppExecRpc', 'ppExecCompReal', 'ppExecProjetosDoDia', 'ppExecDaEquipe', 'ppExecEstado', 'ppExecGarantirDia', 'ppExecCriarFaltantes',
+const NOVAS = ['ppExecRpc', 'ppExecCompReal', 'ppExecProjetosDoDia', 'ppExecDaEquipe', 'ppExecEstado', 'ppExecGarantirDia',
   'ppExecAposIncluir', 'ppExecPrecisaRetirarPorFuncao', 'ppExecRetirarProjetos', 'ppExecResumoWls', 'ppExecChipProjetoHtml', 'ppExecNum', 'ppExecFmt',
-  'ppExecQuando', 'ppExecAbrirWls', 'ppExecRenderModalWls', 'ppExecMarcarWl', 'ppExecColetarItens', 'ppExecSalvarWls', 'ppExecRetirarItem'];
+  'ppExecQuando', 'ppExecAbrirWls', 'ppExecRenderModalWls', 'ppExecCompromissosHtml', 'ppExecMarcarWl', 'ppExecColetarItens', 'ppExecSalvarWls', 'ppExecRetirarItem'];
 const codigoNovo = NOVAS.map(fn).join('\n');
 ok('ES5 nas funções novas e alteradas', !/\blet\s|\bconst\s|=>|`/.test(semComent(codigoNovo + ppMudadas.map(fn).join('\n'))));
 ok('execução só por função do banco (nenhuma escrita direta nas tabelas novas)', !/prog_proj_execuc/.test(codigoNovo.replace(/fn_proj_execucao_\w+/g, '')));
@@ -94,33 +94,27 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   r = await c.ppExecRpc('fn_proj_execucao_criar', {});
   ok('B4: sem login autenticado nenhuma chamada sai e a orientação é clara', r.ok === false && r.semAuth && c.calls.length === 0 && /login autenticado/.test(r.error), r);
 
-  // B1: carga do dia cria a execução que falta (composição salva, projeto estruturado), uma vez só
-  c = sandbox({ comps: [compReal([PE, PL])], rpc: {
-    fn_proj_execucao_dia: (p, calls) => DIA_OK(ESTADOS, calls.some(x => x[0] === 'fn_proj_execucao_criar') ? [{ execucao_id: 'e1', projeto_id: PE, equipe_id: 'eq1', composicao_dia_id: 'comp-1', itens: [] }] : []),
-    fn_proj_execucao_criar: () => ({ status: 200, body: { operacao: 'CRIADA', execucao_id: 'e1' } }) } });
+  // Abrir o quadro não grava: só lê o dia, mesmo com projeto estruturado em composição salva sem programação
+  c = sandbox({ comps: [compReal([PE, PL])], rpc: { fn_proj_execucao_dia: () => DIA_OK(ESTADOS) } });
   c.ppExecGarantirDia('2026-10-17');
-  await ticks(30);
-  const criados = c.calls.filter(x => x[0] === 'fn_proj_execucao_criar');
-  ok('B1: execução criada só para o projeto estruturado da composição salva', criados.length === 1 && criados[0][1].p_projeto_id === PE && criados[0][1].p_composicao_dia_id === 'comp-1', c.calls.map(x => x[0]));
-  ok('B1: a carga pede o estado dos projetos do dia', c.calls[0][0] === 'fn_proj_execucao_dia' && c.calls[0][1].p_projeto_ids.join() === [PE, PL].join(), c.calls[0]);
+  await ticks(20);
   c.ppExecGarantirDia('2026-10-17');
   await ticks(10);
-  ok('B1: idempotente — não tenta criar de novo', c.calls.filter(x => x[0] === 'fn_proj_execucao_criar').length === 1);
-
-  // B1: composição ainda local (não salva) → não cria
-  c = sandbox({ comps: [compReal([PE], { id: 'local_pp_eq1', _local: true })], rpc: { fn_proj_execucao_dia: () => DIA_OK(ESTADOS) } });
+  ok('abrir o quadro: só a leitura do dia (nenhuma gravação)', c.calls.length === 1 && c.calls[0][0] === 'fn_proj_execucao_dia'
+    && c.calls[0][1].p_projeto_ids.join() === [PE, PL].join(), c.calls.map(x => x[0]));
+  ok('abrir o quadro: não existe mais criação automática', !/fn_proj_execucao_criar/.test(fn('ppExecGarantirDia')) && !/ppExecCriarFaltantes/.test(html));
+  c.composicao_dia.push(compReal([PE], { id: 'comp-2', equipe_id: 'eq2' }));
+  c.composicao_dia[0].projeto_ids = JSON.stringify([PE, PL, 'novo-pid']);
   c.ppExecGarantirDia('2026-10-17');
   await ticks(10);
-  ok('B1: composição não salva → execução não é criada', !c.calls.some(x => x[0] === 'fn_proj_execucao_criar'));
-  // dia passado → não cria
-  c = sandbox({ data: '2026-10-10', comps: [compReal([PE], { data: '2026-10-10' })], rpc: { fn_proj_execucao_dia: () => DIA_OK(ESTADOS) } });
-  c.ppExecGarantirDia('2026-10-10');
-  await ticks(10);
-  ok('B1: nunca cria execução em dia passado', !c.calls.some(x => x[0] === 'fn_proj_execucao_criar'));
-
+  ok('projeto novo no dia (Auto Escalar/TMA): só relê, não cria', c.calls.length === 2 && c.calls.every(x => x[0] === 'fn_proj_execucao_dia'), c.calls.map(x => x[0]));
   // Etiqueta no card
   c = sandbox({ comps: [compReal([PE, PL, PC])] });
   c._ppExec.data = '2026-10-17'; c._ppExec.carregado = true; c._ppExec.estados = ESTADOS;
+  c._ppExec.execucoes = [{ execucao_id: 'e1', projeto_id: PE, equipe_id: 'eq1', composicao_dia_id: 'comp-1', itens: [] }];
+  c._ppExec.execucoes = [];
+  let h0 = c.ppExecChipProjetoHtml('eq1', PE, { nome: 'TESTE 1' }, '2026-10-17');
+  ok('sem programação (Auto Escalar/TMA): alerta + clique para programar', /sem WL programada — clique para programar/.test(h0) && /ppExecAbrirWls\('eq1','pe-estr'\)/.test(h0), h0);
   c._ppExec.execucoes = [{ execucao_id: 'e1', projeto_id: PE, equipe_id: 'eq1', composicao_dia_id: 'comp-1', itens: [] }];
   let h = c.ppExecChipProjetoHtml('eq1', PE, { nome: 'TESTE 1' }, '2026-10-17');
   ok('B2: estruturado sem WL programada mostra o alerta', /sem WL programada/.test(h) && /ppExecAbrirWls\('eq1','pe-estr'\)/.test(h), h);
@@ -186,9 +180,12 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   c = sandbox({ comps: [compReal([PE])] });
   c.ppExecRenderModalWls('eq1', PE, '2026-10-17', { execucao_id: 'e1', itens: [{ item_id: 'i1', atividade_id: 'a1', wl_id: 'w1', qtd_programada: 2, qtd_lancada: 0, criado_por: 'Fulano', criado_em: '2026-10-17T10:00:00Z' }] },
     [{ atividade_id: 'a1', wl_id: 'w1', wl_codigo: '1', codigo: 'I-100', descricao: 'SERV A', unidade: 'US3', qtd_prevista: 4, qtd_executada: 0, saldo: 4 },
-     { atividade_id: 'a2', wl_id: 'w1', wl_codigo: '1', codigo: 'I-200', descricao: 'SERV B', unidade: 'US3', qtd_prevista: 2, qtd_executada: 0, saldo: 2 }]);
-  ok('janela: colunas previsto, executado, saldo e meta do dia', /Previsto/.test(c.modal) && /Executado/.test(c.modal) && /Saldo/.test(c.modal) && /Meta do dia/.test(c.modal));
-  ok('janela: meta limitada ao saldo no campo', /class="pp-exec-meta" data-at="a2"/.test(c.modal) && /max="2"/.test(c.modal));
+     { atividade_id: 'a2', wl_id: 'w1', wl_codigo: '1', codigo: 'I-200', descricao: 'SERV B', unidade: 'US3', qtd_prevista: 2, qtd_executada: 0, saldo: 2,
+       qtd_comprometida: 1.5, saldo_livre: 0.5, compromissos: [{ equipe_id: 'eq1', data: '2026-10-18', qtd_aberta: 1.5 }] }]);
+  ok('janela: colunas previsto, executado, comprometido, livre e meta do dia', /Previsto/.test(c.modal) && /Executado/.test(c.modal) && /Comprometido/.test(c.modal)
+    && />Livre</.test(c.modal) && /Meta do dia/.test(c.modal));
+  ok('janela: meta limitada ao saldo livre no campo', /max="0.5" class="pp-exec-meta" data-at="a2"/.test(c.modal), c.modal.match(/max="[^"]*" class="pp-exec-meta" data-at="a2"/));
+  ok('janela: mostra equipe e data onde o saldo está comprometido', /comprometido: EQ 1 \(2026-10-18\) 1,5/.test(c.modal), c.modal.match(/comprometido:[^<]*/));
   ok('janela: atividade já programada mostra quem e quando, e Retirar', /programada por Fulano em/.test(c.modal) && /ppExecRetirarItem\('eq1','pe-estr','i1'\)/.test(c.modal));
   ok('janela: pode fechar sem programar', /Fechar sem programar/.test(c.modal));
   ok('janela: meta não é execução (texto)', /Meta não é execução/.test(c.modal));
@@ -213,28 +210,42 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   }
   c = sandbox();
   c.document = dom([el('pp-exec-wl', { 'data-wl': 'w1' }, { checked: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-saldo': '4' }, { checked: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-saldo': '2' }, { checked: true }),
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-livre': '4' }, { checked: true }),
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }),
     el('pp-exec-meta', { 'data-at': 'a1' }), el('pp-exec-meta', { 'data-at': 'a2' })]);
   let col = c.ppExecColetarItens();
   ok('coleta: WL inteira sem meta vira um item só da WL', !col.erro && col.itens.length === 1 && col.itens[0].wl_id === 'w1' && !col.itens[0].atividade_id, col);
   c.document = dom([el('pp-exec-wl', { 'data-wl': 'w1' }, { checked: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-saldo': '4' }, { checked: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-saldo': '2' }, { checked: false }),
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-livre': '4' }, { checked: true }),
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: false }),
     el('pp-exec-meta', { 'data-at': 'a1' }, { value: '3' }), el('pp-exec-meta', { 'data-at': 'a2' })]);
   col = c.ppExecColetarItens();
   ok('coleta: com meta vai por atividade (meta 3 ≤ saldo 4)', !col.erro && col.itens.length === 1 && col.itens[0].atividade_id === 'a1' && col.itens[0].qtd_programada === 3, col);
-  c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-saldo': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '2,5' })]);
+  c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '2,5' })]);
   col = c.ppExecColetarItens();
-  ok('coleta: meta acima do saldo recusada na tela (2,5 > 2)', /saldo/.test(col.erro || ''), col);
-  c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-saldo': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '-1' })]);
+  ok('coleta: meta acima do saldo livre não passa calada (marca exceção para pedir justificativa)', !col.erro && col.itens[0]._excesso && col.itens[0]._excesso.livre === 2, col);
+  c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '-1' })]);
   ok('coleta: meta negativa recusada', /inválida/.test(c.ppExecColetarItens().erro || ''));
   c.document = dom([el('pp-exec-wl', { 'data-wl': 'w1' }, { checked: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-saldo': '4' }, { checked: true, disabled: true }),
-    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-saldo': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' })]);
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a1', 'data-livre': '4' }, { checked: true, disabled: true }),
+    el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' })]);
   col = c.ppExecColetarItens();
   ok('coleta: WL com atividade já programada inclui só as novas (sem repetir)', !col.erro && col.itens.length === 1 && col.itens[0].atividade_id === 'a2', col);
 
+  // Salvar com excesso: pede justificativa; sem ela nada é enviado
+  for (const just of ['reforço aprovado', null]) {
+    c = sandbox({ rpc: { fn_proj_execucao_definir_itens: () => ({ status: 200, body: { incluidos: 1 } }), fn_proj_execucao_dia: () => DIA_OK(ESTADOS) } });
+    c.prompt = () => just;
+    const errEl = { textContent: '', style: {} };
+    c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '0.5' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '1' })]);
+    c.document.getElementById = id => id === 'pp-exec-erro' ? errEl : null;
+    c.ppExecSalvarWls('eq1', PE, '2026-10-17', 'e1', { disabled: false, textContent: '' });
+    await ticks(10);
+    const env = c.calls.find(x => x[0] === 'fn_proj_execucao_definir_itens');
+    if (just) ok('excesso com justificativa: enviada ao banco junto com a meta', env && env[1].p_itens[0].excesso_justificativa === 'reforço aprovado'
+      && env[1].p_itens[0].qtd_programada === 1 && !('_excesso' in env[1].p_itens[0]), env);
+    else ok('excesso sem justificativa: nada é enviado e a tela explica', !env && /saldo livre/.test(errEl.textContent), errEl.textContent);
+  }
   // Pontos de entrada (estático)
   ok('fila: depois de salvar a composição cria a execução e abre as WLs', /ppExecAposIncluir\(eqId, data, \[pid\], \{abrir:true\}\)/.test(fn('ppFilaColocarNaEquipe'))
     && fn('ppFilaColocarNaEquipe').indexOf('ppExecAposIncluir') > fn('ppFilaColocarNaEquipe').indexOf('if(!ok){'));
