@@ -85130,24 +85130,28 @@ function ppEqSelecionarProjetos(eqId){
     var remExec=typeof ppExecPrecisaRetirarPorFuncao==='function'
       ? rem.filter(function(pid){ return ppExecPrecisaRetirarPorFuncao(eqId, data, pid); }) : [];
     var remComum=rem.filter(function(pid){ return remExec.indexOf(pid)<0; });
-    var motivoRem;
-    if(remExec.length){
-      motivoRem=prompt('Motivo para retirar '+remExec.length+' projeto(s) com WLs programadas desta equipe/dia (fica registrado):', '');
-      if(motivoRem===null || !String(motivoRem).trim()){ progShowToast('⚠ Motivo não informado. Nada foi alterado.','erro'); return; }
-    }
-    var passo=(add.length||remComum.length)
-      ? progProjetoCoreAlterarProjetosEquipe(eqId, data, {add:add, remove:remComum})
-      : Promise.resolve(true);
-    passo.then(function(ok){
-      if(!ok){ progShowToast('⚠ Não foi possível salvar os projetos da equipe. Nada foi alterado.','erro'); progProjRenderQuadro(); return; }
-      add.concat(remComum).forEach(function(pid){ ppFilaSincronizarProjeto(pid, data); });
-      ppFilaInvalidar();
-      progProjRenderQuadro();
-      var depois=remExec.length ? ppExecRetirarProjetos(eqId, data, remExec, motivoRem) : Promise.resolve(true);
-      depois.then(function(){
-        if(add.length && typeof ppExecAposIncluir==='function') ppExecAposIncluir(eqId, data, add, {abrir:true});
+    function seguir(motivoRem){
+      var passo=(add.length||remComum.length)
+        ? progProjetoCoreAlterarProjetosEquipe(eqId, data, {add:add, remove:remComum})
+        : Promise.resolve(true);
+      passo.then(function(ok){
+        if(!ok){ progShowToast('⚠ Não foi possível salvar os projetos da equipe. Nada foi alterado.','erro'); progProjRenderQuadro(); return; }
+        add.concat(remComum).forEach(function(pid){ ppFilaSincronizarProjeto(pid, data); });
+        ppFilaInvalidar();
+        progProjRenderQuadro();
+        var depois=remExec.length ? ppExecRetirarProjetos(eqId, data, remExec, motivoRem) : Promise.resolve(true);
+        depois.then(function(){
+          if(add.length && typeof ppExecAposIncluir==='function') ppExecAposIncluir(eqId, data, add, {abrir:true});
+        });
       });
-    });
+    }
+    // Motivo pedido numa janela do próprio sistema antes de gravar qualquer coisa; cancelar não altera nada.
+    if(remExec.length){
+      ppExecPedirMotivo('Retirar '+remExec.length+' projeto(s) com WLs programadas', 'Esses projetos saem desta equipe/dia e a programação das WLs é cancelada. O motivo fica registrado.',
+        seguir, function(){ progShowToast('Nada foi alterado.'); });
+      return;
+    }
+    seguir(undefined);
   };
 }
 
@@ -85320,18 +85324,21 @@ function ppExecPrecisaRetirarPorFuncao(eqId, data, pid){
 function ppExecRetirarProjetos(eqId, data, pids, motivoJa){
   var comp = progFindCompDia(eqId, data);
   if(!ppExecCompReal(comp)) return Promise.resolve(false);
-  if(_ppExec.semAuth){ alert(PP_EXEC_MSG_SEM_AUTH+'\n\nNada foi alterado.'); return Promise.resolve(false); }
+  if(_ppExec.semAuth){ progShowToast('⚠ '+PP_EXEC_MSG_SEM_AUTH+' Nada foi alterado.','erro'); return Promise.resolve(false); }
   var lanc = (pids||[]).filter(function(pid){
     var ex = ppExecDaEquipe(eqId, data, pid);
     return ex && (ex.itens||[]).some(function(i){ return Number(i.qtd_lancada||0)!==0; });
   });
-  if(lanc.length){ alert(PP_EXEC_ERROS.EXECUCAO_COM_LANCAMENTO+'\n\nNada foi alterado.'); return Promise.resolve(false); }
-  var motivo = motivoJa;
-  if(motivo===undefined){
-    motivo = prompt('Motivo para retirar o projeto desta equipe/dia (fica registrado na programação):', '');
-    if(motivo===null) return Promise.resolve(false);
+  if(lanc.length){ progShowToast('⚠ '+PP_EXEC_ERROS.EXECUCAO_COM_LANCAMENTO+' Nada foi alterado.','erro'); return Promise.resolve(false); }
+  // Motivo pedido numa janela do próprio sistema (não depende do prompt do navegador).
+  if(motivoJa===undefined){
+    return new Promise(function(resolve){
+      ppExecPedirMotivo('Retirar projeto da equipe/dia', 'O projeto sai da composição desta equipe/dia e a programação das WLs é cancelada. O motivo fica registrado.',
+        function(m){ ppExecRetirarProjetos(eqId, data, pids, m).then(resolve); },
+        function(){ resolve(false); });
+    });
   }
-  motivo = String(motivo||'').trim();
+  var motivo = String(motivoJa||'').trim();
   if(!motivo){ progShowToast('⚠ Informe o motivo. Nada foi alterado.','erro'); return Promise.resolve(false); }
   var cadeia = Promise.resolve(true);
   (pids||[]).forEach(function(pid){
@@ -85390,7 +85397,7 @@ function ppExecQuando(ts){ try{ var d=new Date(ts); return isNaN(d) ? '' : d.toL
 function ppExecAbrirWls(eqId, pid){
   var data = progProjGetData();
   var comp = progFindCompDia(eqId, data);
-  if(_ppExec.semAuth){ alert(PP_EXEC_MSG_SEM_AUTH); return; }
+  if(_ppExec.semAuth){ progShowToast('⚠ '+PP_EXEC_MSG_SEM_AUTH,'erro'); return; }
   if(!ppExecCompReal(comp)){ progShowToast('⚠ Salve a equipe do dia antes de programar as WLs.','erro'); return; }
   var ex = ppExecDaEquipe(eqId, data, pid);
   var pegarEx = ex ? Promise.resolve(ex) : ppExecRpc('fn_proj_execucao_criar', {p_composicao_dia_id:comp.id, p_projeto_id:pid}).then(function(r){
@@ -85449,7 +85456,8 @@ function ppExecRenderModalWls(eqId, pid, data, exec, atividades){
         +'<td style="padding:4px 6px;text-align:right;font-weight:600">'+ppExecFmt(livre)+(a.excedente?' <span title="Executado acima do previsto" style="color:#A32D2D">▲</span>':'')+'</td>'
         +'<td style="padding:4px 6px">'+(it
           ? (it.qtd_programada!=null ? ppExecFmt(it.qtd_programada) : '<span style="color:#aaa">—</span>')
-          : '<input type="number" min="0" step="any" max="'+livre+'" class="pp-exec-meta" data-at="'+a.atividade_id+'" placeholder="opcional" style="width:80px;font-size:11px"/>')+'</td>'
+          : '<input type="number" min="0" step="any" max="'+livre+'" class="pp-exec-meta" data-at="'+a.atividade_id+'" data-livre="'+livre+'" placeholder="opcional" style="width:80px;font-size:11px" oninput="ppExecMetaMudou(this)"/>'
+            +'<input type="text" class="pp-exec-just" data-at="'+a.atividade_id+'" placeholder="Justificativa da exceção" maxlength="300" style="display:none;width:150px;font-size:10px;margin-top:3px;border:.5px solid #A35A00;border-radius:4px;padding:2px 4px"/>')+'</td>'
         +'<td style="padding:4px 6px;text-align:right">'+(it
           ? (ppExecNum(it.qtd_lancada)!==0 ? '<span title="Já tem quantidade lançada" style="font-size:10px;color:#888">🔒 lançada</span>'
             : '<button class="btn" style="font-size:10px;padding:2px 6px" onclick="ppExecRetirarItem(\''+eqId+'\',\''+pid+'\',\''+it.item_id+'\')">Retirar</button>')
@@ -85475,6 +85483,51 @@ function ppExecCompromissosHtml(lista){
     var eq = (equipes||[]).find(function(e){ return String(e.id)===String(k.equipe_id); }) || {};
     return escHtml(eq.nome_equipe||eq.nome||'Equipe')+' ('+escHtml(fmtD(String(k.data||'').split('T')[0]))+') '+ppExecFmt(k.qtd_aberta);
   }).join(' · ')+'</div>';
+}
+
+/** Meta acima do saldo livre: mostra o campo de justificativa da exceção na própria linha (sem prompt do navegador). */
+function ppExecMetaMudou(inp){
+  var at = inp.getAttribute('data-at');
+  var just = document.querySelector('#modal-area .pp-exec-just[data-at="'+at+'"]');
+  if(!just) return;
+  var txt = String(inp.value||'').trim().replace(',', '.');
+  var acima = txt!=='' && isFinite(Number(txt)) && Number(txt) > ppExecNum(inp.getAttribute('data-livre'));
+  just.style.display = acima ? 'block' : 'none';
+  if(acima){
+    just.title = 'Passa do saldo livre ('+ppExecFmt(inp.getAttribute('data-livre'))+'): só com a permissão de exceção (PROJ_AUTORIZAR_EXCESSO_META). Fica registrado.';
+    var cb = document.querySelector('#modal-area .pp-exec-at[data-at="'+at+'"]');
+    if(cb && !cb.disabled) cb.checked = true;
+  }
+}
+
+/** Janela do próprio sistema para pedir o motivo (retiradas). Confirmar sem texto não segue; Cancelar não altera nada. */
+function ppExecPedirMotivo(titulo, descricao, aoConfirmar, aoCancelar){
+  setModal('<div class="modal-bg"><div class="modal" style="max-width:460px">'
+    +'<h3 style="margin-bottom:.4rem">'+escHtml(titulo)+'</h3>'
+    +'<div style="font-size:12px;color:#666;margin-bottom:.6rem">'+escHtml(descricao)+'</div>'
+    +'<label style="font-size:11px;font-weight:600;display:block;margin-bottom:4px">Motivo <span style="color:#A32D2D">*</span></label>'
+    +'<textarea id="pp-exec-motivo" maxlength="300" rows="3" style="width:100%;font-size:12px;box-sizing:border-box" placeholder="Obrigatório (fica registrado)"></textarea>'
+    +'<div id="pp-exec-motivo-erro" style="display:none;font-size:12px;color:#A32D2D;margin-top:.4rem"></div>'
+    +'<div style="display:flex;gap:8px;margin-top:.75rem">'
+    +'<button class="btn" id="pp-exec-motivo-cancelar" style="flex:1">Cancelar</button>'
+    +'<button class="btn btn-pri" id="pp-exec-motivo-ok" style="flex:1">Confirmar</button>'
+    +'</div></div></div>');
+  var ok = document.getElementById('pp-exec-motivo-ok');
+  var cancelar = document.getElementById('pp-exec-motivo-cancelar');
+  if(cancelar) cancelar.onclick = function(){ closeModal(); if(aoCancelar) aoCancelar(); };
+  if(ok) ok.onclick = function(){
+    var campo = document.getElementById('pp-exec-motivo');
+    var m = String((campo && campo.value) || '').trim();
+    if(!m){
+      var e = document.getElementById('pp-exec-motivo-erro');
+      if(e){ e.textContent = 'Informe o motivo. Nada foi alterado.'; e.style.display = 'block'; }
+      return;
+    }
+    if(ok.disabled) return;
+    ok.disabled = true;
+    closeModal();
+    aoConfirmar(m);
+  };
 }
 
 function ppExecMarcarWl(cb){
@@ -85511,7 +85564,12 @@ function ppExecColetarItens(){
       if(!isFinite(q) || q<0){ erro = PP_EXEC_ERROS.QTD_INVALIDA; return; }
       item.qtd_programada = q;
       // Acima do saldo livre: bloqueado por padrão; só segue com justificativa (o banco exige a permissão de exceção).
-      if(q>livre){ item._excesso = {livre:livre, codigo:(cb.getAttribute('data-codigo')||'')}; }
+      if(q>livre){
+        var jEl = document.querySelector('#modal-area .pp-exec-just[data-at="'+at+'"]');
+        var just = jEl ? String(jEl.value||'').trim() : '';
+        if(!just){ erro = PP_EXEC_ERROS.QTD_ACIMA_DO_SALDO+' (saldo livre '+ppExecFmt(livre)+'). Para exceção, preencha a justificativa na linha da atividade.'; return; }
+        item.excesso_justificativa = just;
+      }
     }
     itens.push(item);
   });
@@ -85526,14 +85584,6 @@ function ppExecSalvarWls(eqId, pid, data, execId, btn){
   if(col.erro){ mostrar(col.erro); return; }
   if(!col.itens.length){ mostrar(PP_EXEC_ERROS.ITENS_VAZIOS+' Ou feche sem programar.'); return; }
   if(btn.disabled) return;
-  for(var k=0;k<col.itens.length;k++){
-    var ex = col.itens[k]._excesso;
-    if(!ex) continue;
-    var just = prompt('A meta '+ppExecFmt(col.itens[k].qtd_programada)+' passa do saldo livre ('+ppExecFmt(ex.livre)+').\n\nIsso só é aceito com a permissão de exceção (PROJ_AUTORIZAR_EXCESSO_META) e fica registrado.\nJustificativa:', '');
-    if(just===null || !String(just).trim()){ mostrar(PP_EXEC_ERROS.QTD_ACIMA_DO_SALDO+' (saldo livre '+ppExecFmt(ex.livre)+'). Nada foi gravado.'); return; }
-    col.itens[k].excesso_justificativa = String(just).trim();
-    delete col.itens[k]._excesso;
-  }
   btn.disabled = true; btn.textContent = '⏳ Programando…';
   ppExecRpc('fn_proj_execucao_definir_itens', {p_execucao_id:execId, p_itens:col.itens}).then(function(r){
     btn.disabled = false; btn.textContent = '✓ Programar marcadas';
@@ -85545,13 +85595,15 @@ function ppExecSalvarWls(eqId, pid, data, execId, btn){
 }
 
 function ppExecRetirarItem(eqId, pid, itemId){
-  var motivo = prompt('Motivo para retirar esta atividade da programação do dia (fica registrado):', '');
-  if(motivo===null) return;
-  motivo = String(motivo||'').trim();
-  if(!motivo){ progShowToast('⚠ Informe o motivo. Nada foi alterado.','erro'); return; }
+  // Motivo pedido numa janela do próprio sistema; Cancelar volta para as WLs do dia sem alterar nada.
+  ppExecPedirMotivo('Retirar atividade da programação', 'A atividade sai da programação desta equipe/dia. O motivo fica registrado.',
+    function(m){ ppExecRetirarItemComMotivo(eqId, pid, itemId, m); },
+    function(){ ppExecAbrirWls(eqId, pid); });
+}
+function ppExecRetirarItemComMotivo(eqId, pid, itemId, motivo){
   var data = progProjGetData();
   ppExecRpc('fn_proj_execucao_cancelar_item', {p_item_id:itemId, p_motivo:motivo}).then(function(r){
-    if(!r.ok){ progShowToast('⚠ '+r.error,'erro'); return; }
+    if(!r.ok){ progShowToast('⚠ '+r.error,'erro'); ppExecAbrirWls(eqId, pid); return; }
     progShowToast('✅ Atividade retirada da programação. Motivo registrado.');
     ppExecRpc('fn_proj_execucao_dia', {p_data:data, p_projeto_ids:ppExecProjetosDoDia(data)}).then(function(d){
       if(d.ok && d.data){ _ppExec.data=data; _ppExec.estados=d.data.estados||{}; _ppExec.execucoes=d.data.execucoes||[]; _ppExec.carregado=true; }

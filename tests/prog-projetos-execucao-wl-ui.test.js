@@ -40,12 +40,15 @@ ok('na Programação de Projetos só mudaram os 5 pontos de entrada', JSON.strin
 
 const NOVAS = ['ppExecRpc', 'ppExecCompReal', 'ppExecProjetosDoDia', 'ppExecDaEquipe', 'ppExecEstado', 'ppExecGarantirDia',
   'ppExecAposIncluir', 'ppExecPrecisaRetirarPorFuncao', 'ppExecRetirarProjetos', 'ppExecResumoWls', 'ppExecChipProjetoHtml', 'ppExecNum', 'ppExecFmt',
-  'ppExecQuando', 'ppExecAbrirWls', 'ppExecRenderModalWls', 'ppExecCompromissosHtml', 'ppExecMarcarWl', 'ppExecColetarItens', 'ppExecSalvarWls', 'ppExecRetirarItem'];
+  'ppExecQuando', 'ppExecAbrirWls', 'ppExecRenderModalWls', 'ppExecCompromissosHtml', 'ppExecMetaMudou', 'ppExecPedirMotivo', 'ppExecMarcarWl', 'ppExecColetarItens',
+  'ppExecSalvarWls', 'ppExecRetirarItem', 'ppExecRetirarItemComMotivo'];
 const codigoNovo = NOVAS.map(fn).join('\n');
 ok('ES5 nas funções novas e alteradas', !/\blet\s|\bconst\s|=>|`/.test(semComent(codigoNovo + ppMudadas.map(fn).join('\n'))));
 ok('execução só por função do banco (nenhuma escrita direta nas tabelas novas)', !/prog_proj_execuc/.test(codigoNovo.replace(/fn_proj_execucao_\w+/g, '')));
 ok('nenhum lançamento de quantidade executada na 1.7b', !/fn_proj_execucao_lancar|fn_proj_execucao_estornar|qtd_executada\s*[:=]/.test(codigoNovo));
 ok('não liga o interruptor', !/proj_execucao_config/.test(codigoNovo));
+ok('motivo e justificativa sem prompt/alert do navegador (funciona no navegador do app, celular e app instalado)', !/\bprompt\(|\balert\(|\bconfirm\(/.test(semComent(codigoNovo))
+  && !/prompt\(/.test(fn('ppEqSelecionarProjetos')) && !/prompt\(|alert\(/.test(fn('ppEqRemoverProjeto')));
 
 // ── Sandbox ─────────────────────────────────────────────────────
 const VARS = ['PP_EXEC_MSG_SEM_AUTH', '_ppExec', 'PP_EXEC_ERROS'];
@@ -135,22 +138,44 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   c._ppExec.execucoes = [{ execucao_id: 'e1', projeto_id: PE, equipe_id: 'eq1', composicao_dia_id: 'comp-1', itens: [{ qtd_lancada: 0 }] }];
   ok('retirada: estruturado com execução vai pela função do banco; legado não', c.ppExecPrecisaRetirarPorFuncao('eq1', '2026-10-17', PE) === true
     && c.ppExecPrecisaRetirarPorFuncao('eq1', '2026-10-17', PL) === false);
+  c.pedidos = []; c.ppExecPedirMotivo = (tit, d, okf) => { c.pedidos.push(tit); okf('motivo x'); };
   let okR = await c.ppExecRetirarProjetos('eq1', '2026-10-17', [PE]);
   const ret = c.calls.find(x => x[0] === 'fn_proj_execucao_retirar_projeto');
-  ok('retirada: pede motivo e grava numa chamada (composição + cancelamento)', okR === true && c.prompts.length === 1 && ret && ret[1].p_motivo === 'motivo x'
+  ok('retirada: pede motivo (janela do sistema) e grava numa chamada (composição + cancelamento)', okR === true && c.pedidos.length === 1 && ret && ret[1].p_motivo === 'motivo x'
     && ret[1].p_composicao_dia_id === 'comp-1' && c.composicao_dia[0].projeto_ids === JSON.stringify([PL]), { okR, ret });
-  c = sandbox({ comps: [compReal([PE])], motivo: '   ' });
+  c = sandbox({ comps: [compReal([PE])] });
   c._ppExec.data = '2026-10-17'; c._ppExec.estados = ESTADOS; c._ppExec.execucoes = [{ projeto_id: PE, composicao_dia_id: 'comp-1', itens: [] }];
+  c.ppExecPedirMotivo = (tit, d, okf, cancel) => cancel();
   okR = await c.ppExecRetirarProjetos('eq1', '2026-10-17', [PE]);
-  ok('retirada sem motivo: nada é chamado', okR === false && c.calls.length === 0 && /motivo/i.test(c.toasts[0][0]));
+  ok('retirada cancelada na janela do motivo: nada é chamado', okR === false && c.calls.length === 0);
+  okR = await c.ppExecRetirarProjetos('eq1', '2026-10-17', [PE], '   ');
+  ok('retirada com motivo em branco: nada é chamado', okR === false && c.calls.length === 0 && /motivo/i.test(c.toasts[0][0]));
   c = sandbox({ comps: [compReal([PE])] });
   c._ppExec.data = '2026-10-17'; c._ppExec.estados = ESTADOS; c._ppExec.execucoes = [{ projeto_id: PE, composicao_dia_id: 'comp-1', itens: [{ qtd_lancada: 2 }] }];
   okR = await c.ppExecRetirarProjetos('eq1', '2026-10-17', [PE]);
-  ok('retirada com quantidade lançada: bloqueada na tela, nada chamado', okR === false && c.calls.length === 0 && /lançada/.test(c.alerts[0]));
+  ok('retirada com quantidade lançada: bloqueada na tela, nada chamado', okR === false && c.calls.length === 0 && /lançada/.test(c.toasts[0][0]) && c.alerts.length === 0);
   c = sandbox({ comps: [compReal([PE])], semAuth: true });
   c._ppExec.data = '2026-10-17'; c._ppExec.estados = ESTADOS; c._ppExec.semAuth = true; c._ppExec.execucoes = [{ projeto_id: PE, composicao_dia_id: 'comp-1', itens: [] }];
   okR = await c.ppExecRetirarProjetos('eq1', '2026-10-17', [PE]);
-  ok('B4: retirada sem login autenticado não grava nada', okR === false && c.calls.length === 0 && /login autenticado/.test(c.alerts[0]));
+  ok('B4: retirada sem login autenticado não grava nada', okR === false && c.calls.length === 0 && /login autenticado/.test(c.toasts[0][0]) && c.alerts.length === 0);
+
+  // Janela do motivo (sistema): vazio não segue; preenchido segue; Cancelar não altera
+  {
+    const els = { 'pp-exec-motivo': { value: '' }, 'pp-exec-motivo-erro': { textContent: '', style: {} }, 'pp-exec-motivo-ok': { disabled: false }, 'pp-exec-motivo-cancelar': {} };
+    c = sandbox();
+    c.document = { getElementById: id => els[id] || null, querySelector: () => null, querySelectorAll: () => [] };
+    const confirmados = [], cancelados = [];
+    c.ppExecPedirMotivo('Retirar', 'texto', m => confirmados.push(m), () => cancelados.push(1));
+    ok('janela do motivo: abre com campo obrigatório', /id="pp-exec-motivo"/.test(c.modal) && /Motivo/.test(c.modal));
+    els['pp-exec-motivo-ok'].onclick();
+    ok('janela do motivo: sem texto não segue e explica', confirmados.length === 0 && /Informe o motivo/.test(els['pp-exec-motivo-erro'].textContent));
+    els['pp-exec-motivo'].value = '  equipe remanejada ';
+    els['pp-exec-motivo-ok'].onclick();
+    ok('janela do motivo: com texto segue com o motivo limpo', confirmados.join() === 'equipe remanejada' && c.modal === null);
+    c.ppExecPedirMotivo('Retirar', 'texto', m => confirmados.push(m), () => cancelados.push(1));
+    els['pp-exec-motivo-cancelar'].onclick();
+    ok('janela do motivo: Cancelar não segue', cancelados.length === 1 && confirmados.length === 1);
+  }
 
   // Depois de incluir (fila / janela): só com composição salva; cria e abre as WLs
   c = sandbox({ comps: [compReal([PE])], rpc: {
@@ -223,7 +248,21 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   ok('coleta: com meta vai por atividade (meta 3 ≤ saldo 4)', !col.erro && col.itens.length === 1 && col.itens[0].atividade_id === 'a1' && col.itens[0].qtd_programada === 3, col);
   c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '2,5' })]);
   col = c.ppExecColetarItens();
-  ok('coleta: meta acima do saldo livre não passa calada (marca exceção para pedir justificativa)', !col.erro && col.itens[0]._excesso && col.itens[0]._excesso.livre === 2, col);
+  ok('coleta: meta acima do saldo livre sem justificativa é recusada na tela', /saldo livre 2/.test(col.erro || '') && /justificativa/.test(col.erro || ''), col);
+  c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '2,5' }),
+    el('pp-exec-just', { 'data-at': 'a2' }, { value: ' reforço aprovado ' })]);
+  col = c.ppExecColetarItens();
+  ok('coleta: meta acima do saldo livre com justificativa segue com a justificativa', !col.erro && col.itens[0].qtd_programada === 2.5 && col.itens[0].excesso_justificativa === 'reforço aprovado', col);
+  {
+    const just = el('pp-exec-just', { 'data-at': 'a2' }, { style: { display: 'none' } });
+    const cbAt = el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' });
+    c.document = dom([just, cbAt]);
+    const meta = el('pp-exec-meta', { 'data-at': 'a2', 'data-livre': '2' }, { value: '3' });
+    c.ppExecMetaMudou(meta);
+    ok('meta acima do saldo livre mostra o campo de justificativa e marca a atividade', just.style.display === 'block' && cbAt.checked === true);
+    meta.value = '1'; c.ppExecMetaMudou(meta);
+    ok('meta dentro do saldo esconde o campo de justificativa', just.style.display === 'none');
+  }
   c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '2' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '-1' })]);
   ok('coleta: meta negativa recusada', /inválida/.test(c.ppExecColetarItens().erro || ''));
   c.document = dom([el('pp-exec-wl', { 'data-wl': 'w1' }, { checked: true }),
@@ -233,17 +272,17 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
   ok('coleta: WL com atividade já programada inclui só as novas (sem repetir)', !col.erro && col.itens.length === 1 && col.itens[0].atividade_id === 'a2', col);
 
   // Salvar com excesso: pede justificativa; sem ela nada é enviado
-  for (const just of ['reforço aprovado', null]) {
+  for (const just of ['reforço aprovado', '']) {
     c = sandbox({ rpc: { fn_proj_execucao_definir_itens: () => ({ status: 200, body: { incluidos: 1 } }), fn_proj_execucao_dia: () => DIA_OK(ESTADOS) } });
-    c.prompt = () => just;
     const errEl = { textContent: '', style: {} };
-    c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '0.5' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '1' })]);
+    c.document = dom([el('pp-exec-at', { 'data-wl': 'w1', 'data-at': 'a2', 'data-livre': '0.5' }, { checked: true }), el('pp-exec-meta', { 'data-at': 'a2' }, { value: '1' }),
+      el('pp-exec-just', { 'data-at': 'a2' }, { value: just })]);
     c.document.getElementById = id => id === 'pp-exec-erro' ? errEl : null;
     c.ppExecSalvarWls('eq1', PE, '2026-10-17', 'e1', { disabled: false, textContent: '' });
     await ticks(10);
     const env = c.calls.find(x => x[0] === 'fn_proj_execucao_definir_itens');
     if (just) ok('excesso com justificativa: enviada ao banco junto com a meta', env && env[1].p_itens[0].excesso_justificativa === 'reforço aprovado'
-      && env[1].p_itens[0].qtd_programada === 1 && !('_excesso' in env[1].p_itens[0]), env);
+      && env[1].p_itens[0].qtd_programada === 1, env);
     else ok('excesso sem justificativa: nada é enviado e a tela explica', !env && /saldo livre/.test(errEl.textContent), errEl.textContent);
   }
   // Pontos de entrada (estático)
@@ -251,7 +290,7 @@ const compReal = (projs, extra) => Object.assign({ id: 'comp-1', equipe_id: 'eq1
     && fn('ppFilaColocarNaEquipe').indexOf('ppExecAposIncluir') > fn('ppFilaColocarNaEquipe').indexOf('if(!ok){'));
   ok('janela de projetos: retirada de estruturado com execução exige motivo e vai pela função; inclusão abre WLs',
     /ppExecPrecisaRetirarPorFuncao/.test(fn('ppEqSelecionarProjetos')) && /ppExecRetirarProjetos\(eqId, data, remExec, motivoRem\)/.test(fn('ppEqSelecionarProjetos'))
-    && /ppExecAposIncluir\(eqId, data, add, \{abrir:true\}\)/.test(fn('ppEqSelecionarProjetos')));
+    && /ppExecAposIncluir\(eqId, data, add, \{abrir:true\}\)/.test(fn('ppEqSelecionarProjetos')) && /ppExecPedirMotivo\(/.test(fn('ppEqSelecionarProjetos')));
   ok('✕ do card: estruturado com execução vai pela função; demais como antes', /ppExecPrecisaRetirarPorFuncao\(eqId, data, projetoId\)/.test(fn('ppEqRemoverProjeto'))
     && /progProjetoCoreAlterarProjetosEquipe\(eqId, data, \{remove:\[projetoId\]\}\)/.test(fn('ppEqRemoverProjeto')));
   ok('quadro: carrega o dia da execução (uma vez por data)', /ppExecGarantirDia\(data\)/.test(fn('_progProjRenderQuadroInterno')));
