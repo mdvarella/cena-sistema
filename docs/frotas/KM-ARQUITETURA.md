@@ -1,8 +1,8 @@
 # Frotas — Arquitetura de quilometragem, correções e exceções
 
-**Situação:** proposta técnica para aprovação — **nada implementado**. Nenhuma tabela, função, migration ou alteração de KM foi feita.
+**Situação:** arquitetura **aprovada conceitualmente** — **nada implementado**. Nenhuma tabela, função, migration ou alteração de KM foi feita. A autorização para implementar cada fase é concedida separadamente.
 **Data:** 17/10/2026 · **Origem:** diagnóstico do KM atual = 1 (DZH7G12 e mais 6 veículos) e do KM 127491 do TLY9G76.
-**Aprovação conceitual do dono:** 17/10/2026, com os ajustes registrados em §2.
+**Aprovação conceitual do dono:** 17/10/2026 (D1–D9, §2) e 19/10/2026 (P1–P4 decididos e ordem das versões, §2.1–§2.2), sobre o commit `187624c`.
 
 ---
 
@@ -30,14 +30,20 @@
 | D8 | Preservar valores originais e todas as correções; separar **leitura do painel** de **KM total acumulado**; não classificar automaticamente ajustes < 1.000 km como inválidos. |
 | D9 | 8.1.224 = correções já desenvolvidas da Portaria. 8.1.225 = correção do ciclo de regravação. Arquitetura definitiva em fases próprias (§11). |
 
-### Pontos em aberto (decisão do dono)
+### 2.1 Pontos decididos (19/10/2026)
 
-| # | Ponto | Proposta |
+| # | Ponto | Decisão do dono |
 |---|---|---|
-| P1 | Não existe perfil "Gestor de Frotas" em `usuarios_sistema` (hoje: `supervisor_frotas`, 1 usuário). | Criar o perfil `gestor_frotas` **ou** usar `supervisor_frotas`. A matriz de permissões fica pronta para qualquer um. |
-| P2 | Perfil do operador do CCO. | Perfil `operador_cco` criado só na fase CCO; até lá a permissão não é concedida a ninguém além de D2. |
-| P3 | Política de liberação física offline (§6.3). | Padrão "não libera"; contingência só por política aprovada. |
-| P4 | Valores iniciais das regras (§5.3). | Calibrados com o histórico real antes de ativar bloqueios (fase F2 só alerta). |
+| P1 | Perfil "Gestor de Frotas" (não existia; hoje há `supervisor_frotas`, 1 usuário). | **Planejar a criação do perfil `gestor_frotas`**, mantendo o `supervisor_frotas` existente. O supervisor **não** recebe automaticamente as novas permissões de gestão (D1–D3). |
+| P2 | Perfil do operador do CCO. | **Prever o perfil `operador_cco`**, criado somente quando o módulo da Central de Controle Operacional for iniciado. A autorização de exceções exige **usuário autenticado** (Supabase Auth), **permissão válida** (`cena_pode`) e **separação entre solicitante e autorizador**. |
+| P3 | Liberação física sem internet (§6.3). | Registrar ocorrências e evidências **localmente**. **Proibida** a abertura automática do portão com exceção ainda não autorizada. Um **procedimento de contingência supervisionado** para ausência de internet será documentado futuramente (documento próprio, com aprovação). |
+| P4 | Validação de KM (§5.3). | Começar **só com alertas** e calibração pelo histórico real dos veículos. **Nenhum bloqueio automático** antes de homologação específica das regras. |
+
+### 2.2 Ordem das versões (19/10/2026)
+
+1. **8.1.224** — concluir primeiro a homologação da Portaria (correções já desenvolvidas: saída aberta de qualquer dia, PATCH 400 das fotos/OCR).
+2. **8.1.225** — correção do ciclo de regravação do KM (§10), com autorização separada.
+3. **F1–F6** — arquitetura definitiva (§11), cada fase com autorização própria.
 
 ## 3. Princípios
 
@@ -155,14 +161,14 @@ Com `Δt` = tempo desde a referência e `Δkm` = km informado − referência:
 | Foto obrigatória ausente | BLOQUEIO |
 | OCR com confiança baixa | ALERTA |
 
-Na fase F2 todas as regras rodam em modo `ALERTA` (calibração). Bloqueios entram só após aprovação dos parâmetros (P4).
+**P4 (decidido):** todas as regras começam em modo `ALERTA`, com calibração pelo histórico real dos veículos (F2). A coluna "Resultado padrão" acima indica o comportamento **alvo**; nenhuma regra passa a `BLOQUEIO` antes de homologação específica (F5). Enquanto em `ALERTA`, a leitura que dispararia bloqueio fica `PROVISORIA` e entra no painel de inconsistências.
 
 ### 5.4 Correção (item 1)
 Só `FROTAS_CORRIGIR_KM`; justificativa obrigatória; foto opcional; só leituras passadas. Gera evento `CORRECAO` ligado ao original. A saída mostra o KM corrigido e mantém o original visível. O banco recalcula referência e cópia do cadastro.
 
 ### 5.5 Exceção (item 2 — D5)
 1. A leitura é bloqueada → o porteiro solicita exceção (justificativa + foto + KM informado).
-2. Quem tem `FROTAS_AUTORIZAR_EXCECAO_KM` autoriza ou nega, com justificativa.
+2. Quem tem `FROTAS_AUTORIZAR_EXCECAO_KM` autoriza ou nega, com justificativa — sempre **autenticado** (sem fallback anônimo) e **diferente do solicitante** (P2).
 3. Registro: veículo, operação (saída/retorno), saída, solicitante, autorizador, data/hora, justificativa, KM informado, referência do momento, canal.
 4. Vale **uma vez**, até `valida_ate` (padrão 30 min, configurável). Depois: `EXPIRADA`.
 5. A leitura liberada fica `NAO_CONFIAVEL`. **Referência e cadastro não mudam.**
@@ -189,7 +195,7 @@ Mesma validação, com referência = KM de saída da própria viagem se confiáv
 ### 6.3 Offline (D7)
 1. Leitura, foto, OCR e, se bloqueada, o **pedido de exceção** são gravados no aparelho (IndexedDB, fila atual), nunca descartados.
 2. Validação local usa a última referência baixada (cache) — é só orientação.
-3. **Liberação física:** exceção não autorizada **não libera** o veículo. Padrão proposto: veículo bloqueado não sai enquanto não houver autorização. Contingência (P3) somente se o dono aprovar uma política — por exemplo, autorização por telefone registrada com nome do autorizador e horário, revisada obrigatoriamente pelo gestor ao sincronizar. Não se propõe código/semente secreta no aparelho (regra do projeto: nada de segredo no front).
+3. **Liberação física (P3, decidido):** exceção não autorizada **não libera** o veículo e **não abre o portão automaticamente**. Veículo bloqueado não sai enquanto não houver autorização. O **procedimento de contingência supervisionado** para ausência de internet será documentado à parte, para aprovação (ponto de partida: autorização por telefone registrada com nome do autorizador e horário, revisada obrigatoriamente pelo gestor ao sincronizar). Não se propõe código/semente secreta no aparelho (regra do projeto: nada de segredo no front).
 4. Ao sincronizar: os eventos entram com `evento_em` real, validados contra a referência daquele momento; pendências viram exceções `PENDENTE` ou itens do painel.
 
 ### 6.4 Correção, troca e revisão de legado
@@ -197,20 +203,23 @@ Telas de Frotas, restritas às permissões D1/D3, sempre com justificativa e con
 
 ## 7. Permissões (D1–D4)
 
-| Ação (`cena_acoes`) | Admin | Gestor de Frotas (P1) | Operador CCO (P2) | Portaria |
-|---|---|---|---|---|
-| `FROTAS_CORRIGIR_KM` | ✔ | ✔ | — | — |
-| `FROTAS_AUTORIZAR_EXCECAO_KM` | ✔ | ✔ | ✔ (fase CCO) | — |
-| `FROTAS_REGISTRAR_TROCA_HODOMETRO` | ✔ | ✔ | — | — |
-| Registrar leitura / solicitar exceção | ✔ | ✔ | — | ✔ (sem ação especial) |
+| Ação (`cena_acoes`) | `admin` | `gestor_frotas` (novo, P1) | `supervisor_frotas` | `operador_cco` (futuro, P2) | `portaria` |
+|---|---|---|---|---|---|
+| `FROTAS_CORRIGIR_KM` | ✔ | ✔ | — | — | — |
+| `FROTAS_AUTORIZAR_EXCECAO_KM` | ✔ | ✔ | — | ✔ (só na fase CCO) | — |
+| `FROTAS_REGISTRAR_TROCA_HODOMETRO` | ✔ | ✔ | — | — | — |
+| Registrar leitura / solicitar exceção | ✔ | ✔ | ✔ | — | ✔ (sem ação especial) |
 
-Concessão por contrato via `cena_permissoes_acao.contrato_id`; checagem no banco por `cena_pode()`. Quem solicita não pode autorizar a própria exceção.
+- Concessão por contrato via `cena_permissoes_acao.contrato_id`; checagem no banco por `cena_pode()`.
+- `supervisor_frotas` continua existindo e **não** recebe automaticamente as permissões de gestão; concessão individual só por decisão expressa na matriz.
+- Perfil `gestor_frotas`: criação planejada (ainda não criado). Perfil `operador_cco`: criado só ao iniciar o módulo CCO.
+- **Autorizar exceção exige:** usuário autenticado no Supabase Auth (`auth.uid()` não nulo — sem fallback anônimo), permissão válida e **solicitante ≠ autorizador** (checado no banco).
 
 ## 8. Integração futura com o CCO
 
 - **Fila:** exceções `PENDENTE` já são uma fila no banco; o CCO assina via Realtime (mesmo mecanismo já usado na Portaria — `20260930170000_realtime_portaria_programacao.sql`).
 - **Painel do CCO:** foto do hodômetro, OCR, gráfico do KM acumulado do veículo, equipe, programação do dia, histórico de exceções do veículo e do porteiro.
-- **Decisão remota:** `fn_frotas_km_decidir_excecao` com `canal='REMOTO_CCO'`; o tablet da Portaria escuta a própria solicitação e libera assim que `AUTORIZADA`.
+- **Decisão remota:** `fn_frotas_km_decidir_excecao` com `canal='REMOTO_CCO'`, pelo perfil `operador_cco` (criado nesta fase), com as mesmas exigências de autenticação, permissão e separação solicitante/autorizador; o tablet da Portaria escuta a própria solicitação e libera assim que `AUTORIZADA`.
 - **Prazo e escalonamento:** sem resposta no prazo → próximo nível; avisos externos (celular/WhatsApp) por `functions/` (sem segredo no front).
 - **Indicadores:** exceções por veículo/porteiro/base, tempo de resposta, veículos com leituras não confiáveis, divergências OCR × digitado.
 - **Fonte adicional:** `frotas_veiculos.km_rastreador` / telemetria como origem de leitura `CONFIAVEL` com prioridade configurável.
@@ -248,7 +257,7 @@ Escopo mínimo, só tela, sem tabelas novas:
 | F2 — Migração em modo leitura | eventos a partir do histórico; relatório de referência proposta; regras em modo ALERTA | reconstrução idempotente; nenhum dado original alterado (assinatura antes/depois); conferência amostral com fotos |
 | F3 — Portaria | validação pelo banco, pedido/uso de exceção, offline (§6.3); fim da gravação direta de `km_atual` | fluxos online/offline, fila sem perda, exceção expirada, tablets em versão antiga |
 | F4 — Frotas | correção, troca de hodômetro, revisão de legado, painel de inconsistências | permissões por contrato, auditoria completa, relatórios de KM rodado por ciclo |
-| F5 — Ativação de bloqueios | `modo=BLOQUEIO` por perfil após calibração | simulação com 30 dias reais (quantos bloqueios/alertas teriam ocorrido) |
+| F5 — Ativação de bloqueios | `modo=BLOQUEIO` por perfil, **somente após homologação específica das regras** (P4) | simulação com 30 dias reais (quantos bloqueios/alertas teriam ocorrido); homologação das regras com o dono |
 | F6 — CCO | fila em tempo real, decisão remota, escalonamento, indicadores | latência, prazo, canal registrado, tablet libera só com AUTORIZADA |
 
 Cada fase: diagnóstico → aprovação → implementação → testes → homologação → publicação autorizada.
