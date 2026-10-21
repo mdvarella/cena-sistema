@@ -112,7 +112,11 @@
       if(_np(s.placa)!==placa) return;
       var t0=Date.parse(s.data_saida);
       if(!t0) return;
-      var t1=s.data_retorno?Date.parse(s.data_retorno):(t0+18*3600000);
+      // Encerramento administrativo: horário de retorno desconhecido (23:59:59 antigo é convencional) → janela padrão.
+      var encAdm=(typeof global.portEncHorarioDesconhecido==='function')
+        ? global.portEncHorarioDesconhecido(s)
+        : (s.tipo_encerramento==='ENCERRAMENTO_ADMINISTRATIVO' || String(s.obs_retorno||'').indexOf('[Encerramento administrativo]')===0);
+      var t1=(s.data_retorno && !encAdm)?Date.parse(s.data_retorno):(t0+18*3600000);
       if(isNaN(t1)) t1=t0+18*3600000;
       if(ts<t0||ts>t1) return;
       var dist=Math.abs(ts-t0);

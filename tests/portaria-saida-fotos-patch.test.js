@@ -198,16 +198,22 @@ const recuperar = c => c.portAplicarFotosPacote(Object.assign({}, c.banco[0]));
     return m && semComent(m[1]).match(/([a-z_0-9]+)\s*:/g).map(x => x.replace(/[:\s]/g, '')).every(k => COLS.includes(k));
   })());
 
-  // 11. Escopo: só funções da Portaria mudaram em relação à base da branch (TMA, Diário, PP e SOT intactos)
-  const base = execSync('git merge-base HEAD origin/main', { cwd: raiz }).toString().trim();
-  const htmlBase = execSync('git show ' + base + ':index.html', { cwd: raiz, maxBuffer: 1 << 30 }).toString('utf8').replace(/\r\n/g, '\n');
+  // 11. Escopo. (a) A ENTREGA da 8.1.224 (base c27358c → release a557b5d) só mudou funções da Portaria — comparação entre
+  //     commits fixos, para não quebrar com versões seguintes aprovadas (8.1.225 mexe também em Frotas/Showroom).
+  //     (b) No arquivo atual, TMA/PP/Diário/SOT continuam idênticos à base. Commit ausente: falha clara.
+  const showCommit = c => { try { return execSync('git show ' + c + ':index.html', { cwd: raiz, maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').replace(/\r\n/g, '\n'); }
+    catch (e) { console.error('FALHOU: commit histórico ' + c + ' indisponível — verificação de escopo não pode ser feita.'); process.exit(1); } };
+  const BASE_224 = process.env.PORT224_BASE || 'c27358c', REL_224 = process.env.PORT224_RELEASE || 'a557b5d';
+  const htmlBase = showCommit(BASE_224), htmlRel = showCommit(REL_224);
+  ok('escopo: commits históricos certos (8.1.224 na release, não na base)', /numero: '8\.1\.224'/.test(htmlRel) && !/numero: '8\.1\.224'/.test(htmlBase));
   const nomes = src => { const s = new Set(); const re = /\n(?:async )?function ([A-Za-z0-9_$]+)\(/g; let m; while ((m = re.exec(src))) s.add(m[1]); return s; };
-  const nA = nomes(htmlBase), nB = nomes(html);
-  const mudou = [];
-  nB.forEach(n => { if (!nA.has(n) || fnDe(htmlBase, n) !== fnDe(html, n)) mudou.push(n); });
-  nA.forEach(n => { if (!nB.has(n)) mudou.push('-' + n); });
-  ok('escopo: só funções da Portaria alteradas', mudou.length > 0 && mudou.every(n => /^-?port[A-Z]/.test(n)), mudou);
-  ok('escopo: TMA/PP/Diário/SOT idênticos', !mudou.some(n => /tma|progProj|pp[A-Z]|diario|sot/i.test(n)), mudou);
+  const difs = (a, b) => { const nA = nomes(a), nB = nomes(b), out = [];
+    nB.forEach(n => { if (!nA.has(n) || fnDe(a, n) !== fnDe(b, n)) out.push(n); });
+    nA.forEach(n => { if (!nB.has(n)) out.push('-' + n); }); return out; };
+  const mudou224 = difs(htmlBase, htmlRel);
+  ok('escopo: a entrega da 8.1.224 só alterou funções da Portaria', mudou224.length > 0 && mudou224.every(n => /^-?port[A-Z]/.test(n)), mudou224);
+  const mudouAgora = difs(htmlBase, html);
+  ok('escopo: TMA/PP/Diário/SOT idênticos à base no arquivo atual', !mudouAgora.some(n => /tma|progProj|pp[A-Z]|diario|sot/i.test(n)), mudouAgora.filter(n => /tma|progProj|pp[A-Z]|diario|sot/i.test(n)));
 
   if (failed.length) { console.error('FALHOU ' + failed.length + '/' + total + ':\n- ' + failed.join('\n- ')); process.exit(1); }
   console.log('portaria-saida-fotos-patch: OK (' + total + ' verificações)');
