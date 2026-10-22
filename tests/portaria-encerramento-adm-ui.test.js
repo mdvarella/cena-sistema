@@ -232,14 +232,23 @@ const okResp = () => ({ status: 200, body: { ok: true, id: ID, idempotente: fals
   ok('descarte de conflitos nunca inclui retorno aguardando o gestor', /e\.conflito_tipo!=='ENCERRAMENTO_ADM'/.test(fnDe(off, 'portOffDescartarConflitos'))
     && /Tentar conciliar de novo/.test(fnDe(off, 'portOffAbrirPainel')));
 
-  // ── Isolamento: TMA, Programação de Projetos, Diário, SOT idênticos à 8.1.224 ──
-  let htmlBase;
-  try { htmlBase = execSync('git show ' + (process.env.PORT225_BASE || 'a557b5d') + ':index.html', { cwd: raiz, maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').replace(/\r\n/g, '\n'); }
-  catch (e) { console.error('FALHOU: commit base a557b5d (8.1.224) indisponível — isolamento não verificado.'); process.exit(1); }
+  // ── Isolamento: TMA, Programação de Projetos, Diário, SOT ──
+  // (a) A ENTREGA da 8.1.225 (base a557b5d → release 732987e) não alterou nenhuma função protegida — commits fixos,
+  //     para não quebrar com fases seguintes aprovadas do TMA (T0: gravação confirmada, coberta em tma-t0-gravacao.test.js).
+  // (b) No arquivo atual, Programação de Projetos, Diário e SOT continuam idênticos à 8.1.224.
+  const showCommit225 = (c, rot) => { try { return execSync('git show ' + c + ':index.html', { cwd: raiz, maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').replace(/\r\n/g, '\n'); }
+    catch (e) { console.error('FALHOU: commit ' + rot + ' ' + c + ' indisponível — isolamento não verificado.'); process.exit(1); } };
+  const htmlBase = showCommit225(process.env.PORT225_BASE || 'a557b5d', 'base (8.1.224)');
+  const htmlRel = showCommit225(process.env.PORT225_RELEASE || '732987e', 'release (8.1.225)');
+  ok('isolamento: commits certos (8.1.224 na base, 8.1.225 na release)', /numero: '8\.1\.224'/.test(htmlBase) && /numero: '8\.1\.225'/.test(htmlRel));
   const prot = /\n(?:async )?function ((?:progTma\w*|prog(?!Proj|Projeto|Agenda)\w*|_?progProj\w*|progProjetoCore\w*|pp[A-Z]\w*|plpt\w*|_plpt\w*|db[A-Z]\w*|sot\w*))\(/g;
   const nomesP = [...new Set([...htmlBase.matchAll(prot)].map(m => m[1]))];
-  const difP = nomesP.filter(n => { try { return fnDe(htmlBase, n) !== fn(n); } catch (e) { return true; } });
-  ok('TMA, Programação de Projetos, Diário e SOT idênticos à 8.1.224', difP.length === 0 && nomesP.length > 500, { difP: difP.slice(0, 10), n: nomesP.length });
+  const difRel = nomesP.filter(n => { try { return fnDe(htmlBase, n) !== fnDe(htmlRel, n); } catch (e) { return true; } });
+  ok('entrega 8.1.225: TMA, Programação de Projetos, Diário e SOT idênticos à 8.1.224', difRel.length === 0 && nomesP.length > 500, { difRel: difRel.slice(0, 10), n: nomesP.length });
+  const ehTma = n => /^progTma/.test(n) || /^prog(?!Proj|Projeto|Agenda)/.test(n);
+  const nomesNaoTma = nomesP.filter(n => !ehTma(n));
+  const difP = nomesNaoTma.filter(n => { try { return fnDe(htmlBase, n) !== fn(n); } catch (e) { return true; } });
+  ok('arquivo atual: Programação de Projetos, Diário e SOT idênticos à 8.1.224', difP.length === 0 && nomesNaoTma.length > 300, { difP: difP.slice(0, 10), n: nomesNaoTma.length });
 
   if (failed.length) { console.error('FALHOU ' + failed.length + '/' + total + ':\n- ' + failed.join('\n- ')); process.exit(1); }
   console.log('portaria-encerramento-adm-ui: OK (' + total + ' verificações)');
