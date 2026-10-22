@@ -50516,6 +50516,75 @@ function progRemoverPersistente(colabId){
   try{ localStorage.setItem('prog_persistentes',JSON.stringify(ls)); }catch(e){}
 }
 
+function progStatusComPrazo(promessa, ms){
+  // Resolve {v} | {erro} | {_timeout:true}; nunca rejeita (prazo padrão 20 s).
+  return new Promise(function(resolve){
+    var feito=false;
+    var tm=setTimeout(function(){ if(feito) return; feito=true; resolve({_timeout:true}); }, ms||20000);
+    Promise.resolve(promessa).then(function(v){ if(feito) return; feito=true; clearTimeout(tm); resolve({v:v}); },
+      function(e){ if(feito) return; feito=true; clearTimeout(tm); resolve({erro:e}); });
+  });
+}
+
+function progStatusClassificarErro(texto){
+  // Texto de erro do PostgREST/rede → {ok:false, tipo, detalhe}
+  var t=String(texto==null?'':texto), j=null;
+  try{ j=JSON.parse(t); }catch(e){ j=null; }
+  var code=j&&j.code!=null?String(j.code):'';
+  var msg=j&&(j.message||j.msg)?String(j.message||j.msg):t;
+  if(!t) return {ok:false, tipo:'inesperada', detalhe:''};
+  if(/failed to fetch|networkerror|load failed|network request failed/i.test(t)) return {ok:false, tipo:'rede', detalhe:''};
+  if(code==='42501'||code==='PGRST301'||/permission denied|row-level security|jwt/i.test(t)) return {ok:false, tipo:'permissao', detalhe:msg};
+  if(code==='23505'||/duplicate key/i.test(t)) return {ok:false, tipo:'duplicado', detalhe:msg};
+  if(code==='P0001'||code==='23514'||code==='23503'||code==='42703'||/^[A-Z][A-Z0-9_]{5,}\b/.test(msg)) return {ok:false, tipo:'recusa', detalhe:msg};
+  return {ok:false, tipo:'inesperada', detalhe:msg};
+}
+
+function progStatusMsgErro(r){
+  // Mensagem para o usuário (texto do banco escapado — vai para innerHTML do toast)
+  var d=String((r&&r.detalhe)||'').slice(0,200).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  switch(r&&r.tipo){
+    case 'rede': return 'Sem conexão com o servidor. Verifique a internet e tente de novo.';
+    case 'timeout': return 'O servidor não respondeu a tempo — clique em 🔄 Atualizar antes de tentar de novo.';
+    case 'permissao': return 'Seu usuário não tem permissão para esta gravação'+(d?' ('+d+')':'')+'.';
+    case 'recusa': return 'O banco recusou a gravação'+(d?': '+d:'')+'.';
+    case 'duplicado': return 'Já existe um registro deste colaborador neste dia. Clique em 🔄 Atualizar e tente de novo.';
+    case 'leitura': return 'Não foi possível ler o status atual no servidor. Tente de novo em instantes.';
+    case 'nao_confirmada': return 'O banco não confirmou a gravação. Clique em 🔄 Atualizar.';
+    default: return 'Erro inesperado ao gravar'+(d?': '+d:'')+'.';
+  }
+}
+
+function progStatusGravarDia(linha){
+  // Grava o status de UM colaborador em UM dia e só resolve ok com a confirmação do banco.
+  // A tabela aceita uma linha por colaborador+dia (UNIQUE colaborador_id,data). Se a linha do dia estava
+  // excluída (deleted_at), ela é reativada — não há como criar outra. A exclusão anterior continua no
+  // audit_log e a reativação é registrada com o status e o deleted_at antigos, para rastreio.
+  // Resolve {ok:true, linha, reativada} ou {ok:false, tipo, detalhe}; nunca rejeita.
+  if(DEMO) return Promise.resolve({ok:true, linha:linha, reativada:false});
+  var filtro=['colaborador_id=eq.'+linha.colaborador_id,'data=eq.'+linha.data];
+  return progStatusComPrazo(sbFetch('prog_status_diario',{select:'id,status,obs,deleted_at',filters:filtro,limit:1})).then(function(rl){
+    if(rl._timeout) return {ok:false, tipo:'timeout'};
+    if(!Array.isArray(rl.v)) return {ok:false, tipo:'leitura'};
+    var anterior=rl.v[0]||null;
+    window._sbLastUpsertErr='';
+    return progStatusComPrazo(sbUpsert('prog_status_diario', Object.assign({}, linha, {deleted_at:null}), 'colaborador_id,data')).then(function(ru){
+      if(ru._timeout) return {ok:false, tipo:'timeout'};
+      if(ru.erro) return progStatusClassificarErro(String(ru.erro&&ru.erro.message||ru.erro));
+      if(!(Array.isArray(ru.v)&&ru.v.length&&ru.v[0])) return progStatusClassificarErro(window._sbLastUpsertErr);
+      var gravada=ru.v[0];
+      if(gravada.deleted_at || gravada.status!==linha.status) return {ok:false, tipo:'nao_confirmada'};
+      var reativada=!!(anterior&&anterior.deleted_at);
+      if(reativada && typeof auditLog==='function'){
+        auditLog('editar','operacional','Reativou status do dia excluído (prog_status_diario): '+(anterior.status||'')+' → '+linha.status,
+          {tabela:'prog_status_diario', colaborador_id:linha.colaborador_id, data:linha.data, id:anterior.id,
+           status_anterior:anterior.status||null, obs_anterior:anterior.obs||null, excluido_em:anterior.deleted_at, status_novo:linha.status});
+      }
+      return {ok:true, linha:gravada, reativada:reativada};
+    });
+  });
+}
+
 function progSalvarStatus(){
   var data = _progData||dataHojeLocal();
   var key  = 'prog_status_'+data;
@@ -50549,8 +50618,11 @@ function progSalvarStatus(){
     // Os registros 'disponivel' explícitos são gerenciados individualmente
     if(!registros.length) return;
 
-    // Upsert somente dos status ativos (não-disponivel)
-    fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
+    // Upsert somente dos status ativos (não-disponivel).
+    // Não reativa linha excluída (deleted_at): o lote leva o status de TODOS na memória e poderia
+    // ressuscitar uma exclusão feita por outro usuário. Quem edita um colaborador grava a linha dele
+    // com progStatusGravarDia (confirmada e reativada).
+    progStatusComPrazo(fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
       method:'POST',
       headers:{
         'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),
@@ -50558,15 +50630,28 @@ function progSalvarStatus(){
         'Prefer':'resolution=merge-duplicates,return=minimal'
       },
       body:JSON.stringify(registros)
-    }).then(function(r){
+    })).then(function(res){
+      if(res._timeout){
+        progShowToast('⚠ Status do dia: '+progStatusMsgErro({tipo:'timeout'}),'erro');
+        return;
+      }
+      if(res.erro){
+        console.warn('progSalvarStatus erro:', res.erro);
+        progShowToast('⚠ Status do dia não foi salvo no banco — '+progStatusMsgErro(progStatusClassificarErro(String(res.erro&&res.erro.message||res.erro))),'erro');
+        return;
+      }
+      var r=res.v;
       if(r.ok){
         registros.filter(function(reg){ return reg.status==='verificar'; }).forEach(function(reg){
           vtGarantirTratamento(reg.colaborador_id, reg.data, reg.obs||'');
         });
         vtAtualizarAbaAlerta();
+        return;
       }
-    }).catch(function(e){
-      console.warn('progSalvarStatus erro:', e);
+      return r.text().then(function(t){
+        console.warn('progSalvarStatus recusado:', r.status, t);
+        progShowToast('⚠ Status do dia não foi salvo no banco — '+progStatusMsgErro(progStatusClassificarErro(t)),'erro');
+      });
     });
   }
 }
@@ -57603,20 +57688,7 @@ function progSalvarMenuStatus(colabId){
       }).catch(function(){});
     }
   } else {
-    // Salvar persistente no localStorage SEMPRE (com ou sem data retorno)
-    progSalvarPersistente(colabId, novoSt, data, retorno||'', justif||'');
-
-    // Atualizar in-memory
-    _progStatus[colabId] = novoSt;
-    if(!_progStatusInfo[colabId]) _progStatusInfo[colabId]={};
-    _progStatusInfo[colabId].retorno      = retorno||'';
-    _progStatusInfo[colabId].justificativa = justif||'';
-    progMarcarAutorStatus(colabId);
-
-    // Salvar localStorage prog_status_<data> também
-    progSalvarStatus();
-
-    // Verificar motivo de alteração de data (obrigatório quando data mudou)
+    // Verificar motivo de alteração de data (obrigatório quando data mudou) — antes de gravar qualquer coisa
     var motivoEl=document.getElementById('retorno-motivo');
     var motivoWrapEl=document.getElementById('retorno-motivo-wrap');
     var motivoVisivel=motivoWrapEl&&motivoWrapEl.style.display!=='none';
@@ -57629,46 +57701,72 @@ function progSalvarMenuStatus(colabId){
       }
       // Concatenar motivo na justificativa
       justif = (justif?justif+' | ':'')+'[Alteração '+new Date().toLocaleDateString('pt-BR')+']: '+motivo;
-      _progStatusInfo[colabId].justificativa = justif;
     }
 
-    if(!DEMO){
-      var _obsParaSalvar = (_progStatusInfo[colabId]||{}).obs||justif||'';
-      sbUpsert('prog_status_diario',{
-        colaborador_id:colabId, data:data, status:novoSt,
-        data_retorno:progDataRetornoStr(retorno)||null,
-        obs:_obsParaSalvar||null,
-        registrado_por:usuarioLogado?usuarioLogado.nome:''
-      },'prog_status_diario_colaborador_id_data_key').then(function(){
-        if(novoSt==='verificar'){
-          vtGarantirTratamento(colabId, data, _obsParaSalvar||'');
-          vtAtualizarAbaAlerta();
-        }
-        // Propagar nova data para todos os dias futuros do mesmo status
-        if(retorno && ['ferias','afastado','treinamento'].indexOf(novoSt)>=0){
-          sbUpdate('prog_status_diario',
-            {data_retorno:progDataRetornoStr(retorno)},
-            'colaborador_id=eq.'+colabId+'&status=eq.'+novoSt+'&data=gt.'+data
-          );
-        }
-        progShowToast('✅ Status salvo e propagado para todos os dias.');
-        // Só invalidar o cache DEPOIS que o banco confirmou o save
-        // Evita race condition onde re-fetch retorna dado antigo
-        if(['ferias','afastado','treinamento','demitido'].indexOf(novoSt)>=0){
-          _progStatusDateCache = null;
-        }
-      }).catch(function(e){
-        console.error('progSalvarMenuStatus erro:', e);
-        progShowToast('⚠️ Erro ao salvar no banco.','erro');
-        // Reverter memória em caso de erro
-        delete _progStatus[colabId];
-        delete _progStatusInfo[colabId];
-        _progStatusDateCache = null;
-        progRenderQuadro();
-      });
+    // Memória/localStorage só depois que o banco confirmar (no DEMO, direto)
+    var aplicarMenuStatus = function(){
+      // Salvar persistente no localStorage SEMPRE (com ou sem data retorno)
+      progSalvarPersistente(colabId, novoSt, data, retorno||'', justif||'');
+      _progStatus[colabId] = novoSt;
+      if(!_progStatusInfo[colabId]) _progStatusInfo[colabId]={};
+      _progStatusInfo[colabId].retorno      = retorno||'';
+      _progStatusInfo[colabId].justificativa = justif||'';
+      progMarcarAutorStatus(colabId);
+      // Salvar localStorage prog_status_<data> também (e o lote do dia)
+      progSalvarStatus();
+    };
+
+    if(DEMO){
+      aplicarMenuStatus();
+      closeModal();
+      progRenderQuadro();
+      return;
     }
-    // NÃO resetar cache aqui — a memória já está correta
-    // O cache só é invalidado após confirmação do banco (no .then() acima)
+
+    var _obsParaSalvar = obsInput || (_progStatusInfo[colabId]||{}).obs || justif || '';
+    var _chaveMenu = colabId+'_'+data;
+    if(!window._progStatusGravando) window._progStatusGravando = {};
+    if(window._progStatusGravando[_chaveMenu] && Date.now()-window._progStatusGravando[_chaveMenu] < 60000){
+      progShowToast('⏳ Gravação em andamento — aguarde a confirmação do banco.');
+      return;
+    }
+    window._progStatusGravando[_chaveMenu] = Date.now();
+    var _btnMenu = document.querySelector('#modal-area button[onclick*="progSalvarMenuStatus"]');
+    if(_btnMenu){ _btnMenu.disabled=true; _btnMenu.textContent='Salvando...'; }
+    // Modal fica aberta (texto digitado preservado) até o banco confirmar
+    progStatusGravarDia({
+      colaborador_id:colabId, data:data, status:novoSt,
+      data_retorno:progDataRetornoStr(retorno)||null,
+      obs:_obsParaSalvar||null,
+      registrado_por:usuarioLogado?usuarioLogado.nome:''
+    }).then(function(r){
+      delete window._progStatusGravando[_chaveMenu];
+      if(!r.ok){
+        if(_btnMenu){ _btnMenu.disabled=false; _btnMenu.textContent='💾 Salvar'; }
+        progShowToast('⚠ Status não foi salvo — '+progStatusMsgErro(r),'erro');
+        return;
+      }
+      aplicarMenuStatus();
+      if(novoSt==='verificar'){
+        vtGarantirTratamento(colabId, data, _obsParaSalvar||'');
+        vtAtualizarAbaAlerta();
+      }
+      // Propagar nova data para todos os dias futuros do mesmo status
+      if(retorno && ['ferias','afastado','treinamento'].indexOf(novoSt)>=0){
+        sbUpdate('prog_status_diario',
+          {data_retorno:progDataRetornoStr(retorno)},
+          'colaborador_id=eq.'+colabId+'&status=eq.'+novoSt+'&data=gt.'+data
+        );
+      }
+      progShowToast('✅ Status salvo e propagado para todos os dias.');
+      // Só invalidar o cache DEPOIS que o banco confirmou o save
+      if(['ferias','afastado','treinamento','demitido'].indexOf(novoSt)>=0){
+        _progStatusDateCache = null;
+      }
+      closeModal();
+      progRenderQuadro();
+    });
+    return;
   }
   closeModal();
   progRenderQuadro();
@@ -58061,15 +58159,22 @@ function progSetStatus(colabId, status, dataRetorno){
         method:'DELETE',headers:_h
       }).catch(function(){});
     } else {
-      // Upsert para outros status
+      // Upsert para outros status — colunas da regra de unicidade, reativa a linha do dia se estava
+      // excluída e confere a resposta. Se o banco não confirmar, a tela volta ao status anterior.
       var _info=_progStatusInfo[colabId]||{};
-      fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=prog_status_diario_colaborador_id_data_key',{
-        method:'POST',
-        headers:Object.assign({},_h,{'Prefer':'resolution=merge-duplicates,return=minimal'}),
-        body:JSON.stringify([{colaborador_id:colabId,data:_data,status:status,
-          data_retorno:dataRetorno||null,obs:_info.obs||null,
-          registrado_por:usuarioLogado?usuarioLogado.nome:''}])
-      }).catch(function(e){console.error('[progSetStatus] save err:',e);});
+      progStatusGravarDia({colaborador_id:colabId,data:_data,status:status,
+        data_retorno:dataRetorno||null,obs:_info.obs||null,
+        registrado_por:usuarioLogado?usuarioLogado.nome:''
+      }).then(function(r){
+        if(r.ok) return;
+        console.error('[progSetStatus] save err:', r.tipo, r.detalhe||'');
+        if(_progStatus[colabId]===status){
+          if(anterior==='disponivel') delete _progStatus[colabId]; else _progStatus[colabId]=anterior;
+        }
+        _progStatusDateCache = null;
+        progRenderQuadro();
+        progShowToast('⚠ Status não foi salvo — '+progStatusMsgErro(r),'erro');
+      });
     }
   }
 
