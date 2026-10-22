@@ -24,6 +24,74 @@ BEGIN
   END IF;
 END $$;
 
+-- ── 0. Backups do rollback (estrutura permanente: o rollback nunca apaga estas tabelas) ──────────
+-- Cada rollback acrescenta uma cópia completa dos metadados, com identificador único e data/hora, e registra
+-- a contagem e a assinatura da cópia. Nada aqui é sobrescrito ou apagado; a reaplicação confere tudo antes de usar.
+CREATE TABLE IF NOT EXISTS public.frotas_portaria_saidas_encerramento_bkp (
+  bkp_id                      bigserial PRIMARY KEY,
+  rollback_id                 uuid NOT NULL,
+  copiado_em                  timestamptz NOT NULL,
+  id                          uuid NOT NULL,
+  tipo_encerramento           text,
+  retorno_horario_conhecido   boolean,
+  encerrado_em                timestamptz,
+  encerrado_por               text,
+  encerrado_por_auth          uuid,
+  encerramento_justificativa  text,
+  encerramento_evidencia      jsonb,
+  encerramento_origem         text,
+  data_retorno_convencional   timestamptz,
+  convertido_retorno_em       timestamptz,
+  convertido_retorno_por      text,
+  convertido_retorno_por_auth uuid,
+  conversao_origem            text,
+  conversao_justificativa     text,
+  conversao_evento_offline    text,
+  status_no_rollback          text,
+  data_retorno_no_rollback    timestamptz,
+  km_retorno_no_rollback      numeric,
+  obs_retorno_no_rollback     text
+);
+CREATE INDEX IF NOT EXISTS frotas_portaria_saidas_enc_bkp_id_idx ON public.frotas_portaria_saidas_encerramento_bkp (id, copiado_em DESC);
+CREATE TABLE IF NOT EXISTS public.frotas_portaria_saidas_encerramento_rollbacks (
+  rollback_id      uuid PRIMARY KEY,
+  executado_em     timestamptz NOT NULL,
+  executado_por    text NOT NULL DEFAULT current_user,
+  linhas           int NOT NULL,
+  assinatura       text NOT NULL,
+  acao_desativada  boolean NOT NULL DEFAULT false
+);
+-- Só o banco (migration/rollback) usa estas tabelas: fora da API.
+ALTER TABLE public.frotas_portaria_saidas_encerramento_bkp ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.frotas_portaria_saidas_encerramento_rollbacks ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.frotas_portaria_saidas_encerramento_bkp, public.frotas_portaria_saidas_encerramento_rollbacks FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON SEQUENCE public.frotas_portaria_saidas_encerramento_bkp_bkp_id_seq FROM PUBLIC, anon, authenticated;
+
+-- Assinatura de uma cópia (independente do fuso da sessão: horários em UTC).
+CREATE OR REPLACE FUNCTION public.cena_portaria_enc_bkp_assinatura(p_rollback uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SET search_path TO 'public', 'pg_temp'
+AS $$
+  SELECT md5(coalesce(string_agg(
+           b.id::text
+           || '|' || coalesce(b.tipo_encerramento, '∅') || '|' || coalesce(b.retorno_horario_conhecido::text, '∅')
+           || '|' || coalesce((b.encerrado_em AT TIME ZONE 'UTC')::text, '∅') || '|' || coalesce(b.encerrado_por, '∅')
+           || '|' || coalesce(b.encerrado_por_auth::text, '∅') || '|' || coalesce(b.encerramento_justificativa, '∅')
+           || '|' || coalesce(b.encerramento_evidencia::text, '∅') || '|' || coalesce(b.encerramento_origem, '∅')
+           || '|' || coalesce((b.data_retorno_convencional AT TIME ZONE 'UTC')::text, '∅')
+           || '|' || coalesce((b.convertido_retorno_em AT TIME ZONE 'UTC')::text, '∅') || '|' || coalesce(b.convertido_retorno_por, '∅')
+           || '|' || coalesce(b.convertido_retorno_por_auth::text, '∅') || '|' || coalesce(b.conversao_origem, '∅')
+           || '|' || coalesce(b.conversao_justificativa, '∅') || '|' || coalesce(b.conversao_evento_offline, '∅')
+           || '|' || coalesce(b.status_no_rollback, '∅') || '|' || coalesce((b.data_retorno_no_rollback AT TIME ZONE 'UTC')::text, '∅')
+           || '|' || coalesce(b.km_retorno_no_rollback::text, '∅') || '|' || coalesce(b.obs_retorno_no_rollback, '∅'),
+           ',' ORDER BY b.id), ''))
+    FROM public.frotas_portaria_saidas_encerramento_bkp b
+   WHERE b.rollback_id = p_rollback;
+$$;
+REVOKE ALL ON FUNCTION public.cena_portaria_enc_bkp_assinatura(uuid) FROM PUBLIC, anon, authenticated;
+
 -- ── 1. Colunas (só acréscimo) ────────────────────────────────────────────────
 ALTER TABLE public.frotas_portaria_saidas
   ADD COLUMN IF NOT EXISTS tipo_encerramento           text,
@@ -96,6 +164,26 @@ BEGIN
   FROM unnest(ARRAY['admin', 'gestor', 'coordenador', 'diretoria']) AS m(perfil)
   WHERE NOT EXISTS (SELECT 1 FROM public.cena_permissoes_acao pa
                     WHERE pa.perfil = m.perfil AND pa.acao = 'PORT_ENCERRAR_SAIDA_ADMIN' AND pa.contrato_id IS NULL);
+
+  -- Reaplicação depois de rollback: recria SÓ as regras que o próprio rollback revogou (marca '| rollback 8.1.225'),
+  -- com o mesmo perfil, contrato e permitido (concessões e negações). Regra revogada não volta (proteção da tabela):
+  -- cria-se uma nova. Regras revogadas por gestores, fora do rollback, não são recriadas.
+  INSERT INTO public.cena_permissoes_acao (perfil, acao, contrato_id, permitido, motivo)
+  SELECT d.perfil, d.acao, d.contrato_id, d.permitido,
+         'Recriada na reaplicação da 8.1.225 (revogada pelo rollback de ' || to_char(d.deleted_at, 'YYYY-MM-DD HH24:MI') || ')'
+    FROM (SELECT DISTINCT ON (pa.perfil, pa.contrato_id) pa.*
+            FROM public.cena_permissoes_acao pa
+           WHERE pa.acao = 'PORT_ENCERRAR_SAIDA_ADMIN' AND pa.deleted_at IS NOT NULL
+           ORDER BY pa.perfil, pa.contrato_id, pa.deleted_at DESC) d
+   WHERE rtrim(coalesce(d.motivo, '')) LIKE '%| rollback 8.1.225'   -- a revogação mais recente foi a do rollback
+     AND NOT EXISTS (SELECT 1 FROM public.cena_permissoes_acao x
+                      WHERE x.perfil = d.perfil AND x.acao = d.acao AND x.contrato_id IS NOT DISTINCT FROM d.contrato_id
+                        AND x.deleted_at IS NULL);
+  IF EXISTS (SELECT 1 FROM public.frotas_portaria_saidas_encerramento_rollbacks r
+              WHERE r.acao_desativada
+                AND r.executado_em = (SELECT max(executado_em) FROM public.frotas_portaria_saidas_encerramento_rollbacks)) THEN
+    UPDATE public.cena_acoes SET ativo = TRUE WHERE codigo = 'PORT_ENCERRAR_SAIDA_ADMIN' AND ativo IS FALSE;
+  END IF;
 END $$;
 
 -- ── 4. Proteção contra gravação direta + identificação automática ────────────
@@ -414,6 +502,9 @@ DECLARE
   v_depois text;
   v_alvo   int;
   v_feitos int;
+  v_ruim   text;
+  v_conf   int;
+  v_rest   int;
 BEGIN
   SELECT count(*), md5(coalesce(string_agg(id::text || '|' || coalesce(status, '') || '|' || coalesce(data_retorno::text, '') || '|'
            || coalesce(km_retorno::text, '') || '|' || coalesce(obs_retorno, '') || '|' || coalesce(retorno_registrado_por, ''),
@@ -424,23 +515,70 @@ BEGIN
 
   PERFORM set_config('cena.portaria_enc', '1', true);
 
-  -- Reaplicação depois de um rollback: devolve exatamente o que o rollback guardou (nada é reinterpretado).
-  IF to_regclass('public.frotas_portaria_saidas_encerramento_bkp') IS NOT NULL THEN
-    EXECUTE $r$
-      UPDATE public.frotas_portaria_saidas s SET
-        tipo_encerramento = b.tipo_encerramento, retorno_horario_conhecido = b.retorno_horario_conhecido,
-        encerrado_em = b.encerrado_em, encerrado_por = b.encerrado_por, encerrado_por_auth = b.encerrado_por_auth,
-        encerramento_justificativa = b.encerramento_justificativa, encerramento_evidencia = b.encerramento_evidencia,
-        encerramento_origem = b.encerramento_origem, data_retorno_convencional = b.data_retorno_convencional,
-        convertido_retorno_em = b.convertido_retorno_em, convertido_retorno_por = b.convertido_retorno_por,
-        convertido_retorno_por_auth = b.convertido_retorno_por_auth, conversao_origem = b.conversao_origem,
-        conversao_justificativa = b.conversao_justificativa, conversao_evento_offline = b.conversao_evento_offline
+  -- Reaplicação depois de rollback(s): restaura a cópia MAIS RECENTE de cada saída, depois de conferir a integridade de
+  -- TODAS as cópias e que nenhuma saída mudou de forma incompatível desde o rollback. Qualquer divergência interrompe a
+  -- migration inteira (nada é restaurado, nada é apagado; os backups ficam como estavam).
+  IF EXISTS (SELECT 1 FROM public.frotas_portaria_saidas_encerramento_bkp) THEN
+    SELECT string_agg(r.rollback_id::text, ', ') INTO v_ruim
+      FROM public.frotas_portaria_saidas_encerramento_rollbacks r
+     WHERE (SELECT count(*) FROM public.frotas_portaria_saidas_encerramento_bkp b WHERE b.rollback_id = r.rollback_id) <> r.linhas
+        OR public.cena_portaria_enc_bkp_assinatura(r.rollback_id) <> r.assinatura;
+    IF v_ruim IS NOT NULL THEN
+      RAISE EXCEPTION 'BACKUP_INCONSISTENTE: cópia(s) do rollback com contagem ou assinatura diferente do registrado: %. Nada foi restaurado; os backups foram preservados.', v_ruim;
+    END IF;
+    SELECT string_agg(DISTINCT b.rollback_id::text, ', ') INTO v_ruim
       FROM public.frotas_portaria_saidas_encerramento_bkp b
-      WHERE b.id = s.id AND s.tipo_encerramento IS NULL AND s.encerrado_em IS NULL
-        AND (b.tipo_encerramento IS DISTINCT FROM 'ENCERRAMENTO_ADMINISTRATIVO' OR s.status = 'Retornado')
-        AND (b.encerramento_origem IS DISTINCT FROM 'FUNCAO' OR b.tipo_encerramento IS DISTINCT FROM 'ENCERRAMENTO_ADMINISTRATIVO'
-             OR (s.data_retorno IS NULL AND s.km_retorno IS NULL))
-    $r$;
+     WHERE NOT EXISTS (SELECT 1 FROM public.frotas_portaria_saidas_encerramento_rollbacks r WHERE r.rollback_id = b.rollback_id);
+    IF v_ruim IS NOT NULL THEN
+      RAISE EXCEPTION 'BACKUP_INCONSISTENTE: cópia(s) sem registro de rollback: %. Nada foi restaurado; os backups foram preservados.', v_ruim;
+    END IF;
+
+    CREATE TEMP TABLE _enc_restaurar ON COMMIT DROP AS
+      SELECT DISTINCT ON (b.id) b.*
+        FROM public.frotas_portaria_saidas_encerramento_bkp b
+       ORDER BY b.id, b.copiado_em DESC, b.bkp_id DESC;
+
+    -- Incompatibilidades (saída sumiu, já tem outro encerramento, ou mudou depois do rollback):
+    SELECT count(*), string_agg(x.id::text || ' (' || x.motivo || ')', '; ' ORDER BY x.id)
+      INTO v_conf, v_ruim
+      FROM (
+        SELECT r.id,
+               CASE
+                 WHEN s.id IS NULL THEN 'saída não existe mais'
+                 WHEN s.tipo_encerramento IS NOT NULL
+                      AND (s.tipo_encerramento, s.encerrado_em, s.encerramento_origem, s.convertido_retorno_em)
+                          IS DISTINCT FROM (r.tipo_encerramento, r.encerrado_em, r.encerramento_origem, r.convertido_retorno_em)
+                   THEN 'já tem outro encerramento'
+                 WHEN s.tipo_encerramento IS NULL AND r.tipo_encerramento = 'ENCERRAMENTO_ADMINISTRATIVO'
+                      AND (s.status, s.data_retorno, s.km_retorno, s.obs_retorno)
+                          IS DISTINCT FROM (r.status_no_rollback, r.data_retorno_no_rollback, r.km_retorno_no_rollback, r.obs_retorno_no_rollback)
+                   THEN 'encerramento alterado depois do rollback'
+                 WHEN s.tipo_encerramento IS NULL AND r.tipo_encerramento = 'RETORNO_FISICO'
+                      AND (s.data_retorno IS NULL OR (r.convertido_retorno_em IS NOT NULL AND s.data_retorno IS DISTINCT FROM r.data_retorno_no_rollback))
+                   THEN 'retorno alterado depois do rollback'
+               END AS motivo
+          FROM _enc_restaurar r
+          LEFT JOIN public.frotas_portaria_saidas s ON s.id = r.id
+      ) x
+     WHERE x.motivo IS NOT NULL;
+    IF v_conf > 0 THEN
+      RAISE EXCEPTION 'RESTAURACAO_INCONSISTENTE: % saída(s) não batem com o backup: %. Nada foi restaurado; os backups foram preservados — resolva estas saídas e aplique de novo.',
+        v_conf, left(v_ruim, 2000);
+    END IF;
+
+    UPDATE public.frotas_portaria_saidas s SET
+      tipo_encerramento = r.tipo_encerramento, retorno_horario_conhecido = r.retorno_horario_conhecido,
+      encerrado_em = r.encerrado_em, encerrado_por = r.encerrado_por, encerrado_por_auth = r.encerrado_por_auth,
+      encerramento_justificativa = r.encerramento_justificativa, encerramento_evidencia = r.encerramento_evidencia,
+      encerramento_origem = r.encerramento_origem, data_retorno_convencional = r.data_retorno_convencional,
+      convertido_retorno_em = r.convertido_retorno_em, convertido_retorno_por = r.convertido_retorno_por,
+      convertido_retorno_por_auth = r.convertido_retorno_por_auth, conversao_origem = r.conversao_origem,
+      conversao_justificativa = r.conversao_justificativa, conversao_evento_offline = r.conversao_evento_offline
+    FROM _enc_restaurar r
+    WHERE r.id = s.id AND s.tipo_encerramento IS NULL;
+    GET DIAGNOSTICS v_rest = ROW_COUNT;
+    RAISE NOTICE 'restaurados do backup: % (cópia mais recente de cada saída)', v_rest;
+
     -- os restaurados saem do alvo da identificação abaixo e da assinatura de antes
     SELECT count(*), md5(coalesce(string_agg(id::text || '|' || coalesce(status, '') || '|' || coalesce(data_retorno::text, '') || '|'
              || coalesce(km_retorno::text, '') || '|' || coalesce(obs_retorno, '') || '|' || coalesce(retorno_registrado_por, ''),
@@ -510,15 +648,31 @@ NOTIFY pgrst, 'reload schema';
 --  where encerramento_origem = 'LEGADO_23_59' and data_retorno is distinct from data_retorno_convencional;   -- deve ser 0
 -- select public.cena_pode('PORT_ENCERRAR_SAIDA_ADMIN');                                                     -- como gestor: true
 
--- Para desfazer (somente com autorização; NÃO reabre nenhuma saída — encerradas continuam 'Retornado'):
+-- Reversão: NÃO reabre nenhuma saída (status não é tocado) e NÃO apaga backups. Cada execução ACRESCENTA uma cópia
+-- completa dos metadados (rollback_id único + data/hora) e registra contagem e assinatura em
+-- frotas_portaria_saidas_encerramento_rollbacks. As tabelas de backup e a função de assinatura permanecem.
+-- Para desfazer (somente com autorização):
 -- BEGIN;
--- CREATE TABLE IF NOT EXISTS public.frotas_portaria_saidas_encerramento_bkp AS
---   SELECT id, tipo_encerramento, retorno_horario_conhecido, encerrado_em, encerrado_por, encerrado_por_auth,
+-- DO $rb$
+-- DECLARE v_rb uuid := gen_random_uuid(); v_n int; v_agora timestamptz := clock_timestamp();
+-- BEGIN
+--   INSERT INTO public.frotas_portaria_saidas_encerramento_bkp (rollback_id, copiado_em, id, tipo_encerramento,
+--     retorno_horario_conhecido, encerrado_em, encerrado_por, encerrado_por_auth, encerramento_justificativa,
+--     encerramento_evidencia, encerramento_origem, data_retorno_convencional, convertido_retorno_em,
+--     convertido_retorno_por, convertido_retorno_por_auth, conversao_origem, conversao_justificativa,
+--     conversao_evento_offline, status_no_rollback, data_retorno_no_rollback, km_retorno_no_rollback, obs_retorno_no_rollback)
+--   SELECT v_rb, v_agora, id, tipo_encerramento, retorno_horario_conhecido, encerrado_em, encerrado_por, encerrado_por_auth,
 --          encerramento_justificativa, encerramento_evidencia, encerramento_origem, data_retorno_convencional,
 --          convertido_retorno_em, convertido_retorno_por, convertido_retorno_por_auth, conversao_origem,
---          conversao_justificativa, conversao_evento_offline, now() AS copiado_em
+--          conversao_justificativa, conversao_evento_offline, status, data_retorno, km_retorno, obs_retorno
 --     FROM public.frotas_portaria_saidas
 --    WHERE tipo_encerramento IS NOT NULL OR encerrado_em IS NOT NULL OR convertido_retorno_em IS NOT NULL;
+--   GET DIAGNOSTICS v_n = ROW_COUNT;
+--   INSERT INTO public.frotas_portaria_saidas_encerramento_rollbacks (rollback_id, executado_em, linhas, assinatura, acao_desativada)
+--   VALUES (v_rb, v_agora, v_n, public.cena_portaria_enc_bkp_assinatura(v_rb),
+--           EXISTS (SELECT 1 FROM public.cena_acoes WHERE codigo = 'PORT_ENCERRAR_SAIDA_ADMIN' AND ativo));
+--   RAISE NOTICE 'rollback %: % registro(s) de encerramento copiados', v_rb, v_n;
+-- END $rb$;
 -- DROP TRIGGER IF EXISTS trg_portaria_saida_encerramento_guard ON public.frotas_portaria_saidas;
 -- DROP FUNCTION IF EXISTS public.cena_portaria_saida_encerramento_guard();
 -- DROP FUNCTION IF EXISTS public.fn_portaria_encerrar_saida_admin(uuid, text, jsonb);

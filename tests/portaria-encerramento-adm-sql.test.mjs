@@ -287,7 +287,7 @@ const CONV = `select public.fn_portaria_converter_retorno_fisico($1::uuid, $2::t
 
   // ── 5. Rollback ──
   const antesRb = (await db.query(`select id, status from public.frotas_portaria_saidas order by id`)).rows;
-  erro = null; try { await db.exec(desfazer); } catch (e) { erro = e.message; }
+  erro = null; try { await db.exec(desfazer); } catch (e) { erro = e.message; if (process.env.DBG) console.error('DBG:', e.message); try { await db.exec('ROLLBACK'); } catch (_) {} }
   ok('rollback roda sem erro', !erro, erro);
   ok('rollback: nenhuma saída reaberta (status iguais)', JSON.stringify(antesRb) === JSON.stringify((await db.query(`select id, status from public.frotas_portaria_saidas order by id`)).rows));
   const bkp = (await db.query(`select count(*)::int n from public.frotas_portaria_saidas_encerramento_bkp`)).rows[0].n;
@@ -296,17 +296,102 @@ const CONV = `select public.fn_portaria_converter_retorno_fisico($1::uuid, $2::t
   ok('rollback: colunas e funções removidas', cols === 0 && !(await db.query(`select to_regprocedure('public.fn_portaria_encerrar_saida_admin(uuid,text,jsonb)') v`)).rows[0].v);
   ok('rollback: permissão desativada (sem exclusão física)', (await db.query(`select count(*)::int n from public.cena_permissoes_acao where acao='PORT_ENCERRAR_SAIDA_ADMIN' and deleted_at is null`)).rows[0].n === 0
     && (await db.query(`select count(*)::int n from public.cena_permissoes_acao where acao='PORT_ENCERRAR_SAIDA_ADMIN'`)).rows[0].n >= 4);
-  const e7 = (await db.query(`select * from public.frotas_portaria_saidas_encerramento_bkp where id='${S(7)}'`)).rows[0];
+  const e7 = (await db.query(`select * from public.frotas_portaria_saidas_encerramento_bkp where id='${S(7)}' order by copiado_em desc limit 1`)).rows[0] || {};
   await db.exec(`insert into public.frotas_portaria_saidas (id, placa, equipe, data_saida, km_saida, status) values ('${S(12)}', 'LLL2L22', 'EQ12', now() - interval '3 hours', 12000, 'Em campo')`);
   x = await tela(`update public.frotas_portaria_saidas set status='Retornado', data_retorno=now(), km_retorno=12100 where id='${S(12)}' and status='Em campo'`);
   ok('depois do rollback a Portaria volta a gravar retorno normalmente', x.n === 1, x);
-  erro = null; try { await db.exec(mig); } catch (e) { erro = e.message; }
+  erro = null; try { await db.exec(mig); } catch (e) { erro = e.message; if (process.env.DBG) console.error('DBG:', e.message); try { await db.exec('ROLLBACK'); } catch (_) {} }
   ok('reaplicar depois do rollback: sem erro', !erro, erro);
   const r7 = await linha(db, S(7)), r12 = await linha(db, S(12));
   ok('reaplicar depois do rollback: encerramentos da função restaurados do backup (hora real, autor, origem)', r7.tipo_encerramento === 'ENCERRAMENTO_ADMINISTRATIVO'
     && r7.encerramento_origem === 'FUNCAO' && +new Date(r7.encerrado_em) === +new Date(e7.encerrado_em) && r7.encerrado_por_auth === UID.admin && r7.data_retorno === null, r7);
   ok('reaplicar depois do rollback: conversões restauradas', (await linha(db, S(5))).tipo_encerramento === 'RETORNO_FISICO' && (await linha(db, S(5))).conversao_evento_offline === 'ev-1');
   ok('reaplicar depois do rollback: retorno feito sem a 8.1.225 continua sem classificação', r12.tipo_encerramento === null && r12.status === 'Retornado');
+  const pode = async uid => (await api(db, `select public.cena_pode('PORT_ENCERRAR_SAIDA_ADMIN') v`, [], uid)).r.v;
+  ok('reaplicar depois do rollback: permissão volta a valer (ação ativa + matriz reativada)', await pode(UID.gestor) === true && await pode(UID.diretoria) === true
+    && await pode(UID.supervisor) === false
+    && (await db.query(`select count(*)::int n from public.cena_permissoes_acao where acao='PORT_ENCERRAR_SAIDA_ADMIN' and contrato_id is null and deleted_at is null`)).rows[0].n === 4);
+  ok('reaplicar: negação por contrato configurada pelo gestor não é reativada à força', (await db.query(`select count(*)::int n from public.cena_permissoes_acao
+    where acao='PORT_ENCERRAR_SAIDA_ADMIN' and contrato_id='${C_RESTRITO}' and deleted_at is null`)).rows[0].n === 1);
+
+  // ── 6. Ciclos sucessivos de rollback/reaplicação ──
+  const META = `select id, tipo_encerramento, retorno_horario_conhecido, encerrado_em, encerrado_por, encerrado_por_auth, encerramento_justificativa,
+    encerramento_evidencia, encerramento_origem, data_retorno_convencional, convertido_retorno_em, conversao_origem, conversao_evento_offline
+    from public.frotas_portaria_saidas where tipo_encerramento is not null order by id`;
+  const LEG = `select md5(string_agg(id::text||'|'||coalesce(status,'')||'|'||coalesce(data_retorno::text,'')||'|'||coalesce(km_retorno::text,'')||'|'||coalesce(obs_retorno,''), ',' order by id)) v
+    from public.frotas_portaria_saidas where id in ('${S(2)}','${S(3)}')`;
+  const legAntes = (await db.query(LEG)).rows[0].v;
+  const audN = async () => (await db.query(`select count(*)::int n from public.audit_log`)).rows[0].n;
+  const rbs = async () => (await db.query(`select rollback_id, linhas, assinatura from public.frotas_portaria_saidas_encerramento_rollbacks order by executado_em`)).rows;
+  const tenta = async sql => { try { await db.exec(sql); return null; } catch (e) { try { await db.exec('ROLLBACK'); } catch (_) {} return e.message; } };
+
+  // ciclo 2: encerramento novo → rollback 2 → mudanças sem a 8.1.225 → reaplicação
+  await db.exec(`insert into public.frotas_portaria_saidas (id, placa, equipe, data_saida, km_saida, status) values
+    ('${S(13)}', 'MMM3M33', 'EQ13', now() - interval '2 days', 13000, 'Em campo'),
+    ('${S(14)}', 'NNN4N44', 'EQ14', now() - interval '2 days', 14000, 'Em campo'),
+    ('${S(15)}', 'OOO5O55', 'EQ15', now() - interval '2 days', 15000, 'Em campo')`);
+  x = await api(db, ENC, [S(13), 'Encerramento feito entre duas aplicações da migration.', '{"km_observado": 13200, "observado_por": "Porteiro 2"}'], UID.coordenador);
+  ok('ciclo 2: encerramento novo antes do 2º rollback', x.r && x.r.v.ok, x);
+  const meta2 = (await db.query(META)).rows;
+  const aud2 = await audN();
+  const rb1 = (await rbs())[0];
+  erro = await tenta(desfazer);
+  ok('ciclo 2: 2º rollback sem erro', !erro, erro);
+  let lista = await rbs();
+  ok('ciclo 2: 2 rollbacks registrados, cada um com identificador próprio', lista.length === 2 && lista[0].rollback_id !== lista[1].rollback_id);
+  ok('ciclo 2: cópia do 1º rollback não foi sobrescrita (contagem e assinatura intactas)', lista[0].linhas === rb1.linhas && lista[0].assinatura === rb1.assinatura
+    && (await db.query(`select public.cena_portaria_enc_bkp_assinatura('${rb1.rollback_id}') v`)).rows[0].v === rb1.assinatura);
+  ok('ciclo 2: cópia do 2º rollback contém todos os metadados atuais', lista[1].linhas === meta2.length, { linhas: lista[1].linhas, meta: meta2.length });
+  ok('ciclo 2: rollback não mexe no status de nenhuma saída nem na auditoria', (await linha(db, S(13))).status === 'Retornado' && (await linha(db, S(5))).status === 'Retornado' && await audN() === aud2);
+  // sem a 8.1.225: tablet antigo encerra com 23:59 (S14) e registra retorno físico (S15)
+  await db.exec(`update public.frotas_portaria_saidas set status='Retornado', data_retorno=(current_date::text||'T23:59:59')::timestamptz,
+    obs_retorno='[Encerramento administrativo] encerrado com a versão antiga', retorno_registrado_por='Gestor Antigo' where id='${S(14)}'`);
+  await db.exec(`update public.frotas_portaria_saidas set status='Retornado', data_retorno=now(), km_retorno=15100 where id='${S(15)}'`);
+  erro = await tenta(mig);
+  ok('ciclo 2: reaplicação sem erro', !erro, erro);
+  const meta2b = (await db.query(META)).rows.filter(r => ![S(14), S(15)].includes(r.id));
+  ok('ciclo 2: metadados restaurados exatamente (justificativa, responsável, horário, evidência, conversões)', JSON.stringify(meta2b) === JSON.stringify(meta2), { antes: meta2.length, depois: meta2b.length });
+  const r14 = await linha(db, S(14)), r15 = await linha(db, S(15));
+  ok('ciclo 2: encerramento feito sem a 8.1.225 identificado como histórico (valor preservado)', r14.tipo_encerramento === 'ENCERRAMENTO_ADMINISTRATIVO' && r14.encerramento_origem === 'LEGADO_23_59'
+    && +r14.data_retorno === +r14.data_retorno_convencional && r14.encerramento_justificativa === 'encerrado com a versão antiga');
+  ok('ciclo 2: retorno físico feito sem a 8.1.225 intacto', r15.status === 'Retornado' && Number(r15.km_retorno) === 15100 && r15.tipo_encerramento === null);
+  ok('ciclo 2: permissão ativa de novo', await pode(UID.coordenador) === true);
+  ok('ciclo 2: históricos (valores originais) intactos', (await db.query(LEG)).rows[0].v === legAntes);
+  ok('ciclo 2: auditoria preservada', await audN() === aud2);
+
+  // ciclo 3: rollback 3 → cópia adulterada → reaplicação interrompida, nada perdido
+  erro = await tenta(desfazer);
+  ok('ciclo 3: 3º rollback sem erro', !erro, erro);
+  lista = await rbs();
+  const rb3 = lista[2];
+  const bkpN = (await db.query(`select count(*)::int n from public.frotas_portaria_saidas_encerramento_bkp`)).rows[0].n;
+  await db.exec(`update public.frotas_portaria_saidas_encerramento_bkp set encerramento_justificativa='ADULTERADO' where rollback_id='${rb3.rollback_id}' and id='${S(13)}'`);
+  erro = await tenta(mig);
+  ok('ciclo 3: cópia adulterada → reaplicação interrompida com BACKUP_INCONSISTENTE', /BACKUP_INCONSISTENTE/.test(erro || '') && erro.includes(rb3.rollback_id), erro);
+  ok('ciclo 3: interrompida sem aplicar nada (colunas ainda ausentes) e sem apagar backups', (await db.query(`select count(*)::int n from information_schema.columns
+    where table_name='frotas_portaria_saidas' and column_name='tipo_encerramento'`)).rows[0].n === 0
+    && (await db.query(`select count(*)::int n from public.frotas_portaria_saidas_encerramento_bkp`)).rows[0].n === bkpN && (await rbs()).length === 3);
+  await db.exec(`update public.frotas_portaria_saidas_encerramento_bkp set encerramento_justificativa='Encerramento feito entre duas aplicações da migration.'
+    where rollback_id='${rb3.rollback_id}' and id='${S(13)}'`);
+  erro = await tenta(mig);
+  ok('ciclo 3: cópia corrigida → reaplicação sem erro e tudo restaurado', !erro && JSON.stringify((await db.query(META)).rows.filter(r => ![S(14), S(15)].includes(r.id))) === JSON.stringify(meta2), erro);
+
+  // ciclo 4: rollback 4 → saída encerrada alterada sem a 8.1.225 → reaplicação interrompida; resolvida → reaplica
+  erro = await tenta(desfazer);
+  ok('ciclo 4: 4º rollback sem erro', !erro, erro);
+  await db.exec(`update public.frotas_portaria_saidas set data_retorno=now(), km_retorno=13300 where id='${S(13)}'`);
+  erro = await tenta(mig);
+  ok('ciclo 4: saída encerrada alterada depois do rollback → RESTAURACAO_INCONSISTENTE com a saída citada', /RESTAURACAO_INCONSISTENTE/.test(erro || '') && erro.includes(S(13))
+    && /encerramento alterado depois do rollback/.test(erro), erro);
+  ok('ciclo 4: nada aplicado, backups preservados (4 rollbacks)', (await rbs()).length === 4
+    && (await db.query(`select count(*)::int n from information_schema.columns where table_name='frotas_portaria_saidas' and column_name='tipo_encerramento'`)).rows[0].n === 0);
+  await db.exec(`update public.frotas_portaria_saidas set data_retorno=null, km_retorno=null where id='${S(13)}'`);
+  erro = await tenta(mig);
+  ok('ciclo 4: depois de resolvida, reaplicação restaura tudo de novo', !erro && JSON.stringify((await db.query(META)).rows.filter(r => ![S(14), S(15)].includes(r.id))) === JSON.stringify(meta2), erro);
+  ok('ciclo 4: históricos e auditoria intactos depois de 4 ciclos', (await db.query(LEG)).rows[0].v === legAntes && await audN() === aud2);
+  ok('ciclo 4: permissão continua valendo depois de 4 ciclos', await pode(UID.gestor) === true && await pode(UID.portaria) === false);
+  ok('tabelas de backup fora da API (anon/authenticated sem acesso)', !!(await api(db, `select count(*) v from public.frotas_portaria_saidas_encerramento_bkp`, [], UID.admin)).e
+    && !!(await api(db, `select count(*) v from public.frotas_portaria_saidas_encerramento_rollbacks`, [], UID.admin)).e);
 
   if (failed.length) { console.error('FALHOU ' + failed.length + '/' + total + ':\n- ' + failed.join('\n- ')); process.exit(1); }
   console.log('portaria-encerramento-adm-sql: OK (' + total + ' verificações)');

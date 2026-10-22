@@ -121,7 +121,10 @@ Permissão nova no catálogo: `PORT_ENCERRAR_SAIDA_ADMIN` (módulo PORTARIA) par
 6. `GRANT EXECUTE` às funções para `authenticated` (não `anon`);
 7. `NOTIFY pgrst, 'reload schema'`.
 
-**Rollback** (bloco comentado no arquivo, só com autorização): remover gatilho e funções novos, a ação/permissões novas e as colunas novas. Como os campos originais nunca são alterados, a remoção devolve exatamente o estado anterior; encerramentos feitos pela função nova antes do rollback ficariam com `data_retorno` nulo + `status='Retornado'` — o rollback inclui, comentado, a opção de reverter só esses para `Em campo` (decisão do dono na hora).
+**Rollback** (bloco comentado no arquivo, só com autorização; revisado em 22/10/2026): remove gatilho, funções, a ação/permissões novas (revogação, sem exclusão física) e as colunas novas. **Nunca altera o status** de saída nem reabre veículo/equipe.
+- Antes de remover, **acrescenta** uma cópia completa dos metadados em `frotas_portaria_saidas_encerramento_bkp` (com `rollback_id` único, data/hora e o estado operacional da saída no momento) e registra contagem + assinatura em `frotas_portaria_saidas_encerramento_rollbacks`. Essas tabelas e a função `cena_portaria_enc_bkp_assinatura` são permanentes (criadas pela migration, nunca apagadas pelo rollback), sem acesso pela API.
+- **Reaplicação:** confere contagem e assinatura de **todas** as cópias; restaura a cópia **mais recente** de cada saída; recusa a saída que mudou de forma incompatível desde o rollback. Qualquer divergência interrompe a migration inteira (`BACKUP_INCONSISTENTE` / `RESTAURACAO_INCONSISTENTE`, com as saídas citadas) sem restaurar nem apagar nada. Encerramentos feitos pela versão antiga entre as aplicações são identificados como histórico (`LEGADO_23_59`). As regras de permissão revogadas pelo próprio rollback são recriadas (regra revogada não volta, por proteção da tabela); a ação volta a ficar ativa se o rollback a desativou.
+- Testado em 4 ciclos (PGlite) e 3 ciclos (PostgreSQL 17.6 real), incluindo cópia adulterada e saída alterada depois do rollback.
 
 Antes de aplicar: backup confirmado no painel, assinatura md5 dos 228 e de toda a tabela, conferência de colunas.
 

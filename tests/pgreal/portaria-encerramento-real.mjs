@@ -184,6 +184,37 @@ try {
   x = psql(DB, mig);
   ok('reaplicar depois do rollback: sem erro e encerramentos restaurados', x.code === 0 && /^Retornado\|ENCERRAMENTO_ADMINISTRATIVO\|NULO\|NULO$/.test(linha(S(1)))
     && val(DB, `select encerramento_origem from public.frotas_portaria_saidas where id='${S(1)}'`) === 'FUNCAO', x.err);
+
+  // Ciclos sucessivos no servidor real
+  const META = `select md5(string_agg(id::text||'|'||coalesce(tipo_encerramento,'')||'|'||coalesce((encerrado_em at time zone 'UTC')::text,'')||'|'||coalesce(encerrado_por,'')
+    ||'|'||coalesce(encerrado_por_auth::text,'')||'|'||coalesce(encerramento_justificativa,'')||'|'||coalesce(encerramento_evidencia::text,'')||'|'||coalesce(encerramento_origem,'')
+    ||'|'||coalesce((convertido_retorno_em at time zone 'UTC')::text,'')||'|'||coalesce(conversao_evento_offline,''), ',' order by id)) from public.frotas_portaria_saidas where tipo_encerramento is not null`;
+  const pode = uid => psql(DB, como(uid, `select public.cena_pode('PORT_ENCERRAR_SAIDA_ADMIN');`)).out;
+  ok('permissão vale depois da 1ª reaplicação', pode(UID.gestor) === 't' && pode(UID.supervisor) === 'f');
+  psql(DB, ENC(S(8), UID.coordenador));
+  const meta2 = val(DB, META), aud2 = val(DB, 'select count(*) from public.audit_log');
+  x = psql(DB, desfazer);
+  ok('ciclo 2: 2º rollback sem erro; 2 cópias registradas e a 1ª intacta', x.code === 0 && val(DB, 'select count(*) from public.frotas_portaria_saidas_encerramento_rollbacks') === '2'
+    && val(DB, `select bool_and(public.cena_portaria_enc_bkp_assinatura(rollback_id) = assinatura) from public.frotas_portaria_saidas_encerramento_rollbacks`) === 't', x.err);
+  psql(DB, `update public.frotas_portaria_saidas set status='Retornado', data_retorno=(current_date::text||'T23:59:59')::timestamptz,
+    obs_retorno='[Encerramento administrativo] versão antiga entre aplicações' where id='${S(9)}'`);
+  x = psql(DB, mig);
+  ok('ciclo 2: reaplicação restaura exatamente os metadados e identifica o encerramento feito entre aplicações', x.code === 0
+    && val(DB, META.replace("where tipo_encerramento is not null", `where tipo_encerramento is not null and id <> '${S(9)}'`)) === meta2
+    && val(DB, `select encerramento_origem from public.frotas_portaria_saidas where id='${S(9)}'`) === 'LEGADO_23_59'
+    && val(DB, 'select count(*) from public.audit_log') === aud2 && pode(UID.coordenador) === 't', x.err);
+  x = psql(DB, desfazer);
+  psql(DB, `update public.frotas_portaria_saidas_encerramento_bkp set encerrado_por='ADULTERADO' where id='${S(8)}'
+    and rollback_id=(select rollback_id from public.frotas_portaria_saidas_encerramento_rollbacks order by executado_em desc limit 1)`);
+  const y = psql(DB, mig);
+  ok('ciclo 3: cópia adulterada interrompe a reaplicação (BACKUP_INCONSISTENTE), nada aplicado', x.code === 0 && y.code !== 0 && /BACKUP_INCONSISTENTE/.test(y.err)
+    && val(DB, `select count(*) from information_schema.columns where table_name='frotas_portaria_saidas' and column_name='tipo_encerramento'`) === '0', y.err);
+  psql(DB, `update public.frotas_portaria_saidas_encerramento_bkp set encerrado_por='Usuário coordenador' where id='${S(8)}' and encerrado_por='ADULTERADO'`);
+  x = psql(DB, mig);
+  ok('ciclo 3: corrigida a cópia, reaplicação restaura tudo e a permissão volta', x.code === 0
+    && val(DB, META.replace("where tipo_encerramento is not null", `where tipo_encerramento is not null and id <> '${S(9)}'`)) === meta2 && pode(UID.gestor) === 't', x.err);
+  ok('3 rollbacks registrados, nenhuma cópia apagada', val(DB, 'select count(*) from public.frotas_portaria_saidas_encerramento_rollbacks') === '3'
+    && val(DB, 'select sum(linhas) from public.frotas_portaria_saidas_encerramento_rollbacks') === val(DB, 'select count(*) from public.frotas_portaria_saidas_encerramento_bkp'));
 } catch (e) {
   failed.push('execução: ' + e.message);
 } finally {
