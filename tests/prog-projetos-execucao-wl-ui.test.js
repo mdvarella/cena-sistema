@@ -3,7 +3,7 @@
 // B1 execução criada só com a composição salva (id real), por qualquer caminho, idempotente; B2 janela das WLs abre ao
 // incluir e pode fechar sem programar, com alerta "sem WL programada"; meta ≤ saldo também na tela; retirada sempre com
 // motivo e pela função do banco quando há execução; B4 sem login autenticado nada da execução é gravado;
-// projeto legado/em conciliação igual a antes; TMA, Diário e Portaria intactos (funções idênticas à main).
+// projeto legado/em conciliação igual a antes; TMA, Diário e Portaria intactos na entrega da 1.7b (da87584 → 51f607a).
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -12,8 +12,14 @@ const { execFileSync } = require('child_process');
 const raiz = path.join(__dirname, '..');
 const norm = s => s.replace(/\r\n/g, '\n');
 const html = norm(fs.readFileSync(path.join(raiz, 'index.html'), 'utf8'));
-const BASE = process.env.PP_EXEC_BASE || 'da87584';
-const htmlBase = norm(execFileSync('git', ['show', BASE + ':index.html'], { cwd: raiz, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+const BASE = process.env.PP_EXEC_BASE || 'da87584';       // main antes da 1.7b
+const RELEASE = process.env.PP_EXEC_RELEASE || '51f607a'; // release 8.1.223 (entrega da 1.7b)
+function htmlDoCommit(c) {
+  try { return norm(execFileSync('git', ['show', c + ':index.html'], { cwd: raiz, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })); }
+  catch (e) { console.error('FALHOU: commit histórico ' + c + ' indisponível (git fetch / histórico completo) — verificação de isolamento da 1.7b não pode ser feita.'); process.exit(1); }
+}
+const htmlBase = htmlDoCommit(BASE);
+const htmlRelease = htmlDoCommit(RELEASE);
 const failed = [];
 let total = 0;
 function ok(name, cond, detail) { total++; if (!cond) failed.push(name + (detail !== undefined ? ' — ' + JSON.stringify(detail).slice(0, 400) : '')); }
@@ -30,10 +36,17 @@ const semComent = s => s.replace(/\/\/[^\n]*/g, '');
 const tick = () => new Promise(r => setImmediate(r));
 const ticks = async (n = 12) => { for (let i = 0; i < n; i++) await tick(); };
 
-// ── Isolamento: TMA, Diário e Portaria idênticos à main ─────────
-const nomesBase = [...htmlBase.matchAll(/\nfunction ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
-const difs = [...new Set(nomesBase)].filter(n => { try { return fnEm(htmlBase, n) !== fn(n); } catch (e) { return true; } });
-ok('TMA (prog*), Diário (plpt*/db*), Portaria (port*) e SOT idênticos à main (' + BASE + ')', difs.length === 0 && nomesBase.length > 500, { difs: difs.slice(0, 10), n: nomesBase.length });
+// ── Isolamento: a ENTREGA da 1.7b (BASE → RELEASE) não alterou TMA, Diário, Portaria nem SOT ─────────
+// Compara os dois commits históricos (não o arquivo atual): correções posteriores aprovadas desses módulos
+// (ex.: Portaria 8.1.224) são cobertas pelos testes do próprio módulo.
+ok('commits históricos certos: a 1.7b está na release e não na base',
+  /\nfunction ppExecRpc\(/.test(htmlRelease) && !/\nfunction ppExecRpc\(/.test(htmlBase), { BASE, RELEASE });
+const nomesBase = [...htmlBase.matchAll(/\n(?:async )?function ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
+const difs = [...new Set(nomesBase)].filter(n => { try { return fnEm(htmlBase, n) !== fnEm(htmlRelease, n); } catch (e) { return true; } });
+ok('entrega da 1.7b: TMA (prog*), Diário (plpt*/db*), Portaria (port*) e SOT idênticos (' + BASE + ' → ' + RELEASE + ')', difs.length === 0 && nomesBase.length > 500, { difs: difs.slice(0, 10), n: nomesBase.length });
+const nomesRelease = [...htmlRelease.matchAll(/\n(?:async )?function ((?:prog(?!Proj|Projeto|Agenda)\w*|plpt\w*|db\w*|port\w*|_plpt\w*|sot\w*))\(/g)].map(m => m[1]);
+const novasProtegidas = [...new Set(nomesRelease)].filter(n => !nomesBase.includes(n));
+ok('entrega da 1.7b: nenhuma função nova com prefixo de TMA/Diário/Portaria/SOT', novasProtegidas.length === 0, novasProtegidas);
 const ppMudadas = ['ppEqRemoverProjeto', 'ppEqSelecionarProjetos', 'ppFilaColocarNaEquipe', '_progProjRenderQuadroInterno', 'progProjetoCoreRenderEquipeRow'];
 const ppDifs = [...htmlBase.matchAll(/\nfunction ((?:pp|_?progProj|progProjetoCore)\w*)\(/g)].map(m => m[1]).filter(n => fnEm(htmlBase, n) !== fn(n));
 ok('na Programação de Projetos só mudaram os 5 pontos de entrada', JSON.stringify(ppDifs.sort()) === JSON.stringify(ppMudadas.slice().sort()), ppDifs);

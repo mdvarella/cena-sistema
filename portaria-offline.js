@@ -685,6 +685,11 @@ async function portOffSyncRetorno(ev){
     p.saida_id=sid;
     srv=eqv.row;
   }
+  // 8.1.225: saída encerrada administrativamente no servidor — o retorno real deste tablet é conciliado, nunca descartado.
+  if(typeof portOffEncAdm==='function' && portOffEncAdm(srv)){
+    await portOffConciliarRetornoEncerrado(ev, srv, sid, p);
+    return;
+  }
   if(srv.status==='Retornado' && srv.data_retorno){
     ev.status_sync='CONFLITO';
     ev.ultimo_erro='Este evento não foi aplicado porque a equipe já possui retorno registrado no servidor.';
@@ -711,6 +716,8 @@ async function portOffSyncRetorno(ev){
     // sincronizado_em) — não existem na tabela (SQL não aplicado) e causavam 400 PGRST204.
   };
   // Só grava em saída viva e ainda sem retorno; a resposta traz as linhas alteradas (204 sem linha não é sucesso).
+  // Encerramento administrativo (8.1.225) já foi desviado acima para a conciliação; se ele acontecer entre a leitura e
+  // este PATCH, o banco recusa (gatilho de proteção) e a próxima passada concilia.
   // id por último: sbUpdate recusa filtro que começa com id=eq. e não é só o UUID.
   var filtro='deleted_at=is.null&data_retorno=is.null&id=eq.'+sid;
   var ok=await sbUpdate('frotas_portaria_saidas', patch, filtro, {linhas:true});
@@ -756,6 +763,74 @@ async function portOffSyncRetorno(ev){
       if(mem.km_retorno==null || mem.km_retorno==='') mem.km_retorno=p.km_retorno;
     }
   }
+}
+
+/* Encerramento administrativo (8.1.225): tipo_encerramento quando o servidor já tem a coluna; senão o prefixo do texto. */
+function portOffEncAdm(s){
+  if(typeof portEncAdm==='function') return portEncAdm(s);
+  if(!s) return false;
+  if(s.tipo_encerramento) return s.tipo_encerramento==='ENCERRAMENTO_ADMINISTRATIVO';
+  return String(s.obs_retorno||'').indexOf('[Encerramento administrativo]')===0;
+}
+// Recusas da conciliação que dependem de decisão do gestor (dados do retorno não batem): ficam em CONFLITO, guardadas.
+var PORT_OFF_CONC_CONFLITO={HORARIO:1, KM:1, VEICULO:1, NAO_ENCERRADA:1, ACOMPANHANTE:1, NAO_ENCONTRADA:1, EVENTO:1, ORIGEM:1};
+
+/** Retorno real gravado no tablet chegou depois de um encerramento administrativo: converte pelo banco (horário do evento). */
+async function portOffConciliarRetornoEncerrado(ev, srv, sid, p){
+  if(typeof portEncRpc!=='function') throw new Error('Conciliação do retorno indisponível nesta versão — atualize o app.');
+  var fotos=await portOffRestaurarFotos(p.fotos);
+  var fotoUrl=fotos.retorno||null;
+  if(fotoUrl && String(fotoUrl).indexOf('data:')===0 && typeof portUploadFotoSaida==='function'){
+    try{ fotoUrl=await portUploadFotoSaida(fotoUrl,'retorno')||fotoUrl; }catch(e){}
+  }
+  var res=await portEncRpc('fn_portaria_converter_retorno_fisico', {
+    p_saida: sid,
+    p_data_retorno: p.data_retorno,
+    p_km_retorno: p.km_retorno,
+    p_origem: 'OFFLINE_SINCRONIZADO',
+    p_justificativa: 'Retorno registrado no tablet ('+(ev.dispositivo_id||'aparelho')+') e enviado depois do encerramento administrativo.',
+    p_evento_offline: ev.event_id,
+    p_extra: {
+      placa: p.placa||srv.placa||null,
+      obs_retorno: p.obs_retorno||null,
+      retorno_registrado_por: p.retorno_registrado_por||null,
+      base_retorno: p.base_retorno||null,
+      status_devolucao: p.status_devolucao||null,
+      foto_carga_retorno_b64: fotoUrl||null,
+      foto_carga_retorno_ts: p.foto_carga_retorno_ts||null
+    }
+  });
+  if(res && res.ok){
+    ev.status_sync='SINCRONIZADO';
+    ev.data_hora_sincronizacao=new Date().toISOString();
+    ev.conflito_tipo=null;
+    await portOffApagarFotos(p.fotos);
+    p.fotos=null;
+    if(typeof frt_portaria!=='undefined'){
+      var mem=(frt_portaria||[]).find(function(x){return String(x.id)===String(sid);});
+      if(mem){
+        mem._sync_status='SINCRONIZADO';
+        mem.status='Retornado';
+        mem.data_retorno=p.data_retorno;
+        mem.km_retorno=p.km_retorno;
+        mem.tipo_encerramento='RETORNO_FISICO';
+        mem.retorno_horario_conhecido=true;
+        mem.obs_retorno='[Retorno físico conciliado após encerramento administrativo] '+(p.obs_retorno||'');
+      }
+    }
+    return;
+  }
+  if(res && (res.semAuth || res.codigo==='SEM_SESSAO')) throw new Error('Sessão expirada (401). Faça login para sincronizar.');
+  if(res && PORT_OFF_CONC_CONFLITO[res.codigo]){
+    // Nada é descartado: o evento, o KM e as fotos continuam neste tablet até o gestor decidir.
+    ev.status_sync='CONFLITO';
+    ev.conflito_tipo='ENCERRAMENTO_ADM';
+    ev.ultimo_erro='A saída foi encerrada administrativamente no servidor e este retorno não pôde ser conciliado: '
+      +(res.error||res.codigo)+' Os dados e as fotos continuam guardados neste tablet — avise o gestor.';
+    portOffMarcarMemoriaConflito(sid);
+    return;
+  }
+  throw new Error((res && res.error) || 'Servidor não confirmou a conciliação do retorno');
 }
 
 function portOffMarcarMemoriaConflito(sid){
@@ -1167,13 +1242,22 @@ function portOffAbrirPainel(){
     }
     var pend=lista.filter(function(e){return e.status_sync==='PENDENTE'||e.status_sync==='SINCRONIZANDO';});
     var err=lista.filter(function(e){return e.status_sync==='ERRO';});
-    var conf=lista.filter(function(e){return e.status_sync==='CONFLITO';});
+    var confAdm=lista.filter(function(e){return e.status_sync==='CONFLITO' && e.conflito_tipo==='ENCERRAMENTO_ADM';});
+    var conf=lista.filter(function(e){return e.status_sync==='CONFLITO' && e.conflito_tipo!=='ENCERRAMENTO_ADM';});
     var ok=lista.filter(function(e){return e.status_sync==='SINCRONIZADO';}).slice(0,20);
     setModal('<div class="modal-bg" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:520px;max-height:90vh;overflow:auto">'
       +'<h3 style="margin:0 0 .75rem">Sincronização da Portaria</h3>'
       +'<div style="font-size:12px;color:#666;margin-bottom:.75rem">Os horários abaixo são os reais do evento, não o momento do envio.</div>'
       +bloco('Pendentes', pend, '#185FA5')
       +bloco('Erros', err, '#854F0B')
+      +bloco('Retornos aguardando o gestor (saída encerrada administrativamente)', confAdm, '#533AB7')
+      +(confAdm.length
+        ? '<div style="background:#EEEDFE;border-radius:8px;padding:8px 10px;margin-bottom:.75rem;font-size:11px;color:#3C3489">'
+          +'Estes retornos <b>não constam no sistema</b>: a saída foi encerrada administrativamente e o horário ou o KM deste tablet não bateu. '
+          +'Ficam guardados aqui (com as fotos) e <b>não são descartados</b>. Avise o gestor para conferir e tente de novo depois.'
+          +'<div style="margin-top:6px"><button class="btn btn-sm" onclick="portOffReenviarConflitosAdm()" style="color:#fff;background:#533AB7;border-color:#533AB7;font-size:11px;font-weight:700">↻ Tentar conciliar de novo</button></div>'
+          +'</div>'
+        : '')
       +bloco('Conflitos', conf, '#A32D2D')
       +(conf.length
         ? '<div style="background:#FCEBEB;border-radius:8px;padding:8px 10px;margin-bottom:.75rem;font-size:11px;color:#A32D2D">'
@@ -1193,7 +1277,8 @@ function portOffAbrirPainel(){
 /** Descarta manualmente os eventos em CONFLITO (já constam no sistema). Nunca automático. */
 function portOffDescartarConflitos(){
   portOffListEvents().then(function(lista){
-    var conf=(lista||[]).filter(function(e){ return e && e.status_sync==='CONFLITO'; });
+    // Conflito de encerramento administrativo NÃO consta no sistema: nunca entra no descarte (dados e fotos ficam).
+    var conf=(lista||[]).filter(function(e){ return e && e.status_sync==='CONFLITO' && e.conflito_tipo!=='ENCERRAMENTO_ADM'; });
     if(!conf.length){ portOffToast('Nenhum conflito para descartar.'); return; }
     if(!confirm('Descartar '+conf.length+' conflito(s)?\n\nEsses registros JÁ constam no sistema (retorno/saída já lançado). Serão removidos apenas desta fila do tablet — nada é apagado do sistema.')) return;
     var jobs=conf.map(function(e){
@@ -1205,6 +1290,18 @@ function portOffDescartarConflitos(){
       portOffAbrirPainel();
     }).catch(function(){ portOffToast('⚠ Não foi possível descartar todos.','erro'); portOffAbrirPainel(); });
   });
+}
+
+/** Volta para a fila os retornos que esperavam o gestor (encerramento administrativo): o banco decide de novo. */
+function portOffReenviarConflitosAdm(){
+  portOffListEvents().then(function(lista){
+    var adm=(lista||[]).filter(function(e){ return e && e.status_sync==='CONFLITO' && e.conflito_tipo==='ENCERRAMENTO_ADM'; });
+    if(!adm.length){ portOffToast('Nenhum retorno aguardando o gestor.'); return; }
+    return Promise.all(adm.map(function(e){ e.status_sync='PENDENTE'; return portOffPutEvent(e); })).then(function(){
+      if(typeof closeModal==='function') closeModal();
+      portOffSyncAgora();
+    });
+  }).catch(function(){ portOffToast('⚠ Não foi possível reenviar agora.','erro'); });
 }
 
 function portOffSyncAgora(){
