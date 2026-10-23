@@ -50396,6 +50396,12 @@ function progMarcarAutorStatus(colabId){
   if(!colabId) return;
   if(!_progStatusInfo[colabId]) _progStatusInfo[colabId] = {};
   if(usuarioLogado && usuarioLogado.nome) _progStatusInfo[colabId].registrado_por = usuarioLogado.nome;
+  // Marca o colaborador como editado NESTE dia — o lote (progSalvarStatus) grava só os marcados,
+  // nunca a memória inteira (que pode ser de outro dia ou de uma aba antiga).
+  var diaPend = _progData||dataHojeLocal();
+  var pend = window._progStatusPendentes || (window._progStatusPendentes = {});
+  if(!pend[diaPend]) pend[diaPend] = {};
+  pend[diaPend][colabId] = true;
 }
 
 // Statuses que propagam automaticamente para dias seguintes (até data_retorno)
@@ -50592,13 +50598,14 @@ function progSalvarStatus(){
   // 1. localStorage (instantâneo)
   try{ localStorage.setItem(key, JSON.stringify({status:_progStatus,info:_progStatusInfo})); }catch(e){}
 
-  // 2. Banco — salva apenas status não-default
-  // IMPORTANTE: NÃO deleta registros do dia quando lista está vazia
-  // pois pode haver registros 'disponivel' explícitos que bloqueiam férias antigas
-  // IMPORTANTE: NÃO regrava registrado_por de todos — só quem foi editado
-  // (via progMarcarAutorStatus) troca o autor; os demais preservam o original.
+  // 2. Banco — SÓ os colaboradores editados neste dia (marcados por progMarcarAutorStatus).
+  // Antes gravava a memória inteira na data da tela: ao trocar de dia (ou numa aba antiga) copiava
+  // falta/observação do dia anterior para o dia novo e sobrescrevia decisões mais recentes de outros
+  // usuários. A memória dos demais NUNCA é gravada aqui.
+  // IMPORTANTE: NÃO deleta registros do dia; "disponível" é gerenciado individualmente.
   if(!DEMO){
-    var registros = Object.keys(_progStatus)
+    var pendDia = (window._progStatusPendentes||{})[data] || {};
+    var registros = Object.keys(pendDia)
       .filter(function(colId){ return _progStatus[colId]&&_progStatus[colId]!=='disponivel'; })
       .map(function(colId){
         var info = _progStatusInfo[colId]||{};
@@ -50613,45 +50620,37 @@ function progSalvarStatus(){
           registrado_por:autor
         };
       });
-
-    // Se não há registros não-default, apenas retorna — NÃO deleta
-    // Os registros 'disponivel' explícitos são gerenciados individualmente
+    // Marcados que voltaram a "disponível" não vão para o lote
+    Object.keys(pendDia).forEach(function(colId){
+      if(!_progStatus[colId]||_progStatus[colId]==='disponivel') delete pendDia[colId];
+    });
     if(!registros.length) return;
 
-    // Upsert somente dos status ativos (não-disponivel).
-    // Não reativa linha excluída (deleted_at): o lote leva o status de TODOS na memória e poderia
-    // ressuscitar uma exclusão feita por outro usuário. Quem edita um colaborador grava a linha dele
-    // com progStatusGravarDia (confirmada e reativada).
-    progStatusComPrazo(fetch(SB.url+'/rest/v1/prog_status_diario?on_conflict=colaborador_id,data',{
-      method:'POST',
-      headers:{
-        'apikey':SB.key,'Authorization':'Bearer '+(_sbAuthToken||SB.key),
-        'Content-Type':'application/json',
-        'Prefer':'resolution=merge-duplicates,return=minimal'
-      },
-      body:JSON.stringify(registros)
-    })).then(function(res){
-      if(res._timeout){
-        progShowToast('⚠ Status do dia: '+progStatusMsgErro({tipo:'timeout'}),'erro');
-        return;
-      }
-      if(res.erro){
-        console.warn('progSalvarStatus erro:', res.erro);
-        progShowToast('⚠ Status do dia não foi salvo no banco — '+progStatusMsgErro(progStatusClassificarErro(String(res.erro&&res.erro.message||res.erro))),'erro');
-        return;
-      }
-      var r=res.v;
-      if(r.ok){
-        registros.filter(function(reg){ return reg.status==='verificar'; }).forEach(function(reg){
-          vtGarantirTratamento(reg.colaborador_id, reg.data, reg.obs||'');
+    // Um por vez, confirmado: decisão explícita do usuário → reativa a linha do dia se estava excluída
+    // (com auditoria). Sai da lista de pendentes só o que o banco confirmou.
+    var falhas = [];
+    var cadeia = Promise.resolve();
+    registros.forEach(function(reg){
+      cadeia = cadeia.then(function(){
+        return progStatusGravarDia(reg).then(function(r){
+          if(r.ok){
+            delete pendDia[reg.colaborador_id];
+            if(reg.status==='verificar') vtGarantirTratamento(reg.colaborador_id, reg.data, reg.obs||'');
+          } else {
+            falhas.push({reg:reg, r:r});
+          }
         });
-        vtAtualizarAbaAlerta();
-        return;
-      }
-      return r.text().then(function(t){
-        console.warn('progSalvarStatus recusado:', r.status, t);
-        progShowToast('⚠ Status do dia não foi salvo no banco — '+progStatusMsgErro(progStatusClassificarErro(t)),'erro');
       });
+    });
+    cadeia.then(function(){
+      if(registros.length > falhas.length) vtAtualizarAbaAlerta();
+      if(!falhas.length) return;
+      console.warn('progSalvarStatus: não confirmado', falhas);
+      var nomes = falhas.map(function(f){
+        var c = (typeof colaboradores!=='undefined' ? colaboradores : []).find(function(x){ return x.id===f.reg.colaborador_id; });
+        return c && c.nome ? String(c.nome).split(' ')[0] : 'colaborador';
+      }).join(', ');
+      progShowToast('⚠ Status do dia não foi salvo no banco ('+nomes.replace(/</g,'&lt;')+') — '+progStatusMsgErro(falhas[0].r),'erro');
     });
   }
 }
@@ -57712,7 +57711,10 @@ function progSalvarMenuStatus(colabId){
       _progStatusInfo[colabId].retorno      = retorno||'';
       _progStatusInfo[colabId].justificativa = justif||'';
       progMarcarAutorStatus(colabId);
-      // Salvar localStorage prog_status_<data> também (e o lote do dia)
+      // Já confirmado no banco (progStatusGravarDia): não regravar no lote
+      var _pendMenu = (window._progStatusPendentes||{})[data];
+      if(_pendMenu) delete _pendMenu[colabId];
+      // Salvar localStorage prog_status_<data> também
       progSalvarStatus();
     };
 

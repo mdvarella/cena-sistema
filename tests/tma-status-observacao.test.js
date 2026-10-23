@@ -255,22 +255,72 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     ok('clique duplo: uma linha e persistida', banco.linhas.length === 1 && banco.linhas[0].deleted_at === null && banco.linhas[0].status === 'observacao');
   }
 
-  // ═══ 5. Gravação em lote (progSalvarStatus) ═══
+  // ═══ 5. Gravação em lote (progSalvarStatus) — só quem foi editado ═══
+  const ONTEM = '2026-10-21';
+  // Memória de 21/10 (várias faltas/observações) ainda no navegador; a tela já está em 22/10 (troca de dia
+  // dentro da janela de 5 s em que progCarregarStatus ignora a recarga, ou aba antiga). O usuário edita UM colaborador.
+  const memoriaDeOntem = ctx => {
+    ctx._progStatus = { a1: 'falta', a2: 'observacao', a3: 'patio', [CLEBER]: 'falta' };
+    ctx._progStatusInfo = { a1: { registrado_por: 'RODRIGO' }, a2: { obs: 'de ontem', registrado_por: 'RODRIGO' }, [CLEBER]: { obs: 'colaborador ficou na base (21/10)', registrado_por: 'RODRIGO' } };
+  };
+  if (base) {
+    // Reprodução com a main: o lote copia a memória inteira de ontem para 22/10 e sobrescreve o Cleber
+    const banco = criarBanco();
+    banco.linhas.push({ id: 'id-cleber', colaborador_id: CLEBER, data: DIA, status: 'treinamento', data_retorno: '2026-10-23', registrado_por: 'ANSELMO', obs: null, deleted_at: null });
+    const ctx = criarCtx(base, banco);
+    memoriaDeOntem(ctx);
+    ctx._progStatus.editado = 'observacao'; ctx._progStatusInfo.editado = { obs: 'decisão de hoje' };
+    ctx.progMarcarAutorStatus('editado'); ctx.progSalvarStatus(); await espera(30);
+    ok('main: lote copia faltas/observações de ontem para 22/10', ['a1', 'a2', 'a3'].every(id => banco.linhas.some(l => l.colaborador_id === id && l.data === DIA)), banco.linhas.map(l => l.colaborador_id));
+    ok('main: lote sobrescreve o treinamento do Cleber com a falta antiga (sem auditoria)', banco.linhas.find(l => l.colaborador_id === CLEBER).status === 'falta');
+  }
   {
     const banco = criarBanco();
-    banco.linhas.push({ id: 'id-outro', colaborador_id: 'outro', data: DIA, status: 'falta', deleted_at: '2026-10-22T11:00:00Z' });
+    banco.linhas.push({ id: 'id-cleber', colaborador_id: CLEBER, data: DIA, status: 'treinamento', data_retorno: '2026-10-23', registrado_por: 'ANSELMO', obs: null, deleted_at: null });
     const ctx = criarCtx(html, banco);
-    ctx._progStatus = { outro: 'falta', novo: 'observacao' }; ctx._progStatusInfo = { novo: { obs: 'lote' } };
+    memoriaDeOntem(ctx);
+    ctx._progStatus.editado = 'observacao'; ctx._progStatusInfo.editado = { obs: 'decisão de hoje' };
+    ctx.progMarcarAutorStatus('editado'); ctx.progSalvarStatus(); await espera(40);
+    ok('lote: grava só o colaborador editado', banco.linhas.some(l => l.colaborador_id === 'editado' && l.obs === 'decisão de hoje' && !l.deleted_at));
+    ok('lote: NÃO copia faltas/observações da memória de ontem para 22/10', !banco.linhas.some(l => ['a1', 'a2', 'a3'].indexOf(l.colaborador_id) >= 0), banco.linhas.map(l => l.colaborador_id));
+    ok('lote: NÃO sobrescreve o treinamento do Cleber com dado antigo', banco.linhas.find(l => l.colaborador_id === CLEBER).status === 'treinamento' && banco.linhas.find(l => l.colaborador_id === CLEBER).registrado_por === 'ANSELMO');
+    ok('lote: localStorage do dia continua salvo', !!ctx.ls['prog_status_' + DIA]);
+    ok('lote: confirmado sai da lista de pendentes', !Object.keys(ctx.window._progStatusPendentes[DIA] || {}).length);
+    const n = banco.reqs.filter(r => r.metodo === 'POST').length;
     ctx.progSalvarStatus(); await espera(30);
-    ok('lote: grava colaborador novo', banco.linhas.some(l => l.colaborador_id === 'novo' && l.obs === 'lote' && !l.deleted_at));
+    ok('lote: sem pendentes não grava nada (nem a memória antiga)', banco.reqs.filter(r => r.metodo === 'POST').length === n);
+    // Pendente marcado em OUTRO dia não vai para o dia da tela
+    ctx._progData = ONTEM; ctx.progMarcarAutorStatus('a1'); ctx._progData = DIA;
+    ctx.progSalvarStatus(); await espera(30);
+    ok('lote: edição marcada em outro dia não é gravada na data da tela', !banco.linhas.some(l => l.colaborador_id === 'a1'));
+  }
+  {
+    // Edição explícita sobre linha excluída (ex.: janela de status dos Disponíveis, que grava pelo lote)
+    const banco = criarBanco(); linhaCleberExcluida(banco);
+    const ctx = criarCtx(html, banco);
+    ctx._progStatus[CLEBER] = 'observacao'; ctx._progStatusInfo[CLEBER] = { obs: OBS };
+    ctx.progMarcarAutorStatus(CLEBER); ctx.progSalvarStatus(); await espera(40);
+    const rel = await recarregar(criarCtx(html, banco));
+    ok('lote: edição explícita sobre linha excluída reativa e persiste após nova leitura', rel.status === 'observacao' && rel.obs === OBS, rel);
+    ok('lote: reativação auditada', ctx.audits.some(x => /Reativou/.test(x.descricao) && x.extra.status_anterior === 'treinamento'));
+    // Exclusão feita por outro usuário NÃO volta: memória de outro colaborador excluído não é gravada
+    banco.linhas.push({ id: 'id-outro', colaborador_id: 'outro', data: DIA, status: 'falta', deleted_at: '2026-10-22T11:00:00Z' });
+    ctx._progStatus.outro = 'falta';
+    ctx._progStatus.x = 'patio'; ctx.progMarcarAutorStatus('x'); ctx.progSalvarStatus(); await espera(40);
     ok('lote: NÃO ressuscita exclusão de outro colaborador', banco.linhas.find(l => l.colaborador_id === 'outro').deleted_at !== null);
-    ok('lote: localStorage do dia salvo', !!ctx.ls['prog_status_' + DIA]);
-    for (const [modo, re] of [['recusa', /Status do dia não foi salvo no banco — O banco recusou/], ['rede', /Status do dia não foi salvo no banco — Sem conexão/], ['timeout', /Status do dia: O servidor não respondeu/]]) {
-      banco.regra = r => (r.via === 'fetch' && r.metodo === 'POST' ? modo : 'ok');
-      ctx.toasts = [];
-      ctx.progSalvarStatus(); await espera(modo === 'timeout' ? 200 : 30);
-      ok('lote [' + modo + ']: avisa que não salvou', re.test(ult(ctx).m) && ult(ctx).erro, ult(ctx).m);
-    }
+  }
+  for (const [modo, re] of [['recusa', /Status do dia não foi salvo no banco \(CLEBER\) — O banco recusou/], ['rede', /não foi salvo no banco \(CLEBER\) — Sem conexão/], ['timeout', /não foi salvo no banco \(CLEBER\) — O servidor não respondeu/]]) {
+    const banco = criarBanco();
+    banco.regra = r => (r.metodo === 'POST' && r.via === 'auth' ? modo : 'ok');
+    const ctx = criarCtx(html, banco);
+    ctx._progStatus[CLEBER] = 'observacao'; ctx._progStatusInfo[CLEBER] = { obs: OBS };
+    ctx.progMarcarAutorStatus(CLEBER); ctx.progSalvarStatus(); await espera(modo === 'timeout' ? 200 : 40);
+    ok('lote [' + modo + ']: avisa que não salvou', re.test(ult(ctx).m) && ult(ctx).erro, ult(ctx).m);
+    ok('lote [' + modo + ']: continua pendente para nova tentativa', !!(ctx.window._progStatusPendentes[DIA] || {})[CLEBER]);
+    banco.regra = () => 'ok';
+    ctx.progSalvarStatus(); await espera(40);
+    const rel = await recarregar(criarCtx(html, banco));
+    ok('lote [' + modo + ']: nova tentativa grava e persiste', rel.status === 'observacao' && rel.obs === OBS, rel);
   }
 
   // ═══ 6. progSetStatus (janela de status: Faltou etc.) ═══
@@ -299,7 +349,7 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
       return m; };
     const mb = mapa(base), ma = mapa(html);
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
-    ok('escopo: só progSalvarStatus, progSalvarMenuStatus e progSetStatus mudaram', mud.sort().join(',') === 'progSalvarMenuStatus,progSalvarStatus,progSetStatus', mud);
+    ok('escopo: só progSalvarStatus, progSalvarMenuStatus, progSetStatus e progMarcarAutorStatus mudaram', mud.sort().join(',') === 'progMarcarAutorStatus,progSalvarMenuStatus,progSalvarStatus,progSetStatus', mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
     ok('escopo: funções novas só as de gravação do status', novasNomes === 'progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
     ok('Programação de Projetos, Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'progProjSalvarStatus', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
