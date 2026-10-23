@@ -68,7 +68,10 @@ insert into public.prog_status_diario (id, colaborador_id, data, status, registr
 insert into public.prog_status_diario (colaborador_id, data, status, data_retorno, registrado_por) values
  ('${FERIAS}', '2026-09-20', 'ferias', '2026-10-30', 'RH'), ('${VENCIDA}', '2026-10-01', 'afastado', '2026-10-10', 'RH');
 insert into public.prog_status_diario (colaborador_id, data, status, registrado_por)
- select 'dem-' || (g % 150), date '2026-10-01' + (g / 150), 'demitido', 'CÓPIA' from generate_series(0, 3199) g;`;
+ select 'dem-' || (g % 150), date '2026-10-01' + (g / 150), 'demitido', 'CÓPIA' from generate_series(0, 3199) g;
+-- PP: os 3 casos do diagnóstico (fictícios): inapto sem prazo, afastado até 31/10, afastado sem prazo
+insert into public.prog_status_diario (colaborador_id, data, status, data_retorno, registrado_por) values
+ ('pp-heitor', '2026-07-12', 'inapto', null, 'RH'), ('pp-joelson', '2026-07-26', 'afastado', '2026-10-31', 'RH'), ('pp-ricardo', '2026-06-03', 'afastado', null, 'RH');`;
 
 // ── Intermediário local: injeta falhas, registra requisições e repassa ao PostgREST (sem chave/token, papel anon) ──
 let regra = () => null; const reqs = [];
@@ -226,6 +229,28 @@ try {
     const parcial = await ctx.progBuscarStatusPersistentes(DIA);
     ok('falha na página do meio → null (nunca lista parcial)', parcial === null);
     regra = () => null;
+  }
+
+  // ═══ 2b. Programação de Projetos: carga real da PP pelo PostgREST (os 3 casos do diagnóstico) ═══
+  {
+    const ctxPP = src => {
+      const ctx = criarCtx(src);
+      ctx._pp = { statusData: null }; ctx.progProjRenderQuadro = () => {}; ctx._pontoCacheTemDia = () => true;
+      vm.runInContext(['progProjStatusEhDoDia', 'progProjCarregarStatusDia', 'progProjCarregarStatusBanco'].map(n => fnDe(src, n)).join('\n'), ctx);
+      return ctx;
+    };
+    const PP3 = { 'pp-heitor': 'inapto', 'pp-joelson': 'afastado', 'pp-ricardo': 'afastado' };
+    if (base) {
+      const cb = ctxPP(base); cb.progProjCarregarStatusDia(DIA, true); await espera(2500);
+      ok('main (PP, PostgREST real): os 3 somem com o limite de 500', Object.keys(PP3).every(id => !cb._progStatus[id]), Object.keys(PP3).map(id => cb._progStatus[id]));
+    }
+    const c = ctxPP(html); c.progProjCarregarStatusDia(DIA, true); await espera(2500);
+    ok('PP (PostgREST real): os 3 aparecem indisponíveis em 22/10', Object.keys(PP3).every(id => c._progStatus[id] === PP3[id]), Object.keys(PP3).map(id => c._progStatus[id]));
+    ok('PP (PostgREST real): carga completa, sem aviso de falha', c._pp.statusFalhou === null && c._pp.statusData === DIA);
+    let k = 0; regra = x => (x.metodo === 'GET' && /offset=2000/.test(x.url) && k++ === 0 ? 'rede' : null);
+    const c2 = ctxPP(html); c2.progProjCarregarStatusDia(DIA, true); await espera(2500);
+    regra = () => null;
+    ok('PP (PostgREST real): falha de página → dia marcado incompleto, nada aplicado, aviso', c2._pp.statusFalhou === DIA && !Object.keys(c2._progStatus).length && /não foi possível carregar/i.test(ult(c2).m));
   }
 
   // ═══ 3. Gravação individual, lote, janela dos Disponíveis, progSetStatus ═══

@@ -434,6 +434,51 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     banco.regra = () => 'ok';
   }
 
+  // ═══ 6c-PP. Programação de Projetos: os 3 colaboradores do diagnóstico (dados fictícios) ═══
+  {
+    const PP3 = [
+      { id: 'pp-heitor', status: 'inapto', data: '2026-07-12', ret: null },          // como HEITOR SILVA DIAS
+      { id: 'pp-joelson', status: 'afastado', data: '2026-07-26', ret: '2026-10-31' }, // como JOELSON GOMES DE SOUSA
+      { id: 'pp-ricardo', status: 'afastado', data: '2026-06-03', ret: null },        // como RICARDO OLIVEIRA
+    ];
+    const montarBanco = () => {
+      const banco = criarBanco();
+      for (let i = 0; i < 3200; i++) banco.linhas.push({ id: 'd' + String(i).padStart(5, '0'), colaborador_id: 'dem' + (i % 150), data: '2026-10-' + String(1 + Math.floor(i / 150)).padStart(2, '0'), status: 'demitido', data_retorno: null, deleted_at: null });
+      PP3.forEach(p => banco.linhas.push({ id: 'id-' + p.id, colaborador_id: p.id, data: p.data, status: p.status, data_retorno: p.ret, deleted_at: null }));
+      return banco;
+    };
+    const ctxPP = (src, banco) => {
+      const ctx = criarCtx(src, banco);
+      ctx._pp = { statusData: null }; ctx.progProjRenderQuadro = () => {}; ctx._pontoCacheTemDia = () => true;
+      vm.runInContext(['progProjStatusEhDoDia', 'progProjCarregarStatusDia', 'progProjCarregarStatusBanco'].map(n => fnDe(src, n)).join('\n'), ctx);
+      return ctx;
+    };
+    if (base) {
+      const ctx = ctxPP(base, montarBanco());
+      ctx.progProjCarregarStatusDia(DIA, true); await espera(600);
+      ok('main (PP): os 3 colaboradores somem com o limite de 500 (aparecem disponíveis)', PP3.every(p => !ctx._progStatus[p.id]), PP3.map(p => ctx._progStatus[p.id]));
+    }
+    const banco = montarBanco();
+    const ctx = ctxPP(html, banco);
+    ctx.progProjCarregarStatusDia(DIA, true); await espera(600);
+    ok('PP: inapto desde 12/07 sem prazo aparece em 22/10', ctx._progStatus['pp-heitor'] === 'inapto', ctx._progStatus['pp-heitor']);
+    ok('PP: afastado até 31/10 aparece em 22/10', ctx._progStatus['pp-joelson'] === 'afastado', ctx._progStatus['pp-joelson']);
+    ok('PP: afastado desde 03/06 sem prazo aparece em 22/10', ctx._progStatus['pp-ricardo'] === 'afastado', ctx._progStatus['pp-ricardo']);
+    ok('PP: carga completa marcada como do dia, sem aviso de falha', ctx._pp.statusData === DIA && ctx._pp.statusFalhou === null && ctx._pp.statusCarregando === false);
+    // Afastamento de Joelson vence em 31/10: em 31/10 não vale mais (histórico preservado)
+    ctx.progProjCarregarStatusDia('2026-10-31', true); await espera(600);
+    ok('PP: em 31/10 (retorno) o afastado não vale mais; inapto/afastado sem prazo continuam', !ctx._progStatus['pp-joelson'] && ctx._progStatus['pp-heitor'] === 'inapto' && ctx._progStatus['pp-ricardo'] === 'afastado');
+    // Falha numa página intermediária: NÃO vira "ninguém indisponível"
+    let k = 0; banco.regra = r => (r.metodo === 'GET' && /offset=2000/.test(r.url) && k++ === 0 ? 'rede' : 'ok');
+    const ctx2 = ctxPP(html, banco);
+    ctx2.progProjCarregarStatusDia(DIA, true); await espera(600);
+    ok('PP: falha de paginação não aplica lista parcial e marca o dia como incompleto', ctx2._pp.statusFalhou === DIA && !Object.keys(ctx2._progStatus).length);
+    ok('PP: falha de paginação avisa o usuário', /não foi possível carregar férias\/afastamentos\/treinamentos/i.test(ult(ctx2).m) && ult(ctx2).erro, ult(ctx2).m);
+    banco.regra = () => 'ok';
+    ctx2.progProjCarregarStatusDia(DIA, true); await espera(600);
+    ok('PP: nova carga com o banco normal aplica os 3 e limpa o aviso', ctx2._pp.statusFalhou === null && PP3.every(p => !!ctx2._progStatus[p.id]));
+  }
+
   // ═══ 6d. P3 — progVerificarRetornos usa o dia da tela ═══
   {
     const banco = criarBanco();
@@ -506,17 +551,21 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
       return m; };
     const mb = mapa(base), ma = mapa(html);
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
-    const ESPERADAS = ['progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
-      'progMarcarAutorStatus', 'progRenderPainelDisp', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+    const ESPERADAS = ['ppRenderPainelDisp', 'progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
+      'progMarcarAutorStatus', 'progProjAtualizarQuadro', 'progProjCarregarStatusBanco', 'progProjCarregarStatusDia', 'progRenderPainelDisp', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
     const painel = fnDe(html, 'progRenderPainelDisp'), painelBase = fnDe(base, 'progRenderPainelDisp');
     ok('painel de Disponíveis: retorno automático pelo dia da tela (única mudança na função)',
       /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painel.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
     ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
     ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
-    ok('PP: carga e atualização da Programação de Projetos inalteradas', ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => fnDe(base, n) === fnDe(html, n)));
-    ok('Programação de Projetos, Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'progProjSalvarStatus', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
+    // PP: só a LEITURA dos persistentes (paginada) e o aviso de leitura incompleta mudaram
+    const semLeitura = s => s.replace(/sbFetch\('prog_status_diario',\{[^]*?limit:500\s*\}\)/g, 'LEITURA').replace(/progBuscarStatusPersistentes\(data\),?\s*(\/\/[^\n]*)?/g, 'LEITURA');
+    ok('PP: carga usa a busca paginada (sem limite de 500)', ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => /progBuscarStatusPersistentes\(data\)/.test(fnDe(html, n)) && !/limit:\s*500\s*\}\)\s*,?\s*$/m.test(fnDe(html, n).split('composicao_dia')[0])));
+    ok('PP: aviso de leitura incompleta no painel', /pp-status-incompleto/.test(fnDe(html, 'ppRenderPainelDisp')) && /statusFalhou === data/.test(fnDe(html, 'ppRenderPainelDisp')));
+    ok('Programação de Projetos (gravação/regras), Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'ppDispStatusColab', 'ppDispFaltaPeloPonto', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
       .every(n => n === 'sbUpsert' ? sbUpsertReal(base) === sbUpsertReal(html) : fnDe(base, n) === fnDe(html, n)));
+    ok('PP: progProjSalvarStatus continua vazia', /\nfunction progProjSalvarStatus\(\)\{\}\n/.test(html));
     ok('versão não mudou', /numero: '8\.1\.225'/.test(html));
   }
 

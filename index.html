@@ -83212,7 +83212,7 @@ function progProjCarregarStatusDia(data, forcar){
   if(!forcar && progProjStatusEhDoDia(data)) return;
   _progStatus = {};
   _progStatusInfo = {};
-  if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = !DEMO; }
+  if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = !DEMO; _pp.statusFalhou = null; }
   progProjCarregarStatusBanco(data, function(){
     if(_pp && _pp.statusData === data){ _pp.statusCarregando = false; progProjRenderQuadro(); }
   });
@@ -83236,10 +83236,16 @@ function progProjCarregarStatusBanco(data, cb){
   var mesmoDia = progProjStatusEhDoDia(data);
   Promise.all([
     sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-    sbFetch('prog_status_diario',{filters:progFiltrosStatusPersistentes(data),order:'data.desc',limit:500})
+    progBuscarStatusPersistentes(data)   // todas as páginas (o limite de 500 omitia afastados/inaptos antigos)
   ]).then(function(res){
     if(seq !== window._ppStatusSeq){ return; }   // chegou depois de uma carga mais nova (outra data)
-    if(res[0]===null){ if(cb) cb(); return; }
+    if(res[0]===null || res[1]===null){
+      // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa.
+      if(_pp && _pp.statusData === data) _pp.statusFalhou = data;
+      progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
+      if(cb) cb(); return;
+    }
+    if(_pp) _pp.statusFalhou = null;
     var localRecente = (mesmoDia && window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
     progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
     if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; }
@@ -83269,10 +83275,7 @@ function progProjAtualizarQuadro(){
   if(!DEMO){
     Promise.all([
       sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-      sbFetch('prog_status_diario',{
-        filters:progFiltrosStatusPersistentes(data),
-        order:'data.desc', limit:500
-      }),
+      progBuscarStatusPersistentes(data),   // todas as páginas (o limite de 500 omitia afastados/inaptos antigos)
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
       sbFetch('colaboradores',{filters:['contrato_id=eq.'+cid,'ativo=eq.true'],order:'nome',limit:500}),
       sbFetch('equipes',{filters:['contrato_id=eq.'+cid,'status=eq.Ativo'],order:'nome_equipe'}),
@@ -83298,15 +83301,22 @@ function progProjAtualizarQuadro(){
         progProjetoCoreMergeComposicaoRefresh(comps);
       }
 
-      progAplicarStatusDoBanco(rowsDia, persistRows, data);
-      if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; }
+      var statusIncompleto = (res[0]===null || res[1]===null);
+      if(statusIncompleto){
+        // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa.
+        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = data; }
+      } else {
+        progAplicarStatusDoBanco(rowsDia, persistRows, data);
+        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = null; }
+      }
 
       progProjSalvarStatus();
 
       progCarregarVeiculos(data);
       progCarregarPontoDoSupabase(data, function(){
         progProjRenderQuadro();
-        progShowToast('✅ Quadro atualizado!');
+        if(statusIncompleto) progShowToast('⚠ Férias/afastamentos/treinamentos não foram carregados por completo — clique em 🔄 Atualizar de novo.','erro');
+        else progShowToast('✅ Quadro atualizado!');
         setTimeout(function(){ progCarregarBadgesPonto(); }, 200);
       });
     }).catch(function(e){
@@ -84661,7 +84671,9 @@ function ppRenderPainelDisp(eqs, data, cid){
 
   var carregandoHtml = (_pp && _pp.statusCarregando)
     ? '<div id="pp-status-carregando" style="font-size:12px;color:#854F0B;background:#FFF8E1;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⏳ Carregando status do dia '+escHtml(fmtD(data))+'…</div>'
-    : '';
+    : (_pp && _pp.statusFalhou === data)
+      ? '<div id="pp-status-incompleto" style="font-size:12px;color:#A32D2D;background:#FCEBEB;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⚠ Férias, afastamentos e treinamentos de '+escHtml(fmtD(data))+' não foram carregados — a lista de disponíveis pode estar incompleta. Clique em 🔄 Atualizar.</div>'
+      : '';
   return carregandoHtml + treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem" id="pp-painel-disp">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;flex-wrap:wrap;gap:6px">'
