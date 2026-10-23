@@ -43,7 +43,8 @@ const htmlRelPP = norm(execFileSync('git', ['show', REL_PP_STATUS + ':index.html
 ok('TMA: commit da release 8.1.221 certo', /numero: '8\.1\.221'/.test(htmlRelPP));
 const difEntrega = TMA.filter(n => fnEm(htmlBase, n) !== fnEm(htmlRelPP, n));
 ok('TMA: a entrega 8.1.221 manteve as ' + TMA.length + ' funções idênticas à main (' + BASE + ')', difEntrega.length === 0, difEntrega);
-const TMA_CORRIGIDAS_DEPOIS = ['progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus'];
+// + progCarregarStatus/progAplicarStatusDoBanco: histórico de status persistentes (P1/P2, retorno não apaga o histórico)
+const TMA_CORRIGIDAS_DEPOIS = ['progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus', 'progCarregarStatus', 'progAplicarStatusDoBanco'];
 const difTma = TMA.filter(n => TMA_CORRIGIDAS_DEPOIS.indexOf(n) < 0 && fnEm(htmlBase, n) !== fn(n));
 ok('TMA: ' + (TMA.length - TMA_CORRIGIDAS_DEPOIS.length) + ' funções idênticas à main (' + BASE + ') no arquivo atual', difTma.length === 0, difTma);
 ok('TMA: a modal do painel de Projetos não chama a gravação corrigida do TMA', !/progStatusGravarDia\(/.test(['ppDispChipLivreHtml', 'ppDispChipStatusHtml', 'ppRenderPainelDisp'].map(fn).join('\n')));

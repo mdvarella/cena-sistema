@@ -119,6 +119,34 @@ try {
   const [c1, c2] = await Promise.all([psqlBg(s1), psqlBg(s2)]);
   ok('concorrência: as duas gravações terminam sem erro', c1.code === 0 && c2.code === 0, [c1.err, c2.err]);
   ok('concorrência: uma única linha, visível', linhasDoDia(DUPLO, DIA) === 1 && /^observacao\|[AB]$/.test(releitura(DUPLO, DIA)), releitura(DUPLO, DIA));
+  // ── P1/P2: histórico do treinamento e consulta de persistentes (equivale a
+  //    status=in.(…)&data=lte.D&deleted_at=is.null&or=(data_retorno.is.null,data_retorno.gt.D)&order=data.desc,id.desc) ──
+  const T = 'teste-treino-0005';
+  psql(`insert into public.prog_status_diario (colaborador_id, data, status, data_retorno, registrado_por)
+        values ('${T}', '${DIA}', 'treinamento', '2026-10-23', 'GESTOR');
+        insert into public.prog_status_diario (colaborador_id, data, status, data_retorno)
+        select 'dem-' || (g % 150), date '2026-10-01' + (g / 150), 'demitido', null from generate_series(0, 3199) g
+        on conflict (colaborador_id, data) do nothing;
+        insert into public.prog_status_diario (colaborador_id, data, status, data_retorno) values ('fer-antiga', '2026-09-20', 'ferias', '2026-10-30');`);
+  const pers = d => `select colaborador_id from public.prog_status_diario
+     where status in ('ferias','afastado','treinamento','demitido','inapto') and data <= '${d}' and deleted_at is null
+       and (data_retorno is null or data_retorno > '${d}')`;
+  ok('P2: em 22/10 o treinamento (retorno 23/10) é persistente ativo', psql(pers(DIA) + ` and colaborador_id='${T}';`).out === T);
+  ok('P2: em 23/10 não é mais (retorno = 1º dia de volta)', psql(pers('2026-10-23') + ` and colaborador_id='${T}';`).out === '');
+  ok('P1: a linha de 22/10 continua no histórico (consulta do dia)', releitura(T, DIA) === 'treinamento|');
+  ok('P2: férias de 20/09 aparece em 22/10 mesmo entre centenas de linhas', psql(pers(DIA) + ` and colaborador_id='fer-antiga';`).out === 'fer-antiga');
+  const totalPers = Number(psql(`select count(*) from (${pers(DIA)}) x;`).out);
+  let paginado = 0, off = 0, rep = 0;
+  const vistos = new Set();
+  for (;;) {
+    const r = psql(`select id from (${pers(DIA).replace('select colaborador_id', 'select id, data')}) x order by data desc, id desc limit 1000 offset ${off};`).out;
+    const ids = r ? r.split('\n') : [];
+    ids.forEach(i => { if (vistos.has(i)) rep++; vistos.add(i); });
+    paginado += ids.length;
+    if (ids.length < 1000) break;
+    off += 1000;
+  }
+  ok('P2: paginação (1000 por página, data desc, id desc) lê todas as linhas, sem repetir nem pular', totalPers > 1000 && paginado === totalPers && rep === 0, { totalPers, paginado, rep });
 } catch (e) {
   failed.push('exceção: ' + (e && e.message || e));
 } finally {

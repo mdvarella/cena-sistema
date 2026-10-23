@@ -47,12 +47,20 @@ function criarBanco() {
     if (op === 'in') return v.replace(/^\(|\)$/g, '').split(',').indexOf(x) >= 0;
     return true;
   };
-  const filtrar = q => b.linhas.filter(l => [...q].every(([k, v]) => ['select', 'order', 'limit', 'offset', 'on_conflict'].includes(k) || casa(l, k, v)));
+  // or=(col.op.val,col.op.val) — usado pelo filtro de persistentes
+  const casaOr = (l, v) => v.replace(/^\(|\)$/g, '').split(',').some(p => { const i = p.indexOf('.'); return casa(l, p.slice(0, i), p.slice(i + 1)); });
+  const filtrar = q => b.linhas.filter(l => [...q].every(([k, v]) => ['select', 'order', 'limit', 'offset', 'on_conflict'].includes(k) || (k === 'or' ? casaOr(l, v) : casa(l, k, v))));
+  const ordenarPaginar = (rows, q) => {
+    const ord = (q.get('order') || '').split(',').filter(Boolean).map(o => o.split('.'));
+    rows.sort((x, y) => { for (const [c, d] of ord) { const a = x[c] == null ? '' : String(x[c]), bb = y[c] == null ? '' : String(y[c]); if (a !== bb) return (a < bb ? -1 : 1) * (d === 'desc' ? -1 : 1); } return 0; });
+    const off = Number(q.get('offset') || 0), lim = q.get('limit') ? Number(q.get('limit')) : rows.length;
+    return rows.slice(off, off + lim);
+  };
   b.tratar = (metodo, url, corpo, prefer) => {
     const u = new URL(url); const tabela = u.pathname.replace('/rest/v1/', ''); const q = u.searchParams;
     b.reqs.push({ metodo, tabela, url, corpo });
     if (tabela !== 'prog_status_diario') return { status: metodo === 'GET' ? 200 : 201, corpo: metodo === 'GET' ? [] : (corpo ? [].concat(corpo) : []) };
-    if (metodo === 'GET') return { status: 200, corpo: filtrar(q).map(l => Object.assign({}, l)) };
+    if (metodo === 'GET') return { status: 200, corpo: ordenarPaginar(filtrar(q).map(l => Object.assign({}, l)), q) };
     if (metodo === 'PATCH') { const alvo = filtrar(q); alvo.forEach(l => Object.assign(l, corpo)); return { status: /representation/.test(prefer) ? 200 : 204, corpo: alvo.map(l => Object.assign({}, l)) }; }
     if (metodo === 'DELETE') { const alvo = new Set(filtrar(q)); b.linhas = b.linhas.filter(l => !alvo.has(l)); return { status: 204, corpo: [] }; }
     // POST (insert/upsert)
@@ -117,7 +125,10 @@ function criarCtx(src, banco) {
   ctx.progShowToast = (m, t) => ctx.toasts.push({ m: String(m), erro: t === 'erro' });
   ctx.closeModal = () => { ctx.fechou++; };
   ctx.progRenderQuadro = () => { ctx.renders++; };
-  ctx.progGetData = () => DIA; ctx.dataHojeLocal = () => DIA; ctx._compDataStr = v => String(v || '').slice(0, 10);
+  // dia da tela e "hoje" configuráveis (consulta de dias anteriores / atuais / futuros)
+  ctx.progGetData = () => ctx._diaTela || DIA; ctx.dataHojeLocal = () => ctx._hoje || DIA; ctx.dataHoje = () => ctx._hoje || DIA;
+  ctx._compDataStr = v => String(v || '').slice(0, 10);
+  ctx.setModal = () => {}; ctx.escHtml = s => String(s == null ? '' : s);
   ctx.vtGarantirTratamento = () => {}; ctx.vtAtualizarAbaAlerta = () => {};
   ctx.progLancarFaltaPLR = () => {}; ctx.progVerificarRetornos = () => {}; ctx._progSalvarCacheDia = () => {};
   ctx.parseColabIds = r => (Array.isArray(r) ? r : []); ctx.fmtD = d => d; ctx.confirm = () => true;
@@ -129,14 +140,16 @@ function criarCtx(src, banco) {
   ctx.el = el;
   ctx.document = {
     getElementById: id => el[id] || null,
-    querySelector: sel => (/progSalvarMenuStatus/.test(sel) ? (el.__btnSalvar || null) : null),
+    querySelector: sel => (/progSalvarMenuStatus/.test(sel) ? (el.__btnSalvar || null) : /progConfirmarStatus/.test(sel) ? (el.__btnConfirmar || null) : null),
     querySelectorAll: () => [],
   };
   vm.createContext(ctx);
   const nomes = ['isUUID', 'sbFetch', 'sbInsert', 'sbDelete', 'sbUpdate', 'progMarcarAutorStatus', 'progDataRetornoStr', 'progRetornoAindaFora', 'progRetornoExpirouNoDia',
     'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha', 'progAplicarStatusDoBanco', 'progSalvarPersistente', 'progRemoverPersistente',
     'progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus'];
+  nomes.push('progVerificarRetornos', 'progAlterarStatusPool');
   const novos = /function progStatusGravarDia\(/.test(src) ? ['progStatusComPrazo', 'progStatusClassificarErro', 'progStatusMsgErro', 'progStatusGravarDia'] : [];
+  if (/function progBuscarStatusPersistentes\(/.test(src)) novos.push('progBuscarStatusPersistentes');
   vm.runInContext(['var _SOFT_DELETE_TABLES = ["prog_status_diario"];', varDe(src, 'PROG_STATUS_PERSISTENTES')]
     .concat(nomes.map(n => fnDe(src, n)), [sbUpsertReal(src)], novos.map(n => fnDe(src, n))).join('\n'), ctx);
   return ctx;
@@ -148,11 +161,14 @@ function abrirMenu(ctx, colab, status, texto) {
   ctx.el.__btnSalvar = { disabled: false, textContent: '💾 Salvar' };
 }
 // Nova leitura do banco — o que a tela faz ao Atualizar / abrir o dia
-async function recarregar(ctx) {
-  const dia = await ctx.sbFetch('prog_status_diario', { filters: ['data=eq.' + DIA, 'deleted_at=is.null'] });
-  const pers = await ctx.sbFetch('prog_status_diario', { filters: ctx.progFiltrosStatusPersistentes(DIA), order: 'data.desc', limit: 500 });
-  ctx.progAplicarStatusDoBanco(dia || [], pers || [], DIA);
-  return { status: ctx._progStatus[CLEBER] || 'disponivel', obs: (ctx._progStatusInfo[CLEBER] || {}).obs || '' };
+async function recarregar(ctx, diaTela, colab) {
+  const d = diaTela || DIA, c = colab || CLEBER;
+  const dia = await ctx.sbFetch('prog_status_diario', { filters: ['data=eq.' + d, 'deleted_at=is.null'] });
+  // Mesma consulta da tela: versão nova pagina (progBuscarStatusPersistentes); main = limite fixo de 500
+  const pers = ctx.progBuscarStatusPersistentes ? await ctx.progBuscarStatusPersistentes(d)
+    : await ctx.sbFetch('prog_status_diario', { filters: ctx.progFiltrosStatusPersistentes(d), order: 'data.desc', limit: 500 });
+  ctx.progAplicarStatusDoBanco(dia || [], pers || [], d);
+  return { status: ctx._progStatus[c] || 'disponivel', obs: (ctx._progStatusInfo[c] || {}).obs || '', persistentes: pers };
 }
 function linhaCleberExcluida(banco) {
   banco.linhas.push({ id: 'id-cleber', colaborador_id: CLEBER, data: DIA, status: 'treinamento', data_retorno: DIA, registrado_por: 'GESTOR TESTE',
@@ -357,6 +373,128 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     ok('progSetStatus sem permissão: tela volta ao status anterior e avisa', ctx2._progStatus[CLEBER] === undefined && ctx2.toasts.some(t => /Status não foi salvo — Seu usuário não tem permissão/.test(t.m)), [ctx2._progStatus[CLEBER], ctx2.toasts]);
   }
 
+  // ═══ 6b. P1 — histórico: treinamento de 22/10 com retorno 23/10 ═══
+  const linhaTreinoCleber = banco => banco.linhas.push({ id: 'a0000000-0000-4000-8000-000000000022', colaborador_id: CLEBER, data: DIA, status: 'treinamento', data_retorno: '2026-10-23',
+    registrado_por: 'ANSELMO VIEIRA', obs: null, criado_em: '2026-10-21T20:39:00Z', deleted_at: null });
+  if (base) {
+    // main: no dia do retorno a primeira abertura de tela exclui a linha (histórico de 22/10 some)
+    const banco = criarBanco(); linhaTreinoCleber(banco);
+    const ctx = criarCtx(base, banco); ctx._hoje = '2026-10-23';
+    await recarregar(ctx, '2026-10-23'); await espera(20);
+    ok('main: em 23/10 a rotina de vencimento EXCLUI o treinamento de 22/10', !!banco.linhas[0].deleted_at);
+    const rel = await recarregar(criarCtx(base, banco), DIA);
+    ok('main: consultar 22/10 depois do retorno mostra "disponível" (histórico perdido)', rel.status === 'disponivel', rel);
+  }
+  {
+    const banco = criarBanco(); linhaTreinoCleber(banco);
+    const n0 = () => banco.reqs.filter(r => r.metodo === 'PATCH' || r.metodo === 'DELETE').length;
+    const nAntes = n0();
+    for (const hoje of ['2026-10-22', '2026-10-23', '2026-10-30']) {
+      const ctx = criarCtx(html, banco); ctx._hoje = hoje;
+      for (const [diaTela, esperado] of [['2026-10-21', 'disponivel'], [DIA, 'treinamento'], ['2026-10-23', 'disponivel'], ['2026-10-24', 'disponivel']]) {
+        const rel = await recarregar(ctx, diaTela);
+        ok('P1 hoje=' + hoje + ', consulta ' + diaTela + ': ' + esperado, rel.status === esperado, rel);
+      }
+    }
+    ok('P1: abrir dias em datas posteriores ao retorno não exclui nem altera nada no banco', n0() === nAntes && banco.linhas[0].deleted_at === null && banco.linhas.length === 1);
+    // Férias de 15/10 com retorno 25/10: vale de 15 a 24, histórico preservado depois
+    banco.linhas.push({ id: 'id-fer', colaborador_id: 'fer', data: '2026-10-15', status: 'ferias', data_retorno: '2026-10-25', deleted_at: null });
+    const ctx = criarCtx(html, banco); ctx._hoje = '2026-11-10';
+    for (const [diaTela, esperado] of [['2026-10-14', 'disponivel'], ['2026-10-15', 'ferias'], ['2026-10-24', 'ferias'], ['2026-10-25', 'disponivel']]) {
+      const rel = await recarregar(ctx, diaTela, 'fer');
+      ok('P1 férias (consultadas em 10/11) — ' + diaTela + ': ' + esperado, rel.status === esperado, rel);
+    }
+    ok('P1 férias: linha preservada, sem duplicar', banco.linhas.filter(l => l.colaborador_id === 'fer').length === 1 && !banco.linhas.find(l => l.colaborador_id === 'fer').deleted_at);
+  }
+
+  // ═══ 6c. P2 — consulta de persistentes paginada, sem omissão silenciosa ═══
+  {
+    const banco = criarBanco();
+    // ~3.200 linhas como em 22/10/2026 (cópias diárias de "demitido"), e uma férias antiga
+    for (let i = 0; i < 3200; i++) banco.linhas.push({ id: 'd' + String(i).padStart(5, '0'), colaborador_id: 'dem' + (i % 60), data: '2026-10-' + String(1 + (i % 22)).padStart(2, '0'), status: 'demitido', data_retorno: null, deleted_at: null });
+    banco.linhas.push({ id: 'id-ferias-antiga', colaborador_id: 'fer-antiga', data: '2026-09-20', status: 'ferias', data_retorno: '2026-10-30', deleted_at: null });
+    banco.linhas.push({ id: 'id-vencida', colaborador_id: 'vencida', data: '2026-10-01', status: 'afastado', data_retorno: '2026-10-10', deleted_at: null });
+    if (base) {
+      const relMain = await recarregar(criarCtx(base, banco), DIA, 'fer-antiga');
+      ok('main: limite de 500 omite em silêncio a férias iniciada em 20/09 (aparece disponível)', relMain.status === 'disponivel', relMain.status);
+    }
+    const ctx = criarCtx(html, banco);
+    const nGet = banco.reqs.length;
+    const rel = await recarregar(ctx, DIA, 'fer-antiga');
+    ok('P2: férias iniciada em 20/09 continua aparecendo em 22/10', rel.status === 'ferias', rel.status);
+    ok('P2: todas as linhas pertinentes foram lidas (paginação)', rel.persistentes.length === 3201, rel.persistentes.length);
+    ok('P2: status vencido não entra na consulta', !rel.persistentes.some(r => r.colaborador_id === 'vencida'));
+    const pags = banco.reqs.slice(nGet).filter(r => r.metodo === 'GET' && /offset=/.test(r.url));
+    ok('P2: 4 páginas de 1000, ordem estável (data desc, id desc)', pags.length === 4 && pags.every(r => /order=data\.desc,id\.desc/.test(r.url) && /limit=1000/.test(r.url)), pags.map(r => r.url.slice(-60)));
+    ok('P2: filtro de retorno no formato do PostgREST', /or=\(data_retorno\.is\.null,data_retorno\.gt\.2026-10-22\)/.test(pags[0].url), pags[0].url);
+    // Falha numa página do meio → null (nunca lista parcial calada)
+    let k = 0; banco.regra = r => (r.metodo === 'GET' && /offset=2000/.test(r.url) && k++ === 0 ? 'rede' : 'ok');
+    const parcial = await ctx.progBuscarStatusPersistentes(DIA);
+    ok('P2: falha numa página devolve null (não lista parcial)', parcial === null);
+    banco.regra = () => 'ok';
+  }
+
+  // ═══ 6d. P3 — progVerificarRetornos usa o dia da tela ═══
+  {
+    const banco = criarBanco();
+    const ctx = criarCtx(html, banco);
+    const prep = () => { ctx._progStatus = { [CLEBER]: 'treinamento' }; ctx._progStatusInfo = { [CLEBER]: { retorno: '2026-10-23' } }; };
+    ctx._hoje = '2026-10-30';
+    prep(); ctx._diaTela = DIA; ctx.progVerificarRetornos();
+    ok('P3: consultando 22/10 (hoje 30/10), retorno em 23/10 → continua em treinamento', ctx._progStatus[CLEBER] === 'treinamento');
+    prep(); ctx._diaTela = '2026-10-23'; ctx.progVerificarRetornos();
+    ok('P3: consultando 23/10 → retornou (disponível)', ctx._progStatus[CLEBER] === 'disponivel');
+    prep(); ctx._hoje = '2026-10-21'; ctx._diaTela = '2026-10-21'; ctx.progVerificarRetornos();
+    ok('P3: consultando dia atual antes do retorno → continua', ctx._progStatus[CLEBER] === 'treinamento');
+    prep(); ctx._diaTela = '2026-10-25'; ctx.progVerificarRetornos();
+    ok('P3: consultando dia futuro depois do retorno → disponível', ctx._progStatus[CLEBER] === 'disponivel');
+    ctx._diaTela = null; ctx._hoje = null;
+  }
+
+  // ═══ 6e. Janela de status dos Disponíveis (progAlterarStatusPool) ═══
+  {
+    const abrirPool = (ctx, st, texto) => {
+      ctx.progAlterarStatusPool(CLEBER);
+      ctx.window.progStSelecionar(CLEBER, st);
+      ctx.el['prog-st-obs'] = { value: texto };
+      ctx.el.__btnConfirmar = { disabled: false, textContent: 'Confirmar' };
+    };
+    if (base) {
+      const banco = criarBanco(); linhaCleberExcluida(banco);
+      banco.regra = r => (r.via === 'fetch' && r.metodo === 'POST' ? 'recusa' : 'ok');
+      const ctx = criarCtx(base, banco);
+      abrirPool(ctx, 'observacao', OBS);
+      ctx.window.progConfirmarStatus(CLEBER); await espera(30);
+      ok('main (pool): "✅ Status salvo." aparece mesmo sem nada gravado', ctx.toasts.some(t => /Status salvo/.test(t.m)) && !banco.linhas[0].obs);
+    }
+    for (const [modo, re] of [['recusa', /O banco recusou/], ['permissao', /não tem permissão/], ['rede', /Sem conexão/], ['timeout', /não respondeu a tempo/]]) {
+      const banco = criarBanco(); linhaCleberExcluida(banco);
+      banco.regra = r => (r.metodo === 'POST' ? modo : 'ok');
+      const ctx = criarCtx(html, banco);
+      abrirPool(ctx, 'observacao', OBS);
+      ctx.window.progConfirmarStatus(CLEBER); await espera(modo === 'timeout' ? 200 : 30);
+      ok('pool [' + modo + ']: sem "Status salvo", mensagem clara', !ctx.toasts.some(t => /Status salvo/.test(t.m)) && re.test(ult(ctx).m) && ult(ctx).erro, ctx.toasts);
+      ok('pool [' + modo + ']: janela aberta e texto preservado', ctx.fechou === 0 && ctx.el['prog-st-obs'].value === OBS && ctx.el.__btnConfirmar.disabled === false);
+      ok('pool [' + modo + ']: tela não mudou', ctx._progStatus[CLEBER] === undefined);
+    }
+    {
+      const banco = criarBanco(); linhaCleberExcluida(banco);
+      const ctx = criarCtx(html, banco);
+      abrirPool(ctx, 'observacao', OBS);
+      ctx.window.progConfirmarStatus(CLEBER);
+      ok('pool: janela continua aberta até o banco confirmar', ctx.fechou === 0 && ctx.el.__btnConfirmar.textContent === 'Salvando...');
+      ctx.window.progConfirmarStatus(CLEBER);
+      ok('pool: clique duplo bloqueado', /Gravação em andamento/.test(ult(ctx).m));
+      await espera(40);
+      ok('pool: sucesso só depois da confirmação, janela fecha', /✅ Status salvo/.test(ult(ctx).m) && ctx.fechou === 1, ctx.toasts);
+      ok('pool: sem nome da regra, uma gravação confirmada', !banco.reqs.some(r => /prog_status_diario_colaborador_id_data_key/.test(r.url))
+        && banco.reqs.filter(r => r.metodo === 'POST' && /on_conflict=colaborador_id,data/.test(r.url)).length === 1);
+      const rel = await recarregar(criarCtx(html, banco));
+      ok('pool: observação sobre linha excluída persiste após nova leitura', rel.status === 'observacao' && rel.obs === OBS, rel);
+      ok('pool: reativação auditada', ctx.audits.some(x => /Reativou/.test(x.descricao)));
+    }
+  }
+
   // ═══ 7. Estático: ES5 e escopo ═══
   const novas = ['progStatusComPrazo', 'progStatusClassificarErro', 'progStatusMsgErro', 'progStatusGravarDia', 'progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus'];
   ok('ES5 nas funções novas/alteradas', !/\blet\s|\bconst\s|=>|`/.test(semComent(novas.map(n => fnDe(html, n)).join('\n'))));
@@ -368,9 +506,12 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
       return m; };
     const mb = mapa(base), ma = mapa(html);
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
-    ok('escopo: só progSalvarStatus, progSalvarMenuStatus, progSetStatus e progMarcarAutorStatus mudaram', mud.sort().join(',') === 'progMarcarAutorStatus,progSalvarMenuStatus,progSalvarStatus,progSetStatus', mud);
+    const ESPERADAS = ['progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
+      'progMarcarAutorStatus', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+    ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
-    ok('escopo: funções novas só as de gravação do status', novasNomes === 'progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
+    ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
+    ok('PP: carga e atualização da Programação de Projetos inalteradas', ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => fnDe(base, n) === fnDe(html, n)));
     ok('Programação de Projetos, Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'progProjSalvarStatus', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
       .every(n => n === 'sbUpsert' ? sbUpsertReal(base) === sbUpsertReal(html) : fnDe(base, n) === fnDe(html, n)));
     ok('versão não mudou', /numero: '8\.1\.225'/.test(html));

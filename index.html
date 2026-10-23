@@ -15023,8 +15023,9 @@ function relTmaStatus(){
   Promise.all([
     sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
     sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-    sbFetch('prog_status_diario',{filters:progFiltrosStatusPersistentes(data),order:'data.desc',limit:200})
+    progBuscarStatusPersistentes(data)
   ]).then(function(res){
+    if(res[2]===null){ wrap.innerHTML='<div style="padding:1rem;color:#A32D2D;font-size:12px">Não foi possível carregar férias/afastamentos/treinamentos do dia por completo. Tente de novo.</div>'; return; }
     var comps=res[0]||[];var stRows=res[1]||[];var persistRows=res[2]||[];
     var escIds={};
     comps.forEach(function(c){parseColabIds(c.colaborador_ids).forEach(function(id){if(id)escIds[id]=true;});});
@@ -50425,22 +50426,41 @@ function progRetornoExpirouNoDia(dataRetorno, dia){
   return ret <= progDataRetornoStr(dia);
 }
 function progFiltrosStatusPersistentes(dia){
+  // Só o que ainda vale no dia: sem prazo ou com retorno DEPOIS do dia (retorno = 1º dia de volta).
+  // O histórico vencido continua no banco (não é mais excluído) e não entra nesta consulta.
   return [
     'status=in.(ferias,afastado,treinamento,demitido,inapto)',
     'data=lte.'+dia,
-    'deleted_at=is.null'
+    'deleted_at=is.null',
+    'or=(data_retorno.is.null,data_retorno.gt.'+dia+')'
   ];
 }
+function progBuscarStatusPersistentes(dia){
+  // Todas as páginas (ordem estável data desc, id desc) — o limite fixo de 500/200 cortava em silêncio
+  // (≈3.200 linhas em 22/10/2026). Resolve null se QUALQUER página falhar: nunca lista parcial calada.
+  if(DEMO) return Promise.resolve([]);
+  var tam = 1000, todas = [];
+  function pagina(off){
+    return sbFetch('prog_status_diario', {
+      select:'id,colaborador_id,data,status,data_retorno,obs,registrado_por',
+      filters:progFiltrosStatusPersistentes(dia).concat(['offset='+off]),
+      order:'data.desc,id.desc', limit:tam
+    }).then(function(rows){
+      if(!Array.isArray(rows)) return null;
+      todas = todas.concat(rows);
+      if(rows.length < tam) return todas;
+      if(off >= tam*49) return null; // limite de segurança: 50 mil linhas
+      return pagina(off + tam);
+    }, function(){ return null; });
+  }
+  return pagina(0);
+}
 function progExpirarPersistenteLinha(r){
+  // Retorno chegou: encerra só o efeito local (cache prog_persistentes do navegador).
+  // O registro NÃO é mais excluído do banco — o histórico do período continua consultável e a tela
+  // já ignora o status a partir do dia do retorno (progRetornoAindaFora / progFiltrosStatusPersistentes).
   if(!r||!r.colaborador_id) return;
   progRemoverPersistente(r.colaborador_id);
-  if(DEMO) return;
-  if(r.id){
-    sbDelete('prog_status_diario','id=eq.'+r.id).catch(function(){});
-  } else if(r.data){
-    sbDelete('prog_status_diario',
-      'colaborador_id=eq.'+r.colaborador_id+'&data=eq.'+r.data+'&status=eq.'+(r.status||'')).catch(function(){});
-  }
 }
 function progAplicarStatusDoBanco(rowsDia, persistRows, dia){
   _progStatus = {};
@@ -50456,9 +50476,10 @@ function progAplicarStatusDoBanco(rowsDia, persistRows, dia){
     _progStatusInfo[id]._data = r.data;
   }
   (rowsDia||[]).forEach(function(r){
+    // Vencido em relação a HOJE: limpa só o cache local; o dia consultado decide se ainda vale
+    // (ex.: treinamento de 22/10 com retorno 23/10 continua aparecendo ao consultar 22/10).
     if(PROG_STATUS_PERSISTENTES.indexOf(r.status)>=0 && progRetornoExpirouNoDia(r.data_retorno, hojeN)){
       progExpirarPersistenteLinha(r);
-      return;
     }
     if(PROG_STATUS_PERSISTENTES.indexOf(r.status)>=0 && !progRetornoAindaFora(r.data_retorno, diaN)){
       return;
@@ -50472,17 +50493,15 @@ function progAplicarStatusDoBanco(rowsDia, persistRows, dia){
   var jaVisto={};
   (persistRows||[]).forEach(function(r){
     if(PROG_STATUS_PERSISTENTES.indexOf(r.status)<0) return;
-    if(progRetornoExpirouNoDia(r.data_retorno, hojeN)){
-      progExpirarPersistenteLinha(r);
-      return;
-    }
+    var expirouHoje = progRetornoExpirouNoDia(r.data_retorno, hojeN);
+    if(expirouHoje) progExpirarPersistenteLinha(r);
     if(!progRetornoAindaFora(r.data_retorno, diaN)) return;
     if(jaSetNoDia[r.colaborador_id]) return;
     if(jaVisto[r.colaborador_id] || _progStatus[r.colaborador_id]) return;
     jaVisto[r.colaborador_id]=true;
     _progStatus[r.colaborador_id]=r.status==='faltou'?'falta':r.status;
     aplicarInfo(r.colaborador_id, r);
-    progSalvarPersistente(r.colaborador_id,r.status,r.data,progDataRetornoStr(r.data_retorno),r.obs||'');
+    if(!expirouHoje) progSalvarPersistente(r.colaborador_id,r.status,r.data,progDataRetornoStr(r.data_retorno),r.obs||'');
   });
 }
 function colabMergePreservarInativos(colabs){
@@ -51177,12 +51196,14 @@ function progCarregarStatus(data){
       // Busca silenciosa em background
       Promise.all([
         sbFetch('prog_status_diario', {filters:['data=eq.'+data,'deleted_at=is.null']}),
-        sbFetch('prog_status_diario', {
-          filters:progFiltrosStatusPersistentes(data),
-          order:'data.desc', limit:500
-        })
+        progBuscarStatusPersistentes(data)
       ]).then(function(res){
         if(res[0]===null) return;
+        if(res[1]===null){
+          _progStatusDateCache = null;
+          progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
+          return;
+        }
         progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
         progAplicarPersistentes(data);
         _progSalvarCacheDia(data);
@@ -51213,13 +51234,15 @@ function progCarregarStatus(data){
     // Uma única chamada paralela: status do dia + persistentes ativos
     Promise.all([
       sbFetch('prog_status_diario', {filters:['data=eq.'+data,'deleted_at=is.null']}),
-      sbFetch('prog_status_diario', {
-        filters:progFiltrosStatusPersistentes(data),
-        order:'data.desc', limit:500
-      }),
+      progBuscarStatusPersistentes(data),
       progFetchVeiculosDia(data)
     ]).then(function(res){
       var rowsDia      = res[0];
+      if(res[1]===null && rowsDia!==null){
+        // Lista de persistentes incompleta: não aplicar (mostraria férias/afastados como disponíveis)
+        rowsDia = null;
+        progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
+      }
       var persistRows  = res[1] || [];
       var veicRows     = res[2] || [];
       // Limpar cache do dia antes de popular — evita veículos fantasma após remoção
@@ -52074,12 +52097,9 @@ function progAtualizarQuadro(){
 
   if(!DEMO){
     Promise.all([
-      // Status do dia e persistentes
+      // Status do dia e persistentes (todas as páginas)
       sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-      sbFetch('prog_status_diario',{
-        filters:progFiltrosStatusPersistentes(data),
-        order:'data.desc', limit:500
-      }),
+      progBuscarStatusPersistentes(data),
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
       // Dados base — recarregar colaboradores e equipes para pegar folgas atualizadas
       sbFetch('colaboradores',{filters:[cidFilter,'ativo=eq.true'],order:'nome',limit:500}),
@@ -52088,6 +52108,7 @@ function progAtualizarQuadro(){
     ]).then(function(res){
       var rowsDia     = res[0]||[];
       var persistRows = res[1]||[];
+      var persistFalhou = res[1]===null;
       var comps       = res[2]||[];
       var colabs      = res[3]||[];
       var equipes     = res[4]||[];
@@ -52131,7 +52152,8 @@ function progAtualizarQuadro(){
       // Carregar ponto do Supabase ANTES de renderizar para badges aparecerem imediatamente
       progCarregarPontoDoSupabase(data, function(){
         progRenderQuadro();
-        progShowToast('✅ Quadro atualizado!');
+        if(persistFalhou) progShowToast('⚠ Férias/afastamentos/treinamentos não foram carregados por completo — clique em 🔄 Atualizar de novo.','erro');
+        else progShowToast('✅ Quadro atualizado!');
         setTimeout(function(){ progCarregarBadgesPonto(); }, 200);
       });
     }).catch(function(e){
@@ -56741,6 +56763,55 @@ function progAlterarStatusPool(colabId){
     if(rtEl)info.retorno=progDataRetornoStr(rtEl.value);
     if(obEl)info.obs=obEl.value.trim();
     if(_stSel==='observacao' && !info.obs){ progShowToast('⚠ Informe o motivo da observação.','erro'); return; }
+    if(_stSel!=='disponivel' && !DEMO){
+      // Grava SÓ este colaborador, confirmado no banco (reativa a linha do dia se estava excluída).
+      // A tela só muda e a janela só fecha depois da confirmação; em falha, a janela e o texto ficam.
+      var _diaSt = _progData||dataHojeLocal();
+      var _chaveSt = cId+'_'+_diaSt;
+      if(!window._progStatusGravando) window._progStatusGravando = {};
+      if(window._progStatusGravando[_chaveSt] && Date.now()-window._progStatusGravando[_chaveSt] < 60000){
+        progShowToast('⏳ Gravação em andamento — aguarde a confirmação do banco.');
+        return;
+      }
+      window._progStatusGravando[_chaveSt] = Date.now();
+      var _btnSt = document.querySelector('#modal-area button[onclick*="progConfirmarStatus"]');
+      var _txtBtnSt = _btnSt ? _btnSt.textContent : '';
+      if(_btnSt){ _btnSt.disabled=true; _btnSt.textContent='Salvando...'; }
+      var _stGravar = _stSel;
+      progStatusGravarDia({
+        colaborador_id:cId, data:_diaSt, status:_stGravar,
+        data_retorno:progDataRetornoStr(info.retorno)||null,
+        obs:info.obs||null,
+        registrado_por:usuarioLogado?usuarioLogado.nome:''
+      }).then(function(r){
+        delete window._progStatusGravando[_chaveSt];
+        if(!r.ok){
+          if(_btnSt){ _btnSt.disabled=false; _btnSt.textContent=_txtBtnSt; }
+          progShowToast('⚠ Status não foi salvo — '+progStatusMsgErro(r),'erro');
+          return;
+        }
+        progMarcarAutorStatus(cId);
+        info.registrado_por = usuarioLogado?usuarioLogado.nome:(info.registrado_por||'');
+        _progStatus[cId]=_stGravar;
+        _progStatusInfo[cId]=Object.assign({}, _progStatusInfo[cId]||{}, info);
+        if(PRECISA_RETORNO[_stGravar]&&info.retorno){
+          progSalvarPersistente(cId,_stGravar,_diaSt,info.retorno,info.obs||'');
+        }
+        // Já confirmado: não regravar no lote (só localStorage do dia)
+        var _pendSt = (window._progStatusPendentes||{})[_diaSt];
+        if(_pendSt) delete _pendSt[cId];
+        if(_stGravar==='verificar' && typeof vtGarantirTratamento==='function'){
+          vtGarantirTratamento(cId, _diaSt, info.obs||'');
+          if(typeof vtAtualizarAbaAlerta==='function') vtAtualizarAbaAlerta();
+        }
+        _progStatusDateCache=null;
+        closeModal();
+        progSalvarStatus();
+        progRenderQuadro();
+        progShowToast('✅ Status salvo.');
+      });
+      return;
+    }
     progMarcarAutorStatus(cId);
     info.registrado_por = (_progStatusInfo[cId]||{}).registrado_por || (usuarioLogado?usuarioLogado.nome:'');
     _progStatus[cId]=_stSel;
@@ -56765,22 +56836,9 @@ function progAlterarStatusPool(colabId){
         fetch(SB.url+'/rest/v1/prog_status_diario?colaborador_id=eq.'+cId+'&data=neq.'+_dataDisp+'&status=in.(ferias,afastado,treinamento,demitido,inapto)',{method:'DELETE',headers:_h3}).catch(function(){});
       }
     } else {
+      // Somente DEMO chega aqui (gravação real tratada acima, com confirmação)
       if(PRECISA_RETORNO[_stSel]&&info.retorno){
         progSalvarPersistente(cId,_stSel,_progData||dataHojeLocal(),info.retorno,info.obs||'');
-      }
-      if(!DEMO){
-        sbUpsert('prog_status_diario',{
-          colaborador_id:cId, data:_progData||dataHojeLocal(), status:_stSel,
-          data_retorno:progDataRetornoStr(info.retorno)||null,
-          obs:info.obs||null,
-          registrado_por:usuarioLogado?usuarioLogado.nome:''
-        },'prog_status_diario_colaborador_id_data_key').then(function(){
-          progShowToast('✅ Status salvo.');
-          _progStatusDateCache=null;
-          progRenderQuadro();
-        }).catch(function(){
-          progShowToast('⚠️ Erro ao salvar no banco.','erro');
-        });
       }
     }
     closeModal();
@@ -58340,11 +58398,12 @@ function plrSincronizarFaltas(){
 
 
 function progVerificarRetornos(){
-  var hoje = dataHoje();
+  // Compara com o DIA DA TELA (não com hoje): ao consultar 22/10, quem volta em 23/10 continua fora.
+  var hoje = (typeof progGetData==='function' && progGetData()) || dataHoje();
   Object.keys(_progStatusInfo||{}).forEach(function(colabId){
     var info=_progStatusInfo[colabId];
     if(!info||!info.retorno)return;
-    if(info.retorno<=hoje){
+    if(progDataRetornoStr(info.retorno)<=progDataRetornoStr(hoje)){
       _progStatus[colabId]='disponivel';
       delete _progStatusInfo[colabId];
       var col=colaboradores.find(function(c){return c.id===colabId;})||{nome:colabId};
