@@ -246,7 +246,9 @@ const okResp = () => ({ status: 200, body: { ok: true, id: ID, idempotente: fals
   const difRel = nomesP.filter(n => { try { return fnDe(htmlBase, n) !== fnDe(htmlRel, n); } catch (e) { return true; } });
   ok('entrega 8.1.225: TMA, Programação de Projetos, Diário e SOT idênticos à 8.1.224', difRel.length === 0 && nomesP.length > 500, { difRel: difRel.slice(0, 10), n: nomesP.length });
   const ehTma = n => /^progTma/.test(n) || /^prog(?!Proj|Projeto|Agenda)/.test(n);
-  const nomesNaoTma = nomesP.filter(n => !ehTma(n));
+  // PP corrigida depois (TMA status/histórico): leitura paginada dos persistentes — coberta em tma-status-observacao.test.js
+  const PP_STATUS_CORRIGIDAS = ['progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro', 'ppRenderPainelDisp'];
+  const nomesNaoTma = nomesP.filter(n => !ehTma(n) && PP_STATUS_CORRIGIDAS.indexOf(n) < 0);
   const difP = nomesNaoTma.filter(n => { try { return fnDe(htmlBase, n) !== fn(n); } catch (e) { return true; } });
   ok('arquivo atual: Programação de Projetos, Diário e SOT idênticos à 8.1.224', difP.length === 0 && nomesNaoTma.length > 300, { difP: difP.slice(0, 10), n: nomesNaoTma.length });
 
