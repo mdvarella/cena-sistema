@@ -507,7 +507,10 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     const mb = mapa(base), ma = mapa(html);
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
     const ESPERADAS = ['progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
-      'progMarcarAutorStatus', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+      'progMarcarAutorStatus', 'progRenderPainelDisp', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+    const painel = fnDe(html, 'progRenderPainelDisp'), painelBase = fnDe(base, 'progRenderPainelDisp');
+    ok('painel de Disponíveis: retorno automático pelo dia da tela (única mudança na função)',
+      /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painel.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
     ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
     ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
