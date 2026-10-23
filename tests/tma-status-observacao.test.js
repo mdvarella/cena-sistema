@@ -323,6 +323,25 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     ok('lote [' + modo + ']: nova tentativa grava e persiste', rel.status === 'observacao' && rel.obs === OBS, rel);
   }
 
+  // ═══ 5b. Dois supervisores ═══
+  {
+    const banco = criarBanco();
+    const A = criarCtx(html, banco), B = criarCtx(html, banco);
+    // A grava treinamento do Cleber; B (aba aberta antes, memória com falta do Cleber) edita OUTRO colaborador
+    B._progStatus[CLEBER] = 'falta'; B._progStatusInfo[CLEBER] = { obs: 'memória antiga' };
+    abrirMenu(A, CLEBER, 'treinamento', '');
+    A.el['retorno-data'] = { value: '2026-10-23' };
+    A.progSalvarMenuStatus(CLEBER); await espera(30);
+    B._progStatus.y = 'patio'; B._progStatusInfo.y = { obs: 'pátio' }; B.progMarcarAutorStatus('y'); B.progSalvarStatus(); await espera(30);
+    let rel = await recarregar(criarCtx(html, banco));
+    ok('2 supervisores: edição de B em outro colaborador NÃO sobrescreve o treinamento gravado por A', rel.status === 'treinamento', rel);
+    // Mesmo colaborador, decisões explícitas em sequência: vale a última (sem aviso de conflito — ver relatório)
+    abrirMenu(B, CLEBER, 'observacao', 'decisão de B');
+    B.progSalvarMenuStatus(CLEBER); await espera(30);
+    rel = await recarregar(criarCtx(html, banco));
+    ok('2 supervisores no mesmo colaborador: prevalece a última decisão explícita, uma linha só', rel.status === 'observacao' && rel.obs === 'decisão de B' && banco.linhas.filter(l => l.colaborador_id === CLEBER).length === 1, rel);
+  }
+
   // ═══ 6. progSetStatus (janela de status: Faltou etc.) ═══
   {
     const banco = criarBanco(); linhaCleberExcluida(banco);
