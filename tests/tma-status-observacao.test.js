@@ -551,14 +551,25 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
       return m; };
     const mb = mapa(base), ma = mapa(html);
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
-    const ESPERADAS = ['ppRenderPainelDisp', 'progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
-      'progMarcarAutorStatus', 'progProjAtualizarQuadro', 'progProjCarregarStatusBanco', 'progProjCarregarStatusDia', 'progRenderPainelDisp', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+    // + trava de escala/programação com leitura incompleta: escalasModeloAplicar, progEfetuarDropInterno,
+    //   progIniciarAutoEscalaRef, progMobileProgramar, progSalvarEquipe, progSalvarTodas (só a linha da trava)
+    const ESPERADAS = ['escalasModeloAplicar', 'ppRenderPainelDisp', 'progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progEfetuarDropInterno', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
+      'progIniciarAutoEscalaRef', 'progMarcarAutorStatus', 'progMobileProgramar', 'progProjAtualizarQuadro', 'progProjCarregarStatusBanco', 'progProjCarregarStatusDia', 'progRenderPainelDisp', 'progSalvarEquipe', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSalvarTodas', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
     const painel = fnDe(html, 'progRenderPainelDisp'), painelBase = fnDe(base, 'progRenderPainelDisp');
-    ok('painel de Disponíveis: retorno automático pelo dia da tela (única mudança na função)',
-      /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painel.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
+    const painelSemLeitura = painel.replace(/\n  progStatusLeituraAviso\(dataNorm\);[^\n]*/, '')
+      .replace(/\+\(progStatusLeituraEstado\(dataNorm\)==='incompleta'\n\s*\? '[^\n]*'\n\s*: ('[^\n]*')\)/, '+$1');
+    ok('painel de Disponíveis: retorno pelo dia da tela + aviso de leitura incompleta (únicas mudanças na função)',
+      /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painelSemLeitura.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
     ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
-    ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusMsgErro', novasNomes);
+    ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusBloqueiaEscala,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusLeituraAviso,progStatusLeituraEstado,progStatusLeituraMarcar,progStatusLerDia,progStatusMsgErro', novasNomes);
+    // Trava: nas 6 funções de escala/programação a única mudança é a linha da trava (ou o bloco de entrada na escala)
+    const TRAVA = { escalasModeloAplicar: /\n  if\(progStatusBloqueiaEscala\(data, 'implantar o modelo'\)\) return;/, progIniciarAutoEscalaRef: /\n  if\(progStatusBloqueiaEscala\(dest, 'usar o Auto Escalar'\)\) return;/,
+      progMobileProgramar: /\n  if\(progStatusBloqueiaEscala\(data, 'programar a equipe'\)\) return;/, progSalvarEquipe: /\n  if\(progStatusBloqueiaEscala\(data, 'programar a equipe'\)\) return;/,
+      progSalvarTodas: /\n  if\(progStatusBloqueiaEscala\(data, 'programar as equipes'\)\) return;/,
+      progEfetuarDropInterno: /\n  \/\/ Entrar na escala do dia[^\n]*\n  \/\/ Mover[^\n]*\n  var jaNaEscalaDia = [^]*?\n  if\(!jaNaEscalaDia && progStatusBloqueiaEscala\(data, 'escalar'\)\) return;/ };
+    ok('trava: nas funções de escala/programação só entrou a trava', Object.keys(TRAVA).every(n => TRAVA[n].test(fnDe(html, n)) && fnDe(html, n).replace(TRAVA[n], '') === fnDe(base, n)),
+      Object.keys(TRAVA).filter(n => !(TRAVA[n].test(fnDe(html, n)) && fnDe(html, n).replace(TRAVA[n], '') === fnDe(base, n))));
     // PP: só a LEITURA dos persistentes (paginada) e o aviso de leitura incompleta mudaram
     const semLeitura = s => s.replace(/sbFetch\('prog_status_diario',\{[^]*?limit:500\s*\}\)/g, 'LEITURA').replace(/progBuscarStatusPersistentes\(data\),?\s*(\/\/[^\n]*)?/g, 'LEITURA');
     ok('PP: carga usa a busca paginada (sem limite de 500)', ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => /progBuscarStatusPersistentes\(data\)/.test(fnDe(html, n)) && !/limit:\s*500\s*\}\)\s*,?\s*$/m.test(fnDe(html, n).split('composicao_dia')[0])));

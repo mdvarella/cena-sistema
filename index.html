@@ -50191,6 +50191,7 @@ function escalasModeloAbrirImplantar(data, corSugerida){
 
 function escalasModeloAplicar(data, cor, sobrescrever){
   if(data < dataHojeLocal()){ progShowToast('⛔ Não é possível implantar modelo em data passada ('+(data||'').split('-').reverse().join('/')+').','erro'); return; }
+  if(progStatusBloqueiaEscala(data, 'implantar o modelo')) return;
   var modelo = _modelos[cor]||{};
   var eqIds = Object.keys(modelo);
   if(!eqIds.length){ progShowToast('Modelo '+cor+' está vazio. Edite-o primeiro.'); return; }
@@ -50454,6 +50455,60 @@ function progBuscarStatusPersistentes(dia){
     }, function(){ return null; });
   }
   return pagina(0);
+}
+// ── Leitura dos status do dia no TMA (por data): 'carregando' | 'ok' | 'incompleta' ──
+// Sem leitura COMPLETA e válida a disponibilidade não está verificada: ausência de status NÃO é
+// "disponível". Aviso fixo no cabeçalho e escala/programação bloqueadas até uma leitura completa.
+function progStatusLerDia(dia){
+  // Status do dia + todos os persistentes, com prazo. Resolve {rowsDia, persist} ou {falha:'motivo'}.
+  return progStatusComPrazo(Promise.all([
+    sbFetch('prog_status_diario',{filters:['data=eq.'+dia,'deleted_at=is.null']}),
+    progBuscarStatusPersistentes(dia)
+  ])).then(function(r){
+    if(r._timeout) return {falha:'o banco não respondeu a tempo'};
+    if(r.erro) return {falha:'erro de conexão'};
+    var res = r.v||[];
+    if(!Array.isArray(res[0])) return {falha:'status do dia não carregados'};
+    if(!Array.isArray(res[1])) return {falha:'férias/afastamentos/inaptos/demitidos incompletos'};
+    return {rowsDia:res[0], persist:res[1]};
+  });
+}
+function progStatusLeituraMarcar(dia, estado, motivo){
+  if(!dia) return;
+  window._progStatusLeitura = window._progStatusLeitura || {};
+  window._progStatusLeitura[dia] = {estado:estado, motivo:motivo||''};
+  progStatusLeituraAviso(progGetData());
+}
+function progStatusLeituraEstado(dia){
+  if(DEMO) return 'ok';
+  var l = (window._progStatusLeitura||{})[dia];
+  return l ? l.estado : '';
+}
+function progStatusLeituraAviso(dia){
+  // Aviso fixo no cabeçalho do TMA enquanto a leitura do dia da tela estiver incompleta
+  var hdr = document.getElementById('prog-header-fixo');
+  if(!hdr) return;
+  var el = document.getElementById('prog-status-incompleto');
+  var l = (window._progStatusLeitura||{})[dia];
+  if(!l || l.estado!=='incompleta'){ if(el) el.remove(); return; }
+  if(!el){ el = document.createElement('div'); el.id = 'prog-status-incompleto'; hdr.appendChild(el); }
+  el.style.cssText = 'padding:.5rem 1rem;background:#FDECEA;border-top:.5px solid #C0000044;color:#C00000;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+  el.innerHTML = '<span>⚠ Status de '+escHtml(fmtD(dia))+' não foram carregados por completo'+(l.motivo?' ('+escHtml(l.motivo)+')':'')
+    +' — férias, afastados, inaptos e demitidos podem não aparecer. Escalar, Auto Escalar, implantar modelo e Programar estão bloqueados.</span>'
+    +'<button class="btn" onclick="progAtualizarQuadro()" style="font-size:11px;padding:3px 8px;color:#C00000;border-color:#C00000">🔄 Tentar de novo</button>';
+}
+function progStatusBloqueiaEscala(dia, acao){
+  // true = bloqueado (já avisou). Só vale para o TMA; status vazio (nunca lido) mantém o comportamento anterior.
+  var est = progStatusLeituraEstado(dia);
+  if(est==='incompleta'){
+    progShowToast('⛔ Não é possível '+acao+': os status de '+fmtD(dia)+' não foram carregados por completo. Clique em 🔄 Atualizar e tente de novo.','erro');
+    return true;
+  }
+  if(est==='carregando'){
+    progShowToast('⏳ Aguarde: os status de '+fmtD(dia)+' ainda estão carregando.','erro');
+    return true;
+  }
+  return false;
 }
 function progExpirarPersistenteLinha(r){
   // Retorno chegou: encerra só o efeito local (cache prog_persistentes do navegador).
@@ -51194,22 +51249,21 @@ function progCarregarStatus(data){
     if(_progStatusDateCache !== data && !DEMO){
       _progStatusDateCache = data; // marcar já para não buscar de novo se voltar rápido
       // Busca silenciosa em background
-      Promise.all([
-        sbFetch('prog_status_diario', {filters:['data=eq.'+data,'deleted_at=is.null']}),
-        progBuscarStatusPersistentes(data)
-      ]).then(function(res){
-        if(res[0]===null) return;
-        if(res[1]===null){
+      progStatusLerDia(data).then(function(leitura){
+        if(leitura.falha){
           _progStatusDateCache = null;
+          progStatusLeituraMarcar(data, 'incompleta', leitura.falha);
           progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
+          progRenderQuadro();
           return;
         }
-        progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
+        progAplicarStatusDoBanco(leitura.rowsDia, leitura.persist, data);
+        progStatusLeituraMarcar(data, 'ok');
         progAplicarPersistentes(data);
         _progSalvarCacheDia(data);
         _progLS.salvarStatus(data);
         progRenderQuadro();
-      }).catch(function(){});
+      }).catch(function(){ _progStatusDateCache = null; progStatusLeituraMarcar(data, 'incompleta', 'erro ao carregar'); progRenderQuadro(); });
     }
     return;
   }
@@ -51231,20 +51285,21 @@ function progCarregarStatus(data){
   if(_progStatusDateCache === data) return;
 
   if(!DEMO){
-    // Uma única chamada paralela: status do dia + persistentes ativos
+    // Uma única chamada paralela: status do dia + persistentes ativos (com prazo)
+    progStatusLeituraMarcar(data, 'carregando');
     Promise.all([
-      sbFetch('prog_status_diario', {filters:['data=eq.'+data,'deleted_at=is.null']}),
-      progBuscarStatusPersistentes(data),
+      progStatusLerDia(data),
       progFetchVeiculosDia(data)
     ]).then(function(res){
-      var rowsDia      = res[0];
-      if(res[1]===null && rowsDia!==null){
-        // Lista de persistentes incompleta: não aplicar (mostraria férias/afastados como disponíveis)
-        rowsDia = null;
+      var leitura      = res[0]||{falha:'sem resposta'};
+      var rowsDia      = leitura.falha ? null : leitura.rowsDia;
+      if(leitura.falha){
+        // Leitura incompleta: não aplicar (mostraria férias/afastados como disponíveis); escala bloqueada
+        progStatusLeituraMarcar(data, 'incompleta', leitura.falha);
         progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
       }
-      var persistRows  = res[1] || [];
-      var veicRows     = res[2] || [];
+      var persistRows  = leitura.persist || [];
+      var veicRows     = res[1] || [];
       // Limpar cache do dia antes de popular — evita veículos fantasma após remoção
       progLimparVeiculosDia(data);
       (veicRows||[]).forEach(function(r){
@@ -51258,9 +51313,10 @@ function progCarregarStatus(data){
       progPersistVeiculosLocal(data);
       window._veicEscCache = {};
 
-      if(rowsDia === null){ return; } // erro de API — manter localStorage
+      if(rowsDia === null){ progRenderQuadro(); return; } // erro de API — manter localStorage (marcado como não verificado)
 
       progAplicarStatusDoBanco(rowsDia||[], persistRows||[], data);
+      progStatusLeituraMarcar(data, 'ok');
       progAplicarPersistentes(data);
       // Atualizar prog_status_<data> localStorage com dados do banco
       try{
@@ -51299,7 +51355,10 @@ function progCarregarStatus(data){
 
       _progStatusDateCache = data; // marcar como carregado
       progRenderQuadro();
-    }).catch(function(){ progRenderQuadro(); });
+    }).catch(function(){
+      if(progStatusLeituraEstado(data)!=='ok') progStatusLeituraMarcar(data, 'incompleta', 'erro ao carregar');
+      progRenderQuadro();
+    });
   }
 }
 
@@ -52087,8 +52146,8 @@ function notifAbrirPainel(){
 function progAtualizarQuadro(){
   _progStatusDateCache = null;
   _progVeiculosDateCache = null;
-  _progStatus = {};
-  _progStatusInfo = {};
+  // A memória de status NÃO é zerada aqui: só é trocada por uma leitura completa e válida
+  // (progAplicarStatusDoBanco começa do zero). Com falha, fica o conjunto anterior + alterações locais.
   var btn = document.querySelector('[onclick="progAtualizarQuadro()"]');
   if(btn){ btn.textContent = '⏳ Atualizando...'; btn.disabled = true; }
   var data = progGetData();
@@ -52096,22 +52155,21 @@ function progAtualizarQuadro(){
   var cidFilter = cid ? 'contrato_id=eq.'+cid : 'ativo=eq.true';
 
   if(!DEMO){
+    progStatusLeituraMarcar(data, 'carregando');
     Promise.all([
-      // Status do dia e persistentes (todas as páginas)
-      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-      progBuscarStatusPersistentes(data),
+      // Status do dia e persistentes (todas as páginas), com prazo
+      progStatusLerDia(data),
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
       // Dados base — recarregar colaboradores e equipes para pegar folgas atualizadas
       sbFetch('colaboradores',{filters:[cidFilter,'ativo=eq.true'],order:'nome',limit:500}),
       sbFetch('equipes_disp',{filters:['status=eq.Ativo'],order:'codigo'}),
       (typeof progTmaOpsFetchPromise==='function'?progTmaOpsFetchPromise(data):Promise.resolve())
     ]).then(function(res){
-      var rowsDia     = res[0]||[];
-      var persistRows = res[1]||[];
-      var persistFalhou = res[1]===null;
-      var comps       = res[2]||[];
-      var colabs      = res[3]||[];
-      var equipes     = res[4]||[];
+      var leitura     = res[0]||{falha:'sem resposta'};
+      var persistFalhou = !!leitura.falha;
+      var comps       = res[1]||[];
+      var colabs      = res[2]||[];
+      var equipes     = res[3]||[];
       if(typeof _progTmaOpsLastFetch!=='undefined') _progTmaOpsLastFetch=data;
 
       // Update base data — MERGE incremental (não reativa dispensado/inativo)
@@ -52145,19 +52203,26 @@ function progAtualizarQuadro(){
         });
       }
 
-      progAplicarStatusDoBanco(rowsDia, persistRows, data);
+      if(persistFalhou){
+        // Leitura incompleta: não trocar o conjunto confiável por um parcial (nem apagar o que foi alterado aqui)
+        progStatusLeituraMarcar(data, 'incompleta', leitura.falha);
+      } else {
+        progAplicarStatusDoBanco(leitura.rowsDia, leitura.persist, data);
+        progStatusLeituraMarcar(data, 'ok');
+      }
 
       // Also reload veiculos
       progCarregarVeiculos(data);
       // Carregar ponto do Supabase ANTES de renderizar para badges aparecerem imediatamente
       progCarregarPontoDoSupabase(data, function(){
         progRenderQuadro();
-        if(persistFalhou) progShowToast('⚠ Férias/afastamentos/treinamentos não foram carregados por completo — clique em 🔄 Atualizar de novo.','erro');
+        if(persistFalhou) progShowToast('⚠ Status do dia não foram carregados por completo — escala e programação bloqueadas. Clique em 🔄 Atualizar de novo.','erro');
         else progShowToast('✅ Quadro atualizado!');
         setTimeout(function(){ progCarregarBadgesPonto(); }, 200);
       });
     }).catch(function(e){
       console.error('progAtualizarQuadro erro:',e);
+      if(progStatusLeituraEstado(data)==='carregando') progStatusLeituraMarcar(data, 'incompleta', 'erro ao atualizar');
       progRenderQuadro();
       progShowToast('⚠ Erro ao atualizar — verifique a conexão.','erro');
     }).finally(function(){
@@ -54736,6 +54801,7 @@ function progValidarMotoristaObrigatorio(comp, ids, eqId, data){
 
 function progSalvarTodas(){
   var data = progGetData();
+  if(progStatusBloqueiaEscala(data, 'programar as equipes')) return;
   var cid  = progGetCont();
   var eqs  = equipes.filter(function(e){
     return e.status==='Ativo' && (!cid||e.contrato_id===cid);
@@ -54829,6 +54895,7 @@ function progRenderVeiculoCellBloqueado(eq, data){
 
 function progSalvarEquipe(eqId){
   var data = progGetData();
+  if(progStatusBloqueiaEscala(data, 'programar a equipe')) return;
   var eq = equipes_disp.find(function(e){return e.id===eqId;})
     || equipes.find(function(e){return e.id===eqId;});
 
@@ -55966,6 +56033,7 @@ function progMobileRemover(eqId, colabId){
 
 function progMobileProgramar(eqId){
   var data = progGetData();
+  if(progStatusBloqueiaEscala(data, 'programar a equipe')) return;
   var comp = typeof progFindCompDia==='function'
     ? progFindCompDia(eqId, data)
     : composicao_dia.find(function(c){
@@ -56490,6 +56558,7 @@ function progRenderPainelDisp(eqs, data, cid){
   // Verificar retorno automático de férias/afastado com data prevista do STATUS (não do cadastro)
   // pelo DIA DA TELA (não por hoje): ao consultar 22/10, quem volta em 23/10 continua fora.
   var hoje = dataNorm || dataHojeLocal();
+  progStatusLeituraAviso(dataNorm);   // aviso fixo acompanha o dia da tela
   cols.forEach(function(c){
     var st = _progStatus[c.id];
     if(PROG_STATUS_PERSISTENTES.indexOf(st)<0) return;
@@ -56681,7 +56750,9 @@ function progRenderPainelDisp(eqs, data, cid){
   return recemHtml + treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
-    +'<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>'
+    +(progStatusLeituraEstado(dataNorm)==='incompleta'
+      ? '<span style="font-size:13px;font-weight:600;color:#C00000">⚠ Disponibilidade NÃO verificada — leitura de status incompleta (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>'
+      : '<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>')
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
     +'</div>'
     +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
@@ -57077,6 +57148,12 @@ function progEfetuarDrop(colabId,fromEqId,toEqId,toPos,duplicar){
 }
 
 function progEfetuarDropInterno(colabId,fromEqId,toEqId,toPos,duplicar,data){
+  // Entrar na escala do dia (vindo dos Disponíveis) exige os status do dia verificados.
+  // Mover/emprestar quem já está escalado no dia não depende da lista de disponíveis.
+  var jaNaEscalaDia = composicao_dia.some(function(c){
+    return c.data===data && !c.deleted_at && parseColabIds(c.colaborador_ids).indexOf(colabId)>=0;
+  });
+  if(!jaNaEscalaDia && progStatusBloqueiaEscala(data, 'escalar')) return;
   // Verificar se composição destino está confirmada
   var compDest = composicao_dia.find(function(c){return c.equipe_id===toEqId&&c.data===data;});
   if(!_podeAlterarComposicao(compDest, 'adicionar membros')) return;
@@ -58817,6 +58894,7 @@ async function progIniciarAutoEscalaRef(ref, dest, opts){
     progShowToast('Selecione turno e tipo de equipe para Auto Escalar.','erro');
     return;
   }
+  if(progStatusBloqueiaEscala(dest, 'usar o Auto Escalar')) return;
 
   var tipoNome=((tipos_equipe||[]).find(function(t){return String(t.id)===String(tipoId);})||{}).nome||'tipo';
   var cid=progGetCont();
