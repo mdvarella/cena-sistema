@@ -234,7 +234,9 @@ const recuperar = c => c.portAplicarFotosPacote(Object.assign({}, c.banco[0]));
   ok('escopo: classificação de nomes sem falso positivo', !ehPP('progDropPool') && ehPP('ppDispChipLivreHtml') && ehPP('progProjSalvarStatus')
     && ehTma('progBuscarEscalaTMAData') && ehTma('progSalvarCelular') && ehTma('progDropPool') && !ehTma('progProjSalvarStatus') && !ehTma('portSalvarSaida'));
   // PP corrigida depois (TMA status/histórico): leitura paginada dos persistentes — coberta em tma-status-observacao.test.js
-  const PP_STATUS_CORRIGIDAS = ['progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro', 'ppRenderPainelDisp'];
+  const PP_STATUS_CORRIGIDAS = ['progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro', 'ppRenderPainelDisp',
+    // + trava de escala/programação com leitura incompleta (23/10/2026)
+    'progProjetoCoreEfetuarDrop', 'ppAutoEscalarEquipe', 'progProjetoCoreSalvarEquipe', 'ppStatusVerificado', 'ppStatusBloqueiaEscala'];
   const mudouAgora = difs(htmlBase, html).filter(n => PP_STATUS_CORRIGIDAS.indexOf(n) < 0);
   ok('escopo: PP/Diário/SOT idênticos à base no arquivo atual', !mudouAgora.some(ehProtNaoTma), mudouAgora.filter(ehProtNaoTma));
   const REL_225 = process.env.PORT225_RELEASE || '732987e';

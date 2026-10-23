@@ -128,6 +128,7 @@ function criarCtx(src) {
     'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha', 'progAplicarStatusDoBanco', 'progSalvarPersistente', 'progRemoverPersistente',
     'progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus', 'progVerificarRetornos', 'progAlterarStatusPool'];
   const novos = /function progStatusGravarDia\(/.test(src) ? ['progStatusComPrazo', 'progStatusClassificarErro', 'progStatusMsgErro', 'progStatusGravarDia', 'progBuscarStatusPersistentes'] : [];
+  if (/function progStatusLerDia\(/.test(src)) novos.push('progStatusLerDia');   // leitura com prazo (PP e TMA)
   vm.runInContext(['var _SOFT_DELETE_TABLES = ["prog_status_diario"];', varDe(src, 'PROG_STATUS_PERSISTENTES')]
     .concat(nomes.map(n => fnDe(src, n)), [sbUpsertReal(src)], novos.map(n => fnDe(src, n))).join('\n'), ctx);
   return ctx;

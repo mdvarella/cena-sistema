@@ -150,6 +150,7 @@ function criarCtx(src, banco) {
   nomes.push('progVerificarRetornos', 'progAlterarStatusPool');
   const novos = /function progStatusGravarDia\(/.test(src) ? ['progStatusComPrazo', 'progStatusClassificarErro', 'progStatusMsgErro', 'progStatusGravarDia'] : [];
   if (/function progBuscarStatusPersistentes\(/.test(src)) novos.push('progBuscarStatusPersistentes');
+  if (/function progStatusLerDia\(/.test(src)) novos.push('progStatusLerDia');
   vm.runInContext(['var _SOFT_DELETE_TABLES = ["prog_status_diario"];', varDe(src, 'PROG_STATUS_PERSISTENTES')]
     .concat(nomes.map(n => fnDe(src, n)), [sbUpsertReal(src)], novos.map(n => fnDe(src, n))).join('\n'), ctx);
   return ctx;
@@ -450,6 +451,7 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     const ctxPP = (src, banco) => {
       const ctx = criarCtx(src, banco);
       ctx._pp = { statusData: null }; ctx.progProjRenderQuadro = () => {}; ctx._pontoCacheTemDia = () => true;
+      ctx.setTimeout = (f, ms) => setTimeout(f, ms >= 20000 ? 2000 : ms);   // prazo da leitura (20 s) comprimido, mas maior que 4 páginas em memória
       vm.runInContext(['progProjStatusEhDoDia', 'progProjCarregarStatusDia', 'progProjCarregarStatusBanco'].map(n => fnDe(src, n)).join('\n'), ctx);
       return ctx;
     };
@@ -553,26 +555,33 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
     // + trava de escala/programação com leitura incompleta: escalasModeloAplicar, progEfetuarDropInterno,
     //   progIniciarAutoEscalaRef, progMobileProgramar, progSalvarEquipe, progSalvarTodas (só a linha da trava)
-    const ESPERADAS = ['escalasModeloAplicar', 'ppRenderPainelDisp', 'progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progEfetuarDropInterno', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
-      'progIniciarAutoEscalaRef', 'progMarcarAutorStatus', 'progMobileProgramar', 'progProjAtualizarQuadro', 'progProjCarregarStatusBanco', 'progProjCarregarStatusDia', 'progRenderPainelDisp', 'progSalvarEquipe', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSalvarTodas', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
+    // + correções A/B/C: progEfetuarEmprestimoInterno (empréstimo), PP progProjetoCoreEfetuarDrop, ppAutoEscalarEquipe,
+    //   progProjetoCoreSalvarEquipe (trava da PP)
+    const ESPERADAS = ['escalasModeloAplicar', 'ppAutoEscalarEquipe', 'ppRenderPainelDisp', 'progAlterarStatusPool', 'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progEfetuarDropInterno', 'progEfetuarEmprestimoInterno', 'progExpirarPersistenteLinha', 'progFiltrosStatusPersistentes',
+      'progIniciarAutoEscalaRef', 'progMarcarAutorStatus', 'progMobileProgramar', 'progProjAtualizarQuadro', 'progProjCarregarStatusBanco', 'progProjCarregarStatusDia', 'progProjetoCoreEfetuarDrop', 'progProjetoCoreSalvarEquipe', 'progRenderPainelDisp', 'progSalvarEquipe', 'progSalvarMenuStatus', 'progSalvarStatus', 'progSalvarTodas', 'progSetStatus', 'progVerificarRetornos', 'relTmaStatus'];
     const painel = fnDe(html, 'progRenderPainelDisp'), painelBase = fnDe(base, 'progRenderPainelDisp');
     const painelSemLeitura = painel.replace(/\n  progStatusLeituraAviso\(dataNorm\);[^\n]*/, '')
-      .replace(/\+\(progStatusLeituraEstado\(dataNorm\)==='incompleta'\n\s*\? '[^\n]*'\n\s*: ('[^\n]*')\)/, '+$1');
+      .replace(/\+\(\['ok','carregando'\]\.indexOf\(progStatusLeituraEstado\(dataNorm\)\)<0\n\s*\? '[^\n]*'\n\s*: ('[^\n]*')\)/, '+$1');
     ok('painel de Disponíveis: retorno pelo dia da tela + aviso de leitura incompleta (únicas mudanças na função)',
       /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painelSemLeitura.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
     ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
     const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
-    ok('escopo: funções novas só as de status', novasNomes === 'progBuscarStatusPersistentes,progStatusBloqueiaEscala,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusLeituraAviso,progStatusLeituraEstado,progStatusLeituraMarcar,progStatusLerDia,progStatusMsgErro', novasNomes);
+    ok('escopo: funções novas só as de status', novasNomes === 'ppStatusBloqueiaEscala,ppStatusVerificado,progBuscarStatusPersistentes,progStatusBloqueiaEscala,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusLeituraAviso,progStatusLeituraEstado,progStatusLeituraMarcar,progStatusLerDia,progStatusMsgErro', novasNomes);
     // Trava: nas 6 funções de escala/programação a única mudança é a linha da trava (ou o bloco de entrada na escala)
     const TRAVA = { escalasModeloAplicar: /\n  if\(progStatusBloqueiaEscala\(data, 'implantar o modelo'\)\) return;/, progIniciarAutoEscalaRef: /\n  if\(progStatusBloqueiaEscala\(dest, 'usar o Auto Escalar'\)\) return;/,
       progMobileProgramar: /\n  if\(progStatusBloqueiaEscala\(data, 'programar a equipe'\)\) return;/, progSalvarEquipe: /\n  if\(progStatusBloqueiaEscala\(data, 'programar a equipe'\)\) return;/,
       progSalvarTodas: /\n  if\(progStatusBloqueiaEscala\(data, 'programar as equipes'\)\) return;/,
-      progEfetuarDropInterno: /\n  \/\/ Entrar na escala do dia[^\n]*\n  \/\/ Mover[^\n]*\n  var jaNaEscalaDia = [^]*?\n  if\(!jaNaEscalaDia && progStatusBloqueiaEscala\(data, 'escalar'\)\) return;/ };
+      progEfetuarDropInterno: /\n  \/\/ Entrar na escala do dia[^\n]*\n  \/\/ Mover[^\n]*\n  var jaNaEscalaDia = [^]*?\n  if\(!jaNaEscalaDia && progStatusBloqueiaEscala\(data, 'escalar'\)\) return;/,
+      progEfetuarEmprestimoInterno: /\n  \/\/ Empréstimo de outro contrato[^\n]*\n  if\(progStatusBloqueiaEscala\(data, 'emprestar colaborador'\)\) return;/,
+      ppAutoEscalarEquipe: /\n  if\(ppStatusBloqueiaEscala\(data, 'usar o Auto Escalar'\)\) return;/,
+      progProjetoCoreSalvarEquipe: /\n  if\(ppStatusBloqueiaEscala\(data, 'programar a equipe'\)\) return;/,
+      progProjetoCoreEfetuarDrop: /\n  \/\/ Entrar na escala do dia[^\n]*\n  \/\/ Mover[^\n]*\n  var jaNaEscalaDia=[^]*?\n  if\(!jaNaEscalaDia && ppStatusBloqueiaEscala\(data, 'escalar'\)\) return;/ };
     ok('trava: nas funções de escala/programação só entrou a trava', Object.keys(TRAVA).every(n => TRAVA[n].test(fnDe(html, n)) && fnDe(html, n).replace(TRAVA[n], '') === fnDe(base, n)),
       Object.keys(TRAVA).filter(n => !(TRAVA[n].test(fnDe(html, n)) && fnDe(html, n).replace(TRAVA[n], '') === fnDe(base, n))));
     // PP: só a LEITURA dos persistentes (paginada) e o aviso de leitura incompleta mudaram
     const semLeitura = s => s.replace(/sbFetch\('prog_status_diario',\{[^]*?limit:500\s*\}\)/g, 'LEITURA').replace(/progBuscarStatusPersistentes\(data\),?\s*(\/\/[^\n]*)?/g, 'LEITURA');
-    ok('PP: carga usa a busca paginada (sem limite de 500)', ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => /progBuscarStatusPersistentes\(data\)/.test(fnDe(html, n)) && !/limit:\s*500\s*\}\)\s*,?\s*$/m.test(fnDe(html, n).split('composicao_dia')[0])));
+    ok('PP: carga usa a busca paginada com prazo (sem limite de 500)', /progBuscarStatusPersistentes\(dia\)/.test(fnDe(html, 'progStatusLerDia'))
+      && ['progProjCarregarStatusBanco', 'progProjAtualizarQuadro'].every(n => /progStatusLerDia\(data\)/.test(fnDe(html, n)) && !/limit:\s*500\s*\}\)\s*,?\s*$/m.test(fnDe(html, n).split('composicao_dia')[0])));
     ok('PP: aviso de leitura incompleta no painel', /pp-status-incompleto/.test(fnDe(html, 'ppRenderPainelDisp')) && /statusFalhou === data/.test(fnDe(html, 'ppRenderPainelDisp')));
     ok('Programação de Projetos (gravação/regras), Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'ppDispStatusColab', 'ppDispFaltaPeloPonto', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
       .every(n => n === 'sbUpsert' ? sbUpsertReal(base) === sbUpsertReal(html) : fnDe(base, n) === fnDe(html, n)));

@@ -72,11 +72,12 @@ ok('Disponível não apaga mais o histórico de férias/afastamento de outros di
 // ── vm: carregamento por data ───────────────────────────────────
 const CARGA = ['progDataRetornoStr', 'progRetornoAindaFora', 'progRetornoExpirouNoDia', 'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha',
   'progRemoverPersistente', 'progSalvarPersistente', 'progAplicarStatusDoBanco', 'progProjCarregarStatus', 'progProjStatusEhDoDia', 'progProjCarregarStatusDia',
-  'progProjCarregarStatusBanco', 'progProjSalvarStatus', 'progBuscarStatusPersistentes'];   // leitura paginada dos persistentes (TMA status/histórico)
+  'progProjCarregarStatusBanco', 'progProjSalvarStatus', 'progBuscarStatusPersistentes',   // leitura paginada dos persistentes (TMA status/histórico)
+  'progStatusComPrazo', 'progStatusLerDia'];   // leitura com prazo (trava de escala com leitura incompleta, 23/10/2026)
 function ctxCarga(cfg) {
   const log = { fetch: [], renders: 0, ponto: [], ls: 0 };
   const ctx = {
-    console: { log() {}, warn() {}, error() {} }, Date, JSON, Object, Array, String, Number, Math, Promise,
+    console: { log() {}, warn() {}, error() {} }, Date, JSON, Object, Array, String, Number, Math, Promise, setTimeout, clearTimeout,
     DEMO: false, window: {}, _pp: { statusData: cfg.statusData }, progShowToast: () => {},
     _progStatus: Object.assign({}, cfg.memoria || {}), _progStatusInfo: {},
     // conta só as chaves de status POR DIA (pp_status_*, pp_statusinfo_*, prog_status_*); prog_persistentes é do TMA

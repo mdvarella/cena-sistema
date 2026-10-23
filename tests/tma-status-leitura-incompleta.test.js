@@ -120,15 +120,25 @@ function criarCtx(src, banco) {
     progBuscarEscalaTMAData: (...a) => { marca('progBuscarEscalaTMAData')(); return Promise.reject(new Error('fim do teste')); },
     progValidarComposicao: () => [], progConfirmarEscalarTurnoDiferente: (c, e, cb) => cb(), _calDados: {}, CAL_CORES_2026: {},
     closeModal() {}, setModal() {}, confirm: () => true, progFmtDataBR: d => d,
+    // empréstimo entre contratos (A) e Programação de Projetos (C)
+    renderProgram() {}, sbUpdate: () => Promise.resolve(true), sbInsert: () => Promise.resolve([]),
+    _pp: { statusData: null }, progProjGetData: () => ctx._diaPP || DIA, progProjGetCid: () => 'cPP', ppOpsInvalidar() {}, ppFilaInvalidar() {},
+    progProjetoCoreMergeComposicaoRefresh() {}, progProjSalvarStatus() {}, progProjRenderQuadro() {}, _pontoCacheTemDia: () => true,
+    parseColabIdsSlots: (v, n) => { const a = ctx.parseColabIds(v).slice(); while (a.length < n) a.push(null); return a; },
+    ppVinculadosDisponiveisEq: (...a) => { marca('ppVinculadosDisponiveisEq')(); return []; }, progMinColaboradoresEquipe: () => 2,
+    progProjetoCoreFindEquipe: marca('progProjetoCoreFindEquipe'),
   });
   ctx.cenaAuthAuthorizedFetch = banco.authFetch;
   vm.createContext(ctx);
   const nomes = ['isUUID', 'sbFetch', 'progDataRetornoStr', 'progRetornoAindaFora', 'progRetornoExpirouNoDia', 'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha',
     'progAplicarStatusDoBanco', 'progAtualizarQuadro', 'progCarregarStatus', 'progEfetuarDrop', 'progEfetuarDropInterno', 'progSalvarEquipe', 'progSalvarTodas', 'progMobileProgramar',
-    'escalasModeloAplicar', 'progIniciarAutoEscalaRef'];
-  const novos = ['progBuscarStatusPersistentes', 'progStatusComPrazo', 'progStatusLerDia', 'progStatusLeituraMarcar', 'progStatusLeituraEstado', 'progStatusLeituraAviso', 'progStatusBloqueiaEscala']
+    'escalasModeloAplicar', 'progIniciarAutoEscalaRef', 'progEfetuarEmprestimo', 'progEfetuarEmprestimoInterno',
+    'progProjCarregarStatus', 'progProjStatusEhDoDia', 'progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro',
+    'progProjetoCoreEfetuarDrop', 'ppAutoEscalarEquipe', 'progProjetoCoreSalvarEquipe'];
+  const novos = ['progBuscarStatusPersistentes', 'progStatusComPrazo', 'progStatusLerDia', 'progStatusLeituraMarcar', 'progStatusLeituraEstado', 'progStatusLeituraAviso', 'progStatusBloqueiaEscala',
+    'ppStatusVerificado', 'ppStatusBloqueiaEscala']
     .filter(n => new RegExp('\\nfunction ' + n + '\\(').test(src));
-  vm.runInContext(['var PROG_STATUS = {};', varDe(src, 'PROG_STATUS_PERSISTENTES')].concat(nomes.concat(novos).map(n => fnDe(src, n))).join('\n'), ctx);
+  vm.runInContext(['var PROG_STATUS = {};', 'var BLOQ_STATUS = ["falta","ferias","afastado","treinamento","demitido","inapto"];', varDe(src, 'PROG_STATUS_PERSISTENTES')].concat(nomes.concat(novos).map(n => fnDe(src, n))).join('\n'), ctx);
   return ctx;
 }
 const indisponiveis = ctx => Object.keys(INDISP).filter(c => ctx._progStatus[c] === INDISP[c]);
@@ -136,21 +146,24 @@ const aviso = ctx => ctx.el['prog-status-incompleto'] || null;
 const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
 async function atualizar(ctx, ms) { ctx.progAtualizarQuadro(); await espera(ms || 40); }
 // Todas as travas de escala/programação: true se TODAS bloquearam (nenhum ponto de chegada alcançado)
-function tentarEscalar(ctx) {
+function tentarEscalar(ctx, dia) {
+  dia = dia || DIA;
   ctx.chamou = {};
-  ctx.composicao_dia = [{ id: 'cmp1', equipe_id: 'e1', data: DIA, colaborador_ids: [LIVRE], deleted_at: null }];
+  ctx.composicao_dia = [{ id: 'cmp1', equipe_id: 'e1', data: dia, colaborador_ids: [LIVRE], deleted_at: null }];
   ctx.progEfetuarDrop(FERIAS, null, 'e1', 1, false);            // Disponíveis → equipe (arrastar / buscar / celular)
   const drop = !!ctx.chamou._podeAlterarComposicao;
   ctx.chamou = {};
-  ctx.progEfetuarDropInterno(LIVRE, 'e1', 'e2', 0, false, DIA);  // mover quem já está escalado no dia
+  ctx.progEfetuarDropInterno(LIVRE, 'e1', 'e2', 0, false, dia);  // mover quem já está escalado no dia
   const mover = !!ctx.chamou._podeAlterarComposicao;
   ctx.chamou = {};
   ctx.progSalvarEquipe('e1'); ctx.progSalvarTodas(); ctx.progMobileProgramar('e1');
-  ctx._modelos = {}; ctx.escalasModeloAplicar(DIA, 'azul');
-  ctx.progIniciarAutoEscalaRef('2026-10-22', DIA, { turno: 'Manha', tipoId: 't1' });
+  const nToasts = ctx.toasts.length;
+  ctx._modelos = {}; ctx.escalasModeloAplicar(dia, 'azul');
+  const modelo = ctx.toasts.slice(nToasts).some(t => /Modelo azul está vazio/.test(t.m));
+  ctx.progIniciarAutoEscalaRef('2026-10-22', dia, { turno: 'Manha', tipoId: 't1' });
   const c = ctx.chamou;
   return { drop, mover, salvarEquipe: !!c.equipeEstaEmFolga, salvarTodas: !!c.progGetCont, mobile: !!c.progFindCompDia,
-    modelo: ctx.toasts.some(t => /Modelo azul está vazio/.test(t.m)), auto: !!c.progBuscarEscalaTMAData };
+    modelo, auto: !!c.progBuscarEscalaTMAData };
 }
 const nadaPassou = r => !r.drop && !r.salvarEquipe && !r.salvarTodas && !r.mobile && !r.modelo && !r.auto;
 const tudoPassou = r => r.drop && r.salvarEquipe && r.salvarTodas && r.mobile && r.modelo && r.auto;
@@ -219,7 +232,7 @@ const tudoPassou = r => r.drop && r.salvarEquipe && r.salvarTodas && r.mobile &&
     ok('aba nova com falha: leitura incompleta, aviso e escala bloqueada', c.progStatusLeituraEstado(DIA) === 'incompleta' && !!aviso(c) && nadaPassou(tentarEscalar(c)));
     ok('aba nova com falha: nenhuma lista parcial aplicada', Object.keys(c._progStatus).length === 0, c._progStatus);
     // painel: o título deixa de dizer "Disponíveis"
-    ok('painel: com leitura incompleta o título é "Disponibilidade NÃO verificada"', /progStatusLeituraEstado\(dataNorm\)==='incompleta'\n\s*\? '[^\n]*Disponibilidade NÃO verificada/.test(fnDe(html, 'progRenderPainelDisp')));
+    ok('painel: sem leitura verificada o título é "Disponibilidade NÃO verificada"', /\['ok','carregando'\]\.indexOf\(progStatusLeituraEstado\(dataNorm\)\)<0\n\s*\? '[^\n]*Disponibilidade NÃO verificada/.test(fnDe(html, 'progRenderPainelDisp')));
     b.regra = () => 'ok';
     await atualizar(c);
     ok('aba nova: recuperação aplica os 4 indisponíveis e libera', indisponiveis(c).length === 4 && tudoPassou(tentarEscalar(c)));
@@ -267,15 +280,163 @@ const tudoPassou = r => r.drop && r.salvarEquipe && r.salvarTodas && r.mobile &&
     const c = criarCtx(html, b);
     await atualizar(c);
     c.progStatusLeituraAviso('2026-10-24');
-    ok('outro dia na tela: o aviso do dia 23 não aparece', !aviso(c));
+    ok('outro dia na tela (nunca lido): o aviso é de "ainda não lidos", não o da falha do dia 23', !!aviso(c) && /ainda não foram lidos/.test(aviso(c).innerHTML) && !/não foram carregados por completo/.test(aviso(c).innerHTML));
     c.progStatusLeituraAviso(DIA);
-    ok('volta ao dia 23: o aviso reaparece', !!aviso(c));
+    ok('volta ao dia 23: o aviso da falha reaparece', !!aviso(c) && /não foram carregados por completo/.test(aviso(c).innerHTML));
+    b.regra = () => 'ok'; await atualizar(c);
+    ok('dia 23 lido por completo: sem aviso', !aviso(c));
+  }
+
+  // Versão anterior às correções A/B/C (para reproduzir os 3 desvios)
+  let antes = null;
+  try { antes = norm(execSync('git show 373de1e:index.html', { cwd: raiz, maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8')); } catch (e) { antes = null; }
+  if (!antes) ok('commit 373de1e disponível', false);
+  const OUTRO = id(99);
+  const emprestar = async (c, colab) => {
+    c.composicao_dia = [{ id: 'cmp1', equipe_id: 'e1', data: DIA, colaborador_ids: [LIVRE], deleted_at: null }];
+    c.progEfetuarEmprestimo(colab, 'e1', 1); await espera(10);
+    return c.composicao_dia[0].colaborador_ids.indexOf(colab) >= 0;
+  };
+
+  // ═══ A. Empréstimo entre contratos ═══
+  for (const [nome, prep] of [['leitura incompleta', b => falhaNaPagina(b, 1000, 'erro500')], ['prazo esgotado (timeout)', b => falhaNaPagina(b, 2000, 'timeout')]]) {
+    if (antes) {
+      const b = montarBanco(); prep(b); const c = criarCtx(antes, b);
+      await atualizar(c, 250); c.colaboradores.push({ id: OUTRO, nome: 'OUTRO CONTRATO', ativo: true, contrato_id: 'cY' });
+      ok('A (antes, 373de1e) [' + nome + ']: empréstimo de outro contrato passava sem trava (defeito reproduzido)', await emprestar(c, OUTRO));
+    }
+    const b = montarBanco(); prep(b); const c = criarCtx(html, b);
+    await atualizar(c, 250); c.colaboradores.push({ id: OUTRO, nome: 'OUTRO CONTRATO', ativo: true, contrato_id: 'cY' });
+    ok('A [' + nome + ']: empréstimo de outro contrato bloqueado', !(await emprestar(c, OUTRO)) && /Não é possível emprestar colaborador/.test(ult(c).m), ult(c).m);
+    b.regra = () => 'ok'; await atualizar(c);
+    ok('A [' + nome + ']: após leitura completa o empréstimo volta a funcionar', await emprestar(c, OUTRO));
+  }
+  {
+    const b = montarBanco(); const c = criarCtx(html, b);
+    ok('A: dia nunca lido — empréstimo bloqueado', !(await emprestar(c, OUTRO)) && /ainda não foram lidos/.test(ult(c).m), ult(c).m);
+    await atualizar(c);
+    ok('A: com leitura completa a regra de empréstimo existente não mudou (ainda empresta quem está de férias — proposta separada)', await emprestar(c, FERIAS) && c._progStatus[FERIAS] === 'ferias');
+  }
+
+  // ═══ B. Troca de dia dentro dos 5 s · dia nunca lido · memória trocada por outro módulo ═══
+  const D24 = '2026-10-24';
+  if (antes) {
+    const b = montarBanco(); const c = criarCtx(antes, b);
+    await atualizar(c);
+    c.window._progStatusUltimoSave = Date.now(); c._diaTela = D24; c._progData = D24;
+    const g = b.gets; c.progCarregarStatus(D24); await espera(40);
+    ok('B (antes, 373de1e): troca de dia em < 5 s não lia o dia novo e liberava escala com a memória do dia 23 (defeito reproduzido)', b.gets === g && c._progStatus[FALTA] === 'falta' && tudoPassou(tentarEscalar(c, D24)));
+  }
+  {
+    const b = montarBanco(); const c = criarCtx(html, b);
+    await atualizar(c);
+    c.window._progStatusUltimoSave = Date.now(); c._diaTela = D24; c._progData = D24;
+    const g = b.gets; c.progCarregarStatus(D24);
+    ok('B: troca de dia em < 5 s — durante a leitura do dia novo a escala espera', c.progStatusLeituraEstado(D24) === 'carregando' && nadaPassou(tentarEscalar(c, D24)));
+    await espera(40);
+    ok('B: troca de dia em < 5 s lê o dia novo e só então libera', b.gets > g && c.progStatusLeituraEstado(D24) === 'ok' && tudoPassou(tentarEscalar(c, D24)), tentarEscalar(c, D24));
+    ok('B: a memória do dia 24 não traz a falta do dia 23', c._progStatus[FALTA] !== 'falta');
+    // mesmo dia, já verificado, dentro dos 5 s: a otimização continua valendo (não relê)
+    c.window._progStatusUltimoSave = Date.now();
+    const g2 = b.gets; c.progCarregarStatus(D24); await espera(40);
+    ok('B: mesmo dia verificado dentro dos 5 s — reaproveita sem reler', b.gets === g2 && c.progStatusLeituraEstado(D24) === 'ok');
+    // falha no dia novo dentro dos 5 s
+    c.window._progStatusUltimoSave = Date.now(); c._diaTela = '2026-10-25'; c._progData = '2026-10-25'; c._progStatusDateCache = null;
+    falhaNaPagina(b, 1000, 'erro500'); c.progCarregarStatus('2026-10-25'); await espera(40);
+    ok('B: troca de dia em < 5 s com falha — incompleta e bloqueada', c.progStatusLeituraEstado('2026-10-25') === 'incompleta' && nadaPassou(tentarEscalar(c, '2026-10-25')));
+    b.regra = () => 'ok';
+  }
+  {
+    const b = montarBanco(); const c = criarCtx(html, b);
+    ok('B: dia nunca carregado — estado "não lido", escala e programação bloqueadas', c.progStatusLeituraEstado(DIA) === '' && nadaPassou(tentarEscalar(c)) && c.toasts.some(t => /ainda não foram lidos/.test(t.m)));
+    c.progStatusLeituraAviso(DIA);
+    ok('B: dia nunca carregado — aviso fixo "ainda não foram lidos" com Atualizar', !!aviso(c) && /ainda não foram lidos/.test(aviso(c).innerHTML) && /progAtualizarQuadro\(\)/.test(aviso(c).innerHTML));
+    await atualizar(c);
+    ok('B: dia lido — estado separado por data (23 ok, 24 não lido)', c.progStatusLeituraEstado(DIA) === 'ok' && c.progStatusLeituraEstado(D24) === '');
+    // outro módulo (Programação de Projetos) troca a memória compartilhada: o TMA deixa de considerar o dia verificado
+    c.progAplicarStatusDoBanco([], [], D24);
+    ok('B: memória trocada por outro módulo — o dia 23 deixa de contar como verificado', c.progStatusLeituraEstado(DIA) === '' && nadaPassou(tentarEscalar(c)));
+    await atualizar(c);
+    ok('B: nova leitura do dia 23 restaura', c.progStatusLeituraEstado(DIA) === 'ok' && indisponiveis(c).length === 4);
+  }
+
+  // ═══ C. Programação de Projetos ═══
+  const tentarPP = c => {
+    c.chamou = {};
+    c.composicao_dia = [{ id: 'cpp1', equipe_id: 'p1', data: DIA, colaborador_ids: JSON.stringify([LIVRE, null, null]), deleted_at: null, confirmada: false }];
+    c.progFindCompDia = (e, d) => c.composicao_dia.find(x => x.equipe_id === e && x.data === d) || null;
+    c.progProjetoCoreEfetuarDrop(FERIAS, null, 'p1', 1, false);                 // dos Disponíveis para o slot (inclusão/substituição)
+    const drop = c.parseColabIds(c.composicao_dia[0].colaborador_ids).indexOf(FERIAS) >= 0;
+    c.progProjetoCoreEfetuarDrop(LIVRE, 'p1', 'p1', 2, false);                  // mover quem já está escalado
+    const mover = c.parseColabIds(c.composicao_dia[0].colaborador_ids)[2] === LIVRE;
+    c.composicao_dia = [];
+    c.ppAutoEscalarEquipe('p2'); c.progProjetoCoreSalvarEquipe('p1');
+    return { drop, mover, auto: !!c.chamou.ppVinculadosDisponiveisEq, salvar: !!c.chamou.progProjetoCoreFindEquipe };
+  };
+  const ppNada = r => !r.drop && !r.auto && !r.salvar, ppTudo = r => r.drop && r.auto && r.salvar;
+  const carregarPP = async (c, forcar) => { c.progProjCarregarStatusDia(DIA, forcar !== false); await espera(80); };
+  if (antes) {
+    const b = montarBanco(); const c = criarCtx(antes, b);
+    await carregarPP(c); falhaNaPagina(b, 1000, 'erro500'); await carregarPP(c);
+    const r = tentarPP(c);
+    ok('C (antes, 373de1e): PP com leitura incompleta apagava a lista e permitia escalar/Auto Escalar/Salvar (defeito reproduzido)', indisponiveis(c).length === 0 && ppTudo(r), r);
+  }
+  for (const [nome, prep, ms] of [['falha de paginação (offset 2000)', b => falhaNaPagina(b, 2000, 'erro500'), 80], ['prazo esgotado (timeout)', b => falhaNaPagina(b, 1000, 'timeout'), 250]]) {
+    const b = montarBanco(); const c = criarCtx(html, b);
+    await carregarPP(c);
+    ok('C [' + nome + ']: carga completa da PP libera escala', c.ppStatusVerificado(DIA) && indisponiveis(c).length === 4 && ppTudo(tentarPP(c)));
+    c._progStatus[LOCAL] = 'patio';                                           // alteração local ainda não gravada
+    prep(b); c.progProjCarregarStatusDia(DIA, true);
+    ok('C [' + nome + ']: durante a leitura a escala da PP espera', !c.ppStatusVerificado(DIA) && ppNada(tentarPP(c)));
+    await espera(ms);
+    ok('C [' + nome + ']: falha mantém os dados válidos anteriores (4 indisponíveis) e a alteração local', indisponiveis(c).length === 4 && c._progStatus[LOCAL] === 'patio', c._progStatus);
+    ok('C [' + nome + ']: falha marca leitura incompleta (não "atualizado")', c._pp.statusFalhou === DIA && !c.ppStatusVerificado(DIA));
+    const r = tentarPP(c);
+    ok('C [' + nome + ']: escalar dos Disponíveis, Auto Escalar e Salvar bloqueados; mover escalado permitido', ppNada(r) && r.mover, r);
+    ok('C [' + nome + ']: mensagem explica o bloqueio', c.toasts.some(t => /Não é possível (escalar|usar o Auto Escalar|programar a equipe): férias, afastamentos, inaptos e demitidos/.test(t.m)));
+    b.regra = () => 'ok'; await carregarPP(c);
+    ok('C [' + nome + ']: nova leitura completa recupera', c.ppStatusVerificado(DIA) && c._pp.statusFalhou === null && ppTudo(tentarPP(c)));
+  }
+  {
+    // Atualizar da PP (progProjAtualizarQuadro) com falha e recuperação
+    const b = montarBanco(); const c = criarCtx(html, b);
+    await carregarPP(c);
+    falhaNaPagina(b, 3000, 'erro500'); c.progProjAtualizarQuadro(); await espera(80);
+    ok('C: Atualizar da PP com falha mantém os 4 indisponíveis, marca incompleta e bloqueia', indisponiveis(c).length === 4 && c._pp.statusFalhou === DIA && ppNada(tentarPP(c)));
+    ok('C: Atualizar da PP com falha avisa (não "Quadro atualizado")', ult(c).erro && !/Quadro atualizado/.test(ult(c).m));
+    b.regra = () => 'ok'; c.progProjAtualizarQuadro(); await espera(80);
+    ok('C: Atualizar da PP com sucesso recupera', c.ppStatusVerificado(DIA) && ppTudo(tentarPP(c)));
+    // outro dia na PP: não reaproveita a memória do dia 23
+    c._diaPP = D24; c.progProjCarregarStatusDia(D24, false);
+    ok('C: troca de dia na PP — memória do dia anterior não é reaproveitada e a escala espera', c._progStatus[FALTA] !== 'falta' && !c.ppStatusVerificado(D24));
+    await espera(80); c._diaPP = DIA;
+    // PP nunca carregada
+    const c2 = criarCtx(html, montarBanco());
+    ok('C: PP com dia nunca carregado — escala bloqueada', ppNada(tentarPP(c2)));
+    // escala previamente programada continua consultável e não é alterada pela falha
+    const b3 = montarBanco(); const c3 = criarCtx(html, b3); await carregarPP(c3);
+    const prog = { id: 'cpp9', equipe_id: 'p9', data: DIA, colaborador_ids: JSON.stringify([LIVRE, FALTA]), deleted_at: null, confirmada: true };
+    c3.composicao_dia = [prog]; falhaNaPagina(b3, 1000, 'erro500'); c3.progProjAtualizarQuadro(); await espera(80);
+    ok('C/TMA: escala já programada não é alterada nem desprogramada pela falha de leitura', c3.composicao_dia[0] === prog && prog.confirmada === true && prog.colaborador_ids === JSON.stringify([LIVRE, FALTA]));
+  }
+  {
+    // TMA: escala previamente programada não muda com a falha
+    const b = montarBanco(); const c = criarCtx(html, b); await atualizar(c);
+    const prog = { id: 'cmp9', equipe_id: 'e9', data: DIA, colaborador_ids: [LIVRE], deleted_at: null, confirmada: true };
+    c.composicao_dia = [prog]; falhaNaPagina(b, 1000, 'erro500'); await atualizar(c);
+    ok('TMA: escala já programada não é alterada nem desprogramada pela falha de leitura', c.composicao_dia[0] === prog && prog.confirmada === true && prog.colaborador_ids.join() === LIVRE);
   }
 
   // ═══ 7. Estático: caminhos de escala/programação do TMA e ES5 ═══
   const travadas = { progEfetuarDropInterno: "'escalar'", progSalvarEquipe: "'programar a equipe'", progSalvarTodas: "'programar as equipes'", progMobileProgramar: "'programar a equipe'",
     escalasModeloAplicar: "'implantar o modelo'", progIniciarAutoEscalaRef: "'usar o Auto Escalar'" };
+  travadas.progEfetuarEmprestimoInterno = "'emprestar colaborador'";
   ok('todas as entradas ativas de escala/programação têm a trava', Object.keys(travadas).every(n => fnDe(html, n).indexOf('progStatusBloqueiaEscala(') >= 0 && fnDe(html, n).indexOf(travadas[n]) >= 0));
+  const travadasPP = { progProjetoCoreEfetuarDrop: "'escalar'", ppAutoEscalarEquipe: "'usar o Auto Escalar'", progProjetoCoreSalvarEquipe: "'programar a equipe'" };
+  ok('PP: todas as entradas ativas de escala/programação têm a trava da PP', Object.keys(travadasPP).every(n => fnDe(html, n).indexOf('ppStatusBloqueiaEscala(') >= 0 && fnDe(html, n).indexOf(travadasPP[n]) >= 0));
+  ok('PP: buscar para o slot e arrastar passam pela trava (→ progProjetoCoreEfetuarDrop)', /ppEscolherParaSlot\(/.test(fnDe(html, 'progProjetoCoreBuscarParaSlot')) && /progProjetoCoreEfetuarDrop\(/.test(fnDe(html, 'progProjetoCoreEscolherParaSlot')) && /progProjetoCoreEfetuarDrop\(/.test(fnDe(html, 'progProjetoCoreDrop')));
+  ok('empréstimo do slot (outro contrato) passa pela trava (progEfetuarEmprestimo → progEfetuarEmprestimoInterno)', /progEfetuarEmprestimo\(/.test(fnDe(html, 'progBuscarParaSlot')) && /progEfetuarEmprestimoInterno\(/.test(fnDe(html, 'progEfetuarEmprestimo')));
+  ok('janela de 5 s só reaproveita dia verificado', /< 5000 && progStatusLeituraEstado\(data\)==='ok'\)/.test(fnDe(html, 'progCarregarStatus')));
   // Todos os caminhos que colocam alguém dos Disponíveis numa equipe passam por progEfetuarDropInterno
   ok('arrastar, buscar para o slot e celular passam pela trava (progEfetuarDrop → progEfetuarDropInterno)',
     ['progDrop', 'progBuscarParaSlot', 'progMobileEscalar'].every(n => /progEfetuarDrop\(/.test(fnDe(html, n))) && /progEfetuarDropInterno\(/.test(fnDe(html, 'progEfetuarDrop')));

@@ -50476,39 +50476,46 @@ function progStatusLerDia(dia){
 function progStatusLeituraMarcar(dia, estado, motivo){
   if(!dia) return;
   window._progStatusLeitura = window._progStatusLeitura || {};
-  window._progStatusLeitura[dia] = {estado:estado, motivo:motivo||''};
+  // 'ok' guarda QUAL conjunto em memória foi verificado: se _progStatus for trocado (outro dia, cache,
+  // Programação de Projetos), o dia deixa de contar como verificado.
+  window._progStatusLeitura[dia] = {estado:estado, motivo:motivo||'', ref:(estado==='ok' ? _progStatus : null)};
   progStatusLeituraAviso(progGetData());
 }
 function progStatusLeituraEstado(dia){
+  // 'ok' | 'carregando' | 'incompleta' | '' (não lido / memória não é a leitura verificada deste dia)
   if(DEMO) return 'ok';
   var l = (window._progStatusLeitura||{})[dia];
-  return l ? l.estado : '';
+  if(!l) return '';
+  if(l.estado==='ok' && l.ref!==_progStatus) return '';
+  return l.estado;
 }
 function progStatusLeituraAviso(dia){
-  // Aviso fixo no cabeçalho do TMA enquanto a leitura do dia da tela estiver incompleta
+  // Aviso fixo no cabeçalho do TMA enquanto a disponibilidade do dia da tela não estiver verificada
   var hdr = document.getElementById('prog-header-fixo');
   if(!hdr) return;
   var el = document.getElementById('prog-status-incompleto');
-  var l = (window._progStatusLeitura||{})[dia];
-  if(!l || l.estado!=='incompleta'){ if(el) el.remove(); return; }
+  var est = progStatusLeituraEstado(dia);
+  if(est==='ok' || est==='carregando'){ if(el) el.remove(); return; }
+  var l = (window._progStatusLeitura||{})[dia] || {};
   if(!el){ el = document.createElement('div'); el.id = 'prog-status-incompleto'; hdr.appendChild(el); }
   el.style.cssText = 'padding:.5rem 1rem;background:#FDECEA;border-top:.5px solid #C0000044;color:#C00000;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
-  el.innerHTML = '<span>⚠ Status de '+escHtml(fmtD(dia))+' não foram carregados por completo'+(l.motivo?' ('+escHtml(l.motivo)+')':'')
-    +' — férias, afastados, inaptos e demitidos podem não aparecer. Escalar, Auto Escalar, implantar modelo e Programar estão bloqueados.</span>'
-    +'<button class="btn" onclick="progAtualizarQuadro()" style="font-size:11px;padding:3px 8px;color:#C00000;border-color:#C00000">🔄 Tentar de novo</button>';
+  el.innerHTML = '<span>⚠ Status de '+escHtml(fmtD(dia))
+    +(est==='incompleta' ? ' não foram carregados por completo'+(l.motivo?' ('+escHtml(l.motivo)+')':'') : ' ainda não foram lidos nesta tela')
+    +' — férias, afastados, inaptos e demitidos podem não aparecer. Escalar, emprestar, Auto Escalar, implantar modelo e Programar estão bloqueados.</span>'
+    +'<button class="btn" onclick="progAtualizarQuadro()" style="font-size:11px;padding:3px 8px;color:#C00000;border-color:#C00000">🔄 '+(est==='incompleta'?'Tentar de novo':'Atualizar')+'</button>';
 }
 function progStatusBloqueiaEscala(dia, acao){
-  // true = bloqueado (já avisou). Só vale para o TMA; status vazio (nunca lido) mantém o comportamento anterior.
+  // true = bloqueado (já avisou). Só libera com leitura completa e válida DESTE dia (não lido também bloqueia).
   var est = progStatusLeituraEstado(dia);
-  if(est==='incompleta'){
-    progShowToast('⛔ Não é possível '+acao+': os status de '+fmtD(dia)+' não foram carregados por completo. Clique em 🔄 Atualizar e tente de novo.','erro');
-    return true;
-  }
+  if(est==='ok') return false;
   if(est==='carregando'){
     progShowToast('⏳ Aguarde: os status de '+fmtD(dia)+' ainda estão carregando.','erro');
-    return true;
+  } else if(est==='incompleta'){
+    progShowToast('⛔ Não é possível '+acao+': os status de '+fmtD(dia)+' não foram carregados por completo. Clique em 🔄 Atualizar e tente de novo.','erro');
+  } else {
+    progShowToast('⛔ Não é possível '+acao+': os status de '+fmtD(dia)+' ainda não foram lidos nesta tela. Clique em 🔄 Atualizar.','erro');
   }
-  return false;
+  return true;
 }
 function progExpirarPersistenteLinha(r){
   // Retorno chegou: encerra só o efeito local (cache prog_persistentes do navegador).
@@ -51232,8 +51239,9 @@ function _progRestaurarCacheDia(data){
 }
 
 function progCarregarStatus(data){
-  // Não sobrescrever estado se houve alteração manual recente (evita race condition)
-  if(window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < 5000){
+  // Não sobrescrever estado se houve alteração manual recente (evita race condition) — só quando a memória
+  // é a leitura completa e verificada DESTE dia (troca de dia, dia não lido ou leitura incompleta sempre leem)
+  if(window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave) < 5000 && progStatusLeituraEstado(data)==='ok'){
     console.log('[progCarregarStatus] ignorado — save recente (<5s)');
     progRenderQuadro();
     return;
@@ -51248,7 +51256,8 @@ function progCarregarStatus(data){
     // Ainda busca do banco para atualizar, mas não trava a tela
     if(_progStatusDateCache !== data && !DEMO){
       _progStatusDateCache = data; // marcar já para não buscar de novo se voltar rápido
-      // Busca silenciosa em background
+      // Busca silenciosa em background (o cache em memória não conta como verificado até ela terminar)
+      progStatusLeituraMarcar(data, 'carregando');
       progStatusLerDia(data).then(function(leitura){
         if(leitura.falha){
           _progStatusDateCache = null;
@@ -56386,6 +56395,8 @@ function progEfetuarEmprestimo(colabId, eqId, pos){
 
 function progEfetuarEmprestimoInterno(colabId, eqId, pos){
   var data = progGetData();
+  // Empréstimo de outro contrato também inclui alguém na escala do dia: exige os status do dia verificados
+  if(progStatusBloqueiaEscala(data, 'emprestar colaborador')) return;
   var eq = equipes_disp.find(function(e){return e.id===eqId;})||{codigo:eqId};
   // Verificar se já está escalado na equipe de destino
   var compDestino = composicao_dia.find(function(c){return c.equipe_id===eqId&&c.data===data;});
@@ -56750,7 +56761,7 @@ function progRenderPainelDisp(eqs, data, cid){
   return recemHtml + treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">'
-    +(progStatusLeituraEstado(dataNorm)==='incompleta'
+    +(['ok','carregando'].indexOf(progStatusLeituraEstado(dataNorm))<0
       ? '<span style="font-size:13px;font-weight:600;color:#C00000">⚠ Disponibilidade NÃO verificada — leitura de status incompleta (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>'
       : '<span style="font-size:13px;font-weight:600">Disponíveis não escalados (<b>'+livresFiltrados.length+(livresFiltrados.length!==livres.length?'/'+livres.length:'')+'</b>)</span>')
     +'<div style="display:flex;gap:4px;flex-wrap:wrap">'+countHtml+'</div>'
@@ -82589,6 +82600,7 @@ function progProjetoCorePersistirComposicao(eqId, data, ids){
 /** Confirma programação da equipe (fluxo projeto). */
 function progProjetoCoreSalvarEquipe(eqId){
   var data = progProjGetData();
+  if(ppStatusBloqueiaEscala(data, 'programar a equipe')) return;
   var eq = progProjetoCoreFindEquipe(eqId);
   if(!eq){
     progShowToast('⚠ Equipe não encontrada no contrato de projetos.');
@@ -83288,8 +83300,11 @@ function progProjStatusEhDoDia(data){
 function progProjCarregarStatusDia(data, forcar){
   if(!data) return;
   if(!forcar && progProjStatusEhDoDia(data)) return;
-  _progStatus = {};
-  _progStatusInfo = {};
+  // Mesmo dia: mantém o conjunto atual até uma leitura completa (falha não apaga); outro dia: começa limpo
+  if(!progProjStatusEhDoDia(data)){
+    _progStatus = {};
+    _progStatusInfo = {};
+  }
   if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = !DEMO; _pp.statusFalhou = null; }
   progProjCarregarStatusBanco(data, function(){
     if(_pp && _pp.statusData === data){ _pp.statusCarregando = false; progProjRenderQuadro(); }
@@ -83312,26 +83327,41 @@ function progProjCarregarStatusBanco(data, cb){
   var seq = window._ppStatusSeq = (window._ppStatusSeq || 0) + 1;
   // A memória só é preservada se já for desta mesma data (nunca leva status de outro dia).
   var mesmoDia = progProjStatusEhDoDia(data);
-  Promise.all([
-    sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-    progBuscarStatusPersistentes(data)   // todas as páginas (o limite de 500 omitia afastados/inaptos antigos)
-  ]).then(function(res){
+  if(_pp && _pp.statusData === data) _pp.statusOk = null;   // em leitura: não verificado
+  // Status do dia + todas as páginas dos persistentes, com prazo (o limite de 500 omitia afastados/inaptos antigos)
+  progStatusLerDia(data).then(function(leitura){
     if(seq !== window._ppStatusSeq){ return; }   // chegou depois de uma carga mais nova (outra data)
-    if(res[0]===null || res[1]===null){
-      // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa.
-      if(_pp && _pp.statusData === data) _pp.statusFalhou = data;
+    if(leitura.falha){
+      // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa e a escala trava.
+      if(_pp && _pp.statusData === data){ _pp.statusFalhou = data; _pp.statusOk = null; }
       progShowToast('⚠ Não foi possível carregar férias/afastamentos/treinamentos do dia — clique em 🔄 Atualizar.','erro');
       if(cb) cb(); return;
     }
     if(_pp) _pp.statusFalhou = null;
     var localRecente = (mesmoDia && window._progStatusUltimoSave && (Date.now()-window._progStatusUltimoSave)<30000) ? Object.assign({}, _progStatus) : null;
-    progAplicarStatusDoBanco(res[0]||[], res[1]||[], data);
-    if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; }
+    progAplicarStatusDoBanco(leitura.rowsDia, leitura.persist, data);
+    if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusOk = data; }
     if(localRecente){ Object.keys(localRecente).forEach(function(id){ if(localRecente[id] && !_progStatus[id]) _progStatus[id]=localRecente[id]; }); }
     if(cb) cb();
-  }).catch(function(){ if(cb) cb(); });
+  }).catch(function(){
+    if(_pp && _pp.statusData === data){ _pp.statusFalhou = data; _pp.statusOk = null; }
+    if(cb) cb();
+  });
 }
 
+// ── Disponibilidade verificada (trava de escala com leitura incompleta) ──
+function ppStatusVerificado(data){
+  // Verificada = a última leitura COMPLETA é deste dia e a memória ainda é ela (nada carregando, sem falha).
+  // Dia não lido, em leitura ou com falha bloqueia escala/programação.
+  if(DEMO) return true;
+  return !!(_pp && _pp.statusOk === data && progProjStatusEhDoDia(data) && !_pp.statusCarregando && _pp.statusFalhou !== data);
+}
+function ppStatusBloqueiaEscala(data, acao){
+  if(ppStatusVerificado(data)) return false;
+  if(_pp && _pp.statusCarregando) progShowToast('⏳ Aguarde: os status de '+fmtD(data)+' ainda estão carregando.','erro');
+  else progShowToast('⛔ Não é possível '+acao+': férias, afastamentos, inaptos e demitidos de '+fmtD(data)+' não foram carregados por completo. Clique em 🔄 Atualizar e tente de novo.','erro');
+  return true;
+}
 // ── Render quadro ─────────────────────────────────────────────
 function progProjAtualizarQuadro(){
   _progStatusDateCache = null;
@@ -83348,21 +83378,21 @@ function progProjAtualizarQuadro(){
     return;
   }
   if(_pp){ _pp.data = data; _pp.cid = cid; }
-  progProjCarregarStatus(data);
+  progProjCarregarStatus(data);   // outro dia: memória limpa; mesmo dia: mantém até a leitura completa
 
   if(!DEMO){
+    if(_pp){ _pp.statusCarregando = true; _pp.statusOk = null; }
     Promise.all([
-      sbFetch('prog_status_diario',{filters:['data=eq.'+data,'deleted_at=is.null']}),
-      progBuscarStatusPersistentes(data),   // todas as páginas (o limite de 500 omitia afastados/inaptos antigos)
+      // Status do dia + todas as páginas dos persistentes, com prazo (o limite de 500 omitia afastados/inaptos antigos)
+      progStatusLerDia(data),
       sbFetch('composicao_dia',{filters:['data=eq.'+data]}),
       sbFetch('colaboradores',{filters:['contrato_id=eq.'+cid,'ativo=eq.true'],order:'nome',limit:500}),
       sbFetch('equipes',{filters:['contrato_id=eq.'+cid,'status=eq.Ativo'],order:'nome_equipe'}),
     ]).then(function(res){
-      var rowsDia     = res[0]||[];
-      var persistRows = res[1]||[];
-      var comps       = res[2]||[];
-      var colabs      = res[3]||[];
-      var eqs         = res[4]||[];
+      var leitura     = res[0]||{falha:'sem resposta'};
+      var comps       = res[1]||[];
+      var colabs      = res[2]||[];
+      var eqs         = res[3]||[];
 
       if(colabs.length){
         colabMergePreservarInativos(colabs);
@@ -83379,13 +83409,13 @@ function progProjAtualizarQuadro(){
         progProjetoCoreMergeComposicaoRefresh(comps);
       }
 
-      var statusIncompleto = (res[0]===null || res[1]===null);
+      var statusIncompleto = !!leitura.falha;
       if(statusIncompleto){
-        // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa.
-        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = data; }
+        // Leitura incompleta: não aplicar (mostraria indisponíveis como disponíveis); o painel avisa e a escala trava.
+        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = data; _pp.statusOk = null; }
       } else {
-        progAplicarStatusDoBanco(rowsDia, persistRows, data);
-        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = null; }
+        progAplicarStatusDoBanco(leitura.rowsDia, leitura.persist, data);
+        if(_pp){ _pp.statusData = data; _pp.statusRef = _progStatus; _pp.statusCarregando = false; _pp.statusFalhou = null; _pp.statusOk = data; }
       }
 
       progProjSalvarStatus();
@@ -83399,6 +83429,7 @@ function progProjAtualizarQuadro(){
       });
     }).catch(function(e){
       console.error('progProjAtualizarQuadro erro:', e);
+      if(_pp && _pp.statusOk !== data){ _pp.statusCarregando = false; _pp.statusFalhou = data; }
       progProjRenderQuadro();
       progShowToast('⚠ Erro ao atualizar — verifique a conexão.','erro');
     }).finally(function(){
@@ -84749,8 +84780,8 @@ function ppRenderPainelDisp(eqs, data, cid){
 
   var carregandoHtml = (_pp && _pp.statusCarregando)
     ? '<div id="pp-status-carregando" style="font-size:12px;color:#854F0B;background:#FFF8E1;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⏳ Carregando status do dia '+escHtml(fmtD(data))+'…</div>'
-    : (_pp && _pp.statusFalhou === data)
-      ? '<div id="pp-status-incompleto" style="font-size:12px;color:#A32D2D;background:#FCEBEB;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⚠ Férias, afastamentos e treinamentos de '+escHtml(fmtD(data))+' não foram carregados — a lista de disponíveis pode estar incompleta. Clique em 🔄 Atualizar.</div>'
+    : ((_pp && _pp.statusFalhou === data) || !ppStatusVerificado(data))
+      ? '<div id="pp-status-incompleto" style="font-size:12px;color:#A32D2D;background:#FCEBEB;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem">⚠ Férias, afastamentos e treinamentos de '+escHtml(fmtD(data))+' não foram carregados — a lista de disponíveis pode estar incompleta. Disponibilidade NÃO verificada: escalar, Auto Escalar e Salvar estão bloqueados. Clique em 🔄 Atualizar.</div>'
       : '';
   return carregandoHtml + treinoHtml + indispHtml
     +'<div style="background:#fff;border:.5px solid #e0dfd8;border-radius:8px;padding:1rem;margin-bottom:1rem" id="pp-painel-disp">'
@@ -85232,6 +85263,13 @@ function ppEfetuarDrop(colabId, fromEqId, toEqId, toPos, duplicar){
 function progProjetoCoreEfetuarDrop(colabId, fromEqId, toEqId, toPos, duplicar){
   var data=progProjGetData();
   var dataNorm=(data||'').split('T')[0];
+  // Entrar na escala do dia (vindo dos Disponíveis) exige os status do dia verificados.
+  // Mover quem já está escalado no dia não depende da lista de disponíveis.
+  var jaNaEscalaDia=composicao_dia.some(function(c){
+    var cd=(c.data||'').split('T')[0];
+    return (cd===dataNorm || c.data===data) && !c.deleted_at && parseJsonField(c.colaborador_ids,[]).indexOf(colabId)>=0;
+  });
+  if(!jaNaEscalaDia && ppStatusBloqueiaEscala(data, 'escalar')) return;
   var isUUID=function(id){return id&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);};
   if(!duplicar){
     composicao_dia.forEach(function(comp){
@@ -86057,6 +86095,7 @@ function ppAutoEscalarEquipe(eqId){
   var cid=progProjGetCid();
   var data=progProjGetData()||dataHoje();
   if(data < dataHojeLocal()){ progShowToast('⛔ Auto Escalar não disponível para datas passadas.','erro'); return; }
+  if(ppStatusBloqueiaEscala(data, 'usar o Auto Escalar')) return;
   var comp=progFindCompDia(eqId, data);
   if(comp && comp.confirmada){
     progShowToast('⛔ Equipe já programada — desprogramar antes de auto escalar.');
