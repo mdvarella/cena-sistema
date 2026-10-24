@@ -16899,10 +16899,11 @@ function relTmaFatAplicarValor(out){
   // Valor só para minutos faturáveis; tipo/valor indeterminado = pendência (nunca zero como válido)
   out.horas_dec=relTmaMinToDecimal(out.minutos_logados);
   if(!(out.minutos_logados>0)) return out;
-  if(!out.tipo_nome){ out.obs.push('Sem tipo de equipe — valor não calculado'); out.status='Sem tipo de equipe'; return out; }
+  // Dia parcial continua identificado (out.parcial) mesmo quando o status passa a ser a pendência de valor
+  if(!out.tipo_nome){ out.obs.push('Sem tipo de equipe — valor não calculado'+(out.parcial?' (dia com cálculo parcial — a conferir)':'')); out.status='Sem tipo de equipe'; return out; }
   var vh=relTmaValorHoraSeguro(out.tipo_nome, relTmaCid());
   if(!vh.ok){
-    out.obs.push(vh.motivo+(vh.detalhe?' ('+vh.detalhe+')':'')+' — valor não calculado');
+    out.obs.push(vh.motivo+(vh.detalhe?' ('+vh.detalhe+')':'')+' — valor não calculado'+(out.parcial?' (dia com cálculo parcial — a conferir)':''));
     out.status=vh.motivo;
     return out;
   }
@@ -17000,6 +17001,7 @@ function relTmaCalcFatPortariaDia(comp, eq, lista, hojeISO){
     var ini=relTmaFatLocal(uni[0].a), fimL=relTmaFatLocal(uni[uni.length-1].b);
     out.entrada=ini.hh; out.saida=fimL.hh; out.saida_data=fimL.dia;
     out.status=(adm||semRet||campo||ordem||longos.length)?'Calculado parcial — conferir':'Calculado';
+    out.parcial=out.status==='Calculado parcial — conferir';
     relTmaFatAplicarValor(out);
     return relTmaFatTextos(out);
   }
@@ -17070,6 +17072,7 @@ function relTmaCalcFatBordoDia(comp, eq, sessoes, hojeISO){
     var ini=relTmaFatLocal(uni[0].a), fimL=relTmaFatLocal(uni[uni.length-1].b);
     out.entrada=ini.hh; out.saida=fimL.hh; out.saida_data=fimL.dia;
     out.status=(semLogout||andamento||ordem||incompl.length||longos.length)?'Calculado parcial — conferir':'Calculado';
+    out.parcial=out.status==='Calculado parcial — conferir';
     relTmaFatAplicarValor(out);
     return relTmaFatTextos(out);
   }
@@ -17100,6 +17103,34 @@ function relTmaFatPontoLinha(r){
 function relTmaFatEhCalculado(r){
   return !!r && (r.status==='Calculado' || r.status==='Calculado parcial — conferir' || r.status==='Estimativa pela escala');
 }
+function relTmaFatSituacaoValor(r){
+  // completo | parcial (dia com pendência, a conferir) | estimativa (escala) | sem_valor (horas sem tipo/valor/hora) | sem_calculo
+  if(!r) return 'sem_calculo';
+  if(Number(r.valor_dia||0)>0) return r.parcial?'parcial':(r.fonte==='escala'?'estimativa':'completo');
+  if(r.minutos_logados>0 && (r.status==='Sem tipo de equipe'||r.status==='Sem valor hora cadastrado'||r.status==='Valor/hora ambíguo')) return 'sem_valor';
+  return 'sem_calculo';
+}
+var REL_TMA_FAT_SIT_TXT={completo:'Completo', parcial:'Parcial — a conferir', estimativa:'Estimativa', sem_valor:'Sem valor/hora (pendente)', sem_calculo:'Sem cálculo'};
+function relTmaFatResumoValores(rows){
+  // Horas = todas as horas registradas da fonte (mesma regra da visão isolada); valores separados por situação.
+  // "Potencial" = completo + parcial — não é faturamento consolidado.
+  var o={min:0, minSemValor:0, minParcial:0, valCompleto:0, valParcial:0, valEstimativa:0, diasParciais:0, diasSemValor:0};
+  (rows||[]).forEach(function(r){
+    if(!r) return;
+    o.min+=(r.minutos_logados||0);
+    var sit=relTmaFatSituacaoValor(r), v=Number(r.valor_dia||0);
+    if(sit==='completo') o.valCompleto+=v;
+    else if(sit==='parcial'){ o.valParcial+=v; o.minParcial+=(r.minutos_logados||0); o.diasParciais++; }
+    else if(sit==='estimativa') o.valEstimativa+=v;
+    else if(sit==='sem_valor'){ o.minSemValor+=(r.minutos_logados||0); o.diasSemValor++; }
+  });
+  o.valCompleto=Math.round(o.valCompleto*100)/100;
+  o.valParcial=Math.round(o.valParcial*100)/100;
+  o.valEstimativa=Math.round(o.valEstimativa*100)/100;
+  o.valPotencial=Math.round((o.valCompleto+o.valParcial+o.valEstimativa)*100)/100;
+  return o;
+}
+function relTmaFatSeparaParcial(fonte){ return fonte==='portaria'||fonte==='diario'; }
 
 function relTmaFatFonteMudou(){
   // Troca o texto explicativo e as opções de "Status do cálculo" conforme a fonte
@@ -17235,6 +17266,7 @@ async function relTmaFatPontoGerar(){
 function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
   var cab=relTmaFatCab(fonte);
   var estimativa=fonte==='escala';
+  var sep=relTmaFatSeparaParcial(fonte);
   var byEq={};
   detalhes.forEach(function(r){
     var k=r.equipe_id||r.codigo;
@@ -17246,8 +17278,9 @@ function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
     if(r.status!=='Calculado' && r.status!=='Estimativa pela escala') byEq[k].pend++;
     byEq[k].rows.push(r);
   });
-  var totais=Object.keys(byEq).map(function(k){ return byEq[k]; })
+  var totais=Object.keys(byEq).map(function(k){ var t=byEq[k]; t.res=relTmaFatResumoValores(t.rows); return t; })
     .sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),'pt-BR'); });
+  var res=relTmaFatResumoValores(detalhes);
   var ultData='';
   detalhes.forEach(function(r){ if(r.data && (!ultData || r.data>ultData)) ultData=r.data; });
   var cobertura=(ultData && ultData<fim)
@@ -17273,18 +17306,32 @@ function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
     +(semProgN?(' · '+semProgN+' equipe(s)/dia com registro sem programação (fora do cálculo)'):'')
     +'<br><span style="color:#888">'+escHtml(REL_TMA_FAT_AVISO_VH)+'</span>'
     +(estimativa?'<br><b style="color:#185FA5">Estimativa pela escala — não comprova presença nem execução.</b>':'')
+    +(sep?'<br><span style="color:#888">Valor completo = dias sem pendência. Valor parcial = dias com pendência (a conferir). Total potencial = completo + parcial — <b>não é faturamento consolidado</b>.</span>':'')
     +'</div>'+avisoFonte;
 
+  var cardVal=sep
+    ? ('<div style="background:#EAF5EA;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Valor completo</div><div style="font-size:16px;font-weight:700;color:#085041">'+relTmaFmtMoeda(res.valCompleto)+'</div></div>'
+      +'<div style="background:#FEF6E7;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Valor parcial — a conferir</div><div style="font-size:16px;font-weight:700;color:#854F0B">'+relTmaFmtMoeda(res.valParcial)+'</div><div style="font-size:10px;color:#888">'+res.diasParciais+' dia(s) parcial(is)</div></div>'
+      +'<div style="background:#F0EEFF;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Total potencial (não consolidado)</div><div style="font-size:16px;font-weight:700;color:#534AB7">'+relTmaFmtMoeda(res.valPotencial)+'</div></div>')
+    : ('<div style="background:#F0EEFF;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Faturamento est.</div><div style="font-size:16px;font-weight:700;color:#534AB7">'+relTmaFmtMoeda(totVal)+'</div></div>');
   var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;padding:.5rem 1rem 1rem">'
     +'<div style="background:#EBF4FD;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Equipes</div><div style="font-size:18px;font-weight:700;color:#185FA5">'+totEq+'</div></div>'
     +'<div style="background:#EAF5EA;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">'+(estimativa?'Horas estimadas':'Horas logadas')+'</div><div style="font-size:18px;font-weight:700;color:#085041">'+relTmaFmtHhMm(totMin)+'</div></div>'
-    +'<div style="background:#F0EEFF;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Faturamento est.</div><div style="font-size:16px;font-weight:700;color:#534AB7">'+relTmaFmtMoeda(totVal)+'</div></div>'
+    +cardVal
+    +(res.minSemValor&&fonte!=='ponto'?'<div style="background:#FCEBEB;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Horas sem valor/hora</div><div style="font-size:18px;font-weight:700;color:#A32D2D">'+relTmaFmtHhMm(res.minSemValor)+'</div><div style="font-size:10px;color:#888">'+res.diasSemValor+' dia(s) — sem valor calculado</div></div>':'')
     +'<div style="background:#FEF6E7;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">'+escHtml(pendRot)+'</div><div style="font-size:18px;font-weight:700;color:#854F0B">'+pendFonte+'</div></div>'
     +'<div style="background:#FCEBEB;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Sem valor/hora</div><div style="font-size:18px;font-weight:700;color:#A32D2D">'+pendVh+'</div></div>'
     +'<div style="background:#f5f5f3;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Sem tipo</div><div style="font-size:18px;font-weight:700;color:#555">'+pendTipo+'</div></div>'
     +(totConf?'<div style="background:#FCEBEB;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">A conferir (fora do faturável)</div><div style="font-size:18px;font-weight:700;color:#A32D2D">'+relTmaFmtHhMm(totConf)+'</div></div>':'')
     +'</div>';
 
+  function celValor(r){
+    // Ponto/Escala: coluna "Estimado" de sempre; Portaria/Diário: valor completo e valor parcial em colunas separadas
+    if(!sep) return '<td style="font-weight:600;color:#185FA5">'+(r.valor_dia?relTmaFmtMoeda(r.valor_dia):'—')+'</td>';
+    var sit=relTmaFatSituacaoValor(r);
+    return '<td style="font-weight:600;color:#085041">'+(sit==='completo'?relTmaFmtMoeda(r.valor_dia):'—')+'</td>'
+      +'<td style="font-weight:600;color:#854F0B">'+(sit==='parcial'?relTmaFmtMoeda(r.valor_dia):'—')+'</td>';
+  }
   var html=periodoTxt;
   if(!detalhes.length){
     html=periodoTxt+cards+'<div style="padding:1.5rem;text-align:center;color:#888">Nenhuma equipe programada no período com os filtros atuais.</div>';
@@ -17292,7 +17339,7 @@ function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
     html=periodoTxt+cards+'<div style="padding:0 .5rem 1rem;overflow-x:auto"><table class="tbl" style="font-size:11px">'
       +'<thead><tr>'
       +'<th>Data</th><th>Equipe</th><th>Tipo</th><th>'+cab.ref+'</th><th>'+cab.ini+'</th><th>'+cab.fim+'</th>'
-      +'<th>'+cab.bru+'</th><th>'+cab.alm+'</th><th>'+cab.liq+'</th><th>Valor/h</th><th>Estimado</th><th>Status</th><th>Obs.</th>'
+      +'<th>'+cab.bru+'</th><th>'+cab.alm+'</th><th>'+cab.liq+'</th><th>Valor/h</th>'+(sep?'<th>Valor completo</th><th>Valor parcial (a conferir)</th>':'<th>Estimado</th>')+'<th>Status</th><th>Obs.</th>'
       +'</tr></thead><tbody>'
       +detalhes.map(function(r){
         return '<tr>'
@@ -17306,23 +17353,32 @@ function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
           +'<td>'+escHtml(r.almoco_txt||'—')+'</td>'
           +'<td style="font-weight:600">'+escHtml(r.horas_logadas_txt)+'</td>'
           +'<td>'+(r.valor_hora?relTmaFmtMoeda(r.valor_hora):'—')+'</td>'
-          +'<td style="font-weight:600;color:#185FA5">'+(r.valor_dia?relTmaFmtMoeda(r.valor_dia):'—')+'</td>'
+          +celValor(r)
           +'<td><span style="color:'+relTmaFatPontoStatusCor(r.status)+';font-weight:600">'+escHtml(r.status)+'</span></td>'
           +'<td style="font-size:10px;color:#888">'+escHtml((r.obs||[]).join('; '))+'</td>'
           +'</tr>';
       }).join('')
       +'</tbody></table></div>';
   } else {
+    var thVal=sep?'<th>Horas sem valor/hora</th><th>Valor completo</th><th>Valor parcial (a conferir)</th><th>Total potencial</th>'
+      :(estimativa?'<th>Horas sem valor/hora</th><th>Valor estimado</th>':'<th>Valor estimado</th>');
     html=periodoTxt+cards+'<div style="padding:0 .5rem .5rem;font-size:11px;color:#888">Clique em uma equipe para ver o detalhe diário.</div>'
       +'<div style="padding:0 .5rem 1rem;overflow-x:auto"><table class="tbl" style="font-size:12px">'
-      +'<thead><tr><th>Equipe</th><th>Tipo</th><th>Dias prog.</th><th>'+(estimativa?'Horas estimadas':'Horas logadas')+'</th><th>Valor estimado</th><th>Pendências</th>'+(fonte==='ponto'||estimativa?'':'<th>A conferir</th>')+'<th></th></tr></thead><tbody>'
+      +'<thead><tr><th>Equipe</th><th>Tipo</th><th>Dias prog.</th><th>'+(estimativa?'Horas estimadas':'Horas logadas')+'</th>'+thVal+'<th>Pendências</th>'+(fonte==='ponto'||estimativa?'':'<th>A conferir</th>')+'<th></th></tr></thead><tbody>'
       +totais.map(function(t,i){
+        var tdVal=sep
+          ? ('<td>'+(t.res.minSemValor?('<span style="color:#A32D2D">'+relTmaFmtHhMm(t.res.minSemValor)+'</span>'):'—')+'</td>'
+            +'<td style="font-weight:700;color:#085041">'+relTmaFmtMoeda(t.res.valCompleto)+'</td>'
+            +'<td style="font-weight:700;color:#854F0B">'+(t.res.valParcial?relTmaFmtMoeda(t.res.valParcial):'—')+'</td>'
+            +'<td style="color:#534AB7">'+relTmaFmtMoeda(t.res.valPotencial)+'</td>')
+          : ((estimativa?'<td>'+(t.res.minSemValor?('<span style="color:#A32D2D">'+relTmaFmtHhMm(t.res.minSemValor)+'</span>'):'—')+'</td>':'')
+            +'<td style="font-weight:700;color:#185FA5">'+relTmaFmtMoeda(t.valor)+'</td>');
         return '<tr>'
           +'<td style="font-weight:700">'+escHtml(t.codigo)+'</td>'
           +'<td>'+escHtml(t.tipo)+'</td>'
           +'<td style="text-align:center">'+t.dias+'</td>'
           +'<td style="font-weight:600">'+relTmaFmtHhMm(t.min_log)+' <span style="color:#888;font-size:10px">('+relTmaMinToDecimal(t.min_log).toFixed(2).replace('.',',')+' h)</span></td>'
-          +'<td style="font-weight:700;color:#185FA5">'+relTmaFmtMoeda(t.valor)+'</td>'
+          +tdVal
           +'<td>'+(t.pend?('<span style="color:#854F0B;font-weight:600">'+t.pend+'</span>'):'<span style="color:#3B6D11">0</span>')+'</td>'
           +(fonte==='ponto'||estimativa?'':'<td>'+(t.min_conf?('<span style="color:#A32D2D">'+relTmaFmtHhMm(t.min_conf)+'</span>'):'—')+'</td>')
           +'<td><button class="btn btn-sm" onclick="relTmaFatPontoVerDetalhe('+i+')">Detalhe</button></td>'
@@ -17332,7 +17388,8 @@ function relTmaFatRenderFonte(wrap, fonte, ini, fim, visao, detalhes, info){
       +'<div id="tma-fat-detalhe-eq"></div>';
   }
   wrap.innerHTML=html;
-  _relTmaFatPontoCache={fonte:fonte,ini:ini,fim:fim,visao:visao,detalhes:detalhes,totais:totais,totMin:totMin,totVal:totVal,totConf:totConf,info:info};
+  _relTmaFatPontoCache={fonte:fonte,ini:ini,fim:fim,visao:visao,detalhes:detalhes,totais:totais,totMin:totMin,totVal:totVal,totConf:totConf,info:info,
+    resumo:res};
 }
 
 function relTmaFatDifTxt(min){
@@ -17340,14 +17397,14 @@ function relTmaFatDifTxt(min){
   return (min>0?'+':'')+relTmaFmtHhMm(min);
 }
 function relTmaFatCompararCalc(row){
-  // Diferenças: cada fonte registrada (calculada) − 8h previstas; maior − menor entre as registradas
+  // Diferenças: horas registradas de cada fonte (as mesmas da visão isolada) − 8h previstas; maior − menor entre as registradas.
+  // Horas sem valor/hora também são horas registradas; Escala nunca entra como "registrada".
   var fontes=['ponto','portaria','diario'], vals=[];
   var dif={};
   fontes.forEach(function(f){
     var r=row[f];
-    if(r && (r.status==='Calculado'||r.status==='Calculado parcial — conferir') && r.minutos_logados!=null){
-      dif[f]=r.minutos_logados-REL_TMA_ESCALA_MIN; vals.push(r.minutos_logados);
-    } else dif[f]=null;
+    if(r && r.minutos_logados>0){ dif[f]=r.minutos_logados-REL_TMA_ESCALA_MIN; vals.push(r.minutos_logados); }
+    else dif[f]=null;
   });
   var spread=vals.length>=2?(Math.max.apply(null,vals)-Math.min.apply(null,vals)):null;
   return {dif:dif, spread:spread, divergente:spread!=null && spread>60};
@@ -17355,31 +17412,41 @@ function relTmaFatCompararCalc(row){
 function relTmaFatRenderComparar(wrap, ini, fim, visao, linhas, info){
   linhas.forEach(function(row){ row.cmp=relTmaFatCompararCalc(row); });
   var fontes=['ponto','portaria','diario','escala'];
-  var tot={}; fontes.forEach(function(f){ tot[f]={min:0, valor:0, calc:0}; });
-  var div=0;
-  linhas.forEach(function(row){
-    fontes.forEach(function(f){
-      var r=row[f];
-      if(relTmaFatEhCalculado(r)){ tot[f].min+=(r.minutos_logados||0); tot[f].valor+=Number(r.valor_dia||0); tot[f].calc++; }
-    });
-    if(row.cmp.divergente) div++;
+  // Cada fonte totalizada separadamente, com a MESMA regra da visão isolada (nunca soma fontes entre si)
+  var tot={}, div=0;
+  fontes.forEach(function(f){
+    var rows=linhas.map(function(row){ return row[f]; });
+    var res=relTmaFatResumoValores(rows);
+    tot[f]={min:res.min, minSemValor:res.minSemValor, valor:res.valPotencial, valCompleto:res.valCompleto, valParcial:res.valParcial, valEstimativa:res.valEstimativa,
+      diasParciais:res.diasParciais, calc:rows.filter(function(r){ return r && r.minutos_logados>0; }).length};
   });
-  function celula(r){
+  linhas.forEach(function(row){ if(row.cmp.divergente) div++; });
+  function celula(r, f){
     if(!r) return '<td>—</td>';
-    var calc=relTmaFatEhCalculado(r);
-    return '<td style="white-space:nowrap">'+(calc?('<b>'+escHtml(r.horas_logadas_txt)+'</b>'+(r.valor_dia?'<br><span style="font-size:10px;color:#185FA5">'+relTmaFmtMoeda(r.valor_dia)+'</span>':'')):'—')
+    var temHoras=r.minutos_logados>0, sit=relTmaFatSituacaoValor(r);
+    var valTxt='';
+    if(sit==='completo'||sit==='estimativa') valTxt='<br><span style="font-size:10px;color:#185FA5">'+relTmaFmtMoeda(r.valor_dia)+(sit==='estimativa'?' (estimativa)':'')+'</span>';
+    else if(sit==='parcial') valTxt='<br><span style="font-size:10px;color:#854F0B">'+relTmaFmtMoeda(r.valor_dia)+' parcial — a conferir</span>';
+    else if(sit==='sem_valor') valTxt='<br><span style="font-size:10px;color:#A32D2D">sem valor/hora</span>';
+    return '<td style="white-space:nowrap">'+(temHoras?('<b>'+escHtml(r.horas_logadas_txt)+'</b>'):'—')+valTxt
       +'<br><span style="font-size:9px;color:'+relTmaFatPontoStatusCor(r.status)+'">'+escHtml(r.status)+'</span></td>';
   }
   var periodoTxt='<div style="padding:.35rem 1rem;font-size:11px;color:#555">Fonte: <b>Comparar fontes</b> · Período <b>'+escHtml(fmtD(ini))+'</b> a <b>'+escHtml(fmtD(fim))+'</b> · '+linhas.length+' equipe(s)/dia programada(s)'
     +(info.semProgPortaria?(' · Portaria: '+info.semProgPortaria+' equipe(s)/dia sem programação'):'')
     +(info.semProgDiario?(' · Diário: '+info.semProgDiario+' equipe(s)/dia sem programação'):'')
-    +'<br><span style="color:#888">'+escHtml(REL_TMA_FAT_AVISO_VH)+' Escala = estimativa (8h). Fonte sem dado fica "—" com a pendência — nenhuma fonte preenche outra.</span></div>';
-  var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:.5rem 1rem 1rem">'
+    +'<br><span style="color:#888">'+escHtml(REL_TMA_FAT_AVISO_VH)+' Escala = estimativa (8h). Cada fonte é totalizada separadamente, com as mesmas horas da sua visão isolada — as fontes não são somadas entre si. Fonte sem dado fica "—" com a pendência.</span></div>';
+  var cards='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;padding:.5rem 1rem 1rem">'
     +fontes.map(function(f){
+      var t=tot[f], sep=relTmaFatSeparaParcial(f);
       return '<div style="background:#f5f5f3;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">'+escHtml(REL_TMA_FAT_FONTES[f].curto)+(f==='escala'?' (estimativa)':'')+'</div>'
-        +'<div style="font-size:16px;font-weight:700;color:#185FA5">'+relTmaFmtHhMm(tot[f].min)+'</div>'
-        +'<div style="font-size:11px;color:#534AB7">'+relTmaFmtMoeda(tot[f].valor)+'</div>'
-        +'<div style="font-size:10px;color:#888">'+tot[f].calc+' de '+linhas.length+' calculado(s)</div></div>';
+        +'<div style="font-size:16px;font-weight:700;color:#185FA5">'+relTmaFmtHhMm(t.min)+'</div>'
+        +(sep
+          ? ('<div style="font-size:11px;color:#085041">Completo '+relTmaFmtMoeda(t.valCompleto)+'</div>'
+            +'<div style="font-size:11px;color:#854F0B">Parcial — a conferir '+relTmaFmtMoeda(t.valParcial)+'</div>'
+            +'<div style="font-size:10px;color:#534AB7">Potencial (não consolidado) '+relTmaFmtMoeda(t.valor)+'</div>')
+          : ('<div style="font-size:11px;color:#534AB7">'+relTmaFmtMoeda(t.valor)+(f==='escala'?' (estimativa)':'')+'</div>'))
+        +(t.minSemValor?'<div style="font-size:10px;color:#A32D2D">'+relTmaFmtHhMm(t.minSemValor)+' sem valor/hora</div>':'')
+        +'<div style="font-size:10px;color:#888">'+t.calc+' de '+linhas.length+' com horas</div></div>';
     }).join('')
     +'<div style="background:#FCEBEB;border-radius:8px;padding:10px;text-align:center"><div style="font-size:10px;color:#888">Divergência > 1h entre fontes registradas</div><div style="font-size:18px;font-weight:700;color:#A32D2D">'+div+'</div></div>'
     +'</div>';
@@ -17392,8 +17459,11 @@ function relTmaFatRenderComparar(wrap, ini, fim, visao, linhas, info){
       +'<th>Ponto − 8h</th><th>Portaria − 8h</th><th>Diário − 8h</th><th>Maior − menor</th><th>Pendências</th></tr></thead><tbody>'
       +linhas.map(function(row){
         var c=row.cmp;
-        var pend=['ponto','portaria','diario'].map(function(f){
-          var r=row[f]; return (r && r.status!=='Calculado')?(REL_TMA_FAT_FONTES[f].curto+': '+r.status):'';
+        var pend=['ponto','portaria','diario','escala'].map(function(f){
+          var r=row[f]; if(!r) return '';
+          var st=(r.status!=='Calculado' && r.status!=='Estimativa pela escala')?r.status:'';
+          if(r.parcial && st!=='Calculado parcial — conferir') st=(st?st+' · ':'')+'parcial';
+          return st?(REL_TMA_FAT_FONTES[f].curto+': '+st):'';
         }).filter(Boolean).join(' · ');
         return '<tr'+(c.divergente?' style="background:#FFF5F5"':'')+'>'
           +'<td style="white-space:nowrap">'+escHtml(fmtD(row.data))+'</td>'
@@ -17410,13 +17480,10 @@ function relTmaFatRenderComparar(wrap, ini, fim, visao, linhas, info){
     var byEq={};
     linhas.forEach(function(row){
       var k=row.equipe_id||row.codigo;
-      if(!byEq[k]){ byEq[k]={codigo:row.codigo, tipo:row.tipo, dias:0, div:0}; fontes.forEach(function(f){ byEq[k][f]={min:0,valor:0,calc:0}; }); }
+      if(!byEq[k]){ byEq[k]={codigo:row.codigo, tipo:row.tipo, dias:0, div:0, rows:{ponto:[],portaria:[],diario:[],escala:[]}}; }
       byEq[k].dias++;
       if(row.cmp.divergente) byEq[k].div++;
-      fontes.forEach(function(f){
-        var r=row[f];
-        if(relTmaFatEhCalculado(r)){ byEq[k][f].min+=(r.minutos_logados||0); byEq[k][f].valor+=Number(r.valor_dia||0); byEq[k][f].calc++; }
-      });
+      fontes.forEach(function(f){ byEq[k].rows[f].push(row[f]); });
     });
     var tl=Object.keys(byEq).map(function(k){ return byEq[k]; }).sort(function(a,b){ return String(a.codigo).localeCompare(String(b.codigo),'pt-BR'); });
     html=periodoTxt+cards+'<div style="padding:0 .5rem 1rem;overflow-x:auto"><table class="tbl" style="font-size:12px">'
@@ -17426,8 +17493,12 @@ function relTmaFatRenderComparar(wrap, ini, fim, visao, linhas, info){
       +tl.map(function(t){
         return '<tr><td style="font-weight:700">'+escHtml(t.codigo)+'</td><td>'+escHtml(t.tipo)+'</td><td style="text-align:center">'+t.dias+'</td>'
           +fontes.map(function(f){
-            var x=t[f];
-            return '<td style="white-space:nowrap"><b>'+relTmaFmtHhMm(x.min)+'</b><br><span style="font-size:10px;color:#185FA5">'+relTmaFmtMoeda(x.valor)+'</span><br><span style="font-size:9px;color:#888">'+x.calc+'/'+t.dias+' dia(s)</span></td>';
+            var x=relTmaFatResumoValores(t.rows[f]), sep=relTmaFatSeparaParcial(f);
+            return '<td style="white-space:nowrap"><b>'+relTmaFmtHhMm(x.min)+'</b>'
+              +(sep?('<br><span style="font-size:10px;color:#085041">'+relTmaFmtMoeda(x.valCompleto)+'</span>'+(x.valParcial?'<br><span style="font-size:10px;color:#854F0B">+ '+relTmaFmtMoeda(x.valParcial)+' parcial</span>':''))
+                :('<br><span style="font-size:10px;color:#185FA5">'+relTmaFmtMoeda(x.valPotencial)+'</span>'))
+              +(x.minSemValor?'<br><span style="font-size:9px;color:#A32D2D">'+relTmaFmtHhMm(x.minSemValor)+' sem valor/hora</span>':'')
+              +'</td>';
           }).join('')
           +'<td style="text-align:center;color:'+(t.div?'#A32D2D':'#3B6D11')+';font-weight:600">'+t.div+'</td></tr>';
       }).join('')
@@ -17443,14 +17514,17 @@ function relTmaFatPontoVerDetalhe(idx){
   if(!t) return;
   var box=document.getElementById('tma-fat-detalhe-eq');
   if(!box) return;
-  var cab=relTmaFatCab(_relTmaFatPontoCache.fonte);
+  var fonte=_relTmaFatPontoCache.fonte, sep=relTmaFatSeparaParcial(fonte);
+  var cab=relTmaFatCab(fonte);
   box.innerHTML='<div class="card" style="margin:0 1rem 1rem;border-left:4px solid #185FA5">'
-    +'<div class="ch"><span class="ct">Detalhe — '+escHtml(t.codigo)+' · '+escHtml(t.tipo)+' · '+escHtml(REL_TMA_FAT_FONTES[_relTmaFatPontoCache.fonte].curto)+'</span>'
+    +'<div class="ch"><span class="ct">Detalhe — '+escHtml(t.codigo)+' · '+escHtml(t.tipo)+' · '+escHtml(REL_TMA_FAT_FONTES[fonte].curto)+'</span>'
     +'<button class="btn btn-sm" onclick="document.getElementById(\'tma-fat-detalhe-eq\').innerHTML=\'\'">✕</button></div>'
     +'<div style="overflow-x:auto;padding:0 .5rem 1rem"><table class="tbl" style="font-size:11px">'
-    +'<thead><tr><th>Data</th><th>'+(_relTmaFatPontoCache.fonte==='ponto'?'Ref.':cab.ref)+'</th><th>'+cab.ini+'</th><th>'+cab.fim+'</th><th>'+cab.liq+'</th><th>Valor/h</th><th>Estimado</th><th>Status</th>'
-    +(_relTmaFatPontoCache.fonte==='ponto'?'':'<th>Obs.</th>')+'</tr></thead><tbody>'
+    +'<thead><tr><th>Data</th><th>'+(fonte==='ponto'?'Ref.':cab.ref)+'</th><th>'+cab.ini+'</th><th>'+cab.fim+'</th><th>'+cab.liq+'</th><th>Valor/h</th>'
+    +(sep?'<th>Valor completo</th><th>Valor parcial (a conferir)</th>':'<th>Estimado</th>')+'<th>Status</th>'
+    +(fonte==='ponto'?'':'<th>Obs.</th>')+'</tr></thead><tbody>'
     +(t.rows||[]).map(function(r){
+      var sit=relTmaFatSituacaoValor(r);
       return '<tr>'
         +'<td>'+escHtml(fmtD(r.data))+'</td>'
         +'<td>'+escHtml(r.ref_nome)+'</td>'
@@ -17458,9 +17532,10 @@ function relTmaFatPontoVerDetalhe(idx){
         +'<td>'+relTmaFatPontoFmtSaida(r)+'</td>'
         +'<td>'+escHtml(r.horas_logadas_txt)+'</td>'
         +'<td>'+(r.valor_hora?relTmaFmtMoeda(r.valor_hora):'—')+'</td>'
-        +'<td>'+(r.valor_dia?relTmaFmtMoeda(r.valor_dia):'—')+'</td>'
+        +(sep?('<td>'+(sit==='completo'?relTmaFmtMoeda(r.valor_dia):'—')+'</td><td>'+(sit==='parcial'?relTmaFmtMoeda(r.valor_dia):'—')+'</td>')
+          :('<td>'+(r.valor_dia?relTmaFmtMoeda(r.valor_dia):'—')+'</td>'))
         +'<td style="color:'+relTmaFatPontoStatusCor(r.status)+'">'+escHtml(r.status)+'</td>'
-        +(_relTmaFatPontoCache.fonte==='ponto'?'':'<td style="font-size:10px;color:#888">'+escHtml((r.obs||[]).join('; '))+'</td>')
+        +(fonte==='ponto'?'':'<td style="font-size:10px;color:#888">'+escHtml((r.obs||[]).join('; '))+'</td>')
         +'</tr>';
     }).join('')
     +'</tbody></table></div></div>';
@@ -17473,23 +17548,38 @@ function relTmaFatPontoExcel(){
   }
   var fonte=c.fonte||'ponto';
   var rotFonte=REL_TMA_FAT_FONTES[fonte].rotulo;
-  var aviso=' — '+REL_TMA_FAT_AVISO_VH+(fonte==='escala'?' Escala = estimativa, não comprova presença.':'');
+  var sep=relTmaFatSeparaParcial(fonte);
+  var aviso=' — '+REL_TMA_FAT_AVISO_VH+(fonte==='escala'?' Escala = estimativa, não comprova presença.':'')
+    +(sep||fonte==='comparar'?' Valor parcial = dias com pendência (a conferir); total potencial = completo + parcial, não consolidado.':'');
+  var moeda=function(v){ return v?relTmaFmtMoeda(v):''; };
   if(fonte==='comparar'){
     var fontesC=['ponto','portaria','diario','escala'];
     var cabC=['Data','Equipe','Tipo'];
-    fontesC.forEach(function(f){ var n=REL_TMA_FAT_FONTES[f].curto; cabC.push(n+' — horas', n+' — horas decimal', n+' — valor', n+' — status', n+' — natureza'); });
+    fontesC.forEach(function(f){ var n=REL_TMA_FAT_FONTES[f].curto; cabC.push(n+' — horas', n+' — horas decimal', n+' — valor completo', n+' — valor parcial (a conferir)', n+' — situação do valor', n+' — status', n+' — natureza'); });
     cabC.push('Ponto − 8h','Portaria − 8h','Diário − 8h','Maior − menor (registradas)','Divergência > 1h','Pendências / observações');
     var linhasC=c.detalhes.map(function(row){
       var l=[fmtD(row.data), row.codigo, row.tipo];
       fontesC.forEach(function(f){
-        var r=row[f], calc=relTmaFatEhCalculado(r);
-        l.push(calc?r.horas_logadas_txt:'', calc?(r.horas_dec||0).toFixed(2).replace('.',','):'', calc&&r.valor_dia?relTmaFmtMoeda(r.valor_dia):'', r?r.status:'', r?r.natureza:'');
+        var r=row[f], sit=relTmaFatSituacaoValor(r), temH=r && r.minutos_logados>0;
+        l.push(temH?r.horas_logadas_txt:'', temH?(r.horas_dec||0).toFixed(2).replace('.',','):'',
+          (sit==='completo'||sit==='estimativa')?moeda(r.valor_dia):'', sit==='parcial'?moeda(r.valor_dia):'',
+          REL_TMA_FAT_SIT_TXT[sit], r?r.status:'', r?r.natureza:'');
       });
       var cm=row.cmp||relTmaFatCompararCalc(row);
       l.push(cm.dif.ponto!=null?relTmaFatDifTxt(cm.dif.ponto):'', cm.dif.portaria!=null?relTmaFatDifTxt(cm.dif.portaria):'', cm.dif.diario!=null?relTmaFatDifTxt(cm.dif.diario):'',
         cm.spread!=null?relTmaFmtHhMm(cm.spread):'', cm.divergente?'Sim':'Não',
-        ['ponto','portaria','diario','escala'].map(function(f){ var r=row[f]; return r&&(r.obs||[]).length?(REL_TMA_FAT_FONTES[f].curto+': '+r.obs.join('; ')):''; }).filter(Boolean).join(' | '));
+        fontesC.map(function(f){ var r=row[f]; return r&&(r.obs||[]).length?(REL_TMA_FAT_FONTES[f].curto+': '+r.obs.join('; ')):''; }).filter(Boolean).join(' | '));
       return l;
+    });
+    // Totais por fonte (nunca somados entre si)
+    fontesC.forEach(function(f){
+      var t=c.totais[f], l=['TOTAL '+REL_TMA_FAT_FONTES[f].curto.toUpperCase(), '', ''];
+      fontesC.forEach(function(g){
+        if(g!==f){ l.push('','','','','','',''); return; }
+        l.push(relTmaFmtHhMm(t.min), relTmaMinToDecimal(t.min).toFixed(2).replace('.',','), moeda(t.valCompleto+t.valEstimativa), moeda(t.valParcial),
+          t.minSemValor?('Horas sem valor/hora: '+relTmaFmtHhMm(t.minSemValor)):'', '', g==='escala'?'Estimativa':'Registrado');
+      });
+      l.push('','','','','',''); linhasC.push(l);
     });
     exportarXLS('tma_fat_comparar_'+c.ini+'_'+c.fim, cabC, linhasC, 'Horas e faturamento TMA — Comparar fontes — '+c.ini+' a '+c.fim+aviso);
     progShowToast('Excel gerado.');
@@ -17497,10 +17587,17 @@ function relTmaFatPontoExcel(){
   }
   if(c.visao==='total'){
     var cab=['Equipe','Tipo','Dias programados',(fonte==='escala'?'Horas estimadas':'Horas logadas'),'Horas decimal','Valor estimado','Pendências'];
-    if(fonte!=='ponto') cab=['Fonte'].concat(cab, ['A conferir (fora do faturável)','Natureza']);
+    if(sep) cab=['Fonte','Equipe','Tipo','Dias programados','Horas logadas','Horas decimal','Horas sem valor/hora','Valor completo','Valor parcial (a conferir)','Total potencial (não consolidado)','Pendências','A conferir (fora do faturável)','Natureza'];
+    else if(fonte==='escala') cab=['Fonte'].concat(cab, ['A conferir (fora do faturável)','Horas sem valor/hora','Natureza']);
     var linhas=c.totais.map(function(t){
+      if(sep){
+        var x=t.res||relTmaFatResumoValores(t.rows);
+        return [rotFonte,t.codigo,t.tipo,t.dias,relTmaFmtHhMm(t.min_log),relTmaMinToDecimal(t.min_log).toFixed(2).replace('.',','),
+          x.minSemValor?relTmaFmtHhMm(x.minSemValor):'', relTmaFmtMoeda(x.valCompleto), x.valParcial?relTmaFmtMoeda(x.valParcial):'', relTmaFmtMoeda(x.valPotencial),
+          t.pend, t.min_conf?relTmaFmtHhMm(t.min_conf):'', 'Registrado'];
+      }
       var l=[t.codigo,t.tipo,t.dias,relTmaFmtHhMm(t.min_log),relTmaMinToDecimal(t.min_log).toFixed(2).replace('.',','),relTmaFmtMoeda(t.valor),t.pend];
-      if(fonte!=='ponto') l=[rotFonte].concat(l, [t.min_conf?relTmaFmtHhMm(t.min_conf):'', fonte==='escala'?'Estimativa':'Registrado']);
+      if(fonte==='escala'){ var y=t.res||relTmaFatResumoValores(t.rows); l=[rotFonte].concat(l, [t.min_conf?relTmaFmtHhMm(t.min_conf):'', y.minSemValor?relTmaFmtHhMm(y.minSemValor):'', 'Estimativa']); }
       return l;
     });
     exportarXLS('tma_fat_'+fonte+'_total_'+c.ini+'_'+c.fim, cab, linhas, 'Horas e faturamento TMA ('+rotFonte+', total) — '+c.ini+' a '+c.fim+aviso);
@@ -17508,14 +17605,18 @@ function relTmaFatPontoExcel(){
     var cab2=['Data','Equipe','Tipo','Integrante ref.','RE','Entrada','Saída','Horas brutas','Almoço','Horas logadas','Horas decimal','Valor hora','Valor estimado','Status','Observações'];
     if(fonte!=='ponto'){
       var cb=relTmaFatCab(fonte);
-      cab2=['Fonte','Natureza','Data','Equipe','Tipo',cb.ref,cb.ini,cb.fim,cb.bru,cb.alm,'Critério do almoço',cb.liq,'Horas decimal','A conferir (fora do faturável)','Valor hora','Valor estimado','Status','Observações'];
+      cab2=['Fonte','Natureza','Data','Equipe','Tipo',cb.ref,cb.ini,cb.fim,cb.bru,cb.alm,'Critério do almoço',cb.liq,'Horas decimal','A conferir (fora do faturável)','Valor hora']
+        .concat(sep?['Valor completo','Valor parcial (a conferir)','Situação do valor']:['Valor estimado','Situação do valor'], ['Status','Observações']);
     }
     var linhas2=c.detalhes.map(function(r){
       if(fonte!=='ponto'){
+        var sit=relTmaFatSituacaoValor(r);
+        var vals=sep?[sit==='completo'?moeda(r.valor_dia):'', sit==='parcial'?moeda(r.valor_dia):'', REL_TMA_FAT_SIT_TXT[sit]]
+          :[moeda(r.valor_dia), REL_TMA_FAT_SIT_TXT[sit]];
         return [rotFonte, r.natureza, fmtD(r.data), r.codigo, r.tipo, r.ref_nome, r.entrada||'', relTmaFatPontoFmtSaidaTxt(r), r.horas_brutas_txt, r.almoco_txt||'',
           r.almoco_criterio==='estimativo'?'Estimativo (1h se bruto > 6h)':(r.almoco_criterio==='registrado'?'Pausa registrada no Diário':''),
           r.horas_logadas_txt, (r.horas_dec||0).toFixed(2).replace('.',','), r.minutos_conferir?relTmaFmtHhMm(r.minutos_conferir):'',
-          r.valor_hora?relTmaFmtMoeda(r.valor_hora):'', r.valor_dia?relTmaFmtMoeda(r.valor_dia):'', r.status, (r.obs||[]).join('; ')];
+          r.valor_hora?relTmaFmtMoeda(r.valor_hora):''].concat(vals, [r.status, (r.obs||[]).join('; ')]);
       }
       return [fmtD(r.data),r.codigo,r.tipo,r.ref_nome,r.ref_re,r.entrada||'',relTmaFatPontoFmtSaidaTxt(r),r.horas_brutas_txt,'1h00',r.horas_logadas_txt,
         (r.horas_dec||0).toFixed(2).replace('.',','),

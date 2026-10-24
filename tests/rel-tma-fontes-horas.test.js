@@ -105,9 +105,10 @@ pr('9006', D1, '08:00', '17:00'); pr('9007', D1, '08:00', '17:00'); pr('9007', D
 for (let i = 0; i < 2500; i++) pr(String(20000 + i), [D1, D2, D3][i % 3], '07:00', '16:00');
 
 // ── Banco em memória ───────────────────────────────────────────────────────────
-function criarBanco() {
+function criarBanco(extra) {
+  extra = extra || {};
   const t = {
-    composicao_dia: comps, ponto_registros: ponto, frotas_portaria_saidas: portaria, sessoes_disponibilidade: sessoes,
+    composicao_dia: comps, ponto_registros: ponto, frotas_portaria_saidas: portaria, sessoes_disponibilidade: sessoes.concat(extra.sessoes || []),
     plpt_sessoes: sessoesPlpt, servicos_contrato: servicosLinhas, prog_veiculos_dia: [],
   };
   const b = { regra: () => 'ok', reqs: [] };
@@ -355,7 +356,7 @@ const semNovas = r => { const o = Object.assign({}, r); NOVAS_CHAVES.forEach(k =
     ctx.relTmaFatPontoExcel();
     const xl = ctx.xls[0];
     ok('Comparar: Excel com as 4 fontes (horas, valor, status, natureza), diferenças e pendências',
-      xl.cab.includes('Ponto — horas') && xl.cab.includes('Portaria — valor') && xl.cab.includes('Diário — status') && xl.cab.includes('Escala — natureza') && xl.cab.includes('Maior − menor (registradas)') && xl.linhas.length === c.detalhes.length, xl.cab);
+      xl.cab.includes('Ponto — horas') && xl.cab.includes('Portaria — valor completo') && xl.cab.includes('Portaria — valor parcial (a conferir)') && xl.cab.includes('Diário — status') && xl.cab.includes('Escala — natureza') && xl.cab.includes('Maior − menor (registradas)') && xl.linhas.filter(l => !/^TOTAL /.test(l[0])).length === c.detalhes.length, xl.cab);
     const ct = await gerar(criarCtx(html, criarBanco()), { fonte: 'comparar', visao: 'total' });
     ok('Comparar: visão total por equipe', ct.detalhes.length === 13 && ct.totais.ponto.min > 0);
   }
@@ -405,6 +406,113 @@ const semNovas = r => { const o = Object.assign({}, r); NOVAS_CHAVES.forEach(k =
     ok('Tela: fonte Portaria troca a explicação e os status', /intervalos <b>reais/.test(ctx.el['tma-fat-desc'].innerHTML) && /Sem retorno físico/.test(ctx.el['tma-fat-status'].innerHTML) && /sem histórico de preços/.test(ctx.el['tma-fat-desc'].innerHTML));
     ctx.el['tma-fat-fonte'].value = 'comparar'; ctx.relTmaFatFonteMudou();
     ok('Tela: em Comparar o filtro de status fica desabilitado', ctx.el['tma-fat-status'].disabled === true);
+  }
+
+  // ═══ 10. Correções A (valor parcial separado) e B (Comparar = fonte isolada) ═══
+  {
+    const moedaNum = s => s ? Number(String(s).replace(/[^\d,]/g, '').replace(',', '.')) : 0;
+    const r2 = v => Math.round(v * 100) / 100;
+    const vF = m => r2((m / 60) * 254.34);
+    const relTmaFmt = m => criarCtx(html, criarBanco()).relTmaFmtHhMm(m);
+    const somaCol = (xl, nomeCol) => r2(xl.linhas.reduce((s, l) => s + moedaNum(l[xl.cab.indexOf(nomeCol)]), 0));
+    // Portaria: completo, parcial e sem valor no mesmo período (cálculo independente)
+    const ctx = criarCtx(html, criarBanco());
+    const c = await gerar(ctx, { fonte: 'portaria', visao: 'detalhe' });
+    const compEsp = r2(vF(510) + vF(360) + vF(360) + vF(485) + vF(480) + vF(300));
+    const parcEsp = r2(8 * 243.39);
+    ok('A1: Portaria — valor completo = soma independente dos dias sem pendência', Math.abs(c.resumo.valCompleto - compEsp) < 0.02, [c.resumo.valCompleto, compEsp]);
+    ok('A1: Portaria — valor parcial separado (MOT301 15/09, R$ 1.947,12)', c.resumo.valParcial === parcEsp && c.resumo.diasParciais === 1, [c.resumo.valParcial, c.resumo.diasParciais]);
+    ok('A1: total potencial = completo + parcial (sem duplicar)', Math.abs(c.resumo.valPotencial - r2(compEsp + parcEsp)) < 0.02 && Math.abs(c.totVal - c.resumo.valPotencial) < 0.01, [c.resumo.valPotencial, c.totVal]);
+    const h = ctx.el['tma-fat-resultado'].innerHTML;
+    ok('A1: tela com "Valor completo", "Valor parcial — a conferir" e "Total potencial (não consolidado)", sem "Faturamento est."',
+      /Valor completo/.test(h) && /Valor parcial — a conferir/.test(h) && /Total potencial \(não consolidado\)/.test(h) && !/Faturamento est\./.test(h) && /não é faturamento consolidado/.test(h));
+    const lp = linha(c, E.E4, D2);
+    ok('A1: linha parcial continua identificada como parcial', lp.status === 'Calculado parcial — conferir' && lp.parcial === true);
+    ok('A2: por dia — linha parcial só na coluna "Valor parcial (a conferir)"', /<th>Valor completo<\/th><th>Valor parcial \(a conferir\)<\/th>/.test(h) && h.indexOf('<td style="font-weight:600;color:#085041">—</td><td style="font-weight:600;color:#854F0B">R$ 1.947,12</td>') > 0);
+    ctx.relTmaFatPontoExcel();
+    const xd = ctx.xls[0];
+    const ld = xd.linhas.find(l => l[3] === 'MOT301' && l[2] === '15/09/2026');
+    ok('A2: Excel detalhe — parcial em coluna própria com situação "Parcial — a conferir"', ld[xd.cab.indexOf('Valor completo')] === '' && moedaNum(ld[xd.cab.indexOf('Valor parcial (a conferir)')]) === parcEsp && ld[xd.cab.indexOf('Situação do valor')] === 'Parcial — a conferir', ld);
+    ok('A3: Excel detalhe — somas iguais às da tela (completo e parcial)', somaCol(xd, 'Valor completo') === c.resumo.valCompleto && somaCol(xd, 'Valor parcial (a conferir)') === c.resumo.valParcial, [somaCol(xd, 'Valor completo'), somaCol(xd, 'Valor parcial (a conferir)')]);
+    // visão total por equipe
+    const ctxT = criarCtx(html, criarBanco());
+    const ct = await gerar(ctxT, { fonte: 'portaria', visao: 'total' });
+    const mot = ct.totais.find(t => t.codigo === 'MOT301'), ebn = ct.totais.find(t => t.codigo === 'EBN101'), xyz = ct.totais.find(t => t.codigo === 'XYZ601');
+    ok('A2: por equipe — MOT301 só parcial, EBN101 só completo', mot.res.valParcial === parcEsp && mot.res.valCompleto === 0 && ebn.res.valParcial === 0 && ebn.res.valCompleto === r2(vF(510) + vF(360)), [mot.res, ebn.res]);
+    const hT = ctxT.el['tma-fat-resultado'].innerHTML;
+    ok('A2: tabela por equipe com Horas sem valor/hora, Valor completo, Valor parcial e Total potencial', /<th>Horas sem valor\/hora<\/th><th>Valor completo<\/th><th>Valor parcial \(a conferir\)<\/th><th>Total potencial<\/th>/.test(hT));
+    ctxT.relTmaFatPontoExcel();
+    const xt = ctxT.xls[0];
+    ok('A3: Excel total — somas iguais às da tela', somaCol(xt, 'Valor completo') === ct.resumo.valCompleto && somaCol(xt, 'Valor parcial (a conferir)') === ct.resumo.valParcial && somaCol(xt, 'Total potencial (não consolidado)') === ct.resumo.valPotencial,
+      [somaCol(xt, 'Valor completo'), somaCol(xt, 'Valor parcial (a conferir)'), somaCol(xt, 'Total potencial (não consolidado)'), ct.resumo]);
+    const hd = xt.linhas.reduce((s, l) => s + moedaNum(l[xt.cab.indexOf('Horas decimal')]), 0);
+    ok('A3: Excel total — horas decimais iguais às da tela', Math.abs(hd - ct.totMin / 60) < 0.05 * xt.linhas.length, [hd, ct.totMin / 60]);
+    // B5: equipe sem tipo — horas no total, à parte como "sem valor/hora", sem valor inventado
+    ok('B5: sem tipo — horas no total da fonte e em "Horas sem valor/hora", valor zero não contado como válido',
+      xyz.min_log === 480 && xyz.res.minSemValor === 480 && xyz.res.valPotencial === 0 && ct.resumo.minSemValor === 480 && ct.totMin === 510 + 360 + 360 + 485 + 480 + 300 + 480 + 480, [xyz, ct.resumo.minSemValor]);
+    ok('B5: sem tipo — card "Horas sem valor/hora" na tela', /Horas sem valor\/hora<\/div><div[^>]*>8h00/.test(hT) || /Horas sem valor\/hora[\s\S]{0,120}8h00/.test(hT), hT.slice(0, 0));
+    const l6 = xd.linhas.find(l => l[3] === 'XYZ601' && l[2] === '15/09/2026');
+    ok('B5: sem tipo — pendência identificada no Excel (situação e observação)', l6[xd.cab.indexOf('Situação do valor')] === 'Sem valor/hora (pendente)' && /Sem tipo de equipe/.test(l6[xd.cab.indexOf('Observações')]) && l6[xd.cab.indexOf('Valor completo')] === '', l6);
+    // B6: tipo sem valor/hora (MOTO DUPLA removido do cadastro) — inclusive no dia parcial
+    const ctx6 = criarCtx(html, criarBanco());
+    ctx6.servicos = ctx6.servicos.filter(s => s.tipo_disp !== 'MOTO DUPLA');
+    const c6 = await gerar(ctx6, { fonte: 'portaria' });
+    const x6 = linha(c6, E.E4, D2);
+    ok('B6: sem valor/hora — horas preservadas, sem valor, parcial ainda identificado', x6.status === 'Sem valor hora cadastrado' && x6.minutos_logados === 480 && !x6.valor_dia && x6.parcial === true && x6.obs.some(o => /dia com cálculo parcial/.test(o)), x6);
+    ok('B6: sem valor/hora — fora do valor parcial e somado em "Horas sem valor/hora"', c6.resumo.valParcial === 0 && c6.resumo.minSemValor === 480 + 480 && c6.totMin === c.totMin, [c6.resumo, c6.totMin]);
+    // B7: pendentes sem cálculo ficam fora de qualquer valor
+    const pendentes = c.detalhes.filter(r => !(r.minutos_logados > 0));
+    ok('B7: registros pendentes sem cálculo fora dos valores e das horas sem valor', pendentes.length >= 5 && pendentes.every(r => !r.valor_dia && ctx.relTmaFatSituacaoValor(r) === 'sem_calculo') && linha(c, E.E1, D3).status === 'Pendente de conferência', pendentes.map(r => r.status));
+    // B8: sem duplicidade — cada linha em exatamente um balde
+    const baldes = c.detalhes.reduce((o, r) => { const s = ctx.relTmaFatSituacaoValor(r); o[s] = (o[s] || 0) + 1; return o; }, {});
+    ok('B8: cada linha em uma só situação e soma linha a linha = completo + parcial', Object.values(baldes).reduce((a, b) => a + b, 0) === c.detalhes.length && Math.abs(c.detalhes.reduce((s, r) => s + Number(r.valor_dia || 0), 0) - (c.resumo.valCompleto + c.resumo.valParcial)) < 0.01, baldes);
+    // Diário com dia parcial (sessão extra sem logout em 16/09)
+    const bD = criarBanco({ sessoes: [sess(E.E1, D3, ms(D3, '18:00'), null, null, null, 0)] });
+    const cD = await gerar(criarCtx(html, bD), { fonte: 'diario' });
+    const xD = linha(cD, E.E1, D3);
+    ok('A1: Diário — dia parcial separado do completo', xD.parcial === true && cD.resumo.valParcial === xD.valor_dia && xD.valor_dia > 0 && cD.resumo.valPotencial === r2(cD.resumo.valCompleto + cD.resumo.valParcial), [xD.status, xD.valor_dia, cD.resumo]);
+    // B4: fonte isolada × Comparar — horas idênticas, com e sem filtros
+    for (const cfg of [{}, { eq: E.E6 }, { tipo: 'FIORINO' }, { eq: E.E4 }]) {
+      const cc = await gerar(criarCtx(html, criarBanco()), Object.assign({ fonte: 'comparar' }, cfg));
+      for (const f of ['ponto', 'portaria', 'diario', 'escala']) {
+        const ci = await gerar(criarCtx(html, criarBanco()), Object.assign({ fonte: f }, cfg));
+        const porLinha = ci.detalhes.every(r => { const rc = cc.detalhes.find(x => x.equipe_id === r.equipe_id && x.data === r.data); return rc && rc[f].minutos_logados === r.minutos_logados; });
+        ok('B4: ' + f + ' ' + JSON.stringify(cfg) + ' — Comparar com as mesmas horas da fonte isolada (total e por linha)', cc.totais[f].min === ci.totMin && porLinha && cc.totais[f].minSemValor === ci.resumo.minSemValor && cc.totais[f].valor === ci.resumo.valPotencial, [f, cc.totais[f].min, ci.totMin]);
+      }
+    }
+    const ctxC = criarCtx(html, criarBanco());
+    const cc = await gerar(ctxC, { fonte: 'comparar' });
+    const hC = ctxC.el['tma-fat-resultado'].innerHTML;
+    const somaTodas = f => cc.detalhes.reduce((s, r) => s + (r[f].minutos_logados || 0), 0);
+    const somaCalc = f => cc.detalhes.reduce((s, r) => s + (r[f].valor_dia > 0 ? r[f].minutos_logados : 0), 0);
+    ok('B4: caso do achado — horas da equipe sem tipo agora entram no total do Comparar (Ponto e Escala)',
+      cc.totais.ponto.min === somaTodas('ponto') && cc.totais.ponto.min - somaCalc('ponto') === cc.totais.ponto.minSemValor && cc.totais.ponto.minSemValor > 0
+      && cc.totais.escala.min === 13 * 480 && cc.totais.escala.minSemValor === 2 * 480, [cc.totais.ponto, cc.totais.escala]);
+    const r6 = cc.detalhes.find(r => r.equipe_id === E.E6 && r.data === D1);
+    ok('B5: Comparar — horas sem tipo aparecem na célula com "sem valor/hora"', r6.ponto.minutos_logados > 0 && r6.cmp.dif.ponto !== null && /sem valor\/hora/.test(hC));
+    ok('A1: Comparar — Portaria com completo, parcial e potencial separados', cc.totais.portaria.valParcial === parcEsp && Math.abs(cc.totais.portaria.valCompleto - compEsp) < 0.02 && /Parcial — a conferir R\$ 1\.947,12/.test(hC));
+    const somaFontes = ['ponto', 'portaria', 'diario', 'escala'].reduce((s, f) => s + cc.totais[f].min, 0);
+    ok('B8: Comparar não soma as quatro fontes entre si', hC.indexOf(relTmaFmt(somaFontes)) < 0 && !/TOTAL GERAL/i.test(hC) && /não são somadas entre si/.test(hC), relTmaFmt(somaFontes));
+    ctxC.relTmaFatPontoExcel();
+    const xc = ctxC.xls[0];
+    const totRows = xc.linhas.filter(l => /^TOTAL /.test(l[0]));
+    ok('A3/B4: Excel do Comparar — um total por fonte (nunca somadas), iguais à tela', totRows.length === 4 && ['ponto', 'portaria', 'diario', 'escala'].every((f, i) => {
+      const l = totRows[i], n = ctxC.REL_TMA_FAT_FONTES[f].curto;
+      return l[xc.cab.indexOf(n + ' — horas')] === relTmaFmt(cc.totais[f].min) && moedaNum(l[xc.cab.indexOf(n + ' — valor parcial (a conferir)')]) === cc.totais[f].valParcial;
+    }), totRows.map(l => l.filter(Boolean)));
+    const lx6 = xc.linhas.find(l => l[1] === 'XYZ601' && l[0] === '14/09/2026');
+    ok('B5: Excel do Comparar — horas sem valor com situação "Sem valor/hora (pendente)"', lx6[xc.cab.indexOf('Ponto — horas')] !== '' && lx6[xc.cab.indexOf('Ponto — situação do valor')] === 'Sem valor/hora (pendente)', lx6);
+    // A9: Escala identificada como estimativa
+    const ctxE = criarCtx(html, criarBanco());
+    await gerar(ctxE, { fonte: 'escala' });
+    ctxE.relTmaFatPontoExcel();
+    const xe = ctxE.xls[0];
+    ok('A9: Escala — situação "Estimativa" no Excel e "(estimativa)" no Comparar', xe.linhas.filter(l => l[xe.cab.indexOf('Situação do valor')] === 'Estimativa').length === 11 && /Escala \(estimativa\)/.test(hC));
+    // A10: Ponto isolado sem nenhuma coluna ou card novo
+    const ctxP = criarCtx(html, criarBanco());
+    await gerar(ctxP, { fonte: 'ponto', visao: 'total' });
+    const hP = ctxP.el['tma-fat-resultado'].innerHTML;
+    ok('A10: Ponto sem colunas/cards de parcial ou potencial', !/Valor parcial|Total potencial|Horas sem valor\/hora|Valor completo/.test(hP) && /Faturamento est\./.test(hP));
   }
 
   // ═══ 9. Estático ═══
