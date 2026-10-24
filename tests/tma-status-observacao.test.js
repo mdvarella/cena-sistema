@@ -588,7 +588,7 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     ok('Programação de Projetos (gravação/regras), Portaria e wrappers intactos', ['progProjetoCoreSalvarMenuStatus', 'ppDefinirStatus', 'ppDispStatusColab', 'ppDispFaltaPeloPonto', 'sbUpsert', 'sbFetch', 'sbDelete', 'sbUpdate']
       .every(n => n === 'sbUpsert' ? sbUpsertReal(base) === sbUpsertReal(html) : fnDe(base, n) === fnDe(html, n)));
     ok('PP: progProjSalvarStatus continua vazia', /\nfunction progProjSalvarStatus\(\)\{\}\n/.test(html));
-    ok('versão da publicação A: 8.1.226 (app e service worker)', /numero: '8\.1\.226'/.test(html) && /SW_VERSION\s*=\s*'cena-8\.1\.226'/.test(fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8')));
+    ok('versão publicada: 8.1.227 (app e service worker)', /numero: '8\.1\.227'/.test(html) && /SW_VERSION\s*=\s*'cena-8\.1\.227'/.test(fs.readFileSync(path.join(raiz, 'sw.js'), 'utf8')));
   }
 
   if (falhas) { console.error('tma-status-observacao: FALHOU ' + falhas + '/' + total); process.exit(1); }
