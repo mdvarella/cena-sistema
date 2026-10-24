@@ -552,7 +552,9 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
       pos.forEach((p, i) => { const bl = src.slice(p[1], i + 1 < pos.length ? pos[i + 1][1] : src.length); const f = bl.indexOf('\n}\n'); m[p[0]] = (m[p[0]] || '') + (f >= 0 ? bl.slice(0, f + 2) : bl); });
       return m; };
     const mb = mapa(base), ma = mapa(html);
-    const mud = Object.keys(mb).filter(n => mb[n] !== ma[n]);
+    // Entrega do relatório "Horas Logadas e Faturamento" por fontes (branch feat/rel-tma-fontes-horas): fora do escopo de status
+    const REL_FONTES = n => /^relTma(Fat|BuscarTodas$|ValorHoraSeguro$|EnsureServicosTma$|FetchPontoPeriodo$|CalcFat(Portaria|Bordo|Escala)Dia$)/.test(n);
+    const mud = Object.keys(mb).filter(n => mb[n] !== ma[n] && !REL_FONTES(n));
     // + trava de escala/programação com leitura incompleta: escalasModeloAplicar, progEfetuarDropInterno,
     //   progIniciarAutoEscalaRef, progMobileProgramar, progSalvarEquipe, progSalvarTodas (só a linha da trava)
     // + correções A/B/C: progEfetuarEmprestimoInterno (empréstimo), PP progProjetoCoreEfetuarDrop, ppAutoEscalarEquipe,
@@ -565,7 +567,7 @@ const ult = ctx => ctx.toasts[ctx.toasts.length - 1] || { m: '', erro: false };
     ok('painel de Disponíveis: retorno pelo dia da tela + aviso de leitura incompleta (únicas mudanças na função)',
       /var hoje = dataNorm \|\| dataHojeLocal\(\);/.test(painel) && painelSemLeitura.replace(/\n  \/\/ pelo DIA DA TELA[^\n]*/, '').replace('var hoje = dataNorm || dataHojeLocal();', 'var hoje = dataHojeLocal();') === painelBase);
     ok('escopo: só as funções de status do TMA mudaram', mud.sort().join(',') === ESPERADAS.join(','), mud);
-    const novasNomes = Object.keys(ma).filter(n => !(n in mb)).sort().join(',');
+    const novasNomes = Object.keys(ma).filter(n => !(n in mb) && !REL_FONTES(n)).sort().join(',');
     ok('escopo: funções novas só as de status', novasNomes === 'ppStatusBloqueiaEscala,ppStatusVerificado,progBuscarStatusPersistentes,progStatusBloqueiaEscala,progStatusClassificarErro,progStatusComPrazo,progStatusGravarDia,progStatusLeituraAviso,progStatusLeituraEstado,progStatusLeituraMarcar,progStatusLerDia,progStatusMsgErro', novasNomes);
     // Trava: nas 6 funções de escala/programação a única mudança é a linha da trava (ou o bloco de entrada na escala)
     const TRAVA = { escalasModeloAplicar: /\n  if\(progStatusBloqueiaEscala\(data, 'implantar o modelo'\)\) return;/, progIniciarAutoEscalaRef: /\n  if\(progStatusBloqueiaEscala\(dest, 'usar o Auto Escalar'\)\) return;/,
