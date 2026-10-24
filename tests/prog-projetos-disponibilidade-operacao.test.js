@@ -232,7 +232,8 @@ async function testesOperacao() {
 const DISP_FUNCS = ['ppDispStatusColab', 'ppDispEscaladosDia', 'ppDispCalcular', 'ppDispPonto', 'ppDispPresente', 'ppDispFiltrarPonto',
   'ppDispBadgePontoHtml', 'ppDispEscalasUsadas', 'ppDispChipLivreHtml', 'ppDispChipStatusHtml', 'ppDispCorHex', 'ppDispBotaoFiltroHtml',
   'ppRenderPainelDisp', 'ppSetFiltroDispStatus', 'ppSetFiltroIndisp', 'ppSetFiltroEscalaColab', 'ppVinculadosDisponiveisEq',
-  'progFiltrarColsProgramacao', 'progProjetoCoreStatusColab', 'progProjetoCoreStatusInfoColab', 'progStatusAutor', 'progObsLinhaHtml'];
+  'progFiltrarColsProgramacao', 'progProjetoCoreStatusColab', 'progProjetoCoreStatusInfoColab', 'progStatusAutor', 'progObsLinhaHtml',
+  'progProjStatusEhDoDia', 'ppStatusVerificado'];   // aviso de disponibilidade não verificada (23/10/2026)
 const bloqMatch = /var BLOQ_STATUS = (\[[^\]]*\])/.exec(html);
 const dispCodigo = [vr('PROG_STATUS'), 'var BLOQ_STATUS = ' + bloqMatch[1] + ';', vr('PP_DISP_LIVRE_ST'), vr('PP_DISP_INDISP_ST'), vr('PP_DISP_BADGE_ORDEM')]
   .concat(DISP_FUNCS.map(fn)).join('\n');
@@ -248,13 +249,13 @@ const COLS = [
 function ctxDisp() {
   const status = {}; COLS.forEach(c => { if (c.st !== 'disponivel') status[c.id] = c.st; });
   const ctx = {
-    console, Math, Number, String, Object, Array, Date, JSON,
+    console, Math, Number, String, Object, Array, Date, JSON, DEMO: false,
     colaboradores: COLS.map(c => Object.assign({}, c)).concat([{ id: 'outro', nome: 'OUTRO CONTRATO', contrato_id: 'cid-2', ativo: true, vinculo: 'campo' }]),
     _progStatus: status,
     _progStatusInfo: { fe1: { retorno: '2026-10-05' }, t1: { retorno: '2026-10-10' }, o1: { obs: 'Só dirige carro leve', registrado_por: 'Ana' } },
     composicao_dia: [{ equipe_id: 'eqX', data: HOJE, colaborador_ids: JSON.stringify(['d3', 'o2', null]) },
       { equipe_id: 'eqY', data: '2026-09-28', colaborador_ids: ['d1'] }],
-    _pp: { filtroPonto: 'todos' },
+    _pp: { filtroPonto: 'todos', statusData: HOJE, statusOk: HOJE, statusRef: status },   // leitura do dia completa
     ponto: { '1000': { entrada: '06:58' } },
     pontoCacheGet(re) { return ctx.ponto[re] || null; },
     CAL_CORES_2026: { [HOJE]: 'Azul' }, _calDados: { [HOJE]: 'Azul' },
@@ -396,7 +397,8 @@ function testesEstaticos() {
     .concat(['progRenderPainelDisp', 'progRenderEquipeRow', 'progValidarComposicao', 'progEfetuarDrop', 'progRenderQuadro', 'progRenderResumo', 'progFiltrarColsProgramacao', 'progMenuSlot']);
   // 8.1.171: aviso de placa divergente (saída da portaria × programação) — coberto em portaria-placa-reconferencia.test.js.
   // 8.1.208: CNH B para Delivery Express / 4x2 no menu do slot — coberto em cnh-delivery-express.test.js.
-  const ALTERADAS_DEPOIS = ['progTmaHtmlOperacao', 'progMenuSlot'];
+  // TMA status/histórico: retorno automático do painel pelo dia da tela — coberto em tma-status-observacao.test.js.
+  const ALTERADAS_DEPOIS = ['progTmaHtmlOperacao', 'progMenuSlot', 'progRenderPainelDisp'];
   const difs = nomesTma.filter(n => {
     if (ALTERADAS_DEPOIS.includes(n)) return false;
     const re = new RegExp('\\n(?:async )?function ' + n + '\\(');

@@ -35,8 +35,20 @@ const tick = () => new Promise(r => setImmediate(r));
 // ── TMA intacto ─────────────────────────────────────────────────
 const TMA = ['progMenuSlot', 'progSalvarMenuStatus', 'progSalvarStatus', 'progCarregarStatus', 'progSetStatusMenu', 'progSetStatus',
   'progAplicarStatusDoBanco', 'progGetData', 'progRenderPainelDisp', 'progLimparHistoricoFerias'];
-const difTma = TMA.filter(n => fnEm(htmlBase, n) !== fn(n));
-ok('TMA: ' + TMA.length + ' funções idênticas à main (' + BASE + ')', difTma.length === 0, difTma);
+// (a) A ENTREGA desta etapa (base → release 8.1.221) não alterou o TMA — commits fixos.
+// (b) No arquivo atual, o TMA continua idêntico à base, exceto as 3 funções de gravação de status corrigidas
+//     depois pelo próprio TMA (observação que sumia após Atualizar) — cobertas em tma-status-observacao.test.js.
+const REL_PP_STATUS = process.env.PP_STATUS_RELEASE || 'c654452';
+const htmlRelPP = norm(execFileSync('git', ['show', REL_PP_STATUS + ':index.html'], { cwd: raiz, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+ok('TMA: commit da release 8.1.221 certo', /numero: '8\.1\.221'/.test(htmlRelPP));
+const difEntrega = TMA.filter(n => fnEm(htmlBase, n) !== fnEm(htmlRelPP, n));
+ok('TMA: a entrega 8.1.221 manteve as ' + TMA.length + ' funções idênticas à main (' + BASE + ')', difEntrega.length === 0, difEntrega);
+// + progCarregarStatus/progAplicarStatusDoBanco: histórico de status persistentes (P1/P2, retorno não apaga o histórico)
+// + progRenderPainelDisp: retorno automático pelo dia da tela (não por hoje) — homologação ponta a ponta 23/10/2026
+const TMA_CORRIGIDAS_DEPOIS = ['progSalvarStatus', 'progSalvarMenuStatus', 'progSetStatus', 'progCarregarStatus', 'progAplicarStatusDoBanco', 'progRenderPainelDisp'];
+const difTma = TMA.filter(n => TMA_CORRIGIDAS_DEPOIS.indexOf(n) < 0 && fnEm(htmlBase, n) !== fn(n));
+ok('TMA: ' + (TMA.length - TMA_CORRIGIDAS_DEPOIS.length) + ' funções idênticas à main (' + BASE + ') no arquivo atual', difTma.length === 0, difTma);
+ok('TMA: a modal do painel de Projetos não chama a gravação corrigida do TMA', !/progStatusGravarDia\(/.test(['ppDispChipLivreHtml', 'ppDispChipStatusHtml', 'ppRenderPainelDisp'].map(fn).join('\n')));
 ok('TMA: PROG_STATUS_PERSISTENTES e PROG_STATUS iguais', varEm(htmlBase, 'PROG_STATUS_PERSISTENTES') === varEm(html, 'PROG_STATUS_PERSISTENTES')
   && objEm(htmlBase, 'PROG_STATUS') === objEm(html, 'PROG_STATUS'));
 
@@ -60,12 +72,13 @@ ok('Disponível não apaga mais o histórico de férias/afastamento de outros di
 // ── vm: carregamento por data ───────────────────────────────────
 const CARGA = ['progDataRetornoStr', 'progRetornoAindaFora', 'progRetornoExpirouNoDia', 'progFiltrosStatusPersistentes', 'progExpirarPersistenteLinha',
   'progRemoverPersistente', 'progSalvarPersistente', 'progAplicarStatusDoBanco', 'progProjCarregarStatus', 'progProjStatusEhDoDia', 'progProjCarregarStatusDia',
-  'progProjCarregarStatusBanco', 'progProjSalvarStatus'];
+  'progProjCarregarStatusBanco', 'progProjSalvarStatus', 'progBuscarStatusPersistentes',   // leitura paginada dos persistentes (TMA status/histórico)
+  'progStatusComPrazo', 'progStatusLerDia'];   // leitura com prazo (trava de escala com leitura incompleta, 23/10/2026)
 function ctxCarga(cfg) {
   const log = { fetch: [], renders: 0, ponto: [], ls: 0 };
   const ctx = {
-    console: { log() {}, warn() {}, error() {} }, Date, JSON, Object, Array, String, Number, Math, Promise,
-    DEMO: false, window: {}, _pp: { statusData: cfg.statusData },
+    console: { log() {}, warn() {}, error() {} }, Date, JSON, Object, Array, String, Number, Math, Promise, setTimeout, clearTimeout,
+    DEMO: false, window: {}, _pp: { statusData: cfg.statusData }, progShowToast: () => {},
     _progStatus: Object.assign({}, cfg.memoria || {}), _progStatusInfo: {},
     // conta só as chaves de status POR DIA (pp_status_*, pp_statusinfo_*, prog_status_*); prog_persistentes é do TMA
     localStorage: {

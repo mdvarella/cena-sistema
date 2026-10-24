@@ -48,7 +48,12 @@ const nomesRelease = [...htmlRelease.matchAll(/\n(?:async )?function ((?:prog(?!
 const novasProtegidas = [...new Set(nomesRelease)].filter(n => !nomesBase.includes(n));
 ok('entrega da 1.7b: nenhuma função nova com prefixo de TMA/Diário/Portaria/SOT', novasProtegidas.length === 0, novasProtegidas);
 const ppMudadas = ['ppEqRemoverProjeto', 'ppEqSelecionarProjetos', 'ppFilaColocarNaEquipe', '_progProjRenderQuadroInterno', 'progProjetoCoreRenderEquipeRow'];
-const ppDifs = [...htmlBase.matchAll(/\nfunction ((?:pp|_?progProj|progProjetoCore)\w*)\(/g)].map(m => m[1]).filter(n => fnEm(htmlBase, n) !== fn(n));
+// Corrigidas depois (TMA status/histórico): leitura paginada dos status persistentes e aviso de leitura incompleta
+// — cobertas em tma-status-observacao.test.js e tests/pgreal/tma-status-postgrest-real.mjs.
+const PP_STATUS_CORRIGIDAS = ['progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro', 'ppRenderPainelDisp',
+    // + trava de escala/programação com leitura incompleta (23/10/2026)
+    'progProjetoCoreEfetuarDrop', 'ppAutoEscalarEquipe', 'progProjetoCoreSalvarEquipe'];
+const ppDifs = [...htmlBase.matchAll(/\nfunction ((?:pp|_?progProj|progProjetoCore)\w*)\(/g)].map(m => m[1]).filter(n => PP_STATUS_CORRIGIDAS.indexOf(n) < 0 && fnEm(htmlBase, n) !== fn(n));
 ok('na Programação de Projetos só mudaram os 5 pontos de entrada', JSON.stringify(ppDifs.sort()) === JSON.stringify(ppMudadas.slice().sort()), ppDifs);
 
 const NOVAS = ['ppExecRpc', 'ppExecCompReal', 'ppExecProjetosDoDia', 'ppExecDaEquipe', 'ppExecEstado', 'ppExecGarantirDia',

@@ -200,20 +200,50 @@ const recuperar = c => c.portAplicarFotosPacote(Object.assign({}, c.banco[0]));
 
   // 11. Escopo. (a) A ENTREGA da 8.1.224 (base c27358c → release a557b5d) só mudou funções da Portaria — comparação entre
   //     commits fixos, para não quebrar com versões seguintes aprovadas (8.1.225 mexe também em Frotas/Showroom).
-  //     (b) No arquivo atual, TMA/PP/Diário/SOT continuam idênticos à base. Commit ausente: falha clara.
+  //     (b) No arquivo atual, PP/Diário/SOT continuam idênticos à base. TMA: a entrega 8.1.225 (a557b5d → 732987e) não o
+  //     alterou (c); as fases seguintes do TMA têm teste próprio (tma-t0-gravacao.test.js). Commit ausente: falha clara.
   const showCommit = c => { try { return execSync('git show ' + c + ':index.html', { cwd: raiz, maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'pipe'] }).toString('utf8').replace(/\r\n/g, '\n'); }
     catch (e) { console.error('FALHOU: commit histórico ' + c + ' indisponível — verificação de escopo não pode ser feita.'); process.exit(1); } };
   const BASE_224 = process.env.PORT224_BASE || 'c27358c', REL_224 = process.env.PORT224_RELEASE || 'a557b5d';
   const htmlBase = showCommit(BASE_224), htmlRel = showCommit(REL_224);
   ok('escopo: commits históricos certos (8.1.224 na release, não na base)', /numero: '8\.1\.224'/.test(htmlRel) && !/numero: '8\.1\.224'/.test(htmlBase));
-  const nomes = src => { const s = new Set(); const re = /\n(?:async )?function ([A-Za-z0-9_$]+)\(/g; let m; while ((m = re.exec(src))) s.add(m[1]); return s; };
-  const difs = (a, b) => { const nA = nomes(a), nB = nomes(b), out = [];
-    nB.forEach(n => { if (!nA.has(n) || fnDe(a, n) !== fnDe(b, n)) out.push(n); });
-    nA.forEach(n => { if (!nB.has(n)) out.push('-' + n); }); return out; };
+  // Corpos de todas as funções numa varredura só (mesmo corte do fnDe: até o próximo marcador de topo; 1ª ocorrência)
+  const corpos = src => {
+    const marc = [], reM = /\n(?:async function |function |var |\/\/ ═|\/\/ ──|\/\*\*|\/\* )/g; let x;
+    while ((x = reM.exec(src))) marc.push(x.index);
+    const out = new Map(), reF = /\n(?:async )?function ([A-Za-z0-9_$]+)\(/g;
+    while ((x = reF.exec(src))) {
+      if (out.has(x[1])) continue;
+      const alvo = x.index + 12; let lo = 0, hi = marc.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (marc[mid] < alvo) lo = mid + 1; else hi = mid; }
+      out.set(x[1], src.slice(x.index + 1, lo < marc.length ? marc[lo] : undefined));
+    }
+    return out;
+  };
+  const difs = (a, b) => { const cA = corpos(a), cB = corpos(b), out = [];
+    cB.forEach((v, n) => { if (!cA.has(n) || cA.get(n) !== v) out.push(n); });
+    cA.forEach((v, n) => { if (!cB.has(n)) out.push('-' + n); }); return out; };
+  ok('escopo: varredura única igual ao fnDe', (() => { const c = corpos(html); return ['portAplicarFotosPacote', 'progDropPool', 'progSalvarEquipe'].every(n => c.get(n) === fnDe(html, n)); })());
   const mudou224 = difs(htmlBase, htmlRel);
   ok('escopo: a entrega da 8.1.224 só alterou funções da Portaria', mudou224.length > 0 && mudou224.every(n => /^-?port[A-Z]/.test(n)), mudou224);
-  const mudouAgora = difs(htmlBase, html);
-  ok('escopo: TMA/PP/Diário/SOT idênticos à base no arquivo atual', !mudouAgora.some(n => /tma|progProj|pp[A-Z]|diario|sot/i.test(n)), mudouAgora.filter(n => /tma|progProj|pp[A-Z]|diario|sot/i.test(n)));
+  // pp[A-Z] sem /i: com /i, "progDropPool" ("pPo") era tomado como função da Programação de Projetos (falso positivo).
+  const ehPP = n => /(^|-)_?pp[A-Z]/.test(n) || /progProj/i.test(n);
+  const ehProtNaoTma = n => ehPP(n) || /diario|sot/i.test(n);
+  // TMA: mesmo critério do teste da 8.1.225 (prog* fora de Projetos/Agenda) + nomes com "tma"
+  const ehTma = n => /tma/i.test(n) || /^-?prog(?!Proj|Projeto|Agenda)/.test(n);
+  ok('escopo: classificação de nomes sem falso positivo', !ehPP('progDropPool') && ehPP('ppDispChipLivreHtml') && ehPP('progProjSalvarStatus')
+    && ehTma('progBuscarEscalaTMAData') && ehTma('progSalvarCelular') && ehTma('progDropPool') && !ehTma('progProjSalvarStatus') && !ehTma('portSalvarSaida'));
+  // PP corrigida depois (TMA status/histórico): leitura paginada dos persistentes — coberta em tma-status-observacao.test.js
+  const PP_STATUS_CORRIGIDAS = ['progProjCarregarStatusDia', 'progProjCarregarStatusBanco', 'progProjAtualizarQuadro', 'ppRenderPainelDisp',
+    // + trava de escala/programação com leitura incompleta (23/10/2026)
+    'progProjetoCoreEfetuarDrop', 'ppAutoEscalarEquipe', 'progProjetoCoreSalvarEquipe', 'ppStatusVerificado', 'ppStatusBloqueiaEscala'];
+  const mudouAgora = difs(htmlBase, html).filter(n => PP_STATUS_CORRIGIDAS.indexOf(n) < 0);
+  ok('escopo: PP/Diário/SOT idênticos à base no arquivo atual', !mudouAgora.some(ehProtNaoTma), mudouAgora.filter(ehProtNaoTma));
+  const REL_225 = process.env.PORT225_RELEASE || '732987e';
+  const htmlRel225 = showCommit(REL_225);
+  ok('escopo: commit da release 8.1.225 certo', /numero: '8\.1\.225'/.test(htmlRel225));
+  const mudou225 = difs(htmlRel, htmlRel225);
+  ok('escopo: a entrega da 8.1.225 não alterou TMA/PP/Diário/SOT', !mudou225.some(n => ehTma(n) || ehProtNaoTma(n)), mudou225.filter(n => ehTma(n) || ehProtNaoTma(n)));
 
   if (failed.length) { console.error('FALHOU ' + failed.length + '/' + total + ':\n- ' + failed.join('\n- ')); process.exit(1); }
   console.log('portaria-saida-fotos-patch: OK (' + total + ' verificações)');
